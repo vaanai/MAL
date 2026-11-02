@@ -112,7 +112,7 @@ def test_validator_rejections():
     _bad(json.dumps([{"id": i, "action": "SKIP", "why": "no"} for i in IDS]), "bad_item")   # SKIP text
     _bad(json.dumps([{"id": i, "action": "WATCH"} for i in IDS]), "bad_item")
     _bad("I cannot rank these.", "not_json")                             # refusal prose
-    _bad("```json\n" + reply(IDS) + "\n```", "not_json")                 # code fence
+    _bad("Here is the order:\n```json\n" + reply(IDS) + "\n```", "not_json")   # prose outside a code fence (one bare fence is removed: test_fence_rule)
     _bad(None, "refusal")                                                # timeout / budget stop / refusal
     _bad("", "empty")
     _bad("   \n", "empty")
@@ -259,7 +259,7 @@ def test_request_bytes_identical_across_builds_and_marker():
     assert a.request.user_text == b.request.user_text
     sysb = a.request.body()["system"]
     assert sum(1 for blk in sysb if "cache_control" in blk) == 1 and sysb[0]["cache_control"] == P.CACHE_MARKER
-    assert a.request.max_tokens == 600 and "temperature" not in a.request.body()
+    assert a.request.max_tokens == R.MAX_TOKENS == 2000 and a.request.body()["max_tokens"] == 2000 and "temperature" not in a.request.body()
     assert sorted(a.shown_ids) == sorted(IDS) and a.shown_ids == tuple(a.screen_ids[i] for i in a.perm)
     assert a.request.ids == a.shown_ids and "Call " in a.request.user_text
     # a reply in the shown order validates against exactly these ids
@@ -384,7 +384,9 @@ def test_cost_arithmetic():
     assert hv6 == pytest.approx(2.20)
     assert hv6 + v61_parked + hv7 == pytest.approx(2.50) and hv6 + v61_parked + hv7 <= 3.00
     assert 10 * hv7 == pytest.approx(3.00)
-    assert R.ASSUMED_OUTPUT_TOKENS == 400 and R.MAX_TOKENS == 600
+    assert R.ASSUMED_OUTPUT_TOKENS == 400 and R.MAX_TOKENS == 2000
+    worst2000 = R.cost_usd(2874, 9056, 2000)          # DESIGN section 5 worst row after the 2026-10-30 max_tokens change
+    assert worst2000 == pytest.approx(0.00226485) and 24 * worst2000 == pytest.approx(0.0543564) and 24 * worst2000 < hv7
 
 
 # ---------------------------------------------------------------- C2 session: C1 nits
@@ -440,3 +442,83 @@ def test_screen_set_argument_names_and_message():
         R.screen_set(["a"], {"a": 1.0}, n=9)
     with pytest.raises(R.RankError, match=r"got n=8, n_min=2"):
         R.screen_set(["a"], {"a": 1.0}, n_min=2)
+
+
+# ---------------------------------------------------------------- reply format (2026-10-30, after real-model smoke #1779)
+# The smoke's 31 cached replies were read for STRUCTURE only (stop_reason, output_tokens, length, first character, fence, JSON validity, item and
+# id counts; never an id, a why text or an order): 30 stopped at max_tokens 600 with 6 or 7 of 8 items written (28 bare, 2 inside an unclosed ```json
+# fence), 1 ended normally after 4 items with one id twice (duplicate_id). The fixtures below rebuild those shapes from synthetic ids of the
+# real length (44 base58 characters) and why texts of the real length range; no reply byte is copied.
+
+B58 = "123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz"
+
+
+def b58_id(i):
+    h = hashlib.sha256(f"synthetic-{i}".encode()).digest()
+    return "".join(B58[b % 58] for b in (h + h)[:44])
+
+
+IDS44 = [b58_id(i) for i in range(8)]
+WHY_SHORT = "f.vol_60m highest"
+WHY_LONG = "f.quote_eff_sol deep and f.impact_rt_025 low, f.ret_60m positive; hypothesis that f.net_flow_15m buying continues near term"
+
+
+def compact(items):
+    return json.dumps(items, separators=(",", ":"))
+
+
+def full_reply(why=WHY_LONG, order=None):
+    return compact([{"id": i, "why": why} for i in (order or IDS44)])
+
+
+def test_fence_rule_one_bare_fence_is_removed():
+    body = full_reply()
+    for wrapped in ("```json\n" + body + "\n```", "```\n" + body + "\n```", "```JSON\n" + body + "\n```\n", "  ```json\n" + body + "```  \n",
+                    "```json\r\n" + body + "\r\n```"):
+        v = R.validate_rank(wrapped, IDS44)
+        assert v.ok and v.order == tuple(IDS44) and v.reason is None, wrapped[:12]
+    assert R.validate_rank(body, IDS44).order == R.validate_rank("```json\n" + body + "\n```", IDS44).order   # the fence never changes an order
+
+
+def test_fence_rule_keeps_every_other_wrapper_a_fallback():
+    body = full_reply()
+    for bad in ("Ranking:\n```json\n" + body + "\n```",            # prose before
+                "```json\n" + body + "\n```\nTop pick is the first.",   # prose after
+                "```json\n" + body + "\n```\n```json\n" + body + "\n```",   # two fences
+                "```python\n" + body + "\n```",                      # another language tag
+                "```json " + body + "```",                            # no newline after the info string
+                "```json\n" + body,                                   # opened, never closed
+                "Ranking: " + body,                                   # bare prose prefix
+                body + " Done."):
+        assert R.validate_rank(bad, IDS44).reason == "not_json", bad[:20]
+    v = R.validate_rank("```json\n" + full_reply(order=IDS44[:7]) + "\n```", IDS44)
+    assert not v.ok and v.reason == "missing_id"                       # inside the fence every permutation check still applies
+
+
+def _cut(k):
+    """A reply cut mid-item the way max_tokens cuts it: the first k full items, then part of the next one."""
+    items = [compact([{"id": i, "why": WHY_LONG}])[1:-1] for i in IDS44]
+    head = "[" + ",".join(items[:k]) + ("," if k else "")
+    return head + items[k][: len(items[k]) // 2]
+
+
+@pytest.mark.parametrize("k", [6, 7])
+def test_smoke_1779_shapes_cut_replies_stay_not_json(k):
+    assert R.validate_rank(_cut(k), IDS44).reason == "not_json"                    # 28 of the 30 cut replies: bare array, cut mid-item
+    assert R.validate_rank("```json\n" + _cut(k), IDS44).reason == "not_json"     # 2 of 30: inside a ```json fence that never closed
+
+
+def test_smoke_1779_shape_short_reply_with_a_repeated_id_stays_duplicate_id():
+    order = [IDS44[0], IDS44[1], IDS44[2], IDS44[1]]                  # ended normally after 4 items, one id twice, 3 distinct of 8
+    assert R.validate_rank(compact([{"id": i, "why": WHY_SHORT} for i in order]), IDS44).reason == "duplicate_id"
+
+
+def test_max_tokens_covers_a_full_reply():
+    """At the smoke's measured worst structure (the longest item, the fewest chars per token) a full N_MAX reply plus a fence fits in MAX_TOKENS
+    with at least a 1.5x margin. At 600 it did not: 30 of 31 replies were cut."""
+    fence = len("```json\n") + len("\n```")
+    worst_chars = 2 + R.N_MAX * R.MEASURED_MAX_ITEM_CHARS + fence
+    worst_tokens = worst_chars / R.MEASURED_MIN_CHARS_PER_TOKEN
+    assert worst_tokens * 1.5 <= R.MAX_TOKENS
+    assert 600 < worst_tokens                                           # the old cap is below the measured worst full reply
+    assert len(full_reply()) <= 2 + R.N_MAX * R.MEASURED_MAX_ITEM_CHARS   # the synthetic long fixture is inside the measured envelope
