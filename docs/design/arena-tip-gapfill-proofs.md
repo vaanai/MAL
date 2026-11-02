@@ -28,7 +28,7 @@ Common job fields: `resumable: false`; `nice 19`; stream rows to disk; `systemd-
 - Where: research-0, memory 20G (the fill step reads the walker's rows for the deleted slots instead of calling RPC, so it costs no credits; P2 is the proof that the fetch path equals the walker).
 - Command:
   `sh -c 'cd $MAL_CHECKOUT && python3 -m tools.arena_tip_gapfill_proofs p3 --hours-dir "$EXP0814_HOURS" --reasons backlog_jump,unfetchable,skip_contradicted,skip_contradicted_refetch,unresolved_dropped --book pinned-deterministic --backlog-slots 50 --min-rows "$MIN_ROWS" --out "$HOME/data/results/gapfill-p3.json"'`
-- Pass: ledger md5 equal to the unbroken stream's except the rows Amendment 26 item 6 changes by design (marked-through trades and positions with a leg in the margin), which are listed by count and reason; `rows_dup` 0; no mixed (pool, slot) group.
+- Pass: ledger md5 equal to the unbroken stream's except the rows Amendment 26 item 6 changes by design (marked-through trades and positions with a leg in the margin), which are listed by count and reason; `rows_dup` 0; no mixed (pool, slot) group. The output also prints the late-print count (the `late_print` rows with `gap_overlap` and `fill_margin`), per reason.
 
 ## After the three
 
