@@ -62,13 +62,22 @@ No s1t trigger or outcome exists on any pool at writing. Q50's outcomes have bee
     - for `bot_id` `h5v1q50-boostfloor-s1t` only.
   - **Pools covered.** Pools with s0 at or after that process's start record `start_ms` and before `SUCC_END_MS` = 2026-12-01T00:00:00Z (1796083200000), the end constant pinned in S\*'s code. So no outcome the process writes is uncovered (R7(c)).
   - **What the book counts.** Only attempts decided in [clock, E), E = `SUCC_END_MS` (DEC-031 Amendment 24 item 5: H = 24 d from the 2026-11-07T00:00:00Z clock, 21 d from the 2026-11-10T00:00:00Z slip). Outcomes of pools decided before the clock are covered but never counted, scored or read.
-  - **The book's process.** It starts at least 1 h before the clock and after 2026-11-06T00:00:00Z. At S\*' a pool whose s0 is before the start is never tracked (the wrapper drops rows before the start, so the pool is never announced). So the book's process computes no outcome for a pool in Q50's counted window [2026-10-25T00Z, 2026-11-06T00Z).
-  - **The smoke** (DEC-031 Amendment 24 item 6) is a process at the same code with `--smoke` added, in a scratch root that is not the book's root. Its start is at or before 2026-11-05T12:00:00Z.
+  - **The book's process.** It starts at least 1 h before the clock, and after 2026-11-06T00:00:00Z. **A book process (no `--smoke`) started before 2026-11-06T00:00:00Z is not covered.** At S\*' a pool whose s0 is before the start is never tracked: the wrapper drops rows before the start, so the pool is never announced. So the book's process computes no outcome for a pool in Q50's counted window [2026-10-25T00Z, 2026-11-06T00Z).
+  - **The smoke** (DEC-031 Amendment 24 item 6) is a process at the same code with `--smoke` added, in a scratch root that is not the book's root. Both of item 6's forms are covered:
+    - the early form, with its start at or before 2026-11-05T12:00:00Z;
+    - on the 2026-11-10 slip, quant-proof's form, with its fresh start at or after 2026-11-06T00:00:00Z and before that clock.
+
+    Both run with `--smoke` (reviewer R1 option (a) on #1190; quant-proof may instead rule option (b), quant-proof's form with pricing on in a scratch root never opened, counted, scored or read).
     - `--smoke` puts S\*'s H5 Look-2 seal on every pool, so no outcome, ladder, strip or min-Q is computed on any pool. Trigger and pool records are written flagged `h5_look2_sealed`, and the wrapper halts the process if an outcome-type record is produced.
     - The smoke therefore computes no Q50-rule outcome, on Q50's counted window or elsewhere. This note covers it all the same, as the s1 note covered s1's smoke.
     - Its records are never opened, never counted, scored or read. Before s1t's first read, no count of them is printed or notebooked as a number (Amendment 24 item 6).
     - A smoke run without `--smoke` is not covered.
-  - **The P0 count** of Amendment 24 item 5 (a slip clock only) is covered on the same terms. It runs with `--smoke`, counts only.
+  - **The P0 count** of Amendment 24 item 5 is covered under these conditions:
+    - it runs only on the 2026-11-10 slip;
+    - it covers only the days [2026-11-06T00:00Z, 2026-11-09T00:00Z), outside Q50's counted window;
+    - it runs after 2026-11-09T00:00Z, so the smoke's start-instant conditions do not apply to it;
+    - it runs at the same code with `--smoke`, counts only;
+    - it prints its per-day counts, the P0's purpose and nothing else (SEALS-BRIEF S1T READERS).
   - **Pools with s0 in [2026-11-06T00Z, 2026-11-14T00Z)** are covered only by this note (R7(c)). Pools with s0 at or after 2026-11-14T00:00Z are outside every H5 seal of this file.
   - **Where outcomes go.** To s1t's arena output and ledger only. They may be observed in real time, by anyone, as in Amendment 2. They are gate-read once by s1t's scoring wrapper and read tool under DEC-031 §2 and Amendment 11, as DEC-031 Amendment 18 item 7 applies it (carried by Amendment 24 item 2).
   - **Not covered:** a process at any other code, with any other flags (other than `--smoke` as above), on any other input, or for any other `bot_id`. That includes S\* on the public websocket for `h5v1q50-boostfloor-s1`, which the s1 note governs.
