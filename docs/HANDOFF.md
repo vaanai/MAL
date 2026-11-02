@@ -1,4 +1,4 @@
-# MAL manager handoff: manager18 → next manager (written 2026-11-02 ~18:3xZ)
+# MAL manager handoff: manager18 → next manager (written 2026-11-02 ~18:3xZ, updated ~18:5xZ)
 
 Read this file first. Then read:
 1. `/data/mal/hunt-1008/ops/manager18/state-manager18.md`: from "COMPACT-READY SUMMARY #4" to the end. It holds the full detail, with ids and comment numbers.
@@ -9,7 +9,7 @@ Read this file first. Then read:
 ## 0. Owner direction (current)
 - **2026-11-01 ~22:3xZ.** The owner is frustrated by the run of bad news. Be proactive: solve blockers yourself, push hard, and use every resource. Withdraw anything that will hit the same problem. Helm requests go into `/data/mal/hunt-1008/push-1016/hunt29/p1/HELM-ASK-<date>-<n>.md`; the owner tells Helm to check hourly. Ask the owner only for keys, money or a live go. (Memory: owner-push-1101.)
 - **Standing approvals still in force:** C0 canary pre-approval after a gate PASS, DEC-032 preconditions (10-23). API spend past 11-11 (10-28). Decide-and-tell for rule, DEC and lane decisions (10-22). The promotion gate is unchanged.
-- **The weekly usage limit hit 2026-11-02 ~01:2xZ** and resets 2026-11-06T13:00Z. Subagents fail with 429 until then.
+- **The weekly usage limit** hit 11-02 ~01:2xZ; the owner reset it at ~18:1xZ on 11-02, and subagents work again.
 
 ## 1. What changed on 11-01 and 11-02
 - **Diagnosis:** most of October's NOT_DECIDABLE results were self-inflicted: the public feed lost data, A3 halted on redeploys, crons were lost, smokes failed. Lane L4 audit: 30 events, only 4 of them market verdicts (`ops/reports/2026-11-02/L4-nd-audit.md`).
@@ -27,35 +27,42 @@ Read this file first. Then read:
   - #1188, #1195: r4bt counter.
 - **SEALS-BRIEF** is now sha `bb11a222`: S1T READERS final line plus TIP HOUR-HEALTH STAGED INPUTS. The AGENT-BRIEF pointer is updated. The HV4-T READERS line (QP-NOTE-1102-tip-readers Note 2, 8 fixes) is NOT applied yet.
 
-## 2. Open PRs: verify verdicts at the exact head, then merge
+## 2. Open PRs (state at 2026-11-02T18:4xZ): verify verdicts at the exact head, then merge
+**Merged since the first draft of this file:**
+- r4-b-T: #1173 (memory check), #1197 (decode parity + writes, merge commit), #1198 (confirmation read, merge commit 98b9314f), #1200 (sample key-mapping, merge commit f180e40a).
+- **r4-b-T FROZEN SHA = 17e3b05a7696900cda7fcf93e4af4008d8fa0184** (head of the bc65c088-lineage branch; QP-RULING-1102-r4bt-ADDENDUM-2, sha 308e20f0). The registration record pins it, plus the sampler command and tools/r4bt_sample_keys.py.
+- HV7: #1170 (U2 + READ_ROOTS + registration draft; #1102 closed as superseded).
+- Gap-fill: #1182 (Am.26), #1194 (P1–P3 proof harness), #1201 (splice fix + Am.26 Erratum 1). No book may name Am.26 until P1–P3 have run on explore-0814 and been notebooked, and the live wiring, scorer pin and SEALS entry exist. Open reviewer notes: fill() has zero backoff on 429; segment load trusts the manifest's "filled" flags.
+
 | PR | Head | State | Merge |
 |---|---|---|---|
-| #1169 (Am.23 Erratum 1) | a4759075 | reviewer APPROVE; QP agent said "posted"; verify | squash, first |
-| #1170 HV7 U2/READ_ROOTS/registration draft | 59990fbd | reviewer APPROVE; QP test job #2066 PASS, verdict not posted | after #1169, update from main |
-| #1172 HV7 tip P0 counter | 80808625 | reviewer APPROVE; QP #2067 PASS, verdict not posted | after #1170 |
-| #1189 HV7 F1 tip proofs | ee949bbd | reviewer APPROVE; QP #2071 PASS, verdict not posted | after #1172 |
-| #1197 r4-b-T decode parity / writes | 03d22a31 | QP OK; reviewer verdict owed | **merge commit**, before r4-b-T registration |
-| #1198 r4-b-T confirmation read | 87272bef | QP OK; reviewer verdict owed | **merge commit**, before the screen read |
-| #1182 gap-fill (Am.26) | f92029c1 | QP CHANGES F1/F2 | not on the critical path |
-| #1194 gap-fill proofs | 8f7cd596 | QP CHANGES R7 | after #1182 |
-| #1173, #1176 (r4b C0 memory/install) | — | parked | reuse for any C0 |
+| #1169 (Am.23 Erratum 1) | df5d674c | reviewer APPROVE; QP test job #2073 PASS, QP verdict not posted yet | squash; DEC-031 append-only (re-merge main if it conflicts) |
+| #1172 HV7 tip P0 counter | 41080f22 | reviewer APPROVE; QP verdict owed | squash, after #1169 |
+| #1189 HV7 F1 tip proofs | 94246150 | reviewer APPROVE; QP verdict owed (QP to rule: hv7.0- prefix during the EQUIV_RC leg) | after #1172; update from main first |
+| #1202 s1t book tools | moving | reviewer CHANGES (drop whole_lines from digest); QP asked to rule on the research-0 A3 loop + a3-guard-pin-s1t tag | then a follow-up PR: reader wiring in arena_h5_books/legs, A3 alert + daily score job scripts, guard tag command |
+| #1199 (this handoff) | — | T0 owed | squash |
+| #1176 (r4b C0 install pack) | f9ac946f | parked | reuse for any C0 |
 
-DEC-031 merges have been append-only. On a conflict, merge main into the branch with the new amendment block byte-identical and appended at the end, then get both verdicts re-confirmed by diff.
+DEC-031 merges are append-only. On a conflict, merge main into the branch with the amendment block byte-identical and appended at the end, then get both verdicts re-confirmed by diff.
 
-## 3. Clocks (re-plan on resume; the pause cost the 11-07 dates)
-- **s1t:** the 11-07 path is missed (watcher ≤ 11-04T11:30Z, smoke 11-05T11:45Z). Slip clock **2026-11-10T00Z**: P0 days 11-06..11-08 through the Am.23 item 9 pinned P0 counter; slip smoke form (a); S_cap 11-20; H = 21 d. Side-feed probe #2065 passed (rpc.solanatracker.io, 410 msg/s). Watcher ≥ 50 h, started ≥ 24 h before the smoke. The launcher stops the smoke if the watcher exits 4, 5 or 6 or goes away.
-- **HV7:** needs #1169–#1189 merged, the F1 proofs run (md5 equivalence plus the real P0, pins: days 11-03/04/05 and H0 2026-10-29T09 — these days must be re-picked if the registration moves), registration, then the clock. The 11-07 date has likely slipped; pick the next honest 00:00Z.
-- **r4-b-T:** clock 11-07T06Z only if registered by 11-06T23:59:59Z, else **11-08T00Z**. Before registration:
-  - #1197 merged;
-  - a dry run of decode fetch/parity on a real sample;
-  - a fresh evaluated A3 run within 24 h, pinned with the pins file;
-  - `--writes` with `--last-clean-run-utc`;
-  - dry-long-1101a stopped at 11-07T03:00Z, then a new bc65c088 host run after registration.
-
-  All rules are in QP-RULING-1102-r4bt (`2d329e4b`) and its ADDENDUM-1 (`50c76ae0`).
-- **HV4-T:** 2026-11-10T00Z (Am.25).
-- **Q50:** waiter #1886 and read #1887 are still queued on its count.
-- **Walk 2:** stop after hour 11-07T05 is verified (manager decision, n_5l_k53yo2XeSMg). J7 gate command is in `ops/reports/2026-11-02/L6-exp027-protect.md` §8; test cancelling a job from inside a job first. Never call job_status on #1036 or #1290.
+## 3. Clocks (after the limit reset at ~18:1xZ on 11-02, the 11-07 paths are back on)
+- **s1t, clock 2026-11-07T00Z.**
+  - Watcher **#2074 is running** (S = 2026-11-05T11:45Z, 100 h).
+  - Smoke launcher: submit between 11-05T09:00Z and 11:30Z (`/data/mal/hunt-1008/ops/reports/2026-11-02/s1t-run-commands.md` §2).
+  - Notebook pins before the smoke: plan hours 578, cap 3,500 MiB.
+  - Shadow seg1 at 11-06T22:55Z needs: registration notebooked, smoke PASS, feed bar recorded, A3 loop running, plus #1202 and its follow-up merged.
+  - Slip: 11-10T00Z.
+- **HV7, clock 2026-11-07T00Z.** Path: merge #1169→#1172→#1189 → run the F1 proof jobs (`scripts/ops/hv7-tip-equiv.sh`; EQUIV_RC; F_3D) → P0 job (`scripts/ops/hv7-tip-p0.sh`; days 11-03/04/05; H0 2026-10-29T09; it runs after 11-05T23 closes, ~11-06T00:30Z; pass 150/14 a day) → registration by 11-06T22:05Z. Pins and floors: QP report `ops/reports/2026-11-02/qp-hv7-1169-1170-1172-1189.md`.
+- **r4-b-T, clock 2026-11-07T06Z** if the registration record is written by 2026-11-06T23:59:59Z, else 11-08T00Z. Runbook: `ops/reports/2026-11-02/r4bt-registration-runbook.md`. Owed before registration:
+  - decode fetch/parity dry run on a real post-redeploy sample;
+  - a fresh evaluated A3 run within 24 h (loop #2072 runs 07:11Z daily);
+  - the #1173 memory check run from its merge commit (its verdict binds);
+  - P0 from dry-long-1101a entry counts;
+  - stop dry-long-1101a at 11-07T03:00:30Z, then a new host run at 17e3b05a after registration.
+- **HV4-T:** 2026-11-10T00Z (Am.25); smoke only after #1562 ends at 11-08T13:05Z.
+- **Q50:** waiter #1886 and read #1887 still queued on its count.
+- **Walk 2:** stop after hour 11-07T05 is verified (n_5l_k53yo2XeSMg). J7 gate: see `ops/reports/2026-11-02/L6-exp027-protect.md` §8; test cancelling a job from inside a job first. Never job_status #1036/#1290.
+- **EXP-027:** J6b #2053 runs at 11-09T03:05Z; the DEADLINE_ND squash PR and ledger end record are due by 11-09T12Z.
 
 ## 4. Host jobs running (job_list state only; sealed status views stay sealed)
 - r4b DRY #2019 and sidecar #2018, until 11-07T03Z.
@@ -64,6 +71,7 @@ DEC-031 merges have been append-only. On a conflict, merge main into the branch 
 - Pool-cache #2055.
 - Sampler chain #2048 → #2062. The last 30 h window had zero new gap rows (#2022).
 - A3 monitor loop #2072, until 11-07.
+- s1t watcher #2074 (S = 11-05T11:45Z).
 - J6b #2053, at 11-09T03:05Z.
 - Watch #2043 and watchdog #1952.
 
