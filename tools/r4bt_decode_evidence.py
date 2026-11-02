@@ -10,7 +10,9 @@ ADDENDUM 1 A - EVERY WRITE, ON ITS OWN LIVE INTERVAL. Am.4 item 1.9: the fail in
 write of the same program the chain ran w_i's version, and rows decoded then reach r4-b-T's decisions and prices; a sample taken only after the newest write tests none of them. So
 `check_all` takes the enumerated writes (`tools/r4bt_writes.py`) and checks each pump / pumpswap write on [slot_i + SAMPLE_START_OFFSET_SLOTS, slot_{i+1}) (the newest: open-ended).
   * An interval no longer than SAMPLE_MAX_SLOTS is scanned WHOLE (the population): the 500-tx floor, the migrate floor and the "required events were seen" terms are waived (absence
-    in a small population is not evidence of a layout change); every event that IS there must still decode and map with exact parity. Mode "population".
+    in a small population is not evidence of a layout change; QP confirmed this reading, comment 6566519436); every event that IS there must still decode and map with EXACT parity
+    (the decode terms (c) and (d) and the adapter parity are NOT waived). ANY FETCH GAP is an ERROR, never a pass: an RPC failure, an exhausted call budget or an unreachable node
+    (only a slot the node reports as skipped counts as empty) ends that write's check as ERROR (hard halt at that write), because the population was not fully read. Mode "population".
   * An interval with ZERO program transactions and ZERO settled migrate transactions decoded nothing under that version: PASS, mode "vacuous", recorded with its slot range. An empty
     interval (the next write within the offset) is vacuous without any sample RPC.
   * A longer interval is sampled from its start by the pinned rule (floors apply). Mode "sample". The newest write (open-ended) is also mode "sample".
@@ -151,6 +153,9 @@ def check_write(write: Mapping[str, Any], pins: Mapping[str, Any], r4bt_pins: Ma
             fails += [f"d: {n} not seen in the migrate sample" for n in required if n not in mv["seen_events"]]
     except ARC.CheckError as exc:
         out["reasons"] = [str(exc)]
+        return done("ERROR")
+    except Exception as exc:  # noqa: BLE001 - a FETCH GAP (RpcError, RpcUnreachable, CallBudgetExceeded: anything but a skipped slot, which `client.call` returns as None) is an ERROR
+        out["reasons"] = [f"fetch gap: {type(exc).__name__} (class only; the interval was not fully read, so nothing is concluded from it)"]
         return done("ERROR")
     if int(now_ms()) - int(deploy_ms) > CHECK_WINDOW_MS:  # (g)
         fails.append("g: the check did not finish within 24 h of the earliest write")

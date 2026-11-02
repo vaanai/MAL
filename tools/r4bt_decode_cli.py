@@ -152,7 +152,7 @@ def main(argv: Sequence[str] | None = None, *, client: Any = None, http_get: Cal
     try:
         if a.cmd == "parity":
             return cmd_parity(a)
-        cl = client or build_client(a)
+        cl = client or build_client(a, max_calls=4500 if a.cmd == "run" else 450)  # `run` checks every write: up to ~300 getBlock + the migrate paging each
         if a.cmd == "fetch":
             return cmd_fetch(a, cl)
         return cmd_run(a, cl, http_get or mon.urllib_get, now_ms or (lambda: int(time.time() * 1000)))

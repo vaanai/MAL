@@ -1,6 +1,8 @@
 """r4bt_decode_evidence, QP Addendum 1 A: every write is checked on its own live interval. Synthetic blocks and stubbed samples: no network."""
 from __future__ import annotations
 
+import json
+
 import pytest
 
 from tools import a3_redeploy_check as ARC
@@ -90,3 +92,47 @@ def test_check_all_gives_one_result_per_write_and_does_not_stop_at_a_failure(stu
     res = DE.check_all(ws, PINS, R4PINS, client=None, http_get=None, now_ms=lambda: T0, adapter_check=lambda s, population=False: ["x"])
     assert [(r["name"], r["slot"]) for r in res] == [("pump", 1000), ("pump", 1100), ("pumpswap", 2000)]
     assert [r["verdict"] for r in res] == ["PASS", "FAIL", "FAIL"] and res[0]["mode"] == "vacuous"  # the first write's interval is empty (next write within the offset)
+
+
+class GapClient(Blocks):
+    """An RPC failure (not a skipped slot) in the middle of the interval."""
+
+    def call(self, method, params):
+        if params[0] == 1160:
+            raise RuntimeError("rpc 500 https://x/?api-key=SECRETKEY")
+        return super().call(method, params)
+
+
+def test_a_fetch_gap_in_a_fully_scanned_interval_is_an_error_class_only_never_a_pass(stubs, monkeypatch):
+    """QP (comment 6566519436): a fully scanned interval waives 'required events seen' only. Any fetch gap is an ERROR; the reason carries the class, not the message."""
+    monkeypatch.setattr(DE, "migrate_decode_evidence", lambda *a, **k: {"n_migrate_txs": 0, "seen_events": []})
+    cl = GapClient({s: [tx(td.PUMPSWAP_PROGRAM, BUY)] for s in range(1150, 1200)})
+    r = run(cl, 1200, lambda s, population=False: [])
+    assert r["verdict"] == "ERROR" and r["reasons"] == ["fetch gap: RuntimeError (class only; the interval was not fully read, so nothing is concluded from it)"]
+    assert "SECRETKEY" not in json.dumps(r)
+
+
+def test_a_skipped_slot_is_empty_but_a_migrate_fetch_gap_is_an_error(stubs, monkeypatch):
+    def gap(*a, **k):
+        raise RuntimeError("boom")
+
+    monkeypatch.setattr(DE, "migrate_decode_evidence", gap)
+    assert run(Blocks({1150: [tx(td.PUMPSWAP_PROGRAM, BUY)]}), 1200, lambda s, population=False: [])["verdict"] == "ERROR"  # slots 1151..1199 are None (skipped): fine; the migrate gap decides
+    monkeypatch.setattr(DE, "migrate_decode_evidence", lambda *a, **k: {"n_migrate_txs": 0, "seen_events": []})
+    assert run(Blocks({1150: [tx(td.PUMPSWAP_PROGRAM, BUY)]}), 1200, lambda s, population=False: [])["verdict"] == "PASS"  # skipped slots alone are not a gap
+
+
+def test_check_all_keeps_going_after_a_fetch_gap_and_gives_that_write_an_error(stubs, monkeypatch):
+    monkeypatch.setattr(DE, "migrate_decode_evidence", lambda *a, **k: {"n_migrate_txs": 40, "seen_events": ["Complete"]})
+    cl = GapClient({s: [tx(td.PUMPSWAP_PROGRAM, BUY)] for s in range(1150, 1400)})
+    ws = [{"name": "pump", "slot": 1000, "at_ms": T0 - 5_000}, {"name": "pump", "slot": 1250, "at_ms": T0 - 4_000}]  # first interval [1150, 1250) holds the gapped slot 1160
+    res = DE.check_all(ws, PINS, R4PINS, client=cl, http_get=None, now_ms=lambda: T0, adapter_check=lambda s, population=False: [])
+    assert [r["verdict"] for r in res] == ["ERROR", "PASS"] and res[0]["reasons"][0].startswith("fetch gap: RuntimeError")  # the newest write (open-ended) uses the stubbed ARC.fetch_sample
+
+
+def test_every_event_present_in_a_fully_scanned_interval_must_still_match_exactly(stubs, monkeypatch):
+    """The waiver is the 'required events seen' term only: a decode failure of a present event (sample_failures) fails the population write."""
+    monkeypatch.setattr(DE, "migrate_decode_evidence", lambda *a, **k: {"n_migrate_txs": 0, "seen_events": []})
+    monkeypatch.setattr(ARC, "sample_failures", lambda ev, label, pins, fails, client=None: fails.append(f"c: {label}: undecodable events of a decoded discriminator: 1"))
+    r = run(Blocks({1150: [tx(td.PUMPSWAP_PROGRAM, BUY)]}), 1200, lambda s, population=False: [])
+    assert r["mode"] == "population" and r["verdict"] == "FAIL" and "c: log sample: undecodable events of a decoded discriminator: 1" in r["reasons"]
