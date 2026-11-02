@@ -337,11 +337,16 @@ def test_the_post_fill_gap_record_and_the_hour_counts_report_both_filled_and_unf
 def test_the_cli_refuses_the_sealed_tip_tree_the_archive_and_the_derived_copy(tmp_path):
     from tools import arena_tip_tape_writer as w
 
-    for bad in ("/var/lib/mal/sealed/fast-trades-tip/gaps.jsonl", "/var/lib/mal/tip-tape-archive/x", os.path.join(w.DEFAULT_OUT, "seg"), w.DEFAULT_OUT):
+    from tools import arena_tip_push as push
+
+    for bad in ("/var/lib/mal/sealed/fast-trades-tip/gaps.jsonl", "/var/lib/mal/tip-tape-archive/x", os.path.join(w.DEFAULT_OUT, "seg"), w.DEFAULT_OUT,
+                push.DST_ROOTS[0], os.path.join(push.DST_ROOTS[0], "seg"), os.path.join(push.DST_ROOTS[0], "tape", "gaps.jsonl")):
         assert gf.refused_path(bad), bad
     assert gf.refused_path(tmp_path / "gaps.jsonl") is None
     assert gf.main(["--gaps", "/var/lib/mal/sealed/fast-trades-tip/gaps.jsonl", "--segment-dir", str(tmp_path / "s"), "--public-rpc"]) == 4
     assert gf.main(["--gaps", str(tmp_path / "g"), "--segment-dir", "/var/lib/mal/sealed/x", "--public-rpc"]) == 4
+    assert gf.main(["--gaps", os.path.join(push.DST_ROOTS[0], "gaps.jsonl"), "--segment-dir", str(tmp_path / "s"), "--public-rpc"]) == 4  # reading the research-0 derived copy
+    assert gf.main(["--gaps", str(tmp_path / "g"), "--segment-dir", os.path.join(push.DST_ROOTS[0], "fill"), "--public-rpc"]) == 4  # writing into it
 
 
 # ------------------------------------------------------------------------------------------------------------------------------------ order key

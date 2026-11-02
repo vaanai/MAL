@@ -489,12 +489,14 @@ def read_env_file(path: str | os.PathLike) -> dict[str, str]:
 def refused_path(path: str | os.PathLike) -> str | None:
     """Why the CLI will not read or write `path` (None = allowed): under the sealed tip tree, the archive, or the writer's derived copy (QP C7). The fill's gap input is the
     writer's counts-log gap entries or the adapter's in-host stream, never the tip dir's gaps.jsonl."""
+    from tools import arena_tip_push as push
     from tools import arena_tip_tape_writer as w
 
+    derived = (os.path.realpath(w.DEFAULT_OUT), w.DEFAULT_OUT, os.path.realpath(push.DST_ROOTS[0]), push.DST_ROOTS[0])  # fast-0 writer copy and the research-0 derived copy
     for cand in {os.path.abspath(os.fspath(path)), os.path.realpath(os.fspath(path))}:
         if tr.ARCHIVE_MARK in cand:
             return "is under the tip tape archive"
-        for pre in (*REFUSED_PATH_PARTS, os.path.realpath(w.DEFAULT_OUT), w.DEFAULT_OUT):
+        for pre in (*REFUSED_PATH_PARTS, *derived):
             if cand == pre or cand.startswith(pre.rstrip("/") + "/"):
                 return "is under the sealed tip tree or the writer's derived copy"
     return None
