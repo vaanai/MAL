@@ -74,15 +74,16 @@ def _row(clock_ms: int, *, reg_from_ms: int, reg_to_ms: int, h_days: int, p0_per
 
 
 # 2026-11-07T00:00:00Z clock. Registration: not before S + 24 h (2026-11-06T11:45:00Z, the earliest end of a smoke that began at S = 2026-11-05T11:45:00Z and ran >= 24 h)
-# and not after 2026-11-06T22:50:00Z (the shadow starts 22:55:00Z at the earliest; the scorer needs registered_at_ms before the process start; Am.24 item 7 starts it >= 1 h before the clock).
+# and not after 2026-11-06T19:00:00Z (QP on #1202: the first A3 run after the registration is 19:10Z, and it must land before the clock; the shadow starts 22:55:00Z at the earliest and the
+# scorer needs registered_at_ms before the process start; Am.24 item 7 starts it >= 1 h before the clock).
 ROW_1107: Mapping[str, Any] = _row(
-    1_794_009_600_000, reg_from_ms=1_793_965_500_000, reg_to_ms=1_794_005_400_000, h_days=24, p0_per_day=35.333333333333336,
+    1_794_009_600_000, reg_from_ms=1_793_965_500_000, reg_to_ms=1_793_991_600_000, h_days=24, p0_per_day=35.333333333333336,
     p0_ref="job #1413 (Q50's P0, reused as Amendment 18 item 3 reuses it for s1; valid for a clock at or before 2026-11-07T00:00Z; Amendment 24 item 5)",
     p0_rule="reused, fixed")
-# 2026-11-10T00:00:00Z first slip. Registration on 2026-11-09 (the latest 3 closed tip days 11-06, 11-07, 11-08 precede it; Amendment 24 item 5), not after 22:50Z.
+# 2026-11-10T00:00:00Z first slip. Registration on 2026-11-09 (the latest 3 closed tip days 11-06, 11-07, 11-08 precede it; Amendment 24 item 5), not after 19:00Z (the 19:10Z A3 run, as above).
 # The slip's P0 is a tip count made before the registration: it is a REQUIRED registration argument for this row (no value is compiled here).
 ROW_1110: Mapping[str, Any] = _row(
-    1_794_268_800_000, reg_from_ms=1_794_182_400_000, reg_to_ms=1_794_264_600_000, h_days=21, p0_per_day=None,
+    1_794_268_800_000, reg_from_ms=1_794_182_400_000, reg_to_ms=1_794_250_800_000, h_days=21, p0_per_day=None,
     p0_ref="the pinned tip-source P0 counter (Amendment 23 item 9) on 2026-11-06, 11-07 and 11-08; notebooked before the registration (Amendment 24 item 5)",
     p0_rule="slip: counted on the tip, fixed first")
 ROWS: Mapping[int, Mapping[str, Any]] = {r["clock_start_ms"]: r for r in (ROW_1107, ROW_1110)}

@@ -42,9 +42,9 @@ class RowTests(unittest.TestCase):
     def test_registration_windows(self):
         smoke_start = ms("2026-11-05T11:45:00Z")
         self.assertEqual(C7["register_not_before_ms"], smoke_start + 24 * 3_600_000)  # S + 24 h
-        self.assertEqual(C7["register_not_after_ms"], ms("2026-11-06T22:50:00Z"))  # before the 22:55Z shadow start
+        self.assertEqual(C7["register_not_after_ms"], ms("2026-11-06T19:00:00Z"))  # QP on #1202: the 19:10Z A3 run must land after the registration and before the clock
         self.assertEqual(C10["register_not_before_ms"], ms("2026-11-09T00:00:00Z"))
-        self.assertEqual(C10["register_not_after_ms"], ms("2026-11-09T22:50:00Z"))
+        self.assertEqual(C10["register_not_after_ms"], ms("2026-11-09T19:00:00Z"))
         for r in (C7, C10):
             self.assertLess(r["register_not_after_ms"], r["clock_start_ms"] - 3_600_000)  # the shadow starts >= 1 h before the clock (Am.24 item 7)
 
