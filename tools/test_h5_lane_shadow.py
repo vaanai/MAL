@@ -14,6 +14,10 @@ from tools.test_h5_shadow_pick_oracle import SEAL_AT, engine, feed, tape
 
 
 class LaneShadowTests(unittest.TestCase):
+    def setUp(self):  # ls.main patches h5_shadow.cap_pick_oracle_from_env for the process; keep that out of other tests
+        self._orig = h5.cap_pick_oracle_from_env
+        self.addCleanup(lambda: setattr(h5, "cap_pick_oracle_from_env", self._orig))
+
     def test_lane_oracle_writes_triggers_in_the_window(self):
         eng, out = engine(ls.LaneOracle())
         feed(eng, tape().rows)
