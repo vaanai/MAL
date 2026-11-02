@@ -12,6 +12,8 @@ not copied) without changing it:
        no result and 24 h from the earliest write have passed   HALT at that write's instant (a missing result is no PASS: fail closed)
        no result yet, inside the 24 h                           NEEDS_CHECK (the verdict carries the deadline)
        a PASS within 24 h (mode sample, population or vacuous)  record-only
+  2b. QP E1: a result for a CHANGED program with NO listed writes (an incomplete write list) is ignored: one PASS on its newest version must not mark the redeploy safe. The
+      classifier then sees no result: NEEDS_CHECK for 24 h, then a halt at the last clean run (else the pinned instant).
   3. the final verdict is the EARLIEST halt among the two, else NEEDS_CHECK, else RECORD_ONLY (with the per-write records and `repin_advice`), else classify's own verdict.
 The verdict keeps schema `r4bt_a3_v1`, so `python -m tools.r4bt_a3 apply` accepts it unchanged; it adds `per_write` (name, slot, status, mode, slot_range) and `repin_advice`.
 
@@ -73,7 +75,9 @@ def classify_all(rec: Mapping[str, Any], pins: Mapping[str, Any], *, now_ms: int
     checked = [w for w in DE.write_intervals(writes or []) if w["name"] in diff_programs]
     covered = {w["name"] for w in checked}
     neutral = [{"name": n, "slot": newest[n], "verdict": "PASS", "at_ms": 0} for n in sorted(covered)]
-    other = [r for r in ((decode_checks or {}).get("redeploys") or []) if r.get("name") not in covered]
+    # QP E1: a result for a CHANGED program whose write list is incomplete (no listed writes) is IGNORED: one PASS on its newest version must not mark the redeploy safe, so
+    # r4bt_a3 sees no result, stays NEEDS_CHECK for 24 h and then halts at the last clean run (else the pinned instant)
+    other = [r for r in ((decode_checks or {}).get("redeploys") or []) if r.get("name") not in diff_programs]
     v = dict(A.classify(rec, pins, now_ms=now_ms, writes=writes, decode_checks={"profile": A.PROFILE, "redeploys": neutral + other}, **kw))
     if v["verdict"] == "ERROR":
         return v

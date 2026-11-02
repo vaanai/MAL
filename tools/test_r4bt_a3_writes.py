@@ -116,3 +116,18 @@ def test_cli_classify_reads_the_files_refuses_an_existing_out_and_prints_the_ver
     v = json.loads(capsys.readouterr().out)
     assert v["verdict"] == "HALT" and v["halt_at_ms"] == AT2 and json.loads((tmp_path / "v.json").read_text()) == v
     assert W.main(argv, now_ms=NOW) == 2  # --out exists
+
+
+def test_e1_a_pass_on_the_newest_version_of_a_program_with_no_listed_writes_does_not_mark_it_safe():
+    """QP E1: the write list is incomplete (PARTIAL: no pump writes), so a lone PASS for pump's newest slot is IGNORED."""
+    lone = [res(250)]
+    lcr = "2026-11-08T00:00:00Z"
+    v = classify(lone, writes=[], now=NOW, last_clean_run_utc=lcr)
+    assert v["verdict"] == "NEEDS_CHECK"  # inside 24 h of the last clean run: the classifier waits
+    late = ARC.utc_ms(lcr) + 24 * 3_600_000 + 1000
+    v = classify(lone, writes=[], now=late, last_clean_run_utc=lcr)
+    assert v["verdict"] == "HALT" and v["halt_at_ms"] == ARC.utc_ms(lcr) and "no decode-check PASS within 24 h" in v["reasons"][0]
+    # the same lone PASS, with the write list covering ANOTHER program only (pumpswap changed too): pump is still uncovered
+    ws = [{"name": "pumpswap", "slot": 260, "at_ms": AT1}]
+    v = W.classify_all(rec(pump=250, pumpswap=260), PINS, now_ms=late, writes=ws, decode_checks=checks(res(250), res(260, name="pumpswap")), last_clean_run_utc=lcr)
+    assert v["verdict"] == "HALT" and v["halt_at_ms"] == ARC.utc_ms(lcr)
