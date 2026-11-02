@@ -768,3 +768,65 @@ class SealTests(LaneCase):
         self.assertEqual(e.refusals(), [])  # skips are counted only
         self.assertEqual(e.ex.counters.seal_skips, 1)
         self.assertEqual(e.ex._seal_reason(None, e.clock()), "seal_window_no_oracle")
+
+
+class PoolGapWaiverTests(LaneCase):
+    ABSENT = object()
+
+    def env(self, waive, sub):
+        d = self.tmp / sub
+        d.mkdir()
+        lane = self.lane_cfg(ledger_path=str(d / "l.jsonl"), stop_path=str(d / "S"))
+        if waive is not self.ABSENT:
+            lane["waive_pool_gap"] = waive
+        return self.lane_env(sub=None, lane=lane)
+
+    def tag(self, e, ev):
+        return [r.get("pool_gap_waived") for r in (self.rows(e, ev) if ev == "send_intent" else e.ledger(ev))]
+
+    def test_default_false_refuses_a_gap_pool_as_before(self):
+        for i, waive in enumerate((self.ABSENT, False)):
+            e = self.env(waive, f"d{i}")
+            e.fire(gap=True)
+            self.assertEqual(set(e.refusals()), {"feed_gap"})  # the executor ledger is shared by the two envs
+            self.assertEqual(e.rpc.sent, [])
+            self.assertEqual(self.rows(e, "send_intent"), [])
+
+    def test_waived_with_a_healthy_feed_passes_and_is_tagged(self):
+        e = self.env(True, "w")
+        e.fire(gap=True)
+        self.assertEqual(e.refusals(), [])
+        self.assertEqual(len(e.rpc.sent), 1)
+        self.assertEqual(self.tag(e, "send_intent"), [True])
+        self.assertEqual(self.tag(e, "decision"), [True])
+
+    def test_gap_false_trigger_is_tagged_false(self):
+        e = self.env(True, "c")
+        e.fire(gap=False)
+        self.assertEqual(self.tag(e, "send_intent"), [False])
+        self.assertEqual(self.tag(e, "decision"), [False])
+
+    def test_current_feed_gap_still_refuses(self):
+        e = self.env(True, "f")
+        e.ex.on_feed_status(True)
+        e.fire(gap=True)
+        self.assertEqual(e.refusals(), ["feed_gap"])
+        self.assertEqual(e.rpc.sent, [])
+
+    def test_inside_the_gap_hold_still_refuses(self):
+        e = self.env(True, "h")
+        e.ex._gap_until_ms = e.clock() + 5_000
+        e.fire(gap=True)
+        self.assertEqual(e.refusals(), ["feed_gap"])
+        self.assertEqual(e.rpc.sent, [])
+
+    def test_waived_still_hits_other_refusals(self):
+        e = self.env(True, "s")
+        e.fire(gap=True, q_lamports=40 * 10**9 + 1)
+        self.assertEqual(e.refusals(), ["q_above_rule_max"])
+        self.assertEqual(e.rpc.sent, [])
+
+    def test_non_bool_config_refuses(self):
+        for i, bad in enumerate(("true", 1, 0, None)):
+            with self.assertRaises(SystemExit):
+                self.env(bad, f"b{i}")

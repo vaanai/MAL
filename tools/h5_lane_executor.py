@@ -10,6 +10,9 @@ Limits (all DEC-035 s2, enforced IN ADDITION to the tier limits, TIER_WALLET_FRA
   - daily stop: -0.10 SOL from the 00:00Z snapshot, measured two ways (marks, and cost basis) and also as a worst case before a send.
   - max open 3 from the shared ledger; stake in [0.02, 0.03] SOL; marks older than mark_stale_s (<= 60) are worth 0; lane STOP file before every send.
   - write-ahead: the `send_intent` row is fsynced BEFORE the send; every other row goes through a persisted backlog; a malformed ledger fails closed.
+  - optional `waive_pool_gap` (default false): a trigger whose POOL was flagged by a past feed gap (trg.gap) is not refused for that alone. The executor's
+    CURRENT feed gap, the 20 s gap hold, feed_stale and every other refusal are unchanged, and the on-chain entry price check still applies. Every lane
+    `send_intent` row and the `decision` log row carry `pool_gap_waived` true|false so analysis can split waived from clean trades.
 Everything is keyed by (bot_id, mint); `lane_fold` ignores `start` and `snap` rows for positions.
 """
 
@@ -48,7 +51,7 @@ LANE_RECONCILE_EVERY_MS = 5_000
 LANE_MIN_FEE_RESERVE = (pe.FEEARM_RENT_RESERVE_LAMPORTS + tx.BASE_FEE_PER_SIGNATURE + h.H5_DEFAULT["buy_priority_lamports"]
                         + pl.SELL_MAX_ATTEMPTS * (tx.BASE_FEE_PER_SIGNATURE + h.H5_DEFAULT["escalated_priority_lamports"]))
 LANE_KEYS = {"ledger_path", "stop_path", "bot_id", "stake_lamports", "max_open", "budget_lamports", "daily_loss_lamports", "fee_reserve_lamports",
-             "mark_stale_s", "seal_disclosure"}
+             "mark_stale_s", "seal_disclosure", "waive_pool_gap"}
 
 
 class LaneLedgerError(ValueError):
@@ -67,6 +70,7 @@ class LaneConfig:
     fee_reserve_lamports: int
     mark_stale_s: float
     seal_disclosure: str = ""  # the merged HOLDOUT_LEDGER entry that declares the live lane's overlap with the CAP-PICK seal; empty = seals refuse as before
+    waive_pool_gap: bool = False  # opt-in: do not refuse a trigger for its pool's past gap flag alone (current-feed gap and the gap hold still refuse)
 
     @classmethod
     def parse(cls, raw: Any) -> "LaneConfig":
@@ -108,7 +112,10 @@ class LaneConfig:
         disclosure = raw.get("seal_disclosure", "")
         if not isinstance(disclosure, str):
             raise ValueError("lane.seal_disclosure must be a string")
-        return cls(Path(raw["ledger_path"]), Path(raw["stop_path"]), bot, stake, max_open, budget, daily, reserve, float(stale), disclosure.strip())
+        waive = raw.get("waive_pool_gap", False)
+        if not isinstance(waive, bool):
+            raise ValueError("lane.waive_pool_gap must be a boolean")
+        return cls(Path(raw["ledger_path"]), Path(raw["stop_path"]), bot, stake, max_open, budget, daily, reserve, float(stale), disclosure.strip(), waive)
 
 
 @dataclass
@@ -315,7 +322,7 @@ class LaneLedger:
             return "lane_ledger_error"
         return self.evaluate(view, now_ms, stake)
 
-    def reserve(self, mint: str, signature: str, marks: dict[str, tuple[int, int]], now_ms: int, stake: int) -> str | None:
+    def reserve(self, mint: str, signature: str, marks: dict[str, tuple[int, int]], now_ms: int, stake: int, pool_gap_waived: bool = False) -> str | None:
         """Drain the backlog, check every limit and, if they all pass, write and fsync the `send_intent` row, in one critical section. None means
         the send is reserved (write-ahead: the row is on disk before the transaction leaves)."""
         if self.stop_present():
@@ -334,7 +341,7 @@ class LaneLedger:
                 if why:
                     return why
                 self.append({"ev": "send_intent", "ts_ms": now_ms, "mint": mint, "signature": signature, "stake_lamports": stake,
-                             "sol_in_lamports": 0, "sol_out_lamports": 0, "estimated": False})
+                             "sol_in_lamports": 0, "sol_out_lamports": 0, "estimated": False, "pool_gap_waived": bool(pool_gap_waived)})
         except Exception:
             return "lane_ledger_error"
         return None
@@ -378,6 +385,7 @@ class H5LaneExecutor(_Base):
         self._lane_recon_ms = 0
         self._lane_last_fee_sig: str | None = None
         self._lane_prior_unresolved: list[str] = []
+        self._pool_gap_waived: dict[str, bool] = {}  # mint -> whether the latest trigger's pool gap flag was waived (set in _hard_refusal, read at the send and the decision row)
         if "lane" in cfg:  # parsed before the base __init__, which reads `self.h5`
             try:
                 self._lane_cfg = LaneConfig.parse(cfg["lane"])
@@ -444,6 +452,10 @@ class H5LaneExecutor(_Base):
         return why
 
     def _hard_refusal(self, trg: h.H5Trigger, now: int) -> str | None:
+        waived = False
+        if self._lane_cfg is not None and self._lane_cfg.waive_pool_gap and trg.gap is True and not self.feed_gap and now >= self._gap_until_ms:
+            trg, waived = replace(trg, gap=False), True  # only the pool's past gap flag is cleared; the current feed's state was just checked healthy
+        self._pool_gap_waived[trg.mint] = waived
         why = super()._hard_refusal(trg, now)
         if why or self.lane is None or self.dry_run:
             return why
@@ -456,7 +468,8 @@ class H5LaneExecutor(_Base):
             return super()._send(p, mint)
         if self._kill_reason() or self._live_gate() or self._halt_present():
             return super()._send(p, mint)  # the base refuses and cancels the unsent buy by its own rules
-        why = self.lane.reserve(mint, p["signature"], self._lane_marks, self.now_ms(), self.h5.stake_lamports)  # check + fsynced intent row
+        why = self.lane.reserve(mint, p["signature"], self._lane_marks, self.now_ms(), self.h5.stake_lamports,
+                            self._pool_gap_waived.get(mint, False))  # check + fsynced intent row
         if why:
             self.state.pending.pop(mint, None)
             self._log("send_blocked", mint, reason=why, kind_="buy")
@@ -539,6 +552,8 @@ class H5LaneExecutor(_Base):
             self._lane_record("fee", mint, sol_out=fee, reason=why, signature=self._lane_last_fee_sig, estimated=True, **self._fee_parts(fee))
 
     def _log(self, kind: str, mint: str, **kw: Any) -> None:
+        if kind == "decision" and self.lane is not None:
+            kw.setdefault("pool_gap_waived", self._pool_gap_waived.get(mint, False))
         super()._log(kind, mint, **kw)
         if kind == "sell_prior_unresolved" and self.lane is not None:
             self._lane_prior_unresolved.append(str(kw.get("signature")))
