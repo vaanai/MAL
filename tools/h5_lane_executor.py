@@ -320,6 +320,9 @@ class LaneLedger:
             with self.locked():
                 self.drain_locked()
                 view = lane_fold(self.read(), marks, now_ms, self.cfg.mark_stale_s, self.cfg.bot_id)
+                held = view.open.get(f"{self.cfg.bot_id}:{mint}")
+                if held is not None and held["signature"] == signature:
+                    return None  # idempotent: this send is already recorded (a re-send after a restart); its own row is not checked against the limits
                 self._snap_locked(view, now_ms)
                 why = self.evaluate(view, now_ms, stake)
                 if why == "lane_budget_stop":
@@ -381,11 +384,30 @@ class H5LaneExecutor(h.H5Executor):
                 raise SystemExit(f"lane refused: the effective stake {self.h5.stake_lamports} (min of the tier's and lane.stake_lamports) is outside "
                                  f"[{LANE_STAKE_MIN_LAMPORTS}, {LANE_STAKE_MAX_LAMPORTS}]: set the tier file to a tier whose stake is at least the lane's")
             self.lane = LaneLedger(self._lane_cfg)
+            self._lane_bot_lock = self._take_bot_lock()
             if not self.dry_run:
                 self._lane_record("start", "", code_sha256=hashlib.sha256(Path(__file__).read_bytes()).hexdigest(),
                                   base_code_sha256=hashlib.sha256(Path(h.__file__).read_bytes()).hexdigest(), executor_ledger=str(self.fills.path),
                                   limits=asdict(self.h5), lane=_public(self._lane_cfg))
                 self._lane_reconcile(self.now_ms(), force=True)
+
+    def _take_bot_lock(self):
+        """One process per bot_id: an exclusive flock on <ledger>.bot.<bot_id>.lock, held for the life of the process. A second unit with the same
+        bot_id would reconcile the first one's open positions as orphans and write them off."""
+        assert self.lane is not None
+        f = open(f"{self.lane.path}.bot.{self.lane.cfg.bot_id}.lock", "a")
+        try:
+            fcntl.flock(f, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except OSError:
+            f.close()
+            raise SystemExit(f"lane refused: another process holds bot_id {self.lane.cfg.bot_id!r} on this ledger") from None
+        return f
+
+    def release_lane_lock(self) -> None:
+        f = getattr(self, "_lane_bot_lock", None)
+        if f is not None:
+            f.close()
+            self._lane_bot_lock = None
 
     # -- limits: the lane only lowers ------------------------------------------------------------------------------------------
     @property
@@ -544,6 +566,8 @@ class H5LaneExecutor(h.H5Executor):
         assert self.lane is not None
         if not force and now - self._lane_recon_ms < LANE_RECONCILE_EVERY_MS:
             return
+        if self.lane.backlog_pending():
+            return  # a row waiting in the backlog (an exit, say) could make a live position look orphaned
         self._lane_recon_ms = now
         try:
             with self.lane.locked():

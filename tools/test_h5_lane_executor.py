@@ -572,6 +572,7 @@ class BacklogTests(LaneCase):
 
     @staticmethod
     def rebuild(e):
+        e.ex.release_lane_lock()  # the old process is gone
         e.ex = e.build()
         return e
 
@@ -609,6 +610,7 @@ class WriteAheadTests(LaneCase):
     def test_a_rebuilt_executor_runs_the_reconcile_at_start(self):
         e = self.lane_env()
         e.ex.lane.reserve(MINT, "ORPHAN", {}, e.clock(), LANE_STAKE)
+        e.ex.release_lane_lock()
         e.ex = e.build()
         self.assertEqual(e.ex._lane_orphans, {MINT})
 
@@ -637,3 +639,44 @@ class CliTests(LaneCase):
         self.assertEqual((lc.stake_lamports, lc.max_open, lc.budget_lamports, lc.daily_loss_lamports), (25_000_000, 3, 300_000_000, 100_000_000))
         self.assertTrue(str(lc.ledger_path).startswith("/var/lib/mal-live/h5-lane/"))
         h.H5Limits.from_config(cfg)
+
+
+class RestartAndTwinTests(LaneCase):
+    def test_a_buy_resent_after_a_restart_is_not_refused_by_its_own_row(self):
+        e = self.lane_env()
+        e.fire()  # intent row written, transaction sent
+        p = e.ex.state.pending[MINT]
+        # another bot holds two slots: this buy's own open intent is the third
+        other = L.LaneLedger(L.LaneConfig(**{**e.ex.lane.cfg.__dict__, "bot_id": "other-bot"}))
+        for i in range(2):
+            self.assertIsNone(other.reserve(f"o{i}", f"s{i}", {}, e.clock(), LANE_STAKE))
+        before = len(self.rows(e, "send_intent"))
+        # the restart path: pending with sends == 0 is sent again, through reserve
+        p["sends"] = 0
+        e.ex._send(p, MINT)
+        self.assertIn(MINT, e.ex.state.pending)  # not popped as lane_max_open
+        self.assertEqual(len(self.rows(e, "send_intent")), before)  # and no second intent row
+        self.assertEqual(e.ex.lane.reserve(MINT, p["signature"], {}, e.clock(), LANE_STAKE), None)
+        self.assertEqual(e.ex.lane.reserve(MINT, "ANOTHER-SIG", {}, e.clock(), LANE_STAKE), "lane_max_open")  # a different send is still checked
+        e.land_buy()  # it landed: the position exists and gets its exit
+        self.assertIn(MINT, e.ex.state.open)
+
+    def test_a_second_process_with_the_same_bot_id_is_refused(self):
+        e = self.lane_env()
+        lane = self.lane_cfg()
+        with self.assertRaisesRegex(SystemExit, "another process holds bot_id"):
+            self.lane_env(sub="twin", lane=lane)
+        e.ex.release_lane_lock()
+        self.lane_env(sub="twin2", lane=lane)  # free once the first has gone
+        # a different bot_id on the same ledger is fine
+        self.lane_env(sub="other", lane=self.lane_cfg(bot_id="other-bot"))
+
+    def test_reconcile_waits_for_a_pending_backlog(self):
+        e = self.lane_env()
+        e.fire()
+        e.land_buy()
+        with mock.patch.object(L, "LANE_LOCK_WAIT_S", 0.05), e.ex.lane.locked():
+            e.ex.state.open.pop(MINT)  # looks orphaned while its row waits in the backlog
+            e.ex.lane._write_line(e.ex.lane.backlog_path, {"row_id": "x", "ev": "start"})
+        e.ex._lane_reconcile(e.clock(), force=True)
+        self.assertEqual(self.rows(e, "writeoff"), [])
