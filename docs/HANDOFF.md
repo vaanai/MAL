@@ -1,4 +1,4 @@
-# MAL manager handoff: manager18 → next manager (written 2026-11-02 ~18:3xZ, updated ~18:5xZ)
+# MAL manager handoff: manager18 → next manager (written 2026-11-02 ~18:3xZ, updated ~20:xxZ)
 
 Read this file first. Then read:
 1. `/data/mal/hunt-1008/ops/manager18/state-manager18.md`: from "COMPACT-READY SUMMARY #4" to the end. It holds the full detail, with ids and comment numbers.
@@ -34,14 +34,21 @@ Read this file first. Then read:
 - HV7: #1170 (U2 + READ_ROOTS + registration draft; #1102 closed as superseded).
 - Gap-fill: #1182 (Am.26), #1194 (P1–P3 proof harness), #1201 (splice fix + Am.26 Erratum 1). No book may name Am.26 until P1–P3 have run on explore-0814 and been notebooked, and the live wiring, scorer pin and SEALS entry exist. Open reviewer notes: fill() has zero backoff on 429; segment load trusts the manifest's "filled" flags.
 
-| PR | Head | State | Merge |
-|---|---|---|---|
-| #1169 (Am.23 Erratum 1) | df5d674c | reviewer APPROVE; QP test job #2073 PASS, QP verdict not posted yet | squash; DEC-031 append-only (re-merge main if it conflicts) |
-| #1172 HV7 tip P0 counter | 41080f22 | reviewer APPROVE; QP verdict owed | squash, after #1169 |
-| #1189 HV7 F1 tip proofs | 94246150 | reviewer APPROVE; QP verdict owed (QP to rule: hv7.0- prefix during the EQUIV_RC leg) | after #1172; update from main first |
-| #1202 s1t book tools | moving | reviewer CHANGES (drop whole_lines from digest); QP asked to rule on the research-0 A3 loop + a3-guard-pin-s1t tag | then a follow-up PR: reader wiring in arena_h5_books/legs, A3 alert + daily score job scripts, guard tag command |
-| #1199 (this handoff) | — | T0 owed | squash |
-| #1176 (r4b C0 install pack) | f9ac946f | parked | reuse for any C0 |
+**Also merged by ~20Z on 11-02:** HV7 #1169 (Am.23 Erratum 1), #1172 (tip P0 counter), #1189 (F1 tip proofs; QP accepted EQUIV_RC run under hv7.0-). s1t #1202 (book tools, merge commit 529e4a85) and #1203 (reader wiring, A3 alert, daily score job, guard-tag recipe; merge commit d6f1c47d).
+
+| PR | State |
+|---|---|
+| #1199 (this handoff) | T0 owed; squash |
+| #1176 (r4b C0 install pack) | parked; reuse for any C0 |
+| older parked PRs (#1127 #1116 #1108 #1019 #1014 #993 #981 #975 #973 #968 #963 #962 #958 #957) | triage when there is time |
+
+**s1t steps before its clock (QP on #1202/#1203, report ops/reports/2026-11-02/qp-1202-s1t-book-tools.md):**
+- Create the tag `a3-guard-pin-s1t` per #1203's body. Use `/data/mal/venv/bin/python -m pytest -q tools/test_a3_redeploy_check.py tools/test_a3_halt.py` in place of its unittest step. Send QP the pytest result, `git diff --stat` and a books dry run at the tag; QP must OK it before registration.
+- Registration closes by 11-06T19:00Z, so the 19:10Z A3 run lands before the clock.
+- Pin the segment out-dirs `h5-s1t-book-20261106T225500Z` and `h5-s1t-book-20261120T210000Z`. Score A starts at or after 11-06T23:30Z with END 1795216500; chain B after A with both dirs.
+- Owed by 11-09T00Z: the re-clock path after a feed-bar fail.
+- Owed before the first read (~11-17): a read tool that prints Am.24 item 10's disclosures.
+- Add the digest to the S1T READERS line.
 
 DEC-031 merges are append-only. On a conflict, merge main into the branch with the amendment block byte-identical and appended at the end, then get both verdicts re-confirmed by diff.
 
@@ -50,9 +57,9 @@ DEC-031 merges are append-only. On a conflict, merge main into the branch with t
   - Watcher **#2074 is running** (S = 2026-11-05T11:45Z, 100 h).
   - Smoke launcher: submit between 11-05T09:00Z and 11:30Z (`/data/mal/hunt-1008/ops/reports/2026-11-02/s1t-run-commands.md` §2).
   - Notebook pins before the smoke: plan hours 578, cap 3,500 MiB.
-  - Shadow seg1 at 11-06T22:55Z needs: registration notebooked, smoke PASS, feed bar recorded, A3 loop running, plus #1202 and its follow-up merged.
+  - Shadow seg1 at 11-06T22:55Z needs: registration notebooked by 11-06T19:00Z, smoke PASS, feed bar recorded, the A3 loop running, and the guard tag OK'd by QP. #1202 and #1203 are merged.
   - Slip: 11-10T00Z.
-- **HV7, clock 2026-11-07T00Z.** Path: merge #1169→#1172→#1189 → run the F1 proof jobs (`scripts/ops/hv7-tip-equiv.sh`; EQUIV_RC; F_3D) → P0 job (`scripts/ops/hv7-tip-p0.sh`; days 11-03/04/05; H0 2026-10-29T09; it runs after 11-05T23 closes, ~11-06T00:30Z; pass 150/14 a day) → registration by 11-06T22:05Z. Pins and floors: QP report `ops/reports/2026-11-02/qp-hv7-1169-1170-1172-1189.md`.
+- **HV7, clock 2026-11-07T00Z.** All HV7 PRs are merged. Path: run the F1 proof jobs (`scripts/ops/hv7-tip-equiv.sh`; EQUIV_RC; F_3D) → P0 job (`scripts/ops/hv7-tip-p0.sh`; days 11-03/04/05; H0 2026-10-29T09; it runs after 11-05T23 closes, ~11-06T00:30Z; pass 150/14 a day) → registration by 11-06T22:05Z. Pins and floors: QP report `ops/reports/2026-11-02/qp-hv7-1169-1170-1172-1189.md`.
 - **r4-b-T, clock 2026-11-07T06Z** if the registration record is written by 2026-11-06T23:59:59Z, else 11-08T00Z. Runbook: `ops/reports/2026-11-02/r4bt-registration-runbook.md`. Owed before registration:
   - decode fetch/parity dry run on a real post-redeploy sample;
   - a fresh evaluated A3 run within 24 h (loop #2072 runs 07:11Z daily);
