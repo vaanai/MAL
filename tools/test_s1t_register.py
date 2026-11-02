@@ -57,10 +57,15 @@ class Setup(unittest.TestCase):
             p.start()
             self.addCleanup(p.stop)
         self.books, self.read_books, self.rec, self.reg = (self.arena / n for n in ("a3-books.json", "a3-books-read.json", "s1t-registration.json", "bots.json"))
+        self.hh_thr, self.hh_pins = base / "hh-thresholds.json", base / "hh-pins.json"  # fixture config files (not the real thresholds or pins)
+        self.hh_thr.write_text(json.dumps({"writer_hour_complete": {"value": 1, "label": "price-path"}, "max_loss_span_s": {"value": 330, "label": "price-path"}}))
+        self.hh_pins.write_text(json.dumps({"adapter_sha256": "a" * 64, "reader_sha256": "b" * 64, "writer_sha256": "c" * 64}))
 
     def run_(self, apply=False, now=NOW7, row=C7, root=None, **kw):
         kw.setdefault("refs", REFS)
         kw.setdefault("host", HOST)
+        kw.setdefault("hh_thresholds", self.hh_thr)
+        kw.setdefault("hh_pins", self.hh_pins)
         return R.run(self.arena if root is None else root, row, now_ms=now, apply=apply, **kw)
 
     def snapshot(self):
@@ -145,6 +150,34 @@ class Apply(Setup):
         self.assertEqual((r["screen_n"], r["confirm_n"], r["instant_file"]), (200, 300, ti.INSTANT_FILE))
         self.assertNotIn("key", " ".join(r["endpoints"]).lower())
 
+    def test_the_record_pins_the_tip_hour_health_tool_thresholds_pins_programs_and_t_max(self):
+        self.run_(apply=True)
+        hh = json.loads(self.rec.read_text())["tip_hour_health"]
+        self.assertEqual(hh["tool"], "tools/tip_hour_health.py")
+        self.assertEqual(hh["sha256"], hashlib.sha256((REPO / "tools" / "tip_hour_health.py").read_bytes()).hexdigest())
+        self.assertEqual((hh["programs"], hh["t_max_s"], hh["schema"]), (["pumpswap", "pumpfun"], 333.0, "tip_hour_health_v1"))
+        self.assertEqual(hh["thresholds_sha256"], hashlib.sha256(self.hh_thr.read_bytes()).hexdigest())
+        self.assertEqual(hh["pins_sha256"], hashlib.sha256(self.hh_pins.read_bytes()).hexdigest())
+        self.assertEqual(hh["thresholds"]["max_loss_span_s"], {"value": 330, "label": "price-path"})
+        self.assertEqual(hh["pins"], {"adapter_sha256": "a" * 64, "reader_sha256": "b" * 64, "writer_sha256": "c" * 64})
+
+    def test_hour_health_files_are_required_and_validated(self):
+        for kw in ({"hh_thresholds": None}, {"hh_pins": None}, {"hh_thresholds": Path(self._d.name) / "missing.json"}):
+            with self.assertRaises(Refused, msg=str(kw)):
+                self.run_(apply=True, **kw)
+        bad_thr = Path(self._d.name) / "bad-thr.json"
+        for text in ("not json", "[]", "{}", json.dumps({"nope": {"value": 1, "label": "price-path"}}), json.dumps({"max_loss_span_s": {"value": -1, "label": "price-path"}}),
+                     json.dumps({"max_loss_span_s": {"value": 1, "label": "other"}})):
+            bad_thr.write_text(text)
+            with self.assertRaises(Refused, msg=text):
+                self.run_(apply=True, hh_thresholds=bad_thr)
+        bad_pins = Path(self._d.name) / "bad-pins.json"
+        for text in ("not json", "{}", json.dumps({"adapter_sha256": "a" * 64, "reader_sha256": "b" * 64}), json.dumps({"adapter_sha256": "a" * 64, "reader_sha256": "b" * 64, "writer_sha256": "short"})):
+            bad_pins.write_text(text)
+            with self.assertRaises(Refused, msg=text):
+                self.run_(apply=True, hh_pins=bad_pins)
+        self.assertEqual(self.names(), [])
+
     def test_the_slip_row_needs_and_records_its_own_p0(self):
         for kw in ({}, {"p0_per_day": 30.0}, {"p0_ref": "nb_p0_count"}):
             with self.assertRaises(Refused, msg=str(kw)):
@@ -178,7 +211,8 @@ class Apply(Setup):
             self.run_(apply=True, host="mal-fast-0")
         err = io.StringIO()
         with contextlib.redirect_stderr(err):
-            rc = R.main(["--arena-root", str(self.arena), "--apply", "--now-ms", str(NOW7)] + [x for k, v in REFS.items() for x in ("--" + k.replace("_", "-"), v)])
+            rc = R.main(["--arena-root", str(self.arena), "--apply", "--now-ms", str(NOW7), "--hour-health-thresholds", str(self.hh_thr), "--hour-health-pins", str(self.hh_pins)]
+                        + [x for k, v in REFS.items() for x in ("--" + k.replace("_", "-"), v)])
         self.assertEqual(rc, 2)
         self.assertIn("--now-ms", err.getvalue())
 
@@ -250,6 +284,10 @@ class Rerun(Setup):
     def test_a_rerun_with_other_confirmations_or_a_different_clock_is_refused(self):
         self.run_(apply=True)
         snap = self.snapshot()
+        self.hh_thr.write_text(json.dumps({"max_loss_span_s": {"value": 999, "label": "price-path"}}))
+        with self.assertRaises(Refused):  # other thresholds than the recorded ones
+            self.run_(apply=True, now=NOW7 + 500)
+        self.hh_thr.write_text(json.dumps({"writer_hour_complete": {"value": 1, "label": "price-path"}, "max_loss_span_s": {"value": 330, "label": "price-path"}}))
         with self.assertRaises(Refused):
             self.run_(apply=True, now=NOW7 + 1000, refs={**REFS, "smoke_pass_job": "9999"})
         with self.assertRaises(Refused):
@@ -282,7 +320,7 @@ class Rerun(Setup):
 
 class Cli(Setup):
     def argv(self, *extra):
-        return ["--arena-root", str(self.arena), "--host", HOST, *extra] + [x for k, v in REFS.items() for x in ("--" + k.replace("_", "-"), v)]
+        return ["--arena-root", str(self.arena), "--host", HOST, "--hour-health-thresholds", str(self.hh_thr), "--hour-health-pins", str(self.hh_pins), *extra] + [x for k, v in REFS.items() for x in ("--" + k.replace("_", "-"), v)]
 
     def test_cli_dry_run_prints_json_then_the_texts(self):
         out, err = io.StringIO(), io.StringIO()
