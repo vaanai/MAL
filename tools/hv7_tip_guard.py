@@ -27,6 +27,7 @@ from tools import hv4_cards as C
 
 REASON = "age_unknown"        # the screen-counter name and the refusal reason
 COUNTER = "age_unknown"       # key added to the SCAN row's `counts`
+RESTORED = "creation_restored"   # report-only: pools admitted because the creation index restored a creation the state's 6 h eviction forgot (QP condition (a))
 
 
 def created_known(snap: Mapping[str, Any]) -> bool:

@@ -117,15 +117,15 @@ def _test_env(monkeypatch):
 
 
 def test_bot_ids_and_models_are_pinned():
-    assert G.HV7_BOTS == ("hv7.0-L", "hv7.0-R", "hv7.0-S", "hv7.0-U")
-    assert G.HV7_MODELS["hv7.0-L"] and all(G.HV7_MODELS[b] == [] for b in G.HV7_BOTS[1:])
+    assert G.HV7_BOTS == ("hv7.0t-L", "hv7.0t-R", "hv7.0t-S", "hv7.0t-U")
+    assert G.HV7_MODELS["hv7.0t-L"] and all(G.HV7_MODELS[b] == [] for b in G.HV7_BOTS[1:])
 
 
 def test_dry_run_is_the_default_and_writes_nothing(tmp_path):
     reg = tmp_path / "bots.json"
     rc, out, err = run_reg(["--registry", str(reg)], reg)
     assert rc == 0 and "DRY RUN" in out and not reg.exists()
-    for pin in (SHA, str(CLOCK), str(HALT), "hv7.0-U", "0.3", "3.0", G.confirm_phrase(SHA, CLOCK, HALT)):
+    for pin in (SHA, str(CLOCK), str(HALT), "hv7.0t-U", "0.3", "3.0", G.confirm_phrase(SHA, CLOCK, HALT)):
         assert pin in out
 
 
@@ -171,7 +171,7 @@ def test_a_changed_value_for_a_registered_id_is_refused_and_masked(tmp_path):
     out, err = io.StringIO(), io.StringIO()
     c2 = G.CLOCKS_MS[1]
     rc = G.main(["--sha", SHA, "--clock-start-ms", str(c2), "--entries-halt-ms", str(G.halt_for(c2)), "--registry", str(reg), "--execute"], out=out, err=err, _now_ms=NOW, _verify_sha=False)
-    assert rc == 1 and err.getvalue().strip() == "ArenaRefused hv7.0-L"        # the other allowed clock is still a different value for a registered id
+    assert rc == 1 and err.getvalue().strip() == "ArenaRefused hv7.0t-L"        # the other allowed clock is still a different value for a registered id
 
 
 def test_register_all_refuses_a_foreign_id(tmp_path):

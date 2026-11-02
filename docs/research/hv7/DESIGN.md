@@ -110,7 +110,7 @@ check on U (R - U must be mean zero; a non-zero R - U is a pipeline fault, repor
 
 **Engine load for U.** Up to 8 concurrent 0.25 SOL paper positions per hour for one bot id. `arena_paper.ArenaEngine.buy` takes one order at a
 time; whether the engine and runner allow 8 open positions for one bot is **not verified** (C2 checks it). If not, U is computed by the read tool
-from 8 shadow bot ids `hv7.0-U1..U8` (slot by screen order), which is the same arithmetic.
+from 8 shadow bot ids `hv7.0t-U1..U8` (slot by screen order), which is the same arithmetic.
 
 **Cross-arm pricing independence (hard C2 test, QP (a)4).** L's pick is always one of U's N, and R's and S's picks often are too. `arena_paper`
 prices each fill on tape state with only the bot's own buy re-injected (header line 13), which suggests independence, but it is not verified.
@@ -230,7 +230,7 @@ IC 0.10 gives 1.141% / 1.712%.
 **Kill lines (before the clock, structure only).** Not registered if: the offline rehearsal (section 7) fails its pre-declared bars; P0 gives fewer
 than 10.0 attempts/day at the chosen period or any P0 day under 5; the md5 decision-equivalence proof fails; any seal question is open.
 
-**Multiplicity (DEC-031 Am.3 item 3).** HV7 v7.0 registers 4 bot ids (`hv7.0-L`, `-R`, `-S`, `-U`), one deciding stake (0.25), no as-sized cell:
+**Multiplicity (DEC-031 Am.3 item 3).** HV7 v7.0 registers 4 bot ids (`hv7.0t-L`, `-R`, `-S`, `-U`), one deciding stake (0.25), no as-sized cell:
 4 cells, 2 promotable. Each read carries N = every book with a clock before the read (HV4's 9, Q50, the H5 books, hunt23/cohort books, HV6's 5,
 HV7's 4, stopped and NOT_DECIDABLE included, counted from notebook copies), the plain line 1 - 0.95^N, and the report-only p (10,000 draws, seed 1,
 larger of the two fail models) with its Holm rank.

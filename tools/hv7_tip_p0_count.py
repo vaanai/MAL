@@ -13,7 +13,7 @@ Refusals (all tested; each is a `Refused` with a reason, exit 2):
   * `tape_dir` must be the research-0 receiver copy (`hv7_runner.TIP_FEED_ROOT`) or, for tests only, a directory under the system temp dir or `/data2/mal/scratch`. The sealed fast-0
     tip dir, the tip-tape archive, the public arena tape, the mirror and any other path are refused. A `.writer` component is refused.
   * `--h0` (required, `YYYY-MM-DDTHH`): not before 2026-10-16T01 (the D2/D3 seal; nothing before it is ever read) and before day 1. Every hour file from H0 to the end of day 3 must exist
-    (a listing of names only); a missing one is `hours_missing`, not a quiet undercount.
+    (a listing of names only); a missing one is `hours_missing`, not a quiet undercount. Any `tape-<hour>` EARLIER than H0 in the dir is refused (`hours_before_h0_present`).
   * Days: an explicit list of exactly 3 contiguous ascending FULL CLOSED UTC days (the latest 3 before the registration; for T0 2026-11-07: 11-03, 11-04, 11-05), all >= 2026-11-01 (decisions
     only on hours >= 2026-11-01T00Z; nothing before 2026-10-16T01 is ever read), and a non-empty `--notebook-ref` (the days are fixed in a notebook entry BEFORE the job).
   * A day with fewer than 24 hour files is refused (`hours_missing`): a hole is the writer's gap, not an undercount to report quietly.
@@ -62,7 +62,7 @@ PASS_PER_DAY = 150 / 14                  # 10.714285714285714: 150 attempts in H
 KILL_DAY_BELOW = 5
 HISTORY_DAYS = 7                         # L for HV7: H0 + 7 d (Amendment 23 item 7)
 HOUR_FILE = re.compile(r"tape-(\d{4}-\d{2}-\d{2})T(\d{2})\.jsonl(?:\.zst)?")
-TEST_TMP_ROOTS = (tempfile.gettempdir().rstrip("/") + "/", "/data2/mal/scratch/")
+TEST_TMP_ROOTS = (tempfile.gettempdir().rstrip("/") + "/",)       # tests only; /data2/mal/scratch is NOT accepted (QP P2): the counter reads the receiver copy or a system-temp fixture
 
 
 def check_tape_dir(tape_dir: str | os.PathLike) -> Path:
@@ -128,6 +128,8 @@ def hour_names(src: Path, h0_key: str, days: list[str]) -> dict[str, int]:
     while t < end:
         want.append(t.strftime("%Y-%m-%dT%H"))
         t += timedelta(hours=1)
+    if any(k < h0_key for k in present):
+        raise Refused("hours_before_h0_present")          # names only: a tape-<hour> earlier than H0 in the dir means H0 is not the history's start (QP P1')
     if any(k not in present for k in want):
         raise Refused("hours_missing")
     return {"hours_present": len(want), "hours_expected": len(want), "hours_missing": 0, "history_hours_before_day_1": len(want) - 24 * len(days)}

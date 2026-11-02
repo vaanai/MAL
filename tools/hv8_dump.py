@@ -18,6 +18,9 @@ RUN CONDITION (QP, C3): the adapter must run with NO --lookback, and adapter_rep
 pre-block graduation stamped at the block start would count as "observed in block".
 DISCLOSURE: the adapter writes no pool_create rows and `create` rows are ignored, so created_known is GRADUATION-ONLY on this tape (the pool_create path in Known is dead
 on adapter output); PumpSwap pools that did not come from a pump.fun graduation are always dropped. The drop count is reported with this note.
+RULE U2 IS OFF HERE, EXPLICITLY (`u2=False` in the runner config below): HV7's tip-source rule U2 (tools/hv7_tip_guard.py) admits only pools whose `pool_create` row is in the history, and
+this tape has none by construction (see DISCLOSURE), so with U2 on every PumpSwap pool would be refused before HV8's own `Known` filter ran. The runner refuses u2=False for a tape under the
+tip receiver copy. HV8's created_known is its own (graduation-only) rule, unchanged.
 Nothing here says HV8 makes money. HV8 has 0 trades.
 """
 from __future__ import annotations
@@ -213,7 +216,7 @@ def make_runner(tape: Path, scratch: Path, win: Window = DEFAULT, *, t_ds: list[
     known = Known(win)
     root = scratch / "v7"
     allow_roots(scratch)
-    run = R.Hv7Runner(R.Hv7Config(root=str(root), frozen_sha="hv8dump0000000", clock_start_ms=win.block_start_ms, phantom_filter=True),
+    run = R.Hv7Runner(R.Hv7Config(root=str(root), frozen_sha="hv8dump0000000", clock_start_ms=win.block_start_ms, phantom_filter=True, u2=False),
                       ArenaState(tape, start_ms=0), engine or NullEngine(), model or NoModel(), FakeChain(), guard or R.Hv7Guard(root))
     if model is None:
         run._ask = lambda rr, T: None       # type: ignore[method-assign]  # no model call of any kind
