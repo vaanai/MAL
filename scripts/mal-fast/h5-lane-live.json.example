@@ -1,0 +1,32 @@
+{
+  "mode": "live",
+  "intents_file": "/srv/mal-h5-shadow",
+  "state_dir": "/var/lib/mal-live/h5-lane/state",
+  "commitment": "confirmed",
+  "poll_s": 5.0,
+  "intent_poll_ms": 25,
+  "rps": 8.0,
+  "buy_priority_lamports": 55000,
+  "jito_enabled": false,
+  "jito_tip_lamports": 0,
+  "entry_tolerance_bps": 1500,
+  "wallet_floor_lamports": 50000000,
+  "send_lead_ms": 500,
+  "exit_land_offset_s": 0.0,
+  "deadline_s": 400,
+  "sell_retries": 5,
+  "feed_heartbeat_max_age_ms": 150000,
+  "end_ms": 1794787200000,
+  "lane": {
+    "bot_id": "h5-lane-1",
+    "ledger_path": "/var/lib/mal-live/h5-lane/lane-ledger.jsonl",
+    "stop_path": "/var/lib/mal-live/h5-lane/STOP",
+    "stake_lamports": 25000000,
+    "max_open": 3,
+    "budget_lamports": 300000000,
+    "daily_loss_lamports": 100000000,
+    "fee_reserve_lamports": 4200000,
+    "mark_stale_s": 60,
+    "seal_disclosure": ""
+  }
+}
