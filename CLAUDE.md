@@ -36,7 +36,7 @@ Then the one experiment or host you are touching. Daily briefs are in [ARTIFACTS
 
 ## Promotion gate
 
-The live-learning lane (DEC-035) is not a promotion and does not clear this gate.
+Running a book in the live-learning lane (DEC-035) is not a promotion and does not by itself clear this gate. Lane trades count toward a gate read only under a registration as set out in DEC-035 §6, which also sets how real-fill failures are scored against the two fail models; no threshold here changes.
 
 A book promotes only if all of these hold, under **both** the flat 15% fail model and the pressure-fail model at slope scale 1:
 
