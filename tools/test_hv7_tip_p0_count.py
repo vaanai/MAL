@@ -71,8 +71,11 @@ def full_tape(d: Path, rows, h0: str = H0) -> None:
 
 
 def run(tmp_path, monkeypatch, rows, *, h0: str = H0, days: str = DAYS):
+    from datetime import datetime, timezone
+
     monkeypatch.setattr(D, "DRILL_ROOT", tmp_path / "drill")
-    full_tape(tmp_path / "tape", rows)
+    hour = lambda r: datetime.fromtimestamp(r["t_recv_ms"] // 1000, tz=timezone.utc).strftime("%Y-%m-%dT%H")  # noqa: E731
+    full_tape(tmp_path / "tape", [r for r in rows if hour(r) >= h0], h0=h0)      # the dir holds only hours from H0 on (rows before it are not in the history)
     return P.run_p0(days, "d1", "n_fixed_days", h0, tape_dir=tmp_path / "tape", root=tmp_path / "drill" / "d1", now_ms=NOW)
 
 
@@ -139,6 +142,33 @@ def test_a_missing_hour_file_from_h0_to_the_end_is_refused(env, tmp_path, monkey
     (tmp_path / "tape" / missing).unlink()
     with pytest.raises(Refused, match="hours_missing"):
         P.run_p0(DAYS, "d1", "n_1", H0, tape_dir=tmp_path / "tape", root=tmp_path / "drill" / "d1", now_ms=NOW)
+
+
+def test_a_tape_hour_earlier_than_h0_in_the_dir_is_refused_by_name(env, tmp_path, monkeypatch):
+    monkeypatch.setattr(D, "DRILL_ROOT", tmp_path / "drill")
+    full_tape(tmp_path / "tape", shifted_rows())
+    (tmp_path / "tape" / "tape-2026-09-24T21.jsonl").write_text("")                         # one hour before H0 (2026-09-24T22)
+    with pytest.raises(Refused, match="hours_before_h0_present"):
+        P.run_p0(DAYS, "d1", "n_1", H0, tape_dir=tmp_path / "tape", root=tmp_path / "drill" / "d1", now_ms=NOW)
+    (tmp_path / "tape" / "tape-2026-09-24T21.jsonl").unlink()
+    (tmp_path / "tape" / "tape-2026-09-24T21.jsonl.zst").write_bytes(b"")                  # a compacted early hour counts as well
+    with pytest.raises(Refused, match="hours_before_h0_present"):
+        P.run_p0(DAYS, "d1", "n_1", H0, tape_dir=tmp_path / "tape", root=tmp_path / "drill" / "d1", now_ms=NOW)
+
+
+def test_the_system_temp_dir_is_the_only_test_root_and_scratch_is_not_one():
+    assert P.TEST_TMP_ROOTS == (P.tempfile.gettempdir().rstrip("/") + "/",)
+    with pytest.raises(Refused, match="tape_dir_not_allowed"):
+        P.check_tape_dir("/data2/mal/scratch/hv7-tip-equiv/x")
+
+
+def test_the_registered_p0_pins_h0_2026_10_29T09_and_all_three_days_are_undercount_days():
+    days = ["2026-11-03", "2026-11-04", "2026-11-05"]
+    key, ms = P.parse_h0("2026-10-29T09", days)
+    assert ms == 1793264400000 and key == "2026-10-29T09"                                   # QP's pin, recomputed: date -u -d 2026-10-29T09:00:00Z
+    assert P.PASS_PER_DAY == 150 / 14 == 10.714285714285714
+    days_pd = {d: {"hours_ge3": 11, "half_hours_ge3": 22} for d in days}
+    assert P.rule(days_pd, days, ms)["u2_undercount_days"] == days                           # H0 + 7 d = 2026-11-05T09Z: all three days start before it
 
 
 # ------------------------------------------------------------------------------------------------------------------------ the pass
