@@ -5,7 +5,7 @@ Written 2026-11-01. NOTHING HERE WAS RUN. Each is a MiScusi job (`miscusi_job_su
 One heavy replay job at a time on a host: check `systemctl show user-1002.slice -p MemoryCurrent` before submitting. No result here says any book makes money; the gate is unchanged.
 
 All three pass conditions are from QP's verdict on #1183 ("Before any runner relies on this"). They are owed before a book relies on the DEC-031 amendment that changes Am.23 items 5 and 7 for books
-registered after it merges (the "Amendment <N>" section in this PR).
+registered after it merges (the "Amendment 28" section of DEC-031, number filled at merge).
 
 ## P1. Writer drill on exploration hours
 
