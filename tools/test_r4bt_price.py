@@ -430,8 +430,9 @@ def test_v_audit_counts_trades_whose_landing_print_leaves_the_band_or_is_not_wso
     assert res2["v_audit_n"] == 1 and len(got) == 1 and got[0] in {r.get("position_id") for r in Ledger(tmp_path / "b" / "ledger").read_bot(G.BOT_ID)}
     assert "ids" not in json.dumps(res2)
     monkeypatch.setattr(P, "V_HI", 17.7e9)
+    kw_c = world(tmp_path / "c")  # the tape rows carry the real WSOL mint; the audit is then told a different WSOL
     monkeypatch.setattr(P, "WSOL", "not-wsol")
-    assert P.price(**world(tmp_path / "c"))["v_audit_n"] == 1
+    assert P.price(**kw_c)["v_audit_n"] == 1
 
 
 def test_confirmation_boundary_file_selects_from_ms_and_needs_a_fresh_root(tmp_path):
