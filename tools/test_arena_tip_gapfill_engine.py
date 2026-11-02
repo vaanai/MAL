@@ -5,15 +5,17 @@ trades count in the 5% numerator; an unfilled range stays a gap. Synthetic tape,
 from __future__ import annotations
 
 import collections
+import hashlib
 from collections import Counter
+from pathlib import Path
 
 import pytest
 
 from tools import arena_stack as AS
 from tools import arena_tip_gapfill as gf
-from tools.test_arena_paper import SC, _row, mk_engine, run_trade, tms, trades
-from tools.test_arena_tip_adapter import mk_engine as mk_tip_engine
-from tools.test_arena_tip_gapfill import adapter_stream, gap_row, run_fill
+from tools.arena_paper_f2 import ArenaEngineF2
+from tools.test_arena_paper import SC, _row, register_bot, run_trade, tms, trades
+from tools.test_arena_tip_gapfill import adapter_stream, gap_row, mk_tip_f2, run_fill
 
 LO, HI = 148, 160
 SELL = 150
@@ -23,6 +25,20 @@ STAKE = 0.25
 @pytest.fixture(autouse=True)
 def _plenty_of_disk(monkeypatch):
     monkeypatch.setattr("tools.arena_paper.shutil.disk_usage", lambda path: collections.namedtuple("Usage", "total used free")(1000, 500, 500))
+
+
+def make(cls, tmp, cfg=None):
+    """test_arena_paper.mk_engine / mk_arena for any engine class: one bot, the call clock tracking the latest feed row, sps 0.4."""
+    reg = tmp / "bots.json"
+    register_bot("botA", "abc1234", 0, reg, now_ms=0)
+    eng = cls(tmp / "ledger", reg, cfg or SC(strand_rule="total"), vmap=None, sps_fn=lambda: 0.4, code_state_fn=lambda: ("abc1234", False))
+    eng.now_fn = lambda: eng.hw_ms or 0
+    eng.code_state_fn = lambda: ("abc1234", False)
+    return eng
+
+
+def mk_engine(tmp, cfg=None):
+    return make(ArenaEngineF2, tmp, cfg)
 
 
 def marker(lo=LO, hi=HI, back=0, **kw) -> dict:
@@ -231,7 +247,7 @@ def test_the_adapter_stream_spliced_with_a_fill_gives_the_engine_a_fill_and_no_g
     for name, rows, gaps, fills in (("raw", adapter_stream(), 1, 0), ("spliced", list(gf.splice(adapter_stream(), seg, Counter())), 0, 1)):
         sub = tmp_path / name
         sub.mkdir()
-        eng = mk_tip_engine(sub, gap_slots=None, gap_silence_ms=None)
+        eng = mk_tip_f2(sub, gap_slots=None, gap_silence_ms=None)
         for r in rows:
             eng.on_row(r)
         assert (len(eng.gaps), len(eng.fills)) == (gaps, fills), name
@@ -251,3 +267,59 @@ def test_a_fill_row_does_not_trip_the_engines_own_silence_or_slot_jump_detection
         for r in rows:
             eng.on_row({k: v for k, v in r.items() if not (name == "plain" and k == "fill")} if name == "plain" else r)
         assert len(eng.gaps) == want, (name, eng.gaps)
+
+
+# ------------------------------------------------------------------------------------------------------------------------------------ a fill removes only the range it names
+def hole_rows(lo: int, hi: int, live_after: int, gap_before: int = 100) -> list[dict]:
+    """A live row at `gap_before`, a filled marker for [lo, hi] with its repair rows, then a live row at `live_after`."""
+    fills = [dict(_row(i, s), fill=True, src="tip_fill") for i, s in enumerate(range(lo, hi + 1), start=10)]
+    return [_row(0, gap_before), marker(lo, hi), *fills, _row(1, live_after)]
+
+
+def gaps_of(rows: list[dict], tmp_path, name: str) -> list:
+    sub = tmp_path / name
+    sub.mkdir()
+    eng = mk_engine(sub, SC(strand_rule="total"))  # the stack defaults: gap_slots 150, gap_silence_ms 60,000
+    for r in rows:
+        eng.on_row(r)
+    return eng.gaps
+
+
+def test_a_fill_never_hides_an_unlogged_hole_before_the_range(tmp_path):
+    """Reviewer on #1182 (probe): live row at 100, filled [400, 410], live row at 411. The stretch 101..399 is not in any range the follower logged as filled: it stays a gap."""
+    gaps = gaps_of(hole_rows(400, 410, 411), tmp_path, "hole")
+    assert [(g.kind, g.s_lo, g.s_hi) for g in gaps] == [("engine_slot_jump", 100, 400)]
+    assert gaps_of(hole_rows(101, 110, 111), tmp_path, "contiguous") == []  # the fill starts where the last row left off: nothing is hidden, nothing is flagged
+
+
+def test_a_hole_after_the_filled_range_is_measured_from_its_end_and_still_flagged(tmp_path):
+    gaps = gaps_of(hole_rows(101, 110, 400), tmp_path, "after")
+    assert len(gaps) == 1 and gaps[0].s_lo == 110 and gaps[0].kind in ("engine_silence", "engine_slot_jump")  # the hole starts at the end of the range (time silence fires first here)
+
+
+def test_the_base_engine_still_flags_the_same_hole_so_the_fill_changed_nothing_it_did_not_name(tmp_path):
+    from tools.arena_paper import ArenaEngine
+
+    sub = tmp_path / "base"
+    sub.mkdir()
+    eng = make(ArenaEngine, sub)
+    for r in (_row(0, 100), _row(1, 400)):
+        eng.on_row(r)
+    assert len(eng.gaps) == 1 and eng.gaps[0].kind in ("engine_silence", "engine_slot_jump")
+
+
+# ------------------------------------------------------------------------------------------------------------------------------------ the base engine file is untouched (every existing 1.4 pin holds)
+def test_arena_paper_is_byte_identical_to_the_pinned_file_and_the_f2_engine_is_inert_without_a_marker(tmp_path):
+    repo = Path(__file__).resolve().parent.parent
+    assert hashlib.sha256((repo / "tools" / "arena_paper.py").read_bytes()).hexdigest() == "9d2fdb04a3da9bb38de9e30c91154f5a9ab2de513e6f4d7936c1eb1a54863514"
+    from tools.arena_paper import ArenaEngine
+
+    assert not hasattr(ArenaEngine, "_on_filled") and not hasattr(ArenaEngine, "fills")
+    rows = {}
+    for name, cls in (("f2", ArenaEngineF2), ("base", ArenaEngine)):
+        sub = tmp_path / name
+        sub.mkdir()
+        eng = make(cls, sub)
+        run_trade(eng, tape(), sell_slot=190)
+        rows[name] = [(r["kind"], r.get("stake_sol"), r.get("legs"), r.get("calc")) for r in eng.ledger.read_bot("botA") if r["kind"] != "start"]
+    assert rows["f2"] == rows["base"] and len(rows["f2"]) >= 4

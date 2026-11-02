@@ -14,11 +14,19 @@ from tools import arena_tip_adapter as ata
 from tools import arena_tip_gapfill as gf
 from tools import arena_tip_reader as tr
 from tools import fast_tip_follower as ftf
-from tools.arena_paper import ArenaEngine
+from tools.arena_paper import MIN_FREE_PCT_FLOOR, ArenaEngine, StackConfig
+from tools.arena_paper_f2 import ArenaEngineF2
 from tools.test_arena_tip_adapter import T0, wt
 from tools.test_fast_tip_follower import Rpc
 
 GAP_T = T0 + 105 * 400 - 50
+
+
+def mk_tip_f2(tmp, **cfg) -> ArenaEngineF2:
+    """The F2 engine on the tip stack (the adapter tests' mk_engine, with the subclass)."""
+    eng = ArenaEngineF2(tmp / "ledger", tmp / "bots.json", StackConfig(feed_delay_slots=2, **cfg), now_fn=lambda: 0, code_state_fn=lambda: ("0" * 40, False), min_free_pct=MIN_FREE_PCT_FLOOR)
+    eng.now_fn = lambda: eng.hw_ms or 0
+    return eng
 
 
 def gap_row(lo: int, hi: int, reason: str = "backlog_jump", t: int = GAP_T, **kw) -> dict:
@@ -86,6 +94,15 @@ def test_a_skipped_slot_is_listed_not_a_hole(tmp_path):
     (rng,) = man["ranges"]
     assert rng["skipped_slots"] == [102] and rng["fetched"] == 4 and rng["filled"] is True
     assert 102 not in {r["slot"] for r in seg_trades(tmp_path / "seg")}
+
+
+def test_a_trailing_skipped_slot_does_not_unfill_its_range_when_another_range_follows(tmp_path):
+    """Reviewer on #1182: the follower's pending skips must not carry across ranges that are not contiguous (the next block's parentSlot contradicted them)."""
+    alone, rpc1 = run_fill(tmp_path / "a", [gap_row(100, 104)], Rpc(1000, skipped={104}))
+    both, rpc2 = run_fill(tmp_path / "b", [gap_row(100, 104), gap_row(200, 202, "unfetchable")], Rpc(1000, skipped={104}))
+    assert alone["ranges"][0]["filled"] is True and [r["filled"] for r in both["ranges"]] == [True, True]
+    assert both["ranges"][0]["skipped_slots"] == [104] and both["ranges"][0]["failed_slots"] == []
+    assert rpc2.calls.count(104) == rpc1.calls.count(104)  # no refetch, no extra credits
 
 
 def test_overlapping_ranges_fetch_each_slot_once(tmp_path):
@@ -250,10 +267,8 @@ def test_follower_rows_on_both_sides_of_the_gap_row_leave_no_duplicate_and_no_mi
     assert [r["type"] for r in out] == ["trade", "trade", "gap", "trade", "trade"] and out[2]["filled"] is True  # marker in the gap row's place, no repair row kept
     assert c["fill_rows"] == 0 and c["fill_rows_dup_dropped"] == 1 and gf.mixed_groups(out) == 0
     assert len([r for r in out if r["type"] == "trade" and r["slot"] == 102]) == 2
-    from tools.test_arena_tip_adapter import mk_engine
-
     (tmp_path / "eng").mkdir()
-    eng = mk_engine(tmp_path / "eng", gap_slots=None, gap_silence_ms=None)
+    eng = mk_tip_f2(tmp_path / "eng", gap_slots=None, gap_silence_ms=None)
     for r in out:
         eng.on_row(r)
     assert eng.counters.get("rows_dup", 0) == 0 and eng.gaps == [] and len(eng.fills) == 1
