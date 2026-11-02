@@ -26,6 +26,7 @@
     "budget_lamports": 300000000,
     "daily_loss_lamports": 100000000,
     "fee_reserve_lamports": 4200000,
-    "mark_stale_s": 60
+    "mark_stale_s": 60,
+    "seal_disclosure": ""
   }
 }

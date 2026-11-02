@@ -21,6 +21,7 @@ BUDGET = 300_000_000
 DAYMS = 86_400_000
 RESERVE = L.LANE_MIN_FEE_RESERVE
 BOT = "h5-lane-test"
+DISCLOSURE = "HOLDOUT_LEDGER DEC-035 h5-lane-test 0123abc"
 
 
 class LaneEnv(Env):
@@ -726,15 +727,36 @@ class SealTests(LaneCase):
     def test_lane_on_means_no_seal_refusal_inside_the_cap_pick_window(self):
         self.assertEqual(h.SEAL_REASONS, {"seal_window_no_oracle", "seal_pick", "seal_oracle_error"})  # the waived set is exactly the parent's
         for oracle in (None, lambda m: True, lambda m: "x"):
-            e = self.lane_env(sub=f"o{id(oracle)}", oracle=oracle)
+            e = self.lane_env(sub=f"o{id(oracle)}", oracle=oracle, lane=self.lane_cfg(seal_disclosure=DISCLOSURE, ledger_path=str(self.tmp / f"o{id(oracle)}" / "l"),
+                                                                                    stop_path=str(self.tmp / f"o{id(oracle)}" / "S")))
             e.set_time(h.SEAL_START_MS + 3_600_000)
             e.fire()
             self.assertNotIn("seal_window_no_oracle", e.refusals())
             self.assertFalse([r for r in e.refusals() if r in h.SEAL_REASONS], e.refusals())
             self.assertEqual(e.ex.counters.seal_skips, 0)
 
+    def test_without_a_disclosure_the_seal_refuses_as_before(self):
+        for bad in ("", "   "):
+            e = self.lane_env(sub=f"n{len(bad)}", lane=self.lane_cfg(seal_disclosure=bad, ledger_path=str(self.tmp / f"n{len(bad)}" / "l"),
+                                                                     stop_path=str(self.tmp / f"n{len(bad)}" / "S")))
+            e.set_time(h.SEAL_START_MS + 3_600_000)
+            e.fire()
+            self.assertEqual(e.rpc.sent, [])
+            self.assertEqual(e.ex.counters.seal_skips, 1)
+            self.assertEqual(e.ex._seal_reason(None, e.clock()), "seal_window_no_oracle")
+        e = self.lane_env(sub="nokey")  # key absent
+        self.assertEqual(e.ex.lane.cfg.seal_disclosure, "")
+        e.set_time(h.SEAL_START_MS + 3_600_000)
+        self.assertEqual(e.ex._seal_reason(None, e.clock()), "seal_window_no_oracle")
+        with self.assertRaises(SystemExit):
+            self.lane_env(sub="bad", lane=self.lane_cfg(seal_disclosure=5, ledger_path=str(self.tmp / "bad" / "l"), stop_path=str(self.tmp / "bad" / "S")))
+
+    def test_the_disclosure_is_logged_in_the_start_records(self):
+        e = self.lane_env(sub="log", lane=self.lane_cfg(seal_disclosure=DISCLOSURE, ledger_path=str(self.tmp / "log" / "l"), stop_path=str(self.tmp / "log" / "S")))
+        self.assertEqual(self.rows(e, "start")[0]["seal_disclosure"], DISCLOSURE)
+
     def test_lane_on_still_passes_through_other_refusals(self):
-        e = self.lane_env()
+        e = self.lane_env(sub="pt", lane=self.lane_cfg(seal_disclosure=DISCLOSURE, ledger_path=str(self.tmp / "pt" / "l"), stop_path=str(self.tmp / "pt" / "S")))
         e.set_time(h.SEAL_START_MS + 3_600_000)
         with mock.patch.object(h.H5Executor, "_seal_reason", lambda self, trg, now: "some_other_reason"):
             self.assertEqual(e.ex._seal_reason(None, e.clock()), "some_other_reason")

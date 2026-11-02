@@ -48,7 +48,7 @@ LANE_RECONCILE_EVERY_MS = 5_000
 LANE_MIN_FEE_RESERVE = (pe.FEEARM_RENT_RESERVE_LAMPORTS + tx.BASE_FEE_PER_SIGNATURE + h.H5_DEFAULT["buy_priority_lamports"]
                         + pl.SELL_MAX_ATTEMPTS * (tx.BASE_FEE_PER_SIGNATURE + h.H5_DEFAULT["escalated_priority_lamports"]))
 LANE_KEYS = {"ledger_path", "stop_path", "bot_id", "stake_lamports", "max_open", "budget_lamports", "daily_loss_lamports", "fee_reserve_lamports",
-             "mark_stale_s"}
+             "mark_stale_s", "seal_disclosure"}
 
 
 class LaneLedgerError(ValueError):
@@ -66,6 +66,7 @@ class LaneConfig:
     daily_loss_lamports: int
     fee_reserve_lamports: int
     mark_stale_s: float
+    seal_disclosure: str = ""  # the merged HOLDOUT_LEDGER entry that declares the live lane's overlap with the CAP-PICK seal; empty = seals refuse as before
 
     @classmethod
     def parse(cls, raw: Any) -> "LaneConfig":
@@ -104,7 +105,10 @@ class LaneConfig:
         bot = raw.get("bot_id", "h5-lane")
         if not isinstance(bot, str) or not bot or ":" in bot:
             raise ValueError("lane.bot_id must be a non-empty string without ':'")
-        return cls(Path(raw["ledger_path"]), Path(raw["stop_path"]), bot, stake, max_open, budget, daily, reserve, float(stale))
+        disclosure = raw.get("seal_disclosure", "")
+        if not isinstance(disclosure, str):
+            raise ValueError("lane.seal_disclosure must be a string")
+        return cls(Path(raw["ledger_path"]), Path(raw["stop_path"]), bot, stake, max_open, budget, daily, reserve, float(stale), disclosure.strip())
 
 
 @dataclass
@@ -391,7 +395,7 @@ class H5LaneExecutor(_Base):
             if not self.dry_run:
                 self._lane_record("start", "", code_sha256=hashlib.sha256(Path(__file__).read_bytes()).hexdigest(),
                                   base_code_sha256=hashlib.sha256(Path(h.__file__).read_bytes()).hexdigest(), executor_ledger=str(self.fills.path),
-                                  limits=asdict(self.h5), lane=_public(self._lane_cfg))
+                                  limits=asdict(self.h5), lane=_public(self._lane_cfg), seal_disclosure=self._lane_cfg.seal_disclosure)
                 self._lane_reconcile(self.now_ms(), force=True)
 
     def _take_bot_lock(self):
@@ -432,9 +436,10 @@ class H5LaneExecutor(_Base):
     def _seal_reason(self, trg: h.H5Trigger, now: int) -> str | None:
         """DEC-035 s7: the lane is not stopped for seals (the disclosure is a ledger entry). The parent returns only the CAP-PICK oracle reasons
         (h.SEAL_REASONS: seal_window_no_oracle, seal_pick, seal_oracle_error) or None; with the lane on exactly those are waived, and anything
-        else the parent may ever return passes through. Lane off: the parent unchanged."""
+        else the parent may ever return passes through. Waived ONLY when lane.seal_disclosure names the merged HOLDOUT_LEDGER entry (non-empty);
+        otherwise, and with the lane off, the parent is unchanged."""
         why = super()._seal_reason(trg, now)
-        if self.lane is not None and why in h.SEAL_REASONS:
+        if self.lane is not None and self._lane_cfg.seal_disclosure and why in h.SEAL_REASONS:  # only with the merged ledger entry named
             return None
         return why
 
