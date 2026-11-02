@@ -22,7 +22,7 @@ below T resets that series' run; a STALE or UNREADABLE sample is not a completed
 A pid change (or a counter that went down) prints `S1T_SIDE_FEED_FEED_RESTART`, resets both runs, and is neither a stop nor a new baseline: checks resume
 when a sample of the new pid is 60 min old.
 W5 FAIL CLOSED. After S, `S1T_SIDE_FEED_BLIND` and exit 5 when no check has completed for 90 min (UNREADABLE, STALE, or no same-pid 60-min history after
-restarts), and also, stricter, after 10 consecutive STALE or UNREADABLE samples.
+restarts). That 90-minute rule is the only BLIND rule (QP N2.3 W5; reviewer on #1193 at 81893d64).
 W6 Exit 4 or 5 stops the smoke process (a slip, never a stop of s1t; the manager asks QP). Exit 6 means no smoke.
 With --seconds N it exits 0 after N s (printing `S1T_SIDE_FEED_OK`). Exit codes: 0 done, 2 usage, 4 STOP, 5 BLIND, 6 NO_BASELINE.
 """
@@ -46,7 +46,6 @@ MIN_VALID_HOURS = 18
 MAX_INVALID_HOURS = BASE_HOURS - MIN_VALID_HOURS  # 6: the 7th invalid hour ends the baseline before S
 MIN_COVER_S = 3000.0  # 50 of 60 minutes
 STOP_CHECKS = 10
-BLIND_CHECKS = 10  # consecutive STALE or UNREADABLE samples
 BLIND_MS = 90 * 60_000  # no completed check for 90 min
 STALE_MS = 300_000
 READ_MAX = 4 * 1024 * 1024
@@ -186,9 +185,7 @@ class Watcher:
             out += self._check(wall_ms, ex["G"], ex["R"])
             while self.good and self.good[0][0] < wall_ms - 2 * HOUR_MS:
                 self.good.pop(0)
-        if self.bad_run >= BLIND_CHECKS:
-            out.append(f"S1T_SIDE_FEED_BLIND reason=unreadable_or_stale consecutive_samples={self.bad_run}")
-        elif wall_ms - self.last_completed >= BLIND_MS:
+        if wall_ms - self.last_completed >= BLIND_MS:
             out.append("S1T_SIDE_FEED_BLIND reason=no_completed_check_90min")
         return out
 
