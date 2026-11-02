@@ -38,6 +38,10 @@ CLOSED_MARKS = ("tip-tape-archive",)
 HOST_ENTRIES = ("tools/r4b_host_glue.py", "tools/r4b_live.py", "tools/r4b_live_host.py", "tools/r4b_tip_reader.py", "tools/r4b_feed_adapter.py",
                 "tools/r4b_feed_lag_probe.py", "tools/r4b_feed_merge.py")
 RECORD_SCHEMA = "exp027_read_written_v1"
+SHA40_RE = re.compile(r"^[0-9a-f]{40}$")
+ROUTE_B_COMMITS = ("a2_c4_window_commit", "a2_c5_ledger_end_commit")  # QP-RULING-1102-r4bt V6: both must be ancestors of origin/main
+REPO = Path(__file__).resolve().parent.parent
+ARENA_BOTS = "/data/mal/arena/bots.json"  # the shared registry: only the A3 stop line may be written there (Q2 item 7); the tools read r4-b-T's OWN registry
 SHA_RE = re.compile(r"^[0-9a-f]{64}$")
 UTC_RE = re.compile(r"^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ$")
 
@@ -73,8 +77,27 @@ def check_path(path: str | Path, what: str, closed: Sequence[str] = CLOSED_ROOTS
     return p
 
 
-def exp027_read_written(record_path: str | Path | None, record_sha256: str | None, now_ms: int) -> dict:
-    """G8. Returns the validated record (plus its sha256) or raises Refused. Fail closed on every doubt."""
+def git_is_ancestor(repo: str | Path, sha: str, ref: str = "origin/main", fetch: bool = True) -> bool:
+    """`merge-base --is-ancestor <sha> origin/main` after a quiet fetch. No git output is echoed. A failed fetch refuses (fail closed)."""
+    if fetch:
+        r = subprocess.run(["git", "-C", str(repo), "fetch", "-q", "origin"], capture_output=True)
+        if r.returncode != 0:
+            raise Refused("the quiet fetch of origin failed: the ancestor check fails closed")
+    return subprocess.run(["git", "-C", str(repo), "merge-base", "--is-ancestor", sha, ref], capture_output=True).returncode == 0
+
+
+def check_registry(path: str | Path, what: str = "the registry", allow_arena_bots: bool = False) -> Path:
+    """r4-b-T's own registry sits OUTSIDE /data/mal/arena (QP-RULING-1102-r4bt V10): the pricer, the read and the classifier never open the shared bots.json (other
+    books' lines). Only `apply` may name it, to append the A3 stop line (allow_arena_bots)."""
+    if allow_arena_bots and str(Path(path).resolve()) == ARENA_BOTS:
+        return Path(path).resolve()
+    return check_path(path, what)
+
+
+def exp027_read_written(record_path: str | Path | None, record_sha256: str | None, now_ms: int, *, ancestor: Callable[[str], bool] | None = None) -> dict:
+    """G8. Returns the validated record (plus its sha256) or raises Refused. Fail closed on every doubt. Route b also names the A2 C4 Window-line commit and the
+    A2 C5 ledger-end-record merge commit (40 hex each; Addendum 2 C5 is what the pricer and the read wait for); `ancestor(sha)` (default: git_is_ancestor on this
+    checkout against origin/main with a quiet fetch) must be true for both."""
     if not record_path or not record_sha256:
         raise Refused("EXP-027's read is not shown written: --exp027-record and --exp027-record-sha256 are both required (Amendment 25 item 4)")
     if not SHA_RE.match(record_sha256):
@@ -101,6 +124,14 @@ def exp027_read_written(record_path: str | Path | None, record_sha256: str | Non
         raise Refused(f"the EXP-027 record is dated {rec['written_utc']}, after the wall clock {iso(now_ms)}")
     if not isinstance(rec.get("evidence_path"), str) or not rec["evidence_path"] or not SHA_RE.match(str(rec.get("evidence_sha256"))):
         raise Refused("the EXP-027 record needs evidence_path and a 64-hex evidence_sha256")
+    if route == "b":
+        check = ancestor or (lambda sha: git_is_ancestor(REPO, sha))
+        for k in ROUTE_B_COMMITS:
+            sha = rec.get(k)
+            if not isinstance(sha, str) or not SHA40_RE.match(sha):
+                raise Refused(f"route b: the record needs {k} as a 40-hex commit")
+            if not check(sha):
+                raise Refused(f"route b: {k} {sha} is not an ancestor of origin/main: the A2 C4/C5 records must be merged before the pricer or the read runs")
     return dict(rec, record_sha256=got)
 
 
