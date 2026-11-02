@@ -8,7 +8,7 @@ Pump.fun / Solana research lab. GitHub `vaanai/MAL` is the source of truth. This
 
 The path is fixed: trade tape → honest simulator → signals → forward paper → gated live.
 
-Scaling live trading needs a book that clears the promotion gate and the owner's word. Micro-size live trading runs before the gate in the live-learning lane ([DEC-035](DEC/DEC-035-live-learning-lane.md), owner-approved 2026-11-02); its limits are in DEC-035 §2, and DEC-035 controls. Real fills beat more weeks of paper. Speed matters.
+Scaling live trading needs a book that clears the promotion gate and the owner's word. Micro-size live trading runs before the gate in the live-learning lane ([DEC-035](DEC/DEC-035-live-learning-lane.md), owner-approved 2026-11-02); its limits are in DEC-035 §2, and DEC-035 controls. Real fills beat more weeks of paper. Speed matters. The standard does not drop to buy speed.
 
 ## Reload order
 
