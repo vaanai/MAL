@@ -720,3 +720,29 @@ class StartupTests(LaneCase):
         lim = ex.h5
         self.assertEqual((ex.tier, lim.stake_lamports, lim.max_open), ("T1", 25_000_000, 3))
         self.assertIsInstance(ex.lane, L.LaneLedger)
+
+
+class SealTests(LaneCase):
+    def test_lane_on_means_no_seal_refusal_inside_the_cap_pick_window(self):
+        self.assertEqual(h.SEAL_REASONS, {"seal_window_no_oracle", "seal_pick", "seal_oracle_error"})  # the waived set is exactly the parent's
+        for oracle in (None, lambda m: True, lambda m: "x"):
+            e = self.lane_env(sub=f"o{id(oracle)}", oracle=oracle)
+            e.set_time(h.SEAL_START_MS + 3_600_000)
+            e.fire()
+            self.assertNotIn("seal_window_no_oracle", e.refusals())
+            self.assertFalse([r for r in e.refusals() if r in h.SEAL_REASONS], e.refusals())
+            self.assertEqual(e.ex.counters.seal_skips, 0)
+
+    def test_lane_on_still_passes_through_other_refusals(self):
+        e = self.lane_env()
+        e.set_time(h.SEAL_START_MS + 3_600_000)
+        with mock.patch.object(h.H5Executor, "_seal_reason", lambda self, trg, now: "some_other_reason"):
+            self.assertEqual(e.ex._seal_reason(None, e.clock()), "some_other_reason")
+
+    def test_lane_off_the_parent_is_unchanged(self):
+        e = LaneEnv(self.tmp)
+        e.set_time(h.SEAL_START_MS + 3_600_000)
+        e.fire()
+        self.assertEqual(e.refusals(), [])  # skips are counted only
+        self.assertEqual(e.ex.counters.seal_skips, 1)
+        self.assertEqual(e.ex._seal_reason(None, e.clock()), "seal_window_no_oracle")

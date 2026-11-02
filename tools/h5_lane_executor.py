@@ -429,6 +429,15 @@ class H5LaneExecutor(_Base):
             return why
         return "lane_stop_file" if self.lane.stop_present() else None  # new entries only: no sell path reads _kill_reason
 
+    def _seal_reason(self, trg: h.H5Trigger, now: int) -> str | None:
+        """DEC-035 s7: the lane is not stopped for seals (the disclosure is a ledger entry). The parent returns only the CAP-PICK oracle reasons
+        (h.SEAL_REASONS: seal_window_no_oracle, seal_pick, seal_oracle_error) or None; with the lane on exactly those are waived, and anything
+        else the parent may ever return passes through. Lane off: the parent unchanged."""
+        why = super()._seal_reason(trg, now)
+        if self.lane is not None and why in h.SEAL_REASONS:
+            return None
+        return why
+
     def _hard_refusal(self, trg: h.H5Trigger, now: int) -> str | None:
         why = super()._hard_refusal(trg, now)
         if why or self.lane is None or self.dry_run:
