@@ -203,6 +203,8 @@ def test_a_pool_created_before_the_6h_idle_eviction_is_still_admitted(tmp_path, 
         assert patched["age_s"] == pytest.approx((raw["now_ms"] - run.creation.created_ms(POOLS[k])) / 1000.0)
         assert AGE_MIN <= patched["age_s"] <= AGE_MAX
     assert row["counts"]["age_unknown"] == 0 and "u2_age_unknown" not in run.counters
+    assert row["counts"]["creation_restored"] == (4 if state_forgets else 0)                 # QP condition (a): the report-only count of admissions that depended on the restore
+    assert run.counters.get("u2_creation_restored", 0) == (4 if state_forgets else 0) and control["counts"]["creation_restored"] == 0
     assert row["screen"] == control["screen"] and row["card_shas"] and not row["no_trade"]
     assert row["n_candidates"] == control["n_candidates"]
 
@@ -225,3 +227,63 @@ def test_watch_tick_tells_the_prefetcher_only_pools_u2_admits(tmp_path):
     run.poll_to(T)
     run.watch_tick(T)
     assert seen and leader not in seen[-1] and set(seen[-1]) == {POOLS[0], POOLS[1], POOLS[2]}
+
+
+# ------------------------------------------------------------------------------------------------------------------------ the config switch (QP C1) and the bot-id prefix (QP R1)
+def test_u2_is_on_by_default_and_hv8_dump_turns_it_off_explicitly_and_says_so():
+    assert R.Hv7Config().u2 is True
+    src = (Path(__file__).resolve().parent / "hv8_dump.py").read_text()
+    assert "phantom_filter=True, u2=False)" in src and "RULE U2 IS OFF HERE" in src
+
+
+@pytest.mark.usefixtures("_env")
+def test_u2_off_admits_a_pool_without_a_create_row_and_leaves_the_scan_row_as_before(tmp_path):
+    leader = POOLS[3]
+    rows = [r for r in tape_rows() if not (r["type"] == "pool_create" and r["pool"] == leader)]
+    run = make(tmp_path / "off", rows=rows, cfg_kw={"u2": False})
+    run.run(T0 + HOUR, T_E1 + MIN)
+    row = rows_of(run, "SCAN", "period")[0]
+    assert leader in row["screen"] and "age_unknown" not in row["counts"] and "creation_restored" not in row["counts"]       # HV8's view: the SCAN row carries no U2 key
+    assert not [k for k in run.counters if k.startswith("u2_")]
+    on = make(tmp_path / "on", rows=rows)
+    on.run(T0 + HOUR, T_E1 + MIN)
+    assert leader not in rows_of(on, "SCAN", "period")[0]["screen"]                                                          # default: fail closed
+
+
+@pytest.mark.usefixtures("_env")
+def test_the_runner_refuses_u2_off_for_a_tape_under_the_tip_receiver_copy(tmp_path, monkeypatch):
+    feed = tmp_path / "feed"
+    monkeypatch.setattr(R, "TIP_FEED_ROOT", str(feed))
+    with pytest.raises(R.Hv7Error, match="u2_off_on_tip_source"):
+        make(feed / "x", cfg_kw={"u2": False})                                             # make() writes its tape to <tmp>/tape, i.e. under the (patched) receiver root
+    run = make(feed / "y")                                                                 # U2 on: allowed
+    assert run.cfg.u2 is True
+    assert make(tmp_path / "elsewhere", cfg_kw={"u2": False}).cfg.u2 is False              # off is allowed only away from the receiver copy
+
+
+def test_the_four_tip_source_ids_are_exactly_hv7_0t_L_R_S_U_and_disjoint_from_the_public_tape_prefix():
+    from tools import hv7_register as G
+
+    want = ["hv7.0t-L", "hv7.0t-R", "hv7.0t-S", "hv7.0t-U"]
+    assert R.BOT_PREFIX == "hv7.0t-" and [R.bot_id(a) for a in R.ARM_ORDER] == want and list(G.HV7_BOTS) == want
+    assert not "hv7.0-L".startswith(R.BOT_PREFIX) and not "hv7.0t-L".startswith("hv7.0-")
+    assert all(b.startswith("hv7.") for b in G.HV7_BOTS)
+
+
+def test_the_register_docstring_does_not_rest_h_on_the_retired_public_tape_p0():
+    from tools import hv7_register as G
+
+    doc = G.__doc__ or ""
+    assert "NOT the basis" in doc and "150/14" in doc and "at P0's 23.33" not in doc
+
+
+def test_the_pack_state_field_listing_equals_hv4_snapshot_keys():
+    import re
+
+    pack = (Path(__file__).resolve().parents[1] / "ARTIFACTS" / "lab" / "hv7-registration-tip-1101.md").read_text()
+    sec = pack[pack.index("## 6. State fields"):pack.index("## 6b.")]
+    listed = re.search(r"contract list \(checked against the real snapshot by its contract test\): (.*?)\. `tools/test_hv7_tip_guard", sec, re.S).group(1)
+    names = re.findall(r"`([a-z_0-9]+)`", listed)
+    assert sorted(names) == sorted(C.SNAPSHOT_KEYS) and len(names) == 26
+    row = pack.split("| bot ids |")[1].split("\n")[0]
+    assert "`hv7.0t-L/R/S/U`" in row and "REQUIRED" in row
