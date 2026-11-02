@@ -10,6 +10,6 @@ PY=${PY:-/data/mal/venv/bin/python}
 [ -x "$PY" ] || PY=python3
 WORK=${1:-$(mktemp -d "${TMPDIR:-/tmp}/tip-restart-drill.XXXXXX")}
 echo "DRILL start $(date -u +%FT%TZ) head=$(git rev-parse --short HEAD) work=$WORK"
-"$PY" -m pytest -q -p no:cacheprovider tools/test_arena_tip_writer_restart.py tools/test_arena_tip_tape_writer.py tools/test_arena_tip_continuity.py tools/test_arena_restart_equiv.py
+"$PY" -m pytest -q -p no:cacheprovider tools/test_arena_tip_writer_restart.py tools/test_arena_tip_tape_writer.py tools/test_arena_tip_continuity.py tools/test_arena_restart_equiv.py tools/test_hv7_restart_equiv.py
 "$PY" tools/arena_restart_equiv.py --selftest --selftest-slots 2400 --downtime-rows 0,150 --work-dir "$WORK/equiv" --out "$WORK/equiv-report.json"
 echo "DRILL end $(date -u +%FT%TZ) OK"
