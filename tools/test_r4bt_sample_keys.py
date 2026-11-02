@@ -32,7 +32,7 @@ def test_the_unmapped_sampler_lines_halt_the_classifier_at_instant_0_which_is_th
 
 def test_mapped_healthy_lines_are_accepted_by_the_classifier_and_carry_the_sampler_instant():
     rows = K.map_samples([healthy()])
-    assert [r["ts_ms"] for r in rows] == [(T0 + 60 * i) * 1000 for i in range(5)]
+    assert [r["ts_ms"] for r in rows] == [(T0 + 60 * i) * 1000 - 1000 for i in range(5)]  # s_ts_ms first (line() sets it 1 s before t)
     assert all(set(r) == {"ts_ms", "decoder_blobs_pinned", "trade_event_v"} for r in rows)  # no decoder_blobs list, no counter, no s_ts_ms
     assert A.decoder_failure_ms(rows) is None
 
@@ -42,10 +42,10 @@ def test_the_first_failing_sample_halts_at_its_own_instant():
     src[2] = line(T0 + 120, s_decoder_blobs_pinned=False)
     src[3] = line(T0 + 180, s_trade_event_v=None)
     rows = K.map_samples([src])
-    assert A.decoder_failure_ms(rows) == (T0 + 120) * 1000
+    assert A.decoder_failure_ms(rows) == (T0 + 120) * 1000 - 1000
     v = A.classify({"run_utc": RUN, "programs": {}, "accounts": {}, "halt": {"flags": {"pins_changed": {"halt": False}}}}, {"programs": {}, "accounts": {}}, now_ms=NOW,
                    follower_samples=rows)
-    assert v["verdict"] == "HALT" and v["halt_at_ms"] == (T0 + 120) * 1000 and "follower decoder pin failing" in v["reasons"][0]
+    assert v["verdict"] == "HALT" and v["halt_at_ms"] == (T0 + 120) * 1000 - 1000 and "follower decoder pin failing" in v["reasons"][0]
 
 
 def test_a_missing_flag_stays_missing_and_fails_closed_at_that_samples_time():
@@ -54,12 +54,12 @@ def test_a_missing_flag_stays_missing_and_fails_closed_at_that_samples_time():
     del d["s_trade_event_v"]
     src[1] = json.dumps(d)
     rows = K.map_samples([src])
-    assert "trade_event_v" not in rows[1] and A.decoder_failure_ms(rows) == (T0 + 60) * 1000
+    assert "trade_event_v" not in rows[1] and A.decoder_failure_ms(rows) == (T0 + 60) * 1000 - 1000
 
 
 def test_never_pass_decoder_ref_with_this_file_every_sample_would_fail():
     rows = K.map_samples([healthy()])
-    assert A.decoder_failure_ms(rows, ["a", "b", "c"]) == T0 * 1000  # documented in the module: the sampler holds no blob list
+    assert A.decoder_failure_ms(rows, ["a", "b", "c"]) == T0 * 1000 - 1000  # documented in the module: the sampler holds no blob list
 
 
 @pytest.mark.parametrize("bad, key", [
@@ -80,9 +80,42 @@ def test_the_whole_file_is_refused_with_a_line_number_and_a_key_name_never_a_val
     assert key in msg and "f.jsonl line 3" in msg and "hunter2" not in msg
 
 
-def test_other_sampler_namespace_keys_are_dropped_and_an_empty_window_is_refused():
-    rows = K.map_samples([[line(T0, s_new_counter=7, c_other=1)]])
-    assert rows == [{"ts_ms": T0 * 1000, "decoder_blobs_pinned": True, "trade_event_v": True}]
+ALL_REAL = {"t": T0, "s_ts_ms": T0 * 1000 - 700, "s_lag_slots": 2, "s_lag_ms": 800, "s_gaps": 3, "s_skipped": 5, "s_backlog_jumps": 0, "s_unresolved_dropped": 0,
+            "s_block_lag_ms_p50": 500, "s_block_lag_ms_p90": 900, "s_decoder_blobs_pinned": True, "s_trade_event_v": True, "s_last_done_slot": 123, "s_retries": 0,
+            "s_breaker_trips": 0, "c_last_done": 124, "c_gaps": 3, "c_skipped": 5, "c_writing": True}
+
+
+def test_a_row_with_every_real_key_is_accepted_and_the_key_set_is_exactly_the_rulings():
+    """QP-RULING-1102-r4bt Addendum 2: the foreign-key refusal accepts EXACTLY this set."""
+    assert set(ALL_REAL) == K.REAL_KEYS == {"t", "s_ts_ms", "s_lag_slots", "s_lag_ms", "s_gaps", "s_skipped", "s_backlog_jumps", "s_unresolved_dropped", "s_block_lag_ms_p50",
+                                            "s_block_lag_ms_p90", "s_decoder_blobs_pinned", "s_trade_event_v", "s_last_done_slot", "s_retries", "s_breaker_trips", "c_last_done",
+                                            "c_gaps", "c_skipped", "c_writing"}
+    assert K.map_samples([[json.dumps(ALL_REAL)]]) == [{"ts_ms": T0 * 1000 - 700, "decoder_blobs_pinned": True, "trade_event_v": True}]
+    for k in ALL_REAL:  # only `t` is required: every other key may be absent
+        if k != "t":
+            assert len(K.map_samples([[json.dumps({a: v for a, v in ALL_REAL.items() if a != k})]])) == 1
+
+
+@pytest.mark.parametrize("extra", ["s_new_counter", "c_other", "s_ts", "s_lag", "x", "T", "s_decoder_blobs"])
+def test_any_key_outside_the_exact_real_set_is_refused_even_in_the_samplers_namespaces(extra):
+    with pytest.raises(K.MapError, match=f"key {extra!r} is not in the sampler's real key set"):
+        K.map_samples([[json.dumps(dict(ALL_REAL, **{extra: 1}))]])
+
+
+def test_ts_ms_comes_from_s_ts_ms_first_the_earlier_instant_else_t_times_1000():
+    def ts(**over):
+        d = {k: v for k, v in ALL_REAL.items() if k != "s_ts_ms"}
+        d.update(over)
+        return K.map_samples([[json.dumps(d)]])[0]["ts_ms"]
+
+    assert ts(s_ts_ms=T0 * 1000 - 700) == T0 * 1000 - 700  # the status instant, earlier than t
+    assert ts() == T0 * 1000  # no s_ts_ms: t * 1000
+    for unusable in (None, True, 1.5e12, "x", 17, T0 * 1000 * 1000):
+        assert ts(s_ts_ms=unusable) == T0 * 1000  # present but not an in-range integer ms: t * 1000
+    assert ts(s_ts_ms=T0 * 1000 + 5000) == T0 * 1000  # a LATER s_ts_ms (clock skew) is not the earlier instant: the halt can only be earlier, never later
+
+
+def test_an_empty_window_is_refused():
     with pytest.raises(K.MapError, match="no sample in the window"):
         K.map_samples([healthy()], since_s=T0 + 10_000)
     with pytest.raises(K.MapError, match="no sample"):
@@ -97,6 +130,8 @@ def test_duplicate_t_across_merged_segments_keeps_the_worse_copy():
     rows = K.map_samples([b, a])
     assert rows[0]["decoder_blobs_pinned"] is False
     assert K.map_samples([a, a])[0]["decoder_blobs_pinned"] is True
+    c = [line(T0, s_ts_ms=T0 * 1000 - 5000)]
+    assert K.map_samples([a, c])[0]["ts_ms"] == T0 * 1000 - 5000 == K.map_samples([c, a])[0]["ts_ms"]  # the earlier instant
     d = json.loads(line(T0))
     del d["s_decoder_blobs_pinned"]
     assert "decoder_blobs_pinned" not in K.map_samples([a, [json.dumps(d)]])[0]  # one copy lacks it: absent, so failing

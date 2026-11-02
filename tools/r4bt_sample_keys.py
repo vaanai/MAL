@@ -5,19 +5,23 @@ THE PROBLEM. `r4bt_a3.decoder_failure_ms` reads the keys `ts_ms`, `decoder_blobs
 `t` (epoch SECONDS of the sample) and the follower status under an `s_` prefix: `s_ts_ms`, `s_decoder_blobs_pinned`, `s_trade_event_v`, counters `s_gaps`, `s_skipped`, ... and
 `c_*`. Fed as is, every line "fails" with no usable time and the classifier halts r4bt-a1 at instant 0.
 
-THE MAPPING (the only one; a sample's instant is the sampler's own `t`):
-    ts_ms                   := t * 1000                      (t: an integer epoch second, 2020 <= year < 2100, not a bool)
+THE MAPPING (the only one; QP-RULING-1102-r4bt Addendum 2):
+    ts_ms                   := s_ts_ms   when it is an integer epoch ms in range (the follower status instant: the EARLIER instant of the two), else t * 1000
+                               (t: the sample's integer epoch second, 2020 <= year < 2100, not a bool). When s_ts_ms is later than t * 1000 (a clock skew: not the earlier
+                               instant) the earlier t * 1000 is used, so the halt instant can only be earlier, never later.
     decoder_blobs_pinned    := s_decoder_blobs_pinned        (copied unchanged)
     trade_event_v           := s_trade_event_v               (copied unchanged)
-No `decoder_blobs` list is produced (the sampler holds none): NEVER pass `--decoder-ref` with this file, every sample would fail the blob comparison. `s_ts_ms` (the follower
-status freshness) is NOT mapped: it is the hour-health tool's and the P0 rule's input (Q3 iii), not an A3 decoder-pin input.
+No `decoder_blobs` list is produced (the sampler holds none): NEVER pass `--decoder-ref` with this file, every sample would fail the blob comparison. `t` still keys the samples
+(de-duplication, the --since-s window).
 
 FAIL CLOSED.
   * A key that is missing is left missing in the output (the classifier then treats the sample as failing at its `ts_ms`); a value that is not `true` is copied as it is (failing).
   * The WHOLE FILE is refused (exit 2; the error names the line number and the key NAME, never a value) for: a line that is not a JSON object; a missing, boolean, float or
-    out-of-range `t`; a key outside the sampler's own namespaces (`t`, `s_*`, `c_*`) - a foreign shape; a line that already carries a classifier key (`ts_ms`, `decoder_blobs_pinned`,
-    `trade_event_v`, `decoder_blobs`) - a mixed or already-mapped file; no sample left after the window (an empty file is no evidence of a healthy follower, so the job is loud).
-  * Other `s_*` / `c_*` keys (the counters) are dropped, not read.
+    out-of-range `t`; a key outside the EXACT real key set (`REAL_KEYS`: t, s_ts_ms, s_lag_slots, s_lag_ms, s_gaps, s_skipped, s_backlog_jumps, s_unresolved_dropped,
+    s_block_lag_ms_p50, s_block_lag_ms_p90, s_decoder_blobs_pinned, s_trade_event_v, s_last_done_slot, s_retries, s_breaker_trips, c_last_done, c_gaps, c_skipped, c_writing) - a new
+    key is a changed sampler and is refused until the set is re-pinned; a line that already carries a classifier key (`ts_ms`, `decoder_blobs_pinned`, `trade_event_v`,
+    `decoder_blobs`) - a mixed or already-mapped file; no sample left after the window (an empty file is no evidence of a healthy follower, so the job is loud).
+  * The other real keys (the counters, lags, last-done markers) are accepted and dropped, not read. A line need not carry all of them (only `t` is required).
   * Several lines with the same `t` (merged segments) become ONE sample: a mapped flag is kept only if EVERY copy has it as `true`; otherwise the first copy's non-true value is
     kept (or the key is omitted when a copy lacks it).
 
@@ -41,6 +45,9 @@ from pathlib import Path
 from typing import Any, Iterable, Sequence
 
 T_MIN_S, T_MAX_S = 1_577_836_800, 4_102_444_800  # 2020-01-01 .. 2100-01-01 (epoch seconds)
+# the sampler's real key set (QP-RULING-1102-r4bt Addendum 2): anything else is refused
+REAL_KEYS = frozenset({"t", "s_ts_ms", "s_lag_slots", "s_lag_ms", "s_gaps", "s_skipped", "s_backlog_jumps", "s_unresolved_dropped", "s_block_lag_ms_p50", "s_block_lag_ms_p90",
+                       "s_decoder_blobs_pinned", "s_trade_event_v", "s_last_done_slot", "s_retries", "s_breaker_trips", "c_last_done", "c_gaps", "c_skipped", "c_writing"})
 MAPPED_FLAGS = (("s_decoder_blobs_pinned", "decoder_blobs_pinned"), ("s_trade_event_v", "trade_event_v"))
 CLASSIFIER_KEYS = ("ts_ms", "decoder_blobs_pinned", "trade_event_v", "decoder_blobs")
 
@@ -50,7 +57,11 @@ class MapError(ValueError):
 
 
 def _ok_key(k: str) -> bool:
-    return k == "t" or k.startswith("s_") or k.startswith("c_")
+    return k in REAL_KEYS
+
+
+def _is_ms(x: Any) -> bool:
+    return isinstance(x, int) and not isinstance(x, bool) and T_MIN_S * 1000 <= x < T_MAX_S * 1000
 
 
 def map_lines(lines: Iterable[str], *, label: str = "input") -> dict[int, dict[str, Any]]:
@@ -69,11 +80,12 @@ def map_lines(lines: Iterable[str], *, label: str = "input") -> dict[int, dict[s
             if k in CLASSIFIER_KEYS:
                 raise MapError(f"{label} line {n}: carries the classifier key {k!r}: an already-mapped or mixed file is refused")
             if not _ok_key(k):
-                raise MapError(f"{label} line {n}: key {k!r} is outside the sampler's namespaces (t, s_*, c_*): a foreign shape is refused")
+                raise MapError(f"{label} line {n}: key {k!r} is not in the sampler's real key set: a foreign or changed shape is refused")
         t = d.get("t")
         if not isinstance(t, int) or isinstance(t, bool) or not T_MIN_S <= t < T_MAX_S:
             raise MapError(f"{label} line {n}: `t` is missing or not an integer epoch second in range")
-        row: dict[str, Any] = {"ts_ms": t * 1000}
+        sts = d.get("s_ts_ms")
+        row: dict[str, Any] = {"ts_ms": min(sts, t * 1000) if _is_ms(sts) else t * 1000}  # the earlier instant
         for src, dst in MAPPED_FLAGS:
             if src in d:
                 row[dst] = d[src]
@@ -84,7 +96,7 @@ def map_lines(lines: Iterable[str], *, label: str = "input") -> dict[int, dict[s
 
 def _merge(a: dict[str, Any], b: dict[str, Any]) -> dict[str, Any]:
     """Two samples of the same t: a flag survives only if both copies have it as true; else the first non-true value; omitted when a copy lacks it."""
-    out = {"ts_ms": a["ts_ms"]}
+    out = {"ts_ms": min(a["ts_ms"], b["ts_ms"])}
     for _src, dst in MAPPED_FLAGS:
         va, vb = a.get(dst, None), b.get(dst, None)
         if dst in a and dst in b:
