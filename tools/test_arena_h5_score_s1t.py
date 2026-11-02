@@ -23,8 +23,10 @@ S1T = "h5v1q50-boostfloor-s1t"
 C7, C10 = ti.ROW_1107, ti.ROW_1110
 DAY = 86_400_000
 REG7 = C7["register_not_before_ms"] + 1_000
+ARGV = ["--tip-input", "/data2/mal/arena-tip-feed/hv7", "--fresh-forward", "ARENA", "--q-star-sol", "50", "--out-dir", "/x/h5-s1t-book-20261106T225500Z", "--syn-sockets", "1",
+        "--ws-url", "wss://rpc.solanatracker.io/public", "--max-seconds", "1202000"]  # the book's registered command (s1t-run-commands.md section 4), as S*'s redacted start-record copy
 START = {"q_star_sol": 50.0, "rule": "H5-BOOSTFLOOR-Q50 v1", "rule_sha256": "b3f8ecbf8731dc322a035a0b3996b7ed3f0b8c508cc6947014e3de1aa9524fd4",
-         "h5_look2": {"end_only_ms": 1_796_083_200_000}}
+         "h5_look2": {"end_only_ms": 1_796_083_200_000}, "argv": ARGV, "synthetic_gate": {"syn_sockets": 1}}
 SEG1, SEG2 = "h5-s1t-book-20270115T075500Z", "h5-s1t-book-20270115T090000Z"
 
 
@@ -126,6 +128,11 @@ class LineTests(unittest.TestCase):
         self.assertEqual((e["deciding_stake_sol"], e["deciding_cell"], e["stack"], e["registered_at_ms"], e["sockets"]), (0.3, "1p9", sc.STACK, REG7, 1))
         self.assertEqual(e["endpoints"], ["wss://rpc.solanatracker.io"])
 
+    def test_the_command_check_is_part_of_the_wrapper_not_s1s(self):
+        self.assertIsNone(w.start_problem({**START, "argv": ARGV}))
+        self.assertEqual(w.start_problem({**START, "argv": [*ARGV, "--smoke"]}), "smoke_run")
+        self.assertIsNone(s1w.start_problem({**START, "argv": [*ARGV, "--smoke"]}))  # s1's check (unchanged) has no command rule: only s1t's wrapper does
+
     def test_the_slip_row_line(self):
         bots: dict = {}
         e = w.add_line(bots, C10, sockets=1, endpoints=["wss://rpc.solanatracker.io"], host="h", reg_ms=C10["register_not_before_ms"])
@@ -191,6 +198,37 @@ class StartRecordTests(Base):
             res = self.counted({"h5-s1t-book-2027011" + str(len(name)) + "T000000Z": s1t_records(2, **kw)})
             self.assertEqual(list(res.refused.values()), [why], name)
             self.assertEqual((res.triggers_seen, res.rows), (0, []), name)
+
+    def test_the_registered_command_line_is_required(self):
+        def swap(flag, value):
+            a = list(ARGV)
+            a[a.index(flag) + 1] = value
+            return a
+
+        def drop(flag):
+            a = list(ARGV)
+            i = a.index(flag)
+            return a[:i] + a[i + 2:]
+
+        cases = {"no_argv": (dict(argv=None), "argv_missing"), "empty": (dict(argv=[]), "argv_missing"), "smoke": (dict(argv=[*ARGV, "--smoke"]), "smoke_run"),
+                 "smoke_abbrev": (dict(argv=[*ARGV, "--smo"]), "unexpected_flag"), "tip_abbrev": (dict(argv=["--tip-in", *ARGV[1:]]), "unexpected_flag"),
+                 "other_flag": (dict(argv=[*ARGV, "--log-level", "debug"]), "unexpected_flag"),
+                 "tip_other": (dict(argv=swap("--tip-input", "/data2/mal/arena-tip-feed/hv7x")), "tip_input_mismatch"), "tip_hv4t": (dict(argv=swap("--tip-input", "/data/mal/arena/tape")), "tip_input_mismatch"),
+                 "tip_missing": (dict(argv=drop("--tip-input")), "tip_input_mismatch"), "tip_twice": (dict(argv=[*ARGV, "--tip-input", "/data2/mal/arena-tip-feed/hv7"]), "tip_input_mismatch"),
+                 "syn3": (dict(argv=swap("--syn-sockets", "3")), "syn_sockets_mismatch"), "syn_missing": (dict(argv=drop("--syn-sockets")), "syn_sockets_mismatch"),
+                 "syn_gate": (dict(synthetic_gate={"syn_sockets": 2}), "syn_sockets_mismatch"), "syn_gate_bool": (dict(synthetic_gate={"syn_sockets": True}), "syn_sockets_mismatch"),
+                 "no_gate": (dict(synthetic_gate=None), "syn_sockets_mismatch"),
+                 "ws_other": (dict(argv=swap("--ws-url", "wss://api.mainnet-beta.solana.com")), "side_feed_mismatch"),
+                 "ws_path": (dict(argv=swap("--ws-url", "wss://rpc.solanatracker.io/other")), "side_feed_mismatch"), "ws_missing": (dict(argv=drop("--ws-url")), "side_feed_mismatch"),
+                 "ff_other": (dict(argv=swap("--fresh-forward", "TAPE")), "fresh_forward_mismatch"), "q40_argv": (dict(argv=swap("--q-star-sol", "40")), "fresh_forward_mismatch")}
+        for i, (name, (kw, why)) in enumerate(cases.items()):
+            res = self.counted({f"h5-s1t-book-202701{i + 10:02d}T000000Z": s1t_records(2, **kw)})
+            self.assertEqual(list(res.refused.values()), [why], name)
+            self.assertEqual((res.triggers_seen, res.rows), (0, []), name)
+        eq_form = list(ARGV)
+        eq_form[:2] = ["--tip-input=/data2/mal/arena-tip-feed/hv7"]
+        res = self.counted({SEG1: s1t_records(2, argv=eq_form)})
+        self.assertEqual((res.refused, res.triggers_seen), ({}, 2))  # the `--flag=value` spelling of the same command passes
 
     def test_s0_filter_counts_and_dropped_pool_is_not_an_attempt(self):
         P = [f"Pool{i:04d}" for i in range(4)]

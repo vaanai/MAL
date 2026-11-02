@@ -9,6 +9,9 @@ their pure helpers (start-record check, pv s0 filter, line builder) with s1t's t
   the Q50 rule and its sha256, and h5_look2.end_only_ms == 1796083200000 (SUCC_END_MS, which S*' shares with S*). Anything else is refused by the scorer's own refusal path with the reason.
 - BOTH segment out dirs are passed, one `--shadow-dir` each (the 2026-11-20T21:00Z hand-off writes a new out dir). Every `--shadow-dir` must be named `h5-s1t-book-<YYYYMMDDTHHMMSSZ>`: the smoke's
   out dir (`h5-smoke-s1t-*`, sealed, never counted, scored or read), s1's, Q50's and HV4-T's dirs are refused before the scorer is called.
+- The start record's `argv` (S*'s redacted copy of the wrapper's command line) must be the registered command (QP on #1202): `--tip-input` = the registered derived copy exactly once, `--syn-sockets 1`,
+  `--ws-url` = the registered side-feed endpoint (so another host is refused), `--fresh-forward ARENA`, `--q-star-sol 50`, NO `--smoke`, and no flag outside `ALLOWED_FLAGS` (so an argparse
+  abbreviation of `--smoke` cannot pass). `synthetic_gate.syn_sockets` must be 1. A refused dir is reported with its reason by the scorer's refusal path.
 - pv triggers whose s0_t_recv_ms is missing, not an integer or below clock + 60,000 ms are dropped before score_book (counted, never attempts), with the a2 split counters.
 - THE READ INSTANT: on every `score` run the screen instant (200 counted trades on 5 dates, or 100 at B >= S_cap = clock + 10 d, by E; tools.arena_h5_s1t_instant) is computed from the scorer's own
   BookResult (decision timestamps and class only) and, unless --dry-run, recorded ONCE in <ledger>/h5v1q50-boostfloor-s1t/s1t-read-instant.json. The scorer's read-instant.json is an attempt-boundary
@@ -19,7 +22,9 @@ their pure helpers (start-record check, pv s0 filter, line builder) with s1t's t
 """
 from __future__ import annotations
 
+import collections
 import contextlib
+import copy
 import os
 import re
 import sys
@@ -30,7 +35,7 @@ from tools import arena_h5_s1t_instant as ti
 from tools import arena_h5_score as sc
 from tools import arena_h5_score_q50 as q50w
 from tools import arena_h5_score_q50s as w
-from tools.arena_h5_score_a2 import DROP_KEYS
+from tools.arena_h5_score_a2 import DROP_KEYS, _bucket, _s0_ok
 
 SCORER_SHA256 = q50w.SCORER_SHA256
 S1T_ID = ti.S1T_ID
@@ -50,14 +55,85 @@ def row_for_entry(entry: Mapping) -> Mapping:
     return ti.row_for_clock(entry["clock_start_ms"])
 
 
+ALLOWED_FLAGS = ("--tip-input", "--fresh-forward", "--q-star-sol", "--out-dir", "--syn-sockets", "--ws-url", "--max-seconds")  # the book's command (scripts: s1t-run-commands.md section 4)
+
+
+def _flag_values(argv: Sequence[str], flag: str) -> list[str | None]:
+    out: list[str | None] = []
+    for i, a in enumerate(argv):
+        if a == flag:
+            out.append(argv[i + 1] if i + 1 < len(argv) else None)
+        elif a.startswith(flag + "="):
+            out.append(a.split("=", 1)[1])
+    return out
+
+
+def argv_problem(start: Mapping, row: Mapping = ti.ROW_1107) -> str | None:
+    """Why this start record's command line is not the registered s1t command (None: it is). Reasons: argv_missing, unexpected_flag, smoke_run, tip_input_mismatch, syn_sockets_mismatch,
+    side_feed_mismatch, fresh_forward_mismatch."""
+    argv = start.get("argv")
+    if not isinstance(argv, list) or not argv or not all(isinstance(a, str) for a in argv):
+        return "argv_missing"
+    if any(a == "--smoke" or a.startswith("--smoke=") for a in argv):
+        return "smoke_run"
+    flags = [a.split("=", 1)[0] for a in argv if a.startswith("--")]
+    if any(f not in ALLOWED_FLAGS for f in flags):
+        return "unexpected_flag"  # also an argparse abbreviation (--smo, --tip-in): the registered command spells every flag out
+    if _flag_values(argv, "--tip-input") != [row["tip_input"]]:
+        return "tip_input_mismatch"
+    sg = start.get("synthetic_gate")
+    sg_n = sg.get("syn_sockets") if isinstance(sg, dict) else None
+    if _flag_values(argv, "--syn-sockets") != [str(row["syn_sockets"])] or isinstance(sg_n, bool) or sg_n != row["syn_sockets"]:
+        return "syn_sockets_mismatch"
+    if _flag_values(argv, "--ws-url") != [row["side_feed_ws"]]:
+        return "side_feed_mismatch"
+    if _flag_values(argv, "--fresh-forward") != [row["fresh_forward"]] or _flag_values(argv, "--q-star-sol") != [str(int(row["q_star_sol"]))]:
+        return "fresh_forward_mismatch"
+    return None
+
+
 def start_problem(start: Mapping, row: Mapping = ti.ROW_1107) -> str | None:
-    """Why this start record is not an s1t process's (None: it is): q_star, rule, rule sha256 and S*''s end_only_ms, as s1's check with s1t's row."""
-    return w.start_problem(start, row)
+    """Why this start record is not an s1t process's (None: it is): q_star, rule, rule sha256 and S*''s end_only_ms (s1's check with s1t's row), then the registered command line."""
+    return w.start_problem(start, row) or argv_problem(start, row)
 
 
-def filtered_dirs(entry: dict, dirs: Sequence[sc.ShadowDir]):
-    """Dirs guarded by the start-record check, with pv triggers kept only for pools whose s0 is at or after clock + 60 s (s1's filter, s1t's row)."""
-    return w.filtered_dirs(entry, dirs, row_for_entry(entry))
+def _guarded(d: sc.ShadowDir, row: Mapping) -> sc.ShadowDir:
+    c = copy.copy(d)
+    orig = d.identity_problem
+
+    def problem(entry):
+        why = orig(entry)
+        if why:
+            return why
+        for s in d.starts:
+            p = start_problem(s, row)
+            if p:
+                return p
+        return None
+
+    c.identity_problem = problem  # type: ignore[method-assign]
+    return c
+
+
+def filtered_dirs(entry: dict, dirs: Sequence[sc.ShadowDir], row: Mapping | None = None):
+    """Dirs guarded by the s1t start-record check (identity, rule, end_only_ms AND the registered command line), with pv triggers kept only for pools whose s0 is at or after clock + 60 s
+    (s1's filter, s1t's row); dropped pools are counted by decision instant into the a2 split counters over dirs that pass both checks, by distinct pool. A dropped pool is never an attempt."""
+    row = row or row_for_entry(entry)
+    clock, end = int(entry["clock_start_ms"]), entry.get("window_end_ms")
+    out, counts, seen = [], collections.Counter(), set()
+    for d in dirs:
+        c = _guarded(d, row)
+        c.triggers = {p: t for p, t in d.triggers.items() if _s0_ok(t, clock)}
+        if c.identity_problem(entry) is None:
+            for pool, t in d.triggers.items():
+                if pool in c.triggers or pool in seen:
+                    continue
+                seen.add(pool)
+                k = _bucket(t, clock, end)
+                if k:
+                    counts[k] += 1
+        out.append(c)
+    return out, counts
 
 
 def s1t_instant(bot: str, res: sc.BookResult, entry: dict, ledger_root: Path, now_ms: int, *, dry_run: bool) -> dict:
@@ -94,7 +170,7 @@ def s1t_bots() -> Iterator[None]:
         if bot != S1T_ID:
             raise RuntimeError(f"the s1t wrapper scores only {S1T_ID}, not {bot!r}")
         row = row_for_entry(entry)
-        fdirs, dropped = w.filtered_dirs(entry, dirs, row)
+        fdirs, dropped = filtered_dirs(entry, dirs, row)
         res = orig_score(bot, entry, fdirs)
         for k in DROP_KEYS:
             res.counts[k] += dropped[k]
