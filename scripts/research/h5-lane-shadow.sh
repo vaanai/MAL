@@ -7,7 +7,7 @@
 #
 # Env (all optional):
 #   H5_PYTHON       python with websockets + certifi (default: the listener venv /var/lib/mal/fast-listener/.venv/bin/python)
-#   H5_OUT_DIR      output dir (default $HOME/data/h5-shadow; only $HOME/data/h5-shadow*, /var/lib/mal/h5-shadow* or /tmp/* is accepted; no "..")
+#   H5_OUT_DIR      output dir (lane script: only $HOME/data/h5-shadow-lane* or /var/lib/mal/h5-shadow* or /tmp/*; no "..")
 #   H5_WS_URLS      comma-separated public websocket URLs (default: the public mainnet-beta endpoint). Free endpoints only.
 #   H5_SOCKETS      redundant public logsSubscribe sockets (default 3; fewer than 3 is refused, see H5_ALLOW_FEW_SOCKETS). Their records feed the
 #                   live executor: with 2 sockets any reconnect of the peer during a 3-10 s pause of the other flags every open pool, which
@@ -48,7 +48,7 @@ PY="${H5_PYTHON:-/var/lib/mal/fast-listener/.venv/bin/python}"
 OUT="${H5_OUT_DIR:-$HOME/data/h5-shadow}"
 case "$OUT" in
   *..*) echo "h5-lane-shadow: refusing out dir $OUT" >&2; exit 2 ;;
-  "$HOME"/data/h5-shadow|"$HOME"/data/h5-shadow/*|/var/lib/mal/h5-shadow|/var/lib/mal/h5-shadow/*|/tmp/*) ;;
+  "$HOME"/data/h5-shadow-lane*|/var/lib/mal/h5-shadow|/var/lib/mal/h5-shadow/*|/tmp/*) ;;
   *) echo "h5-lane-shadow: refusing out dir $OUT" >&2; exit 2 ;;
 esac
 SOCKETS="${H5_SOCKETS:-3}"
