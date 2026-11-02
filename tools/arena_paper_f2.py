@@ -27,13 +27,15 @@ from tools.arena_paper import ArenaEngine, LedgerCorrupt
 
 F = base.F
 LATS = base.LATS
-PRUNE_AFTER_SLOTS = 2 * base.GRACE_SLOTS + base.LATE_KEEP_SLOTS  # a filled range this far behind the high-water slot can no longer touch a pending or watched position
 
 
 class ArenaEngineF2(ArenaEngine):
     def __init__(self, *a: Any, **k: Any) -> None:
         super().__init__(*a, **k)
-        self.fills: list[tuple[str | None, int, int, int]] = []  # (prog, lo, hi, back_slots) of every filled range seen: not gaps
+        # (prog, lo, hi, back_slots) of EVERY filled range seen, kept for the whole window (QP on #1182, F1: a position held longer than any horizon must still meet the margin
+        # exclusion of a range filled before it was bought; pruning by age dropped it). Not gaps.
+        self.fills: list[tuple[str | None, int, int, int]] = []
+        self._active: list[tuple[str | None, int, int, int]] = []  # the fills with hi above the high-water slot: the only ones the slot-jump walk can still use
         self._marks: dict[str, tuple[int, int, int]] = {}  # position_id -> (xs before, lo, hi) of its mark-through
         self._legs: dict[str, tuple[list[int], int]] = {}  # position_id -> (entry landing slots, exit pricing slot before any mark-through), noted when it is priced
 
@@ -54,8 +56,8 @@ class ArenaEngineF2(ArenaEngine):
             # the stretch between the last row seen and the start of the range is not the range: the follower did not log it as filled, so it stays a gap
             self.gaps.append(base.Gap(None, self.hw_ms, at_ms, self.hw_slot, lo, "engine_slot_jump"))
             self._count("gap_engine_slot_jump")
-        self.fills = [f for f in self.fills if f[2] + PRUNE_AFTER_SLOTS >= self.hw_slot]
         self.fills.append((prog, lo, hi, back))
+        self._active.append((prog, lo, hi, back))
         self._count("gap_filled")
         self.counters["gap_filled_slots"] = self.counters.get("gap_filled_slots", 0) + (hi - lo + 1)
         if self.hw_ms is not None and at_ms > self.hw_ms:
@@ -67,7 +69,7 @@ class ArenaEngineF2(ArenaEngine):
         moved = True
         while moved:
             moved = False
-            for _p, lo, hi, _b in self.fills:
+            for _p, lo, hi, _b in self._active:
                 if lo <= slot + 1 and hi > slot:
                     slot, moved = hi, True
         return slot
@@ -85,6 +87,8 @@ class ArenaEngineF2(ArenaEngine):
         if self.fills and self.hw_slot >= 0 and row.get("type", "trade") == "trade":
             self.hw_slot = max(self.hw_slot, self._through_fills(self.hw_slot))  # the jump to this row is measured from the end of the filled range
         super().on_row(row)
+        if self._active and self.hw_slot >= 0:
+            self._active = [f for f in self._active if f[2] > self.hw_slot]  # the high-water slot never goes back: a range at or below it cannot extend a walk again
 
     # ------------------------------------------------------------------------------------------------ legs, mark-through, exclusion
     def _legs_of(self, pos: base.Position) -> tuple[list[int], int]:
@@ -160,4 +164,4 @@ class ArenaEngineF2(ArenaEngine):
                 self._count("fill_margin_flagged")
 
 
-__all__ = ["ArenaEngineF2", "PRUNE_AFTER_SLOTS"]
+__all__ = ["ArenaEngineF2"]
