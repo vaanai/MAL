@@ -8,14 +8,14 @@ Pump.fun / Solana research lab. GitHub `vaanai/MAL` is the source of truth. This
 
 The path is fixed: trade tape → honest simulator → signals → forward paper → gated live.
 
-Live trading does not start until a book clears the promotion gate and the owner approves. Speed matters. The standard does not drop to buy speed.
+Scaling live trading needs a book that clears the promotion gate and the owner's word. Micro-size live trading runs before the gate in the live-learning lane ([DEC-035](DEC/DEC-035-live-learning-lane.md), owner-approved 2026-11-02): 0.30 SOL loss budget, 0.02–0.03 SOL a trade, at most 3 open. Real fills beat more weeks of paper. Speed matters.
 
 ## Reload order
 
 Read these at the start of a session, in this order:
 
 0. [docs/HANDOFF.md](docs/HANDOFF.md) — current manager handoff, while it exists. Remove this line and the file once it goes stale.
-1. [LAB_STATE.md](LAB_STATE.md)
+1. [LAB_STATE.md](LAB_STATE.md): the "Now" section only (the file is ~90 KB)
 2. [CONSTITUTION.md](CONSTITUTION.md)
 3. [ARTIFACTS/SUMMARY.md](ARTIFACTS/SUMMARY.md)
 4. The DEC sections that docs/HANDOFF.md names for the current work (not every DEC file in full); with no HANDOFF, the DECs that LAB_STATE "Now" and its decisions index list as in effect
@@ -25,7 +25,7 @@ Then the one experiment or host you are touching. Daily briefs are in [ARTIFACTS
 
 ## Hard rules
 
-- Paper only on both hosts. No trading keys, wallet keys, or X keys.
+- Paper only on both hosts, except the DEC-035 live-learning lane. Its wallet key is placed root-only by Helm; no Claude session reads, prints or copies it. No X keys.
 - Postgres stays on localhost. Never print or commit the DB password.
 - Port 22 is never opened to the world. SSH is Cloudflare Access.
 - Stop on a host-key mismatch. Pins are in [docs/HOSTS.md](docs/HOSTS.md).
@@ -48,6 +48,9 @@ The first positive in-sample cell does **not** clear this gate. Read the paragra
 Forward-paper rows from 2026-09-25T19:00:00Z through 2026-09-27T06:58:12Z are void. Clean clock 2026-09-28T00:00:00Z. Kill review 2026-10-05T05:00:00Z.
 
 ## How to work
+
+- **Cost discipline (2026-11-02 usage audit: subagents were 71% of usage, open-ended Opus lane agents 60% alone).** Subagents run on Sonnet by default, Haiku for lookups and checks, Opus only for quant-proof and the manager. One scoped task per agent, about 40 turns; no open-ended lane agents. Read big files by section (`grep -n` then `sed -n`), never whole: DEC-031 is ~440 KB, LAB_STATE ~90 KB. Wait for PR verdicts with one `gh pr view --json comments` check per agent completion, not polling loops.
+- **Records batch.** Records-only changes (ledger lines, LAB_STATE rows, errata, pins, Console) go into one daily `claude/records-<date>` PR (T0 where DEC-013 Amendment 1 allows, else T1), not one PR each.
 
 - Branch: `claude/<topic>`. One topic per branch. Small pull requests.
 - Workers open the PR and stop. The manager (the Claude session on `mal-fast-0`) reviews and merges. Every PR needs `QP VERDICT … OK` and `REVIEWER VERDICT … APPROVE` on the PR at the exact head. They come from separate agents (T1) or, for PRs with no T1 trigger, one combined agent (T0); see [DEC-013 Amendment 1](DEC/DEC-013-claude-manager-merges.md).
