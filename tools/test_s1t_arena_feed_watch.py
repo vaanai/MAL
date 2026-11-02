@@ -196,12 +196,23 @@ def test_a_restart_is_not_a_stop_and_not_a_new_baseline():
 
 
 # ---- W5: blind --------------------------------------------------------------------------------------------------------------------------------
-def test_stale_leads_to_blind_after_ten_samples():
+def test_stale_for_90_minutes_is_blind():
     sim = warm()
-    sim.step()
-    out = [sim.step(stale=(i % 2 == 0), none=(i % 2 == 1)) for i in range(10)]  # STALE and UNREADABLE count together
-    assert all(len(x) == 1 and x[0] in ("STALE", "UNREADABLE") for x in out[:9])
-    assert out[9][-1] == "S1T_SIDE_FEED_BLIND reason=unreadable_or_stale consecutive_samples=10"
+    sim.step()  # m = 0: the last completed check
+    for i in range(90):  # m = 1..90: STALE and UNREADABLE samples only, no completed check
+        sim.step(stale=(i % 2 == 0), none=(i % 2 == 1))
+    assert sim.lines("S1T_SIDE_FEED_BLIND") == [(90, "S1T_SIDE_FEED_BLIND reason=no_completed_check_90min")]
+    assert not sim.lines("S1T_SIDE_FEED_STOP")
+
+
+def test_stale_for_89_minutes_is_not_blind():
+    sim = warm()
+    sim.step()  # m = 0: the last completed check
+    for i in range(89):  # m = 1..89: 89 bad samples, more than the old 10-sample rule, but under 90 min
+        sim.step(stale=(i % 2 == 0), none=(i % 2 == 1))
+    assert not sim.lines("S1T_SIDE_FEED_BLIND")
+    sim.step()  # m = 90: a good sample completes a check before the 90-minute test
+    assert not sim.lines("S1T_SIDE_FEED_BLIND")
 
 
 def test_a_good_sample_resets_the_stale_count():
