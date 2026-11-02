@@ -892,244 +892,6 @@ class H5Ledger(pe.FillLog):
         super().write({"schema": SCHEMA_LEDGER, **row})
 
 
-# --- the live-learning lane (DEC-035 s2): opt-in, config key `lane` ---------------------------------------------------------
-# With `lane` absent nothing below runs and every decision is as before. With it, the limits below are enforced IN ADDITION to the tier limits
-# (the 35% wallet cap, RULE_Q_MAX_LAMPORTS and the rest stay). The lane ledger is an append-only JSONL under an fcntl lock; with several
-# executors it is the shared ledger, and a send is reserved (checked and written) under that one lock.
-LANE_SCHEMA = "h5-lane-ledger.v1"
-LANE_STAKE_MIN_LAMPORTS = 20_000_000
-LANE_STAKE_MAX_LAMPORTS = 30_000_000
-LANE_MAX_OPEN = 3
-LANE_BUDGET_MAX_LAMPORTS = 300_000_000
-LANE_DAILY_MAX_LAMPORTS = 100_000_000
-LANE_MARK_STALE_MAX_S = 60
-LANE_LOCK_WAIT_S = 5.0
-LANE_KEYS = {"ledger_path", "stop_path", "bot_id", "stake_lamports", "max_open", "budget_lamports", "daily_loss_lamports", "fee_reserve_lamports",
-             "mark_stale_s"}
-
-
-@dataclass(frozen=True)
-class LaneConfig:
-    ledger_path: Path
-    stop_path: Path
-    bot_id: str
-    stake_lamports: int
-    max_open: int
-    budget_lamports: int
-    daily_loss_lamports: int
-    fee_reserve_lamports: int
-    mark_stale_s: float
-
-    @classmethod
-    def parse(cls, raw: Any) -> "LaneConfig":
-        """A bad lane config raises ValueError (the executor refuses to start). Config can only lower the DEC-035 maxima."""
-        if not isinstance(raw, dict):
-            raise ValueError("lane must be an object")
-        extra = set(raw) - LANE_KEYS
-        if extra:
-            raise ValueError(f"lane: unknown keys {sorted(extra)}")
-
-        def num(key: str, default: Any = None) -> int:
-            v = raw.get(key, default)
-            if isinstance(v, bool) or not isinstance(v, (int, float)) or not math.isfinite(v) or v != int(v):
-                raise ValueError(f"lane.{key} must be a whole number")
-            return int(v)
-
-        for key in ("ledger_path", "stop_path"):
-            if not isinstance(raw.get(key), str) or not raw[key]:
-                raise ValueError(f"lane.{key} is required")
-        stake = num("stake_lamports")
-        if not LANE_STAKE_MIN_LAMPORTS <= stake <= LANE_STAKE_MAX_LAMPORTS:
-            raise ValueError(f"lane.stake_lamports {stake} is outside [{LANE_STAKE_MIN_LAMPORTS}, {LANE_STAKE_MAX_LAMPORTS}]")
-        max_open, budget, daily = num("max_open", LANE_MAX_OPEN), num("budget_lamports", LANE_BUDGET_MAX_LAMPORTS), num("daily_loss_lamports", LANE_DAILY_MAX_LAMPORTS)
-        if not 1 <= max_open <= LANE_MAX_OPEN:
-            raise ValueError(f"lane.max_open must be 1..{LANE_MAX_OPEN}")
-        if not 1 <= budget <= LANE_BUDGET_MAX_LAMPORTS:
-            raise ValueError(f"lane.budget_lamports must be 1..{LANE_BUDGET_MAX_LAMPORTS}")
-        if not 1 <= daily <= LANE_DAILY_MAX_LAMPORTS:
-            raise ValueError(f"lane.daily_loss_lamports must be 1..{LANE_DAILY_MAX_LAMPORTS}")
-        reserve = num("fee_reserve_lamports")
-        if reserve < 0:
-            raise ValueError("lane.fee_reserve_lamports must be >= 0")
-        stale = raw.get("mark_stale_s", LANE_MARK_STALE_MAX_S)
-        if isinstance(stale, bool) or not isinstance(stale, (int, float)) or not math.isfinite(stale) or not 0 < stale <= LANE_MARK_STALE_MAX_S:
-            raise ValueError(f"lane.mark_stale_s must be in (0, {LANE_MARK_STALE_MAX_S}]")
-        bot = raw.get("bot_id", "h5-lane")
-        if not isinstance(bot, str) or not bot or ":" in bot:
-            raise ValueError("lane.bot_id must be a non-empty string without ':'")
-        return cls(Path(raw["ledger_path"]), Path(raw["stop_path"]), bot, stake, max_open, budget, daily, reserve, float(stale))
-
-
-@dataclass
-class LaneView:
-    cash: int  # sum over every row of (sol_in - sol_out): SOL received minus SOL sent, fees and rent included
-    pnl: int  # cash plus the fresh marks of the filled open positions (a stale or missing mark is worth 0)
-    open: dict[str, dict[str, Any]]  # "<bot_id>:<mint>" -> {"stake", "filled"}: sent and not yet exited or written off
-    snaps: dict[str, int]  # UTC day -> lane P&L at its 00:00Z snapshot
-
-    @property
-    def open_stakes(self) -> int:
-        return sum(int(p["stake"]) for p in self.open.values())
-
-
-def lane_fold(rows: Sequence[dict[str, Any]], marks: dict[str, tuple[int, int]], now_ms: int, stale_s: float, bot_id: str = "") -> LaneView:
-    """Replay the ledger. `marks` is mint -> (value in lamports, quote time ms) for this executor's own positions only; another executor's open
-    position has no mark here and counts 0 (fail closed)."""
-    cash = 0
-    pos: dict[str, dict[str, Any]] = {}
-    snaps: dict[str, int] = {}
-    for r in rows:
-        ev = r.get("ev")
-        key = f"{r.get('bot_id', '')}:{r.get('mint', '')}"
-        if ev == "snap":
-            snaps[str(r["day"])] = int(r["pnl_lamports"])
-            continue
-        cash += int(r.get("sol_in_lamports") or 0) - int(r.get("sol_out_lamports") or 0)
-        if ev == "send":
-            pos[key] = {"stake": int(r["stake_lamports"]), "filled": False}
-        elif ev == "fill":
-            if r.get("ok") and key in pos:
-                pos[key]["filled"] = True
-            else:
-                pos.pop(key, None)  # a buy that landed with an error: closed, its fee is in cash
-        elif ev in ("exit", "writeoff"):
-            pos.pop(key, None)
-        # "fee" (a failed sell that paid its fee) leaves the position open
-    value = 0
-    for key, p in pos.items():
-        owner, mint = key.split(":", 1)
-        mk = marks.get(mint) if owner == bot_id else None
-        if p["filled"] and mk is not None and 0 <= now_ms - mk[1] <= stale_s * 1000:
-            value += int(mk[0])
-    return LaneView(cash=cash, pnl=cash + value, open=pos, snaps=snaps)
-
-
-class LaneLedger:
-    """Append-only JSONL with an fcntl lock (a sibling .lock file, waited for up to LANE_LOCK_WAIT_S). Check-and-append is one critical section."""
-
-    def __init__(self, cfg: LaneConfig):
-        self.cfg = cfg
-        self.path = cfg.ledger_path
-        self.path.parent.mkdir(parents=True, exist_ok=True)
-
-    @contextlib.contextmanager
-    def locked(self):
-        fd = os.open(str(self.path) + ".lock", os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW, 0o600)
-        try:
-            deadline = time.monotonic() + LANE_LOCK_WAIT_S
-            while True:
-                try:
-                    fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
-                    break
-                except OSError:
-                    if time.monotonic() >= deadline:
-                        raise TimeoutError("lane ledger lock busy") from None
-                    time.sleep(0.01)
-            yield
-        finally:
-            os.close(fd)  # closing releases the flock
-
-    def read(self) -> list[dict[str, Any]]:
-        """Call under `locked`. A torn or unreadable line is an error (fail closed), never skipped."""
-        if not self.path.exists():
-            return []
-        return [json.loads(x) for x in self.path.read_text().splitlines() if x.strip()]
-
-    def append(self, row: dict[str, Any]) -> None:
-        """Call under `locked`."""
-        line = json.dumps({"schema": LANE_SCHEMA, "bot_id": self.cfg.bot_id, **row}, sort_keys=True, default=str) + "\n"
-        fd = os.open(self.path, os.O_WRONLY | os.O_APPEND | os.O_CREAT | os.O_NOFOLLOW, 0o600)
-        try:
-            os.write(fd, line.encode())
-            os.fsync(fd)
-        finally:
-            os.close(fd)
-
-    def stop_present(self) -> bool:
-        """The lane STOP file. Present, or unreadable for any reason but 'not there', blocks new sends."""
-        try:
-            os.stat(self.cfg.stop_path)
-            return True
-        except FileNotFoundError:
-            return False
-        except OSError:
-            return True
-
-    def write_stop(self, reason: str, now_ms: int) -> None:
-        """Create the STOP file with a reason line. An existing file is left alone (it survives restarts; only the manager removes it)."""
-        self.cfg.stop_path.parent.mkdir(parents=True, exist_ok=True)
-        try:
-            fd = os.open(self.cfg.stop_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o644)
-        except FileExistsError:
-            return
-        with os.fdopen(fd, "w") as f:
-            f.write(f"{reason} ts_ms={now_ms} bot_id={self.cfg.bot_id}\n")
-
-    def evaluate(self, view: LaneView, now_ms: int, stake: int) -> str | None:
-        """The DEC-035 s2 limits, in order. Pure: it reads the view only."""
-        c = self.cfg
-        if not LANE_STAKE_MIN_LAMPORTS <= stake <= LANE_STAKE_MAX_LAMPORTS:
-            return "lane_stake_out_of_bounds"
-        if view.pnl <= -c.budget_lamports:
-            return "lane_budget_stop"
-        base = view.snaps.get(day_key(now_ms))
-        if base is not None and view.pnl - base <= -c.daily_loss_lamports:
-            return "lane_daily_stop"
-        if len(view.open) >= c.max_open:
-            return "lane_max_open"
-        if view.pnl - (view.open_stakes + stake + c.fee_reserve_lamports) <= -c.budget_lamports:
-            return "lane_budget_presend"
-        return None
-
-    def check(self, marks: dict[str, tuple[int, int]], now_ms: int, stake: int) -> str | None:
-        """Read-only early check (no row written)."""
-        if self.stop_present():
-            return "lane_stop_file"
-        try:
-            with self.locked():
-                view = lane_fold(self.read(), marks, now_ms, self.cfg.mark_stale_s, self.cfg.bot_id)
-        except (OSError, ValueError, KeyError, TimeoutError):
-            return "lane_ledger_error"
-        return self.evaluate(view, now_ms, stake)
-
-    def reserve(self, mint: str, signature: str, marks: dict[str, tuple[int, int]], now_ms: int, stake: int) -> str | None:
-        """Check every limit and, if they all pass, write the `send` row, in one critical section. None means the send is reserved."""
-        if self.stop_present():
-            return "lane_stop_file"
-        try:
-            with self.locked():
-                view = lane_fold(self.read(), marks, now_ms, self.cfg.mark_stale_s, self.cfg.bot_id)
-                day = day_key(now_ms)
-                if day not in view.snaps:  # the first look of a UTC day is its 00:00Z snapshot
-                    self.append({"ev": "snap", "ts_ms": now_ms, "day": day, "pnl_lamports": view.pnl})
-                    view.snaps[day] = view.pnl
-                why = self.evaluate(view, now_ms, stake)
-                if why == "lane_budget_stop":
-                    self.write_stop(f"lane_budget_stop pnl_lamports={view.pnl} budget_lamports={self.cfg.budget_lamports}", now_ms)
-                if why:
-                    return why
-                self.append({"ev": "send", "ts_ms": now_ms, "mint": mint, "signature": signature, "stake_lamports": stake,
-                             "sol_in_lamports": 0, "sol_out_lamports": 0})
-        except (OSError, ValueError, KeyError, TimeoutError):
-            return "lane_ledger_error"
-        return None
-
-    def record(self, ev: str, mint: str, marks: dict[str, tuple[int, int]], now_ms: int, *, sol_in: int = 0, sol_out: int = 0, fee_network: int = 0,
-               fee_priority: int = 0, fee_tip: int = 0, rent_unreclaimed: int = 0, **extra: Any) -> LaneView:
-        """Append a fill / fee / exit / writeoff row, then, if the budget is gone, write the STOP file. Returns the new view."""
-        with self.locked():
-            before = lane_fold(self.read(), marks, now_ms, self.cfg.mark_stale_s, self.cfg.bot_id)
-            if day_key(now_ms) not in before.snaps:  # the first row of a UTC day is preceded by that day's 00:00Z snapshot
-                self.append({"ev": "snap", "ts_ms": now_ms, "day": day_key(now_ms), "pnl_lamports": before.pnl})
-            self.append({"ev": ev, "ts_ms": now_ms, "mint": mint, "sol_in_lamports": int(sol_in), "sol_out_lamports": int(sol_out),
-                         "fee_network_lamports": int(fee_network), "fee_priority_lamports": int(fee_priority), "fee_tip_lamports": int(fee_tip),
-                         "rent_unreclaimed_lamports": int(rent_unreclaimed), **extra})
-            view = lane_fold(self.read(), marks, now_ms, self.cfg.mark_stale_s, self.cfg.bot_id)
-            if view.pnl <= -self.cfg.budget_lamports:
-                self.write_stop(f"lane_budget_stop pnl_lamports={view.pnl} budget_lamports={self.cfg.budget_lamports}", now_ms)
-        return view
-
-
 class PublicOnly:
     """Dry-run stand-in for a Keypair: a public key, no signing capability at all."""
 
@@ -1364,19 +1126,6 @@ class H5Executor(pl.LiveExecutor):
                  now_ms: Callable[[], int] | None = None, pick_oracle: Callable[[str], bool | None] | None = None,
                  root: Path | None = None, rpc_label: str | None = None):
         self.h5cfg = cfg
-        # The live-learning lane (DEC-035): absent means none of the lane code runs. Parsed first: `self.h5` reads it. A bad lane config, or a
-        # stake outside [0.02, 0.03] SOL, refuses to start.
-        self.lane: LaneLedger | None = None
-        self._lane_marks: dict[str, tuple[int, int]] = {}  # mint -> (value in lamports, quote ms): the last fresh exit quote of an open position
-        self._lane_write_failed = False
-        if "lane" in cfg:
-            try:
-                lane_cfg = LaneConfig.parse(cfg["lane"])
-            except ValueError as exc:
-                raise SystemExit(f"lane refused: {exc}") from None
-            if cfg.get("stake_lamports") not in (None, lane_cfg.stake_lamports):
-                raise SystemExit("lane refused: top-level stake_lamports must be absent or equal lane.stake_lamports")
-            self.lane = LaneLedger(lane_cfg)
         self.tier = "T0"  # the active tier (see the `h5` property); the file is read before every buy
         self._tier_limits: dict[str, H5Limits] = {}
         self._stake_cap: int | None = None  # set only while a tipauth-path trigger is handled (handle_trigger); None otherwise
@@ -1470,8 +1219,7 @@ class H5Executor(pl.LiveExecutor):
         self._log("start", "", rule=RULE_ID if self.exit_mode == EXIT_MODE_V1 else RULE_ID_V2, run_mode=self.run_mode, limits=asdict(self.h5), user=str(self.user), paths=self.paths,
                   rpc=sim.redact_rpc_url(rpc_label) if rpc_label else None,
                   code_sha256=hashlib.sha256(Path(__file__).read_bytes()).hexdigest(), seal_end_ms=self.seal_end_ms,
-                  config_clamps=self._config_clamps(), **({} if self.exit_mode == EXIT_MODE_V1 else {"exit_mode": self.exit_mode}),
-                  **({} if self.lane is None else {"lane": {**asdict(self.lane.cfg), "ledger_path": str(self.lane.cfg.ledger_path), "stop_path": str(self.lane.cfg.stop_path)}}))
+                  config_clamps=self._config_clamps(), **({} if self.exit_mode == EXIT_MODE_V1 else {"exit_mode": self.exit_mode}))
         self._clamp_alert("start")
         if self._tier_state_legacy:
             self._alert("tier_state_legacy", "", tier=self.counters.tier_state.get("tier"),
@@ -1487,10 +1235,6 @@ class H5Executor(pl.LiveExecutor):
         lim = self._tier_limits.get(self.tier)
         if lim is None:
             lim = self._tier_limits[self.tier] = H5Limits.from_config(self.h5cfg, self.tier)
-            if self.lane is not None:  # the lane sets its own stake / open / loss limits (DEC-035 s2); TIER_WALLET_FRAC still caps the total stop
-                c = self.lane.cfg
-                lim = self._tier_limits[self.tier] = replace(lim, stake_lamports=c.stake_lamports, max_open=c.max_open, daily_loss_lamports=c.daily_loss_lamports,
-                                                             total_loss_lamports=c.budget_lamports)
         if self._stake_cap is not None and lim.stake_lamports > self._stake_cap:  # a tipauth-path trigger being handled: its stake is the class stake
             return replace(lim, stake_lamports=self._stake_cap)
         return lim
@@ -1617,8 +1361,6 @@ class H5Executor(pl.LiveExecutor):
             return "halt_file"
         if self._stop_present():
             return "stop_file"
-        if self.lane is not None and self.lane.stop_present():
-            return "lane_stop_file"  # new entries only: no sell path reads _kill_reason
         return None
 
     def _live_gate(self) -> str | None:
@@ -1742,10 +1484,6 @@ class H5Executor(pl.LiveExecutor):
         pend = sum(1 for p in self.state.pending.values() if p["kind"] == "buy")
         if len(self.state.open) + pend >= self.h5.max_open:
             return "max_open"
-        if self.lane is not None and not self.dry_run:
-            if self._lane_write_failed:
-                return "lane_ledger_error"
-            return self.lane.check(self._lane_marks, now, self.h5.stake_lamports)  # read-only; the send is reserved under the lock in _live_buy
         return None
 
     def _s0_anchor(self, trg: H5Trigger) -> tuple[int | None, str | None, dict[str, Any]]:
@@ -1942,10 +1680,6 @@ class H5Executor(pl.LiveExecutor):
         late = self._kill_reason() or self._live_gate()  # the kill switch, once more, immediately before the send
         if late:
             return self._refuse(trg, late)
-        if self.lane is not None:  # DEC-035: every lane limit checked and the `send` row written in one locked step, before the send
-            lane_why = self.lane.reserve(trg.mint, signature, self._lane_marks, self.now_ms(), self.h5.stake_lamports)
-            if lane_why:
-                return self._refuse(trg, lane_why)
         st = self.state
         st.attempts += 1
         self.counters.tier_attempts += 1
@@ -1975,7 +1709,6 @@ class H5Executor(pl.LiveExecutor):
         self._send(p, trg.mint)
         self.save()
         if trg.mint not in st.pending:  # the kill switch fired between the gate and the send: nothing was sent
-            self._lane_record("writeoff", trg.mint, reason="not_sent")
             return
         self._count_accepted(trg.pre_unlinked)
         self._log("decision", trg.mint, **trg.log_fields(), anchor=self._anchor_info, stake_lamports=spend, expected_tokens=terms["expected_tokens"], min_out=terms["min_out"],
@@ -2769,8 +2502,6 @@ class H5Executor(pl.LiveExecutor):
             quote, ret = chk["quote_out"], chk["ret"]
             if quote and quote > 0:
                 pos["last_quote_out"] = quote  # the reference for a floor when the pool cannot be read later
-                if self.lane is not None:
-                    self._lane_marks[mint] = (int(quote), now)  # the lane's mark: stale after lane.mark_stale_s, then worth 0
         if ps is None:
             return None
         if emergency:
@@ -3021,8 +2752,6 @@ class H5Executor(pl.LiveExecutor):
         before = self.state.realized_lamports
         super()._finish_buy(mint, p, m)
         self._bal = None  # the balance moved
-        if self.lane is not None:
-            self._lane_buy_landed(mint, p, m)
         self._book_realized(self.state.realized_lamports - before, mint)
         pos = self.state.open.get(mint)
         h5 = p.get("h5") or self.counters.plans.get(mint)
@@ -3079,8 +2808,6 @@ class H5Executor(pl.LiveExecutor):
         priors = list(p.get("prior") or [])
         super()._finish_sell(mint, p, m)
         self._bal = None
-        if self.lane is not None:
-            self._lane_sell_landed(mint, m)
         self._book_realized(self.state.realized_lamports - before, mint)
         if priors:
             self._settle_priors(mint, priors)  # superseded signatures that landed with an error paid their fee
@@ -3124,49 +2851,7 @@ class H5Executor(pl.LiveExecutor):
     def _resolve_expired(self, mint: str, p: dict[str, Any]) -> None:
         before = self.state.realized_lamports
         super()._resolve_expired(mint, p)
-        if self.lane is not None and p.get("kind") == "buy":
-            self._lane_record("writeoff", mint, reason="buy_expired")  # an unlanded buy: closed, no SOL moved
         self._book_realized(self.state.realized_lamports - before, mint)
-
-    # -- the lane (DEC-035) --------------------------------------------------------------------------------------------------
-    def _lane_record(self, ev: str, mint: str, **kw: Any) -> None:
-        """Append one lane row (SOL in / out and every fee). A failed write is an alert and blocks new entries; it never stops an exit."""
-        if self.lane is None or self.dry_run:
-            return
-        try:
-            self.lane.record(ev, mint, self._lane_marks, self.now_ms(), **kw)
-        except (Exception, SystemExit) as exc:
-            self._lane_write_failed = True
-            self._alert("lane_ledger_write_failed", mint, ev=ev, label=pe.error_label(exc))
-        if ev in ("exit", "writeoff"):
-            self._lane_marks.pop(mint, None)
-
-    def _lane_buy_landed(self, mint: str, p: dict[str, Any], m: dict[str, Any]) -> None:
-        fee = int(m["fee"])
-        net, prio = min(fee, tx.BASE_FEE_PER_SIGNATURE), max(0, fee - tx.BASE_FEE_PER_SIGNATURE)
-        if m["err"] is not None:  # landed with an error: only the fee was paid
-            self._lane_record("fill", mint, ok=False, sol_out=-int(m["sol_delta"]), fee_network=net, fee_priority=prio, signature=p.get("signature"))
-            return
-        # the whole wallet delta of the buy: stake, fees and the token-account rent paid up front (the rent comes back on the closing sell)
-        self._lane_record("fill", mint, ok=True, sol_out=-int(m["sol_delta"]), fee_network=net, fee_priority=prio, signature=p.get("signature"),
-                          rent_paid_lamports=int(m.get("ata_rent_post") or 0))
-        if mint not in self.state.open:  # landed with zero tokens: the SOL is gone and there is no position
-            self._lane_record("writeoff", mint, reason="zero_tokens", rent_unreclaimed=int(m.get("ata_rent_post") or 0))
-
-    def _lane_sell_landed(self, mint: str, m: dict[str, Any]) -> None:
-        fee = int(m["fee"])
-        net, prio = min(fee, tx.BASE_FEE_PER_SIGNATURE), max(0, fee - tx.BASE_FEE_PER_SIGNATURE)
-        if m["err"] is not None:  # a failed sell paid its fee; the position stays open
-            self._lane_record("fee", mint, sol_out=-int(m["sol_delta"]), fee_network=net, fee_priority=prio, reason="sell_failed")
-            return
-        # gross proceeds (pool leg plus rent refund); the sell's own fee goes out in the same row
-        self._lane_record("exit", mint, sol_in=int(m["sol_delta"]) + fee, sol_out=fee, fee_network=net, fee_priority=prio)
-
-    def _sell_failed(self, pos: dict[str, Any]) -> None:
-        was = bool(pos.get("abandoned"))
-        super()._sell_failed(pos)
-        if self.lane is not None and pos.get("abandoned") and not was:
-            self._lane_record("writeoff", pos["mint"], reason="sell_abandoned")  # value 0; the SOL already spent is in cash
 
     # -- loop ----------------------------------------------------------------------------------------------------------------
     def prewarm(self) -> None:
@@ -3242,9 +2927,6 @@ class H5Executor(pl.LiveExecutor):
             pos["extra_cost"] = int(pos.get("extra_cost") or 0) + fee
         self.state.realized_lamports -= fee
         self._book_realized(-fee, mint)
-        if self.lane is not None:
-            self._lane_record("fee", mint, sol_out=fee, fee_network=min(fee, tx.BASE_FEE_PER_SIGNATURE), fee_priority=max(0, fee - tx.BASE_FEE_PER_SIGNATURE),
-                              reason=why)
         self._log("sell_fee_booked", mint, fee_lamports=fee, why=why)
 
     def _poll_priors(self) -> None:

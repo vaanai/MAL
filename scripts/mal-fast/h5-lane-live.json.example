@@ -16,8 +16,7 @@
   "deadline_s": 400,
   "sell_retries": 5,
   "feed_heartbeat_max_age_ms": 150000,
-  "pick_file": "/srv/mal-h5-shadow/cap-pick/picks.jsonl",
-  "end_ms": 1792783793000,
+  "end_ms": 1794787200000,
   "lane": {
     "bot_id": "h5-lane-1",
     "ledger_path": "/var/lib/mal-live/h5-lane/lane-ledger.jsonl",
@@ -26,7 +25,7 @@
     "max_open": 3,
     "budget_lamports": 300000000,
     "daily_loss_lamports": 100000000,
-    "fee_reserve_lamports": 3000000,
+    "fee_reserve_lamports": 4200000,
     "mark_stale_s": 60
   }
 }
