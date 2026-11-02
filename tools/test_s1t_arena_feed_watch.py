@@ -165,6 +165,74 @@ def test_main_reads_only_the_named_file(tmp_path, capsys):
     assert capsys.readouterr().out.splitlines()[0] == "UNREADABLE"
 
 
+def test_ten_consecutive_stale_or_unreadable_checks_are_blind():
+    w = aw.Watcher()
+    for i in range(9):
+        out = step(w, i, 100, 40, stale_s=301) if i % 2 == 0 else w.step(None, i * 60.0, 0)
+        assert len(out) == 1 and out[0] in ("STALE", "UNREADABLE")  # nine bad checks, mixed: no BLIND yet
+    out = step(w, 9, 100, 40, stale_s=301)
+    assert out == ["STALE", "S1T_SIDE_FEED_BLIND reason=unreadable_or_stale consecutive_checks=10"]
+
+
+def test_a_good_check_resets_the_blind_count():
+    w = aw.Watcher()
+    for i in range(9):
+        step(w, i, 100, 40, stale_s=301)
+    assert step(w, 9, 100, 40) == []  # fresh
+    for i in range(10, 19):
+        assert not any("BLIND" in x for x in step(w, i, 100, 40, stale_s=301))  # nine more bad checks: still not blind
+    assert any("BLIND" in x for x in step(w, 19, 100, 40, stale_s=301))
+
+
+def test_three_rebaselines_inside_60_minutes_are_blind():
+    w = aw.Watcher()
+    step(w, 0, 100, 40, pid=1)
+    assert step(w, 1, 100, 40, pid=2) == ["S1T_SIDE_FEED_REBASELINE"]
+    assert step(w, 2, 100, 40, pid=3) == ["S1T_SIDE_FEED_REBASELINE"]
+    out = step(w, 3, 100, 40, pid=4)
+    assert out == ["S1T_SIDE_FEED_REBASELINE", "S1T_SIDE_FEED_BLIND reason=rebaselines count=3 window_s=3600"]
+
+
+def test_rebaselines_spread_over_more_than_60_minutes_are_not_blind():
+    w = aw.Watcher()
+    step(w, 0, 100, 40, pid=1)
+    for i, pid in ((100, 2), (200, 3), (300, 4)):  # 100 minutes apart
+        assert step(w, i, 100, 40, pid=pid) == ["S1T_SIDE_FEED_REBASELINE"]
+    w2 = aw.Watcher()  # two inside the window are not enough
+    step(w2, 0, 100, 40, pid=1)
+    step(w2, 1, 100, 40, pid=2)
+    assert not any("BLIND" in x for x in step(w2, 2, 100, 40, pid=3))
+
+
+def test_counter_resets_count_as_rebaselines_too():
+    w = aw.Watcher()
+    step(w, 0, 100, 40)
+    step(w, 1, 50, 40)
+    step(w, 2, 20, 40)
+    assert any("BLIND" in x for x in step(w, 3, 5, 40))
+
+
+def test_run_watch_exits_5_when_blind():
+    clock = {"t": 0.0}
+
+    def sleep(s):
+        clock["t"] += s
+
+    out = []
+    rc = aw.run_watch(lambda: None, None, 60.0, clock=lambda: clock["t"], sleep=sleep, wall_ms=lambda: 0, emit=out.append)
+    assert rc == aw.EXIT_BLIND == 5 and out[-1].startswith("S1T_SIDE_FEED_BLIND") and out.count("UNREADABLE") == 10
+    pids = iter([1, 2, 3, 4, 5])
+    n = {"i": 0}
+
+    def read():
+        n["i"] += 1
+        return st(n["i"], 100, 40, pid=next(pids))
+
+    out2 = []
+    rc = aw.run_watch(read, None, 60.0, clock=lambda: clock["t"], sleep=sleep, wall_ms=lambda: BASE_MS + n["i"] * 60_000, emit=out2.append)
+    assert rc == 5 and out2[-1].startswith("S1T_SIDE_FEED_BLIND reason=rebaselines")
+
+
 def test_source_never_lists_a_directory_or_names_a_tape_file():
     src = Path(aw.__file__).read_text()
     code = "\n".join(ln for ln in src.splitlines() if not ln.lstrip().startswith("#"))
