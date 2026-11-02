@@ -52,6 +52,6 @@ def test_the_p0_job_passes_h0_and_the_notebook_ref_to_the_counter_and_names_the_
 
 def test_the_p0_job_carries_qps_pins_and_the_sizing_from_the_receivers_hour_sizes():
     text = SCRIPTS["p0"].read_text()
-    for needle in ("2026-10-29T09 (1793264400000", "2026-11-03,2026-11-04,2026-11-05", "150/14 = 10.714285714285714", "8,961.0 MB", "mean 103.0 MB", "207 hour files", "740,175 an hour",
+    for needle in ("2026-10-29T09 (1793264400000", "2026-11-03,2026-11-04,2026-11-05", "150/14 = 10.714285714285714", "8,961.0 MB", "mean 103.0 MB", "183 hour files", "18.8 GB compressed", "23.6 GB at p90", "740,168.6 an hour", "135.5M trades", "about 1.5 h", "the 144 screens",
                    "MemoryMax=16G", "timeout 21600", "NOT measured"):
         assert needle in text, needle
