@@ -105,6 +105,41 @@ def test_a_trailing_skipped_slot_does_not_unfill_its_range_when_another_range_fo
     assert rpc2.calls.count(104) == rpc1.calls.count(104)  # no refetch, no extra credits
 
 
+def test_a_skip_at_the_end_of_a_range_is_checked_against_the_next_block_and_a_hidden_block_is_refetched(tmp_path):
+    """QP on #1182, F2: the RPC says slot 104 is skipped, but block 105 has parentSlot 104: the skip is contradicted, 104 is refetched and its rows are in the segment."""
+    from tools.test_fast_tip_follower import _block
+
+    rpc = Rpc(1000, script={104: [-32007, -32007, _block(104)], 105: [_block(105, parent=104)]})
+    man, _ = run_fill(tmp_path, [gap_row(100, 104)], rpc)
+    (rng,) = man["ranges"]
+    assert rng["filled"] is True and rng["skipped_slots"] == [] and rng["fetched"] == 5 and man["trailing_probes"] == 1
+    slots = [r["slot"] for r in seg_trades(tmp_path / "seg")]
+    assert 104 in slots and 105 not in slots  # the hidden block is repaired; the probe block is not committed
+
+
+def test_a_trailing_skip_contradicted_and_skipped_again_leaves_the_range_a_gap(tmp_path):
+    from tools.test_fast_tip_follower import _block
+
+    rpc = Rpc(1000, script={104: [-32007] * 4, 105: [_block(105, parent=104)]})
+    man, _ = run_fill(tmp_path, [gap_row(100, 104)], rpc)
+    (rng,) = man["ranges"]
+    assert rng["filled"] is False and rng["failed_slots"] == [104] and man["complete"] is False
+
+
+def test_a_trailing_skip_with_no_block_to_check_it_against_leaves_the_range_a_gap(tmp_path):
+    man, rpc = run_fill(tmp_path, [gap_row(100, 104)], Rpc(1000, skipped=set(range(104, 104 + 80))))
+    (rng,) = man["ranges"]
+    assert rng["filled"] is False and rng["failed_slots"] == [104] and man["trailing_probes"] == gf.TRAILING_PROBE_MAX
+    assert max(rpc.calls) < 104 + gf.TRAILING_PROBE_MAX + 1  # bounded
+
+
+def test_an_honest_trailing_skip_is_verified_and_the_range_stays_filled_without_writing_outside_it(tmp_path):
+    man, rpc = run_fill(tmp_path, [gap_row(100, 104)], Rpc(1000, skipped={104}))
+    (rng,) = man["ranges"]
+    assert rng["filled"] is True and rng["skipped_slots"] == [104] and man["trailing_probes"] == 1 and 105 in rpc.calls
+    assert max(r["slot"] for r in seg_trades(tmp_path / "seg")) == 103
+
+
 def test_overlapping_ranges_fetch_each_slot_once(tmp_path):
     man, rpc = run_fill(tmp_path, [gap_row(100, 104), gap_row(103, 106, "unfetchable")])
     assert sorted(rpc.calls) == list(range(100, 107)) and len(rpc.calls) == 7
