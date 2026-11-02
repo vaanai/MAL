@@ -85,8 +85,8 @@ ALL_REAL = {"t": T0, "s_ts_ms": T0 * 1000 - 700, "s_lag_slots": 2, "s_lag_ms": 8
             "s_breaker_trips": 0, "c_last_done": 124, "c_gaps": 3, "c_skipped": 5, "c_writing": True}
 
 
-def test_a_row_with_every_real_key_is_accepted_and_the_key_set_is_exactly_the_rulings():
-    """QP-RULING-1102-r4bt Addendum 2: the foreign-key refusal accepts EXACTLY this set."""
+def test_a_row_with_every_real_key_is_accepted_and_the_documented_set_is_the_rulings():
+    """QP-RULING-1102-r4bt Addendum 2: the sampler's real 19 keys are accepted (as part of the t / s_* / c_* namespace rule, QP K1)."""
     assert set(ALL_REAL) == K.REAL_KEYS == {"t", "s_ts_ms", "s_lag_slots", "s_lag_ms", "s_gaps", "s_skipped", "s_backlog_jumps", "s_unresolved_dropped", "s_block_lag_ms_p50",
                                             "s_block_lag_ms_p90", "s_decoder_blobs_pinned", "s_trade_event_v", "s_last_done_slot", "s_retries", "s_breaker_trips", "c_last_done",
                                             "c_gaps", "c_skipped", "c_writing"}
@@ -96,10 +96,15 @@ def test_a_row_with_every_real_key_is_accepted_and_the_key_set_is_exactly_the_ru
             assert len(K.map_samples([[json.dumps({a: v for a, v in ALL_REAL.items() if a != k})]])) == 1
 
 
-@pytest.mark.parametrize("extra", ["s_new_counter", "c_other", "s_ts", "s_lag", "x", "T", "s_decoder_blobs"])
-def test_any_key_outside_the_exact_real_set_is_refused_even_in_the_samplers_namespaces(extra):
-    with pytest.raises(K.MapError, match=f"key {extra!r} is not in the sampler's real key set"):
-        K.map_samples([[json.dumps(dict(ALL_REAL, **{extra: 1}))]])
+@pytest.mark.parametrize("extra", ["x", "T", "ts", "d_new", "password", "S_gaps"])
+def test_a_key_outside_the_namespace_rule_is_refused_with_its_name(extra):
+    with pytest.raises(K.MapError, match=f"key {extra!r} is outside the sampler's namespaces"):
+        K.map_samples([[json.dumps(dict(ALL_REAL, **{extra: "hunter2"}))]])
+
+
+def test_other_s_and_c_keys_are_accepted_and_dropped_unread():
+    rows = K.map_samples([[json.dumps(dict(ALL_REAL, s_new_counter=7, c_other=1))]])
+    assert rows == [{"ts_ms": T0 * 1000 - 700, "decoder_blobs_pinned": True, "trade_event_v": True}]
 
 
 def test_ts_ms_comes_from_s_ts_ms_first_the_earlier_instant_else_t_times_1000():

@@ -17,11 +17,13 @@ No `decoder_blobs` list is produced (the sampler holds none): NEVER pass `--deco
 FAIL CLOSED.
   * A key that is missing is left missing in the output (the classifier then treats the sample as failing at its `ts_ms`); a value that is not `true` is copied as it is (failing).
   * The WHOLE FILE is refused (exit 2; the error names the line number and the key NAME, never a value) for: a line that is not a JSON object; a missing, boolean, float or
-    out-of-range `t`; a key outside the EXACT real key set (`REAL_KEYS`: t, s_ts_ms, s_lag_slots, s_lag_ms, s_gaps, s_skipped, s_backlog_jumps, s_unresolved_dropped,
-    s_block_lag_ms_p50, s_block_lag_ms_p90, s_decoder_blobs_pinned, s_trade_event_v, s_last_done_slot, s_retries, s_breaker_trips, c_last_done, c_gaps, c_skipped, c_writing) - a new
-    key is a changed sampler and is refused until the set is re-pinned; a line that already carries a classifier key (`ts_ms`, `decoder_blobs_pinned`, `trade_event_v`,
-    `decoder_blobs`) - a mixed or already-mapped file; no sample left after the window (an empty file is no evidence of a healthy follower, so the job is loud).
-  * The other real keys (the counters, lags, last-done markers) are accepted and dropped, not read. A line need not carry all of them (only `t` is required).
+    out-of-range `t`; a key outside the sampler's NAMESPACE RULE (`t`, `s_*`, `c_*`; QP K1) - a foreign shape, e.g. a new key prefix, which therefore halts the A3 job until the
+    mapping is re-reviewed (the registration record pins this sampler command and this file's path@sha256); a line that already carries a classifier key (`ts_ms`,
+    `decoder_blobs_pinned`, `trade_event_v`, `decoder_blobs`) - a mixed or already-mapped file; no sample left after the window (an empty file is no evidence of a healthy follower,
+    so the job is loud).
+  * Every other `s_*` / `c_*` key is accepted and dropped, not read. The real set today is `REAL_KEYS` (19 keys: t, s_ts_ms, s_lag_slots, s_lag_ms, s_gaps, s_skipped,
+    s_backlog_jumps, s_unresolved_dropped, s_block_lag_ms_p50, s_block_lag_ms_p90, s_decoder_blobs_pinned, s_trade_event_v, s_last_done_slot, s_retries, s_breaker_trips,
+    c_last_done, c_gaps, c_skipped, c_writing); a row with all of them is accepted (tested). A line need not carry them all (only `t` is required).
   * Several lines with the same `t` (merged segments) become ONE sample: a mapped flag is kept only if EVERY copy has it as `true`; otherwise the first copy's non-true value is
     kept (or the key is omitted when a copy lacks it).
 
@@ -45,7 +47,7 @@ from pathlib import Path
 from typing import Any, Iterable, Sequence
 
 T_MIN_S, T_MAX_S = 1_577_836_800, 4_102_444_800  # 2020-01-01 .. 2100-01-01 (epoch seconds)
-# the sampler's real key set (QP-RULING-1102-r4bt Addendum 2): anything else is refused
+# the sampler's real key set today (QP-RULING-1102-r4bt Addendum 2); the refusal rule is the NAMESPACE (t, s_*, c_*), QP K1
 REAL_KEYS = frozenset({"t", "s_ts_ms", "s_lag_slots", "s_lag_ms", "s_gaps", "s_skipped", "s_backlog_jumps", "s_unresolved_dropped", "s_block_lag_ms_p50", "s_block_lag_ms_p90",
                        "s_decoder_blobs_pinned", "s_trade_event_v", "s_last_done_slot", "s_retries", "s_breaker_trips", "c_last_done", "c_gaps", "c_skipped", "c_writing"})
 MAPPED_FLAGS = (("s_decoder_blobs_pinned", "decoder_blobs_pinned"), ("s_trade_event_v", "trade_event_v"))
@@ -57,7 +59,7 @@ class MapError(ValueError):
 
 
 def _ok_key(k: str) -> bool:
-    return k in REAL_KEYS
+    return k == "t" or k.startswith("s_") or k.startswith("c_")
 
 
 def _is_ms(x: Any) -> bool:
@@ -80,7 +82,7 @@ def map_lines(lines: Iterable[str], *, label: str = "input") -> dict[int, dict[s
             if k in CLASSIFIER_KEYS:
                 raise MapError(f"{label} line {n}: carries the classifier key {k!r}: an already-mapped or mixed file is refused")
             if not _ok_key(k):
-                raise MapError(f"{label} line {n}: key {k!r} is not in the sampler's real key set: a foreign or changed shape is refused")
+                raise MapError(f"{label} line {n}: key {k!r} is outside the sampler's namespaces (t, s_*, c_*): a foreign shape is refused")
         t = d.get("t")
         if not isinstance(t, int) or isinstance(t, bool) or not T_MIN_S <= t < T_MAX_S:
             raise MapError(f"{label} line {n}: `t` is missing or not an integer epoch second in range")
