@@ -8,21 +8,24 @@ p90 and max in ms, the side feed's counters, and report-only lines of tape row c
 pool or decision count.
 
 READ SET (exact; every other field of every record is left unread):
-  Files: `<out-dir>/h5-shadow-????-??-??T??.jsonl` (not h5-shadow-status.json, not h5-shadow-errors.log), `<rep-dir>/process.log` (a byte search for
-  'Traceback'), `<rep-dir>/rss.tsv` (epoch_s TAB rss_bytes TAB pid), and the --exit-code argument.
+  Files: `<out-dir>/h5-shadow-????-??-??T??.jsonl` (not h5-shadow-status.json), `<out-dir>/h5-shadow-errors.log` and `<rep-dir>/process.log` (each a byte
+  search for the literal `Traceback (most recent call last)`; the content is never printed; a missing errors log means none, because S*'s ErrorLog
+  creates it on the first error), `<rep-dir>/rss.tsv` (epoch_s TAB rss_bytes TAB pid), and the --exit-code argument.
   Byte tests only (no JSON parse): the type of every line (a regex on its first key); on `start` lines, the fixed substrings START_PINS and the endpoint
   pin; on `excluded` lines, `"reason":"unclassified"`; `outcome`, `outcome_bx10` and `strip` lines are never parsed (their presence fails SEAL_HELD);
   `tip_input_halted` by its type bytes.
-  Parsed: `tip_input_start` (`smoke`); `tip_input_stats` and `tip_input_stop` (`t_ms`, `driver.rows_bad_*`, `source.rows`, `source.reader_loss_bad_lines`,
-  `source.reader_loss_zst_errors`, `source.reader_loss_apply_errors`); `trigger` (`t_detect_ms`, `block_time`, `h5_look2_sealed`); `hb` and `stop`
-  (`syn_class.ws_restarts`, `syn_class.ws_feed_errors`, `syn_class.ws_decode_errors`).
+  Parsed: `tip_input_start` (`smoke`); `tip_input_stats` and `tip_input_stop` (`t_ms`; driver `rows_bad_*`, `rows_before_start`, `problems`, `gap_rows`,
+  `gap_rows_flagging`; source `rows`, `reader_loss_bad_lines`, `reader_loss_zst_errors`, `reader_loss_apply_errors`, `reader_errors`, `polls_unhealthy`);
+  `trigger` (`t_detect_ms`, `block_time`, `h5_look2_sealed`); `hb` and `stop` (`syn_class.ws_restarts`, `syn_class.ws_feed_errors`,
+  `syn_class.ws_decode_errors`). The driver's per-kind counters of APPLIED rows (rows_pool_create, rows_trade_pumpswap, rows_complete, rows_ignored_*)
+  stay unread.
 
 FLAGS (one line each, `S1T_SMOKE_<NAME> PASS|FAIL`):
   A_STARTED         every `start` record carries the pins (code_sha, dirty false, fresh_forward ARENA, q_star_sol 50.0, end_only_ms, and the endpoints list
                     equal to --ws-endpoint, which must itself equal the pinned WS_ENDPOINT), there is at least one, and a `tip_input_start` exists.
   B_DECISION_ROWS   at least one trigger record, or tip_input_stats/stop records present through the run (no gap above --stats-gap-max-s).
-  C_NO_CRASH        --exit-code is 0, process.log holds no 'Traceback', there is no second `start` or `tip_input_start` record, and the pid in
-                    rss.tsv never changes (a restart). Booleans only.
+  C_NO_CRASH        --exit-code is 0, neither process.log nor h5-shadow-errors.log holds any `Traceback (most recent call last)` (Am.6 item 1.3(c), the s1
+                    precedent), there is no second `start` or `tip_input_start` record, and the pid in rss.tsv never changes (a restart). Booleans only.
   D_MEMORY          Am.6 item 1.3(d): R0 + slope x --plan-hours <= --cap-mib. R0 is the first rss sample at or after WARM_S (1800 s) past the first sample,
                     the slope is the least-squares fit over those samples, fewer than MIN_FIT_SAMPLES (10) fails, and no sample may exceed the cap.
   DURATION          the first and last tip_input_stats/stop records are >= --min-hours apart (default 24).
@@ -35,8 +38,10 @@ INFORMATION (not in the verdict):
                     class, so an unknown one shows only as `excluded`).
   S1T_SMOKE_SIDE_FEED reconnects=<int> feed_errors=<int> decode_errors=<int>   the classifier's ws_restarts, ws_feed_errors and ws_decode_errors, from the
                     last hb/stop record carrying `syn_class`; `unavailable` when no record does.
-  S1T_SMOKE_REPORT dropped_rows <code>=<int> ...   Am.23 item 8, report-only: the tape reader's loss codes and the driver's rows_bad_<code> counters from
-                    the last stats/stop record.
+  S1T_SMOKE_REPORT input_rows <code>=<int> ...   Am.23 item 8's input report, report-only, from the last stats/stop record: not-applied row counts and
+                    input health by code. The tape reader's loss codes (bad_lines, zst_errors, apply_errors), the driver's rows_bad_<code>
+                    (trade_fields, trade_venue, pool_create_fields), rows_before_start, problems, gap_rows, gap_rows_flagging, and the source's
+                    reader_errors and polls_unhealthy. Input rows and input health, not pools, triggers or decisions.
   S1T_SMOKE_REPORT rows_per_min=<x>   tape rows read (source.rows) per minute between the first and last stats record. It is a row count of the tape,
                     not a trigger, pool or decision count; the driver's per-type counters (rows_pool_create and the like) are never read.
   S1T_SMOKE_REPORT rss_peak_mib=<x>   the largest rss.tsv sample (anon only if the sampler wrote RssAnon).
@@ -61,6 +66,9 @@ WARM_S = 1800  # R0 and the slope start 30 min after the first rss sample (the H
 MIN_FIT_SAMPLES = 10
 LOSS_CODES = ("bad_lines", "zst_errors", "apply_errors")  # source.reader_loss_<code>
 BAD_CODES = ("trade_fields", "trade_venue", "pool_create_fields")  # driver.rows_bad_<code>, always printed
+DRIVER_CODES = ("rows_before_start", "problems", "gap_rows", "gap_rows_flagging")  # driver counters named in the wrapper at afa4971d
+SOURCE_CODES = ("reader_errors", "polls_unhealthy")  # source counters named in the wrapper at afa4971d
+TRACEBACK = b"Traceback (most recent call last)"
 SEALED_TYPES = frozenset({"outcome", "outcome_bx10", "strip"})
 _HEAD = re.compile(rb'\A\s*\{\s*"type"\s*:\s*"([A-Za-z0-9_]{1,40})"')
 _SEALED_ANY = re.compile(rb'"type"\s*:\s*"(?:outcome|outcome_bx10|strip)"')
@@ -131,7 +139,8 @@ def read_out_dir(out_dir: Path, ws_endpoint: str = WS_ENDPOINT) -> dict:
                         if f["last_stats"] is None or t >= f["last_stats"][0]:
                             src, drv = rec.get("source"), rec.get("driver")
                             f["last_stats"] = (t, _num(src.get("rows")) if isinstance(src, dict) else None,
-                                               {**_int_map(src, LOSS_CODES, "reader_loss_"), **_int_map(drv, None, "rows_bad_")})
+                                               {**_int_map(src, LOSS_CODES, "reader_loss_"), **_int_map(src, SOURCE_CODES),
+                                                **_int_map(drv, None, "rows_bad_"), **_int_map(drv, DRIVER_CODES)})
                 elif kind == "trigger":
                     f["n_trig"] += 1
                     rec = _parse(line)
@@ -198,14 +207,19 @@ def memory_ok(rows: Sequence[tuple[float, float | None, str]], cap_mib: float, p
     return slope is not None and fit[0][1] + slope * plan_hours * 3600 <= cap and max(r for _, r in pts) <= cap
 
 
+def has_traceback(path: Path) -> bool:
+    """A byte search for the literal TRACEBACK; the content is never kept or printed."""
+    with open(path, "rb") as fh:
+        return any(TRACEBACK in ln for ln in fh)
+
+
 def judge(out_dir: Path, rep_dir: Path, exit_code: int, cap_mib: float, plan_hours: float, age_limit_ms: float = 3500, age_share_max: float = 0.025,
           min_hours: float = 24, stats_gap_max_s: float = 600, ws_endpoint: str = WS_ENDPOINT) -> dict:
     f = read_out_dir(out_dir, ws_endpoint)
     log = rep_dir / "process.log"
-    traceback = True  # an unreadable log cannot show a clean run
-    if log.is_file():
-        with open(log, "rb") as fh:
-            traceback = any(b"Traceback" in ln for ln in fh)
+    errlog = out_dir / "h5-shadow-errors.log"
+    traceback = has_traceback(log) if log.is_file() else True  # an unreadable process log cannot show a clean run
+    traceback = traceback or (errlog.is_file() and has_traceback(errlog))  # a missing errors log means none: S*'s ErrorLog creates it on the first error
     rss = read_rss(rep_dir / "rss.tsv")
     ts = sorted(f["stats"])
     span_h = (ts[-1] - ts[0]) / 3.6e6 if len(ts) >= 2 else 0.0
@@ -228,7 +242,7 @@ def judge(out_dir: Path, rep_dir: Path, exit_code: int, cap_mib: float, plan_hou
     return {"flags": flags, "verdict": all(flags.values()),
             "age": (nearest_rank(ages, 0.5), nearest_rank(ages, 0.9), ages[-1]) if ages else None,
             "class_unknown": f["class_unknown"], "side": f["side"],
-            "dropped": None if last is None else {**{c: 0 for c in LOSS_CODES + BAD_CODES}, **last[2]},
+            "dropped": None if last is None else {**{c: 0 for c in LOSS_CODES + BAD_CODES + DRIVER_CODES + SOURCE_CODES}, **last[2]},
             "rows_per_min": rows_pm, "rss_peak_mib": max(peak) / MIB if peak else None}
 
 
@@ -244,7 +258,7 @@ def report_lines(res: dict) -> list[str]:
     s = res["side"]
     out.append("S1T_SMOKE_SIDE_FEED unavailable" if s is None else f"S1T_SMOKE_SIDE_FEED reconnects={s[0]} feed_errors={s[1]} decode_errors={s[2]}")
     d = res["dropped"]
-    out.append("S1T_SMOKE_REPORT dropped_rows unavailable" if d is None else "S1T_SMOKE_REPORT dropped_rows " + " ".join(f"{k}={v}" for k, v in sorted(d.items())))
+    out.append("S1T_SMOKE_REPORT input_rows unavailable" if d is None else "S1T_SMOKE_REPORT input_rows " + " ".join(f"{k}={v}" for k, v in sorted(d.items())))
     out.append("S1T_SMOKE_REPORT rows_per_min=" + ("unavailable" if res["rows_per_min"] is None else f"{res['rows_per_min']:.1f}"))
     out.append("S1T_SMOKE_REPORT rss_peak_mib=" + ("unavailable" if res["rss_peak_mib"] is None else f"{res['rss_peak_mib']:.1f}"))
     out.append(f"S1T_SMOKE_VERDICT {pf(res['verdict'])}")
