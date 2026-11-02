@@ -9,12 +9,25 @@ Required: `--lane DEC-035` (any other value is refused). Without this module the
 """
 from __future__ import annotations
 
+import os
 import sys
+from pathlib import Path
 from typing import Any, Sequence
 
 from tools import h5_shadow as hs
 
 LANE_REF = "DEC-035"
+
+
+def check_lane_out_dir(path: str | None) -> None:
+    """The only accepted out dir is $HOME/data/h5-shadow-lane* (resolved, no '..'): never the book shadow's dir, which feeds the live executor."""
+    if not path or ".." in Path(path).parts:
+        raise ValueError("--out-dir is required and must not contain '..'")
+    home = Path(os.environ.get("HOME") or Path.home())
+    base = (home / "data").resolve()
+    cand = Path(os.path.realpath(path))
+    if cand.parent != base or not cand.name.startswith("h5-shadow-lane") or Path(path).parent.resolve() != base:
+        raise ValueError(f"lane shadow out dir must be {home}/data/h5-shadow-lane* (got {path!r})")
 
 
 class LaneOracle:
@@ -49,6 +62,17 @@ def main(argv: Sequence[str] | None = None) -> int:
         return 2
     if any(a == "--fresh-forward" or a.startswith("--fresh-forward=") for a in rest):
         print("h5_lane_shadow: --fresh-forward is a different mode (arena); refused", file=sys.stderr)
+        return 2
+    out = None
+    for j, a in enumerate(rest):
+        if a == "--out-dir" and j + 1 < len(rest):
+            out = rest[j + 1]
+        elif a.startswith("--out-dir="):
+            out = a.split("=", 1)[1]
+    try:
+        check_lane_out_dir(out)
+    except ValueError as exc:
+        print(f"h5_lane_shadow: {exc}", file=sys.stderr)
         return 2
     hs.cap_pick_oracle_from_env = lane_oracle_from_env  # type: ignore[assignment]  # run_live looks this global up at call time
     return hs.main(rest)

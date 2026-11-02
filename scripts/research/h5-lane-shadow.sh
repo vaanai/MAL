@@ -1,13 +1,13 @@
 #!/usr/bin/env bash
 # LANE variant (DEC-035, tools/h5_lane_shadow.py: CAP-PICK oracle replaced by "not a pick"; CAP_PICK_* env ignored) of the H5-BOOSTFLOOR v1 live SHADOW detector as a MiScusi job on mal-fast-0. Paper only: no keys, no transactions, 0 Helius credits.
 #
-# Submit (miscusi_job_submit): machine mal-fast-0, command `bash scripts/research/h5-shadow.sh`, resumable true (no checkpoint is needed: a pool
+# Submit (miscusi_job_submit): machine mal-fast-0, command `bash scripts/research/h5-lane-shadow.sh` (NEVER h5-shadow.sh: that is the book shadow, whose dir feeds the live executor), resumable true (no checkpoint is needed: a pool
 # is followed for 400 s and a restart shows up as a gap record), 1 CPU, memory 1.9 GB (the process uses tens of MB), a long time limit.
-# Output: $HOME/data/h5-shadow/h5-shadow-<UTC hour>.jsonl, h5-shadow-status.json and h5-shadow-errors.log (the dir is created by the job; no sudo).
+# Output: $HOME/data/h5-shadow-lane1/h5-shadow-<UTC hour>.jsonl, h5-shadow-status.json and h5-shadow-errors.log (the dir is created by the job; no sudo).
 #
 # Env (all optional):
 #   H5_PYTHON       python with websockets + certifi (default: the listener venv /var/lib/mal/fast-listener/.venv/bin/python)
-#   H5_OUT_DIR      output dir (lane script: only $HOME/data/h5-shadow-lane* or /var/lib/mal/h5-shadow* or /tmp/*; no "..")
+#   H5_OUT_DIR      output dir (default $HOME/data/h5-shadow-lane1; the ONLY accepted pattern is $HOME/data/h5-shadow-lane*; no "..")
 #   H5_WS_URLS      comma-separated public websocket URLs (default: the public mainnet-beta endpoint). Free endpoints only.
 #   H5_SOCKETS      redundant public logsSubscribe sockets (default 3; fewer than 3 is refused, see H5_ALLOW_FEW_SOCKETS). Their records feed the
 #                   live executor: with 2 sockets any reconnect of the peer during a 3-10 s pause of the other flags every open pool, which
@@ -29,7 +29,7 @@
 #                   FINAL (the same path the exporter job waits on). Without CAP_PICK_LIVE and CAP_PICK_FINAL_MARKER every pool with s0 from
 #                   2026-10-16T01Z is sealed (no trigger record: the executor buys nothing). CAP_PICK_STALE_S may only tighten the 60 s limit.
 #                   The start record's seal.oracle says which one ran ("cap_pick_oracle" or "stub_always_true"). A resume must set them again.
-#   H5_MAX_SECONDS  stop after this many seconds (smoke test: H5_MAX_SECONDS=120 H5_OUT_DIR=/tmp/h5-smoke bash scripts/research/h5-shadow.sh)
+#   H5_MAX_SECONDS  stop after this many seconds (smoke test: H5_MAX_SECONDS=120 H5_OUT_DIR=$HOME/data/h5-shadow-lane-smoke bash scripts/research/h5-lane-shadow.sh)
 #   H5_SYN_SOCKETS  logsSubscribe sockets on the pump.fun program for the synthetic-migration class (side feed, default 1; the RPC fallback covers a miss)
 #   H5_RPC_URL      public RPC for the synthetic-class fallback (default https://api.mainnet-beta.solana.com; Helius URLs are refused)
 #   H5_TIP_DIR      REPORT-ONLY tip union (trade-rate phase 0): the tip follower's dir, read incrementally for tracked pools to write
@@ -45,10 +45,10 @@ HERE="$(cd "$(dirname "$0")" && pwd)"
 ROOT="$(cd "$HERE/../.." && pwd)"
 [ -n "${HOME:-}" ] || { echo "h5-lane-shadow: HOME is not set" >&2; exit 2; }
 PY="${H5_PYTHON:-/var/lib/mal/fast-listener/.venv/bin/python}"
-OUT="${H5_OUT_DIR:-$HOME/data/h5-shadow}"
+OUT="${H5_OUT_DIR:-$HOME/data/h5-shadow-lane1}"
 case "$OUT" in
   *..*) echo "h5-lane-shadow: refusing out dir $OUT" >&2; exit 2 ;;
-  "$HOME"/data/h5-shadow-lane*|/var/lib/mal/h5-shadow|/var/lib/mal/h5-shadow/*|/tmp/*) ;;
+  "$HOME"/data/h5-shadow-lane*) ;;
   *) echo "h5-lane-shadow: refusing out dir $OUT" >&2; exit 2 ;;
 esac
 SOCKETS="${H5_SOCKETS:-3}"
