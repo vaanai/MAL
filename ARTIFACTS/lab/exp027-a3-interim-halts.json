@@ -1,0 +1,26 @@
+{
+ "built_utc": "2026-11-01T23:13:50Z",
+ "checked_from": "2026-10-18T03:00:00Z",
+ "checked_through": "2026-11-01T23:13:50Z",
+ "entry_format": "at = the run's run_utc; reason = '<flag>: <reason verbatim>' (ruling Q4; tools/exp027_a3_record.py, PR #1184)",
+ "halts": [
+  {
+   "at": "2026-10-20T07:11:27Z",
+   "reason": "pins_changed: program_pump deploy_slot 456494698 -> 458921440 (2026-10-19T17:47:02Z); program_pumpswap deploy_slot 454596406 -> 458921517 (2026-10-19T17:47:20Z)"
+  },
+  {
+   "at": "2026-10-21T17:55:29Z",
+   "reason": "pins_changed: program_pump deploy_slot 456494698 -> 458921440 (2026-10-19T17:47:02Z); program_pumpswap deploy_slot 454596406 -> 458921517 (2026-10-19T17:47:20Z)"
+  },
+  {
+   "at": "2026-10-29T07:11:08Z",
+   "reason": "synthetic_share_high: PostCompleteBuyEvent on 9/19 = 0.474 of graduations (halt above 0.35)"
+  }
+ ],
+ "kind": "EXP-027 INTERIM halt list (QP-RULING-1102-r4b-a3-record Addendum 1 A1.1). Not the EXP027_A3_RECORD and not a Window-record value: the post-E EXP027_A3_RECORD must contain these three entries unchanged.",
+ "monitor_last_run_seen": "2026-11-01T07:11:06Z",
+ "ruling": "/data/mal/hunt-1008/ops/manager18/QP-RULING-1102-r4b-a3-record.md",
+ "ruling_sha256": "55a035a650a81c61136eb9ba2fab70fcd2cbe0cbef289f7b008218deff1c8003",
+ "schema": "r4b_a3_v1",
+ "source": "QP-RULING-1102-r4b-a3-record Q2 table: research-0 /data/mal/structure-monitor/daily.jsonl lines 13, 14 and 23, read by quant-proof from the run_utc and halt fields only (26 lines, last 2026-11-01T07:11:06Z). This file was written from the ruling's table; the monitor file was not opened to write it."
+}
