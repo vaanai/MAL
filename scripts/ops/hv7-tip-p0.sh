@@ -11,9 +11,9 @@
 #
 # SIZING (P4; names and sizes of the receiver copy only, read 2026-11-02T00:25Z, no file opened): 88 tape files, 87 closed .jsonl.zst totalling 8,961.0 MB (mean 103.0 MB, median 100.6,
 # p90 128.9, max 138.8 MB per hour), first hour 2026-10-29T09, last closed 2026-11-02T00 (the open hour was 251.1 MB at about 00:25Z, so roughly 0.6 GB of rows an hour, about 6x the zst size).
-# The job reads H0 .. 2026-11-05T23 = 207 hour files, about 21.3 GB compressed at the mean (24 GB at p90). Rows: QP-RULING-1102 section 1 counts 63,654,500 trades in 86 closed hours =
-# 740,175 an hour, so about 153M trades in 207 hours. TIME is NOT measured: at an assumed 25,000 rows/s (no run exists; an hour of rows is about 30 s) the pass is about 1.7 h, plus
-# the 3 x 144 screens; the job timeout is 6 h (about 3.5x). MEMORY is NOT measured: ArenaState holds only live pools (6 h idle eviction, about 10 KB a key per arena_state.py), HV7 on the
+# The job reads H0 .. 2026-11-05T23 = 183 hour files, about 18.8 GB compressed at the mean (23.6 GB at p90). Rows: QP-RULING-1102 section 1 counts 63,654,500 trades in 86 closed hours =
+# 740,168.6 an hour, so about 135.5M trades in 183 hours. TIME is NOT measured: at an assumed 25,000 rows/s (no run exists; an hour of rows is about 30 s) the pass is about 1.5 h, plus
+# the 144 screens (3 days x 48 half-hour instants); the job timeout is 6 h (about 4x). MEMORY is NOT measured: ArenaState holds only live pools (6 h idle eviction, about 10 KB a key per arena_state.py), HV7 on the
 # public tape was about 3.6 GB (plan), the tip has complete data so the key count may be higher; the scope cap is 16 GB, which kills the job (MemorySwapMax=0) rather than swap. The first
 # run is the measurement: if it is killed or times out, re-size from its logged hour and rerun; nothing is lost but time. Disk: no scratch beyond the small drill root under HV7_ROOT.
 #
