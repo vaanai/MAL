@@ -148,7 +148,9 @@ def test_redact_cuts_after_redacting():
     ("wss://user:pw@rpc.example.org", "userinfo"), ("wss://user@rpc.example.org", "userinfo"),
     ("wss://rpc.example.org/ABCDEFGHIJKLMNOPQRSTUVWXYZ123456", "keylike"), ("wss://rpc.example.org/api-key/x", "keylike"),
     ("wss://api.mainnet-beta.solana.com", "arena feed"), ("wss://API.mainnet-beta.solana.com/", "arena feed"),
-    ("wss://foo.solanavibestation.com", "arena feed"), ("wss://SolanaVibeStation.example.org/ws", "arena feed")])
+    ("wss://foo.solanavibestation.com", "arena feed"), ("wss://SolanaVibeStation.example.org/ws", "arena feed"),
+    ("wss://api.mainnet-beta.solana.com.:443", "arena feed"), ("wss://api.mainnet-beta.solana.com./", "arena feed"),
+    ("wss://foo.solanavibestation.com./ws", "arena feed")])  # the trailing-dot (DNS root) forms of the arena hosts
 def test_refusals(url, why):
     with pytest.raises(ValueError) as e:
         pr.check_url(url)
