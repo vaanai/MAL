@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """hv7_runner: the hourly loop of HV7, a forced-rank Haiku 5.5 book (chunk C2 of docs/research/hv7/DESIGN.md sections 2-5, 8, 9).
 
-PAPER only. No wallet or trading key. Four arms on one paper stream: hv7.0-L (Haiku rank 1), -R (seeded random pick of the screen order), -S (screen
+PAPER only. No wallet or trading key. Four arms on one paper stream: hv7.0t-L (Haiku rank 1), -R (seeded random pick of the screen order), -S (screen
 leader), -U (all N candidates, one 0.25 SOL position each, one bot holding up to 8 positions). Every arm buys at the fixed instant t_e = H:02:45.000Z and
 exits by HV6's X rule (stop -8%, target +20%, 60 min), priced by tools.arena_paper.ArenaEngine from its own 1.9 s leg from that instant.
 
@@ -14,7 +14,7 @@ DEVIATIONS from DESIGN section 8, found by reading the code (disclosed for the P
     path check (`check_path`, same rule: allowlist first, then H.DENY_TOKENS) and its own DecisionLog subclass. H.check is not called.
   * hv6_agents.BudgetGuard's ledger table is HV6's (ledger_name / day_cap_usd are module-level), so HV7 has a thin `Hv7Guard` with the same duck-typed
     surface (preflight / record_refusal, reserve-before-call through haiku_caller's own ledger) and one ledger, RANK-L, capped at HV7_DAY_CAP_USD.
-  * The U arm is ONE bot id (hv7.0-U) holding up to 8 positions: the engine keys positions by id (bot, pool, stamp, slot), not by bot. Pricing
+  * The U arm is ONE bot id (hv7.0t-U) holding up to 8 positions: the engine keys positions by id (bot, pool, stamp, slot), not by bot. Pricing
     independence across L, R, S and U is a hard test (test_hv7_runner.py), not an assumption.
   * Shared clock (new, not in DESIGN): one engine call clock is frozen for each batch of orders (all arms' entries at t_e; all sells of one tick), so arms
     that call a few ms apart cannot land a slot apart.
@@ -90,7 +90,7 @@ T_D_OFFSET_MS = 2 * MIN_MS                 # t_d = H:02:00.000Z
 T_E_OFFSET_MS = T_D_OFFSET_MS + 45_000     # t_e = H:02:45.000Z, fixed for every arm
 ENTRY_SETTLE_MS = 3_000
 SELL_RETRY_MS = 1_000
-BOT_PREFIX = "hv7.0-"
+BOT_PREFIX = "hv7.0t-"                 # the tip-source book (QP R1, REQUIRED): disjoint from the public-tape records named hv7.0-* (#1711, #1779, the #1019 pack)
 ARM_ORDER = ("L", "R", "S", "U")
 STAKE_SOL = 0.25
 HV7_ROOT = "/data/mal/arena/haiku-v7"
@@ -383,6 +383,10 @@ class Hv7Config:
     # its quote_sol_15m_ago / quote_sol_peak facts are computed from the quotes since the revival only. The state's own eviction already resets such a pool's age, so
     # the sweep follows the state; it is not exact against a never-swept history. tools/test_hv7_runner_mem.py::test_revived_pool_after_sweep pins the behaviour.
     bound_memory: bool = True
+    # Rule U2 (tools/hv7_tip_guard.py): admit a pool to the age band only when its creation is known. ON by default and fail-closed for the tip-source runner, its smoke and the tip P0.
+    # OFF only for a replay whose input holds no `pool_create` rows by construction (tools/hv8_dump.py, the adapter-written explore-0814 tape, which sets it explicitly). The runner REFUSES
+    # u2=False when the tape resolves under TIP_FEED_ROOT (the receiver copy of the tip writer), so a tip-source book can never run without the guard.
+    u2: bool = True
     n: int = R.N_DEFAULT
     n_min: int = R.N_MIN
 
@@ -421,6 +425,9 @@ class Hv7Runner:
         self.arm_of: dict[str, str] = {}
         self.pending: dict[str, Any] | None = None
         self.creation = U2.CreationIndex()
+        tape_dir = getattr(state, "dir", None)
+        if not cfg.u2 and tape_dir is not None and H._under(os.path.realpath(os.fspath(tape_dir)), os.path.realpath(TIP_FEED_ROOT)):
+            raise Hv7Error("u2_off_on_tip_source: rule U2 cannot be switched off for a tape under the tip receiver copy")
         self.counters: dict[str, int] = {}
         self._last_hot: list[str] = []
         self._lock = threading.Lock()              # the L thread and the loop both count
@@ -455,7 +462,12 @@ class Hv7Runner:
     # -- plumbing
     def _snap(self, key: str, **kw: Any) -> Mapping[str, Any] | None:
         """ArenaState.snapshot with the creation the state's 6 h idle eviction forgot put back from the creation index (rule U2, reviewer B1 on PR #1170)."""
-        return self.creation.patch(self.state.snapshot(key, **kw))
+        snap = self.state.snapshot(key, **kw)
+        return self.creation.patch(snap) if self.cfg.u2 else snap
+
+    def _u2(self, pairs: Any, refused: list[int] | None = None) -> Any:
+        """Rule U2 over the (snapshot, prints) pairs of a scan; a pass-through when cfg.u2 is False (HV8 dump only)."""
+        return U2.guard(pairs, refused) if self.cfg.u2 else pairs
 
     def _count(self, k: str, n: int = 1) -> None:
         with self._lock:
@@ -564,7 +576,7 @@ class Hv7Runner:
                 if snap is not None:
                     yield snap, list(p.events)
 
-        res = H.scan(U2.guard(gen()), as_of_ms=T, limiter=C.SetupLimiter(), board_on=False)     # U2: the watch set holds only pools the screen can admit
+        res = H.scan(self._u2(gen()), as_of_ms=T, limiter=C.SetupLimiter(), board_on=False)     # U2: the watch set holds only pools the screen can admit
         vol = {q: res.feats[q].get("vol_60m") for q in res.candidates}
         items, hot, vols = watch_sets(vol, self._last_hot)
         self.chain.watch([(q, self.state.pool(q).mint) for q in items], hot, self._now(T), vols=vols)
@@ -574,17 +586,24 @@ class Hv7Runner:
         t_d = R.iso_from_ms(T)
         pools = self.state.pools_wsol(lambda p: p.prog == "pumpswap")
 
+        restored = [0]
+
         def gen():
             for p in pools:
-                snap = self._snap(p.id)
+                raw = self.state.snapshot(p.id)
+                snap = self.creation.patch(raw) if self.cfg.u2 else raw
                 if snap is not None:
+                    if snap is not raw:
+                        restored[0] += 1                 # admitted only because the index put back a creation the state's eviction forgot
                     yield snap, list(p.events)
 
         scratch = C.SetupLimiter()
         u2_refused = [0]
-        res = H.scan(U2.guard(gen(), u2_refused), as_of_ms=T, limiter=scratch, board_on=False)    # rule U2, before `filters` and the cards
+        res = H.scan(self._u2(gen(), u2_refused), as_of_ms=T, limiter=scratch, board_on=False)    # rule U2, before `filters` and the cards
         if u2_refused[0]:
             self._count("u2_" + U2.COUNTER, u2_refused[0])
+        if restored[0]:
+            self._count("u2_" + U2.RESTORED, restored[0])
         vol = {pid: res.feats[pid].get("vol_60m") for pid in res.candidates}
         order = sorted((pid for pid in res.candidates if R._vol_ok(vol[pid])), key=lambda q: (-float(vol[q]), q))
         cards: dict[str, dict] = {}
@@ -606,7 +625,7 @@ class Hv7Runner:
         scr = R.screen_set(list(cards), vol, n=self.cfg.n, n_min=self.cfg.n_min)
         self._last_hot = list(dict.fromkeys([*scr.ids, *tried]))[:WATCH_HOT_MAX]      # the next minute ticks keep these hot
         shas = tuple(A.p4.card_sha256(cards[i]) for i in scr.ids)
-        base = {"kind": "period", "t_d": t_d, "t_e": R.iso_from_ms(T - T_D_OFFSET_MS + T_E_OFFSET_MS), "counts": {**res.counts, U2.COUNTER: u2_refused[0]}, "n_candidates": len(res.candidates),
+        base = {"kind": "period", "t_d": t_d, "t_e": R.iso_from_ms(T - T_D_OFFSET_MS + T_E_OFFSET_MS), "counts": ({**res.counts, U2.COUNTER: u2_refused[0], U2.RESTORED: restored[0]} if self.cfg.u2 else dict(res.counts)), "n_candidates": len(res.candidates),
                 "vetoed": sorted(vetoed), "screen": list(scr.ids), "card_shas": list(shas), "no_trade": scr.no_trade, "reason": scr.reason, "as_of_slot": self.slot}
         if rebuild is not None and (list(scr.ids) != list(rebuild.get("screen", ())) or list(shas) != list(rebuild.get("card_shas", ())) or scr.no_trade):
             self._count("resume_rebuild_mismatch")
