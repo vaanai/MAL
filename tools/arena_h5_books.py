@@ -21,6 +21,7 @@ from typing import Any, Mapping
 
 from tools import arena_h5_q50_instant as qi
 from tools import arena_h5_q50s_instant as s1i
+from tools import arena_h5_s1t_instant as s1ti
 from tools import arena_h5_score as h5s
 from tools.arena_h5_score_a2 import A2_BOTS
 from tools.arena_score import Refused
@@ -32,10 +33,11 @@ BOOKS_REGISTERED = (BOOKS_V2_SHA256, BOOKS_V3_SHA256)  # the default pin of load
 BOOKS_KEYS = ("legacy_bot_ids", "new_rule_bot_ids")
 Q50_ID = qi.Q50_ID
 S1_ID = s1i.S1_ID
-EXIT_RULES: dict[str, str] = {**h5s.BOTS, **A2_BOTS, Q50_ID: "v1", S1_ID: "v1"}  # the Q50 wrapper's Q50_BOTS (tools/arena_h5_score_q50.py) and the s1 table row; tests check they agree
+S1T_ID = s1ti.S1T_ID  # DEC-031 Amendment 24: s1 on the tip source; its own instant file and table rows (tools/arena_h5_s1t_instant.py)
+EXIT_RULES: dict[str, str] = {**h5s.BOTS, **A2_BOTS, Q50_ID: "v1", S1_ID: "v1", S1T_ID: "v1"}  # the Q50 wrapper's Q50_BOTS (tools/arena_h5_score_q50.py) and the s1 table row; tests check they agree
 # the Amendment 11 write-once instant files and the rule text each must carry (the seal in tools/arena_h5_legs.gate keys on this)
-AM11_FILES: dict[str, str] = {qi.INSTANT_FILE: qi.RULE, s1i.INSTANT_FILE: s1i.RULE}
-AM11_BOOKS: dict[str, str] = {Q50_ID: qi.INSTANT_FILE, S1_ID: s1i.INSTANT_FILE}
+AM11_FILES: dict[str, str] = {qi.INSTANT_FILE: qi.RULE, s1i.INSTANT_FILE: s1i.RULE, s1ti.INSTANT_FILE: s1ti.RULE}
+AM11_BOOKS: dict[str, str] = {Q50_ID: qi.INSTANT_FILE, S1_ID: s1i.INSTANT_FILE, S1T_ID: s1ti.INSTANT_FILE}
 
 
 class Books(dict):
@@ -105,7 +107,16 @@ def check_recorded_instant(bot_id: str, doc: Mapping[str, Any], counted_decision
     if bot_id == S1_ID:  # s1: the power-n screen rule (200 counted trades, or 100 at B >= S_cap, on 5 dates, by E), never Q50's single threshold
         r = s1i.instant_rule(counted_decisions, [], start_ms=int(doc["clock_start_ms"]), end_ms=int(doc["end_seal_ms"]), now_ms=ri)
         return None if r["status"] == s1i.READ and r["instant_ms"] == ri else f"s1 power-n rule recomputed from the ledger gives {r['status']} {r['instant_ms']}"
-    if bot_id in AM11_BOOKS:  # only Q50 reaches this line (s1 returned above): Amendment 11's rule with the record's own clock and end
+    if bot_id == S1T_ID:  # s1t (DEC-031 Amendment 24 item 9): the same power-n screen rule with the row of the record's clock (11-07 or the 11-10 slip), whose end must be the record's
+        try:
+            row = s1ti.row_for_clock(doc.get("clock_start_ms"))
+        except ValueError as e:
+            return str(e)
+        if doc.get("end_seal_ms") != row["window_end_ms"]:
+            return f"the record's end {doc.get('end_seal_ms')} is not the s1t table row's {row['window_end_ms']}"
+        r = s1ti.instant_rule(counted_decisions, [], now_ms=ri, row=row)
+        return None if r["status"] == s1ti.READ and r["instant_ms"] == ri else f"s1t power-n rule recomputed from the ledger gives {r['status']} {r['instant_ms']}"
+    if bot_id in AM11_BOOKS:  # only Q50 reaches this line (s1 and s1t returned above): Amendment 11's rule with the record's own clock and end
         r = qi.instant_rule(counted_decisions, [], start_ms=int(doc["clock_start_ms"]), end_ms=int(doc["end_seal_ms"]), now_ms=ri)
         return None if r["status"] == qi.READ and r["instant_ms"] == ri else f"Am.11 rule recomputed from the ledger gives {r['status']} {r['instant_ms']}"
     return None if h5s.read_instant(all_decisions, ri) == ri else "differs"
