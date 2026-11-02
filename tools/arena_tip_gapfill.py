@@ -55,7 +55,7 @@ BACKLOG_SLOTS = 50  # the follower's registered --backlog-slots (fast_tip_follow
 ROWS_DIR, MANIFEST = "rows", "manifest.json"
 TRAILING_PROBE_MAX = 64  # slots probed past the end of a range to find the next block that verifies its trailing skips
 LOOKAHEAD_MAX = 100_000  # splice: rows read ahead of a fillable gap row, looking for the first row of slot > to_slot
-LOOKBEHIND_SLOTS = 256  # splice: how many slots of already-yielded follower rows it remembers
+LOOKBEHIND_SLOTS = MAX_MISSED_SLOTS  # splice: how many slots of already-yielded follower rows it remembers: the widest range the fill bound allows (a twin can sit anywhere in it)
 REFUSED_PATH_PARTS = ("/var/lib/mal/sealed",)  # the CLI never reads or writes under the tip dir, the archive or the writer's derived copy (SEALS-BRIEF 2026-11-01)
 KIND_ORDER = {"migration": 0, "create": 1, "trade": 2}  # the reader's order inside one slot (arena_tip_adapter: migrations, creates, trades)
 FEED_KINDS = ("trades", "creates", "migrations")
@@ -406,14 +406,18 @@ def splice(rows: Iterable[Mapping[str, Any]], seg: Segment, counts: Counter | No
     must already know the range).
 
     Dedupe (QP C2): a repair row is dropped if the follower already carries a row with the same (type, slot, signature, event_index) in slots [from_slot, to_slot], on EITHER
-    side of the gap row (the rows already passed, remembered for LOOKBEHIND_SLOTS slots, and the rows after it up to the first row of slot > to_slot); the follower row stands
-    and tx_index plays no part in the key. If the follower rows and the kept repair rows would put a numbered and an unnumbered PumpSwap print in one (pool, slot), or a repair
+    side of the gap row (the rows already passed, remembered for LOOKBEHIND_SLOTS = 2,000 slots, the widest range the bound allows, and the rows after it up to the first row of
+    slot > to_slot); the follower row stands and tx_index plays no part in the key. A gap NOTICED LATE, one whose to_slot the stream has already passed (a data row of a later slot was
+    yielded before the gap row), stays unfilled: the engine has priced past it without the marker, so mark-through and the margin could not apply as the amendment says (fail closed).
+    A range wider than the look-behind cannot be deduped and stays unfilled too. If the follower rows and the kept repair rows would put a numbered and an unnumbered PumpSwap print in one (pool, slot), or a repair
     row is a bad row, the range is NOT filled: the original data_loss gap row passes unchanged (fail closed). A gap that is not filled (or not in the segment) passes through
     unchanged; order is the adapter's."""
     c = counts if counts is not None else Counter()
     filled = seg.filled()
     it, queue = iter(rows), deque()
     recent: dict[int, list[dict[str, Any]]] = {}
+    order: deque = deque()  # the slots in `recent`, oldest first (rows arrive in slot order up to small disorder)
+    max_slot: int | None = None  # the highest slot of a data row yielded so far
     end = object()
 
     def nxt() -> Any:
@@ -428,6 +432,11 @@ def splice(rows: Iterable[Mapping[str, Any]], seg: Segment, counts: Counter | No
             c["gaps_not_filled"] += 1
         if rng is not None:
             lo, hi = rng["from_slot"], rng["to_slot"]
+            if (max_slot is not None and max_slot > hi) or hi - lo + 1 > LOOKBEHIND_SLOTS:
+                c["fill_refused_late" if max_slot is not None and max_slot > hi else "fill_refused_wide"] += 1
+                c["gaps_not_filled"] += 1
+                yield dict(row)
+                continue
             ahead: list[Any] = []
             while len(ahead) < lookahead_max:
                 r = nxt()
@@ -454,9 +463,12 @@ def splice(rows: Iterable[Mapping[str, Any]], seg: Segment, counts: Counter | No
             yield from kept
             continue
         if row.get("type") in _DATA_TYPES and isinstance(row.get("slot"), int):
+            if row["slot"] not in recent:
+                order.append(row["slot"])
             recent.setdefault(row["slot"], []).append(row)
-            for old in [k for k in recent if k < row["slot"] - LOOKBEHIND_SLOTS]:
-                del recent[old]
+            max_slot = row["slot"] if max_slot is None else max(max_slot, row["slot"])
+            while order and order[0] < max_slot - LOOKBEHIND_SLOTS:
+                recent.pop(order.popleft(), None)
         yield dict(row)
 
 
