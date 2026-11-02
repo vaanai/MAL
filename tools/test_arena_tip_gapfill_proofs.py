@@ -23,11 +23,11 @@ def _plenty_of_disk(monkeypatch):
     monkeypatch.setattr("tools.arena_paper.shutil.disk_usage", lambda path: collections.namedtuple("Usage", "total used free")(1000, 500, 500))
 
 
-def stream(pools: int = 10, lo: int = 90, hi: int = 420, stagger: int = 30, inside: bool = True) -> list[dict]:
+def stream(pools: int = 10, lo: int = 90, hi: int = 420, stagger: int = 30, inside: bool = True, starts: list[int] | None = None) -> list[dict]:
     """`pools` PumpSwap pools, pool k printing every slot from lo + stagger * k to hi, with t_recv_ms inside explore-0814 (inside=False: the October time of the engine tests)."""
     rows = []
     for k in range(pools):
-        for i, s in enumerate(range(lo + stagger * k, hi)):
+        for i, s in enumerate(range(starts[k] if starts else lo + stagger * k, hi)):
             r = _row(i, s, pool=f"P{k}", sig=f"sigP{k}x{i}")
             if inside:
                 r["t_recv_ms"] = EXPLORE_START_MS + (s - lo) * 400
@@ -224,3 +224,46 @@ def test_p3_fails_when_the_engine_does_not_apply_item_6(tmp_path, monkeypatch):
 def test_p3_refuses_below_the_min_rows_floor(tmp_path):
     res = pr.p3(stream(pools=1), tmp_path, ["unfetchable"], min_rows=10**9)
     assert res["pass"] is False and "min-rows" in res["refused"]
+
+
+# ------------------------------------------------------------------------------------------------------------------------------------ R7: a long-hold cell
+def long_stream() -> list[dict]:
+    """Two pools: one from the start, one from slot 5,080, which falls in the backlog_jump margin of the early range the far plan puts at about slot 5,125."""
+    return stream(pools=2, hi=30_300, starts=[90, 5_080])
+
+
+def test_the_far_plan_puts_the_first_range_early_and_the_last_late():
+    cuts = pr.plan_cuts(long_stream(), ["backlog_jump", "unfetchable"], far=True)
+    assert 4_000 < cuts[0]["lo"] < 6_500 and 24_000 < cuts[1]["lo"] < 26_500 and cuts[0]["back"] == 50
+    assert pr.plan_cuts(long_stream(), ["backlog_jump", "unfetchable"])[1]["lo"] < 21_000  # the ordinary plan keeps them nearer
+
+
+def test_p3_long_hold_cell_passes_and_exposes_a_position_bought_in_the_early_margin(tmp_path):
+    res = pr.p3(long_stream(), tmp_path, ["backlog_jump", "unfetchable"], long_hold_slots=21_000, every=1)
+    cell = res["cells"]["long_hold_detection_on"]
+    assert cell["pass"] is True, cell
+    assert cell["long_hold_exposed"] >= 1 and cell["expected_classes"].get("fill_hit", 0) >= 1 and cell["mismatched_positions"] == 0 and res["long_hold_slots"] == 21_000
+
+
+def test_p3_long_hold_cell_catches_an_engine_that_forgets_old_filled_ranges(tmp_path, monkeypatch):
+    """QP probe of F1, scaled: an engine that drops filled ranges more than 5,000 slots behind prices the long-held position that the early range's margin excludes; the cell fails."""
+    orig = f2.ArenaEngineF2._on_filled
+
+    def forgetful(self, prog, lo, hi, at_ms, back):
+        self.fills = [f for f in self.fills if f[2] + 5_000 >= self.hw_slot]
+        orig(self, prog, lo, hi, at_ms, back)
+
+    monkeypatch.setattr(f2.ArenaEngineF2, "_on_filled", forgetful)
+    res = pr.p3(long_stream(), tmp_path, ["backlog_jump", "unfetchable"], long_hold_slots=21_000, every=1)
+    cell = res["cells"]["long_hold_detection_on"]
+    assert res["pass"] is False and cell["pass"] is False and cell["mismatched_positions"] >= 1
+
+
+def test_p3_long_hold_cell_is_vacuous_when_no_position_is_exposed(tmp_path):
+    res = pr.p3(stream(), tmp_path, ["backlog_jump", "unfetchable"], long_hold_slots=10, every=1)  # a 10-slot hold never reaches the late range
+    assert res["cells"]["long_hold_detection_on"]["pass"] is False and res["cells"]["long_hold_detection_on"]["long_hold_exposed"] == 0
+
+
+def test_p3_long_hold_cell_needs_two_reasons(tmp_path):
+    with pytest.raises(pr.Refused):
+        pr.p3(stream(), tmp_path, ["unfetchable"], long_hold_slots=100, every=1)
