@@ -170,7 +170,13 @@ class PositionManager:
             qin, qout, liq = bq.get("in_lamports"), bq.get("out_lamports"), bq.get("liq_usd")
             if liq is None:
                 liq = candidate.get("liq_usd")
-            quote_age = 0.0
+            bqts = bq.get("quote_ts")
+            if isinstance(bqts, (int, float)) and not isinstance(bqts, bool):
+                quote_age = now - bqts  # real age of the injected quote, guarded like the candidate-quote path
+                if quote_age > MAX_QUOTE_AGE_S or quote_age < 0:
+                    return self._refuse(arm, candidate, "stale_quote", now, quote_age_s=quote_age)
+            else:
+                quote_age = 0.0
         else:
             qin, qout, liq = candidate.get("quote_in_lamports"), candidate.get("quote_out_lamports"), candidate.get("liq_usd")
             qts = candidate.get("quote_ts")
