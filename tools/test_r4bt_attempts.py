@@ -363,3 +363,78 @@ def test_cli_count_p0_day_sha_and_refusals(tmp_path, capsys):
     assert A.main(["count", "--declog-root", str(root), "--clock-ms", str(CLOCK), "--h-days", "14", "--hour-table", str(bad)], now_ms=now) == 2
     out_all = capsys.readouterr()
     assert SENTINEL_MINT not in out_all.out + out_all.err
+
+
+# ---------------------------------------------------------------------------------------------------------- confirmation mode (count --from-ms)
+SCREEN = ms_of("2026-11-12T00:00:00")  # a screen read instant
+
+
+def test_confirmation_counts_only_attempts_at_or_after_the_screen_instant(tmp_path):
+    b = Book(tmp_path)
+    for t in hours("2026-11-07T06:00:00", 24 * 13):
+        b.mark(t, 1)
+    out = A.count(tmp_path, ARM, CLOCK, 14, ms_of("2026-11-20T00:00:00"), table(), from_ms=SCREEN)
+    assert out["mode"] == "confirmation" and out["from"] == "2026-11-12T00:00:00Z"
+    assert out["not_counted_before_from"] == 18 + 24 * 4  # 11-07 06Z .. 11-11 23Z
+    assert min(out["counted_per_date"]) == "2026-11-12"
+    # 24 a day from 11-12: 11-12..11-16 = 120 on 5 dates -> boundary 2026-11-17T00:00Z (4 dates hold only 96)
+    assert out["status"] == "boundary" and out["boundary"] == "2026-11-17T00:00:00Z"
+    assert out["attempts_before_boundary"] == 120 and out["dates_before_boundary"] == 5
+
+
+def test_confirmation_needs_five_further_dates_and_its_own_coverage(tmp_path):
+    b = Book(tmp_path)
+    for t in hours("2026-11-07T06:00:00", 24 * 13):
+        b.mark(t, 10)  # 240 a day: attempts never bind, the 5 further dates do
+    as_of = ms_of("2026-11-20T00:00:00")
+    out = A.count(tmp_path, ARM, CLOCK, 14, as_of, table(), from_ms=SCREEN)
+    assert out["boundary"] == "2026-11-17T00:00:00Z" and out["dates_before_boundary"] == 5
+    # a table that stops before the confirmation's last hour withholds the boundary
+    short = A.count(tmp_path, ARM, CLOCK, 14, as_of, table(th="2026-11-16T22"), from_ms=SCREEN)
+    assert short["status"] == "pending_hour_table" and short["boundary"] is None
+    # coverage is judged from the screen instant's hour: a table starting there is enough
+    own = A.count(tmp_path, ARM, CLOCK, 14, as_of, table(fr="2026-11-12T00", th="2026-11-16T23"), from_ms=SCREEN)
+    assert own["status"] == "boundary"
+    # the screen count with the same table refuses to print (the clock's hours are not tabled)
+    screen = A.count(tmp_path, ARM, CLOCK, 14, as_of, table(fr="2026-11-12T00", th="2026-11-16T23"))
+    assert screen["mode"] == "screen" and screen["status"] == "pending_hour_table"
+
+
+def test_confirmation_excluded_share_is_over_its_own_attempts(tmp_path):
+    b = Book(tmp_path)
+    for t in hours("2026-11-07T06:00:00", 24 * 13):
+        b.mark(t, 1)
+    ex = [f"2026-11-08T{h:02d}" for h in range(24)] + [f"2026-11-13T{h:02d}" for h in range(6)]  # 24 screen-window hours, 6 confirmation hours
+    out = A.count(tmp_path, ARM, CLOCK, 14, ms_of("2026-11-20T00:00:00"), table(excluded=ex), from_ms=SCREEN)
+    # confirmation attempts: 11-12 24, 11-13 18 (+6 excluded), 11-14..16 72 -> 114 by 11-17T00Z on 5 dates
+    assert out["boundary"] == "2026-11-17T00:00:00Z" and out["attempts_before_boundary"] == 114
+    assert out["excluded_hour_before_boundary"] == 6 and out["excluded_share"] == pytest.approx(6 / 120)
+
+
+def test_confirmation_end_and_refusals(tmp_path):
+    b = Book(tmp_path)
+    for t in hours("2026-11-07T06:00:00", 24 * 6):
+        b.mark(t, 1)
+    for d in range(6, 16):
+        b.mark(CLOCK // 1000 + 86400 * d, 1)  # 1 a day after 11-13: never 100 further attempts by clock + H
+    out = A.count(tmp_path, ARM, CLOCK, 14, ms_of("2026-11-22T00:00:00"), table(), from_ms=SCREEN)
+    assert out["status"] == "ended_not_decidable"
+    with pytest.raises(A.Refused):
+        A.count(tmp_path, ARM, CLOCK, 14, ms_of("2026-11-22T00:00:00"), table(), from_ms=CLOCK - 1)
+    with pytest.raises(A.Refused):
+        A.count(tmp_path, ARM, CLOCK, 14, ms_of("2026-11-22T00:00:00"), table(), from_ms=CLOCK + 14 * A.DAY_MS)
+
+
+def test_cli_from_ms(tmp_path, capsys):
+    root = tmp_path / "declog"
+    b = Book(root)
+    for t in hours("2026-11-07T06:00:00", 24 * 13):
+        b.mark(t, 1)
+    hx = tmp_path / "hours.json"
+    hx.write_text(json.dumps({"tabled_from": "2026-11-07T06", "tabled_through": "2026-11-19T23", "excluded_hours": []}))
+    assert A.main(["count", "--declog-root", str(root), "--clock-ms", str(CLOCK), "--h-days", "14", "--hour-table", str(hx),
+                   "--from-ms", str(SCREEN)], now_ms=ms_of("2026-11-20T00:00:00")) == 0
+    c = json.loads(capsys.readouterr().out)
+    assert c["mode"] == "confirmation" and c["boundary"] == "2026-11-17T00:00:00Z" and c["chain_verified"] is True
+    assert A.main(["count", "--declog-root", str(root), "--clock-ms", str(CLOCK), "--h-days", "14", "--from-ms", "5"],
+                  now_ms=ms_of("2026-11-20T00:00:00")) == 2
