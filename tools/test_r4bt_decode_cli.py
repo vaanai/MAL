@@ -10,6 +10,7 @@ from tools import a3_redeploy_check as ARC
 from tools import r4bt_a3 as A
 from tools import r4bt_decode_cli as C
 from tools import r4bt_decode_check as D
+from tools import r4bt_decode_evidence as DE
 from tools.test_r4bt_decode_parity import clean_sample  # synthetic fixtures
 
 KEY = "SUPERSECRETKEYVALUE123"
@@ -87,13 +88,6 @@ def test_parity_subcommand_pass_fail_and_bad_input(tmp_path, capsys):
     assert "no evidence" in capsys.readouterr().out
 
 
-def test_newest_write_per_program_with_the_earliest_deploy_instant():
-    ws = [{"name": "pump", "slot": 150, "at_ms": 5}, {"name": "pump", "slot": 180, "at_ms": 9}, {"name": "pumpswap", "slot": 7, "at_ms": 3}]
-    assert C.newest_writes(ws) == [{"name": "pump", "slot": 180, "deploy_ms": 5}, {"name": "pumpswap", "slot": 7, "deploy_ms": 3}]
-    with pytest.raises(C.CliRefused):
-        C.newest_writes([{"name": "pump", "slot": "x", "at_ms": 1}])
-
-
 @pytest.fixture
 def stubs(monkeypatch):
     big = clean_sample() * (ARC.SAMPLE_MIN_TXS // 6 + 1)
@@ -105,7 +99,7 @@ def stubs(monkeypatch):
     monkeypatch.setattr(ARC, "validate_trailing_pins", lambda t: {})
     monkeypatch.setattr(ARC, "fetch_sample", lambda client, slot: (big, 100))
     monkeypatch.setattr(ARC, "evaluate_sample", lambda *a, **k: dict(ev))
-    monkeypatch.setattr(ARC, "migrate_evidence", lambda *a, **k: dict(ev))
+    monkeypatch.setattr(DE, "migrate_decode_evidence", lambda *a, **k: dict(ev))
     monkeypatch.setattr(ARC, "sample_failures", lambda *a, **k: None)
 
 
@@ -116,13 +110,15 @@ def run_args(tmp_path, writes):
     return ["run", "--writes", str(tmp_path / "w.json"), "--pins", str(tmp_path / "pins.json"), "--r4bt-pins", str(tmp_path / "r4.json"), "--out", str(tmp_path / "res.json")]
 
 
-def test_run_writes_the_file_the_a3_classifier_reads(tmp_path, stubs, capsys):
-    ws = [{"name": "pump", "slot": 1000, "at_ms": T0 - 7_200_000}, {"name": "pump", "slot": 1100, "at_ms": T0 - 3_600_000}]
+def test_run_checks_every_write_and_writes_the_file_the_a3_classifier_reads(tmp_path, stubs, capsys):
+    ws = [{"name": "pump", "slot": 1000, "at_ms": T0 - 7_200_000}, {"name": "pump", "slot": 1100, "at_ms": T0 - 3_600_000}, {"name": "fees", "slot": 900, "at_ms": T0 - 9_000_000}]
     argv = run_args(tmp_path, ws) + ["--save-input", str(tmp_path / "in.json")]
     assert C.main(argv, client=object(), http_get=None, now_ms=lambda: T0) == 0
     res = json.loads((tmp_path / "res.json").read_text())
-    assert res["profile"] == A.PROFILE == D.PROFILE and [(r["name"], r["slot"], r["verdict"]) for r in res["redeploys"]] == [("pump", 1100, "PASS")]
-    assert json.loads((tmp_path / "pump-in.json").read_text())["schema"] == C.INPUT_SCHEMA
+    assert res["profile"] == A.PROFILE == D.PROFILE
+    # the older write's interval [1150, 1100) is empty: vacuous PASS, no sample RPC; the newest is open-ended; the fees write is not checked here
+    assert [(r["name"], r["slot"], r["verdict"], r["mode"]) for r in res["redeploys"]] == [("pump", 1000, "PASS", "vacuous"), ("pump", 1100, "PASS", "sample")]
+    assert json.loads((tmp_path / "in-00.json").read_text())["schema"] == C.INPUT_SCHEMA
     assert C.main(argv, client=object(), http_get=None, now_ms=lambda: T0) == 11  # outputs exist: never overwritten
     capsys.readouterr()
 

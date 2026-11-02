@@ -86,9 +86,21 @@ def test_main_writes_the_list_file_never_overwrites_and_exit_codes(tmp_path, mon
     assert json.loads(out.read_text()) == [{"name": "pump", "slot": 180, "at_ms": ARC.utc_ms("2026-11-08T05:47:00Z")}]
     assert W.main(argv, client=Client()) == 2  # exists: refused
     assert W.main(["--daily", str(daily), "--monitor-pins", str(pins), "--run-utc", "2020-01-01T00:00:00Z"], client=Client()) == 2
+    capsys.readouterr()
     monkeypatch.setattr(ARC, "list_upgrade_writes", writes_for({"pump": ARC.CheckError("x")}))
-    assert W.main(["--daily", str(daily), "--monitor-pins", str(pins)], client=Client()) == 3
-    assert "PARTIAL" in capsys.readouterr().err
+    base = ["--daily", str(daily), "--monitor-pins", str(pins)]
+    assert W.main(base, client=Client()) == 0  # PARTIAL exits 0 so a chained classify job runs; the status line is explicit
+    assert 'r4bt_writes: STATUS=PARTIAL failed={"pump": "CheckError"} n_writes=0' in capsys.readouterr().err
+    assert W.main(base + ["--strict"], client=Client()) == 3
+
+
+def test_complete_status_line(tmp_path, capsys):
+    daily, pins = tmp_path / "daily.jsonl", tmp_path / "pins.json"
+    daily.write_text(json.dumps(rec()) + "\n")
+    pins.write_text(json.dumps(PINS))
+    assert W.main(["--daily", str(daily), "--monitor-pins", str(pins)], client=Client()) == 0
+    cap = capsys.readouterr()
+    assert cap.out.strip() == "[]" and "r4bt_writes: STATUS=COMPLETE n_writes=0" in cap.err
 
 
 def test_the_classifier_dates_a_pin_change_to_the_earliest_write_from_this_producers_file(monkeypatch):

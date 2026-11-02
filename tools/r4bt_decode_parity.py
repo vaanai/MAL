@@ -217,7 +217,7 @@ def _check_tx(i: int, logs: Sequence[str], st: _State) -> None:
             st.bad[f"tape.unexpected_row_type:{typ}"] += 1
 
 
-def parity_report(sample: Sequence[Sequence[str]], *, min_txs: int | None = None) -> dict[str, Any]:
+def parity_report(sample: Sequence[Sequence[str]], *, min_txs: int | None = None, require_venues: bool = True) -> dict[str, Any]:
     """Counts and failure names for the sample. report["failures"] is [] only on exact structural parity."""
     need = ARC.SAMPLE_MIN_TXS if min_txs is None else int(min_txs)
     st = _State()
@@ -232,7 +232,7 @@ def parity_report(sample: Sequence[Sequence[str]], *, min_txs: int | None = None
         fails.append("no evidence: the sample is empty")
     elif len(sample) < need:
         fails.append(f"no evidence: {len(sample)} transactions, need {need}")
-    for venue in ("pumpswap", "pump_bonding"):
+    for venue in (("pumpswap", "pump_bonding") if require_venues else ()):
         if st.n[f"adapter_trade_{venue}"] + st.n[f"adapter_market_{venue}"] == 0:
             fails.append(f"no evidence: no {venue} trade reached the adapter")
     for name, n in sorted(errors.items()):
@@ -244,6 +244,6 @@ def parity_report(sample: Sequence[Sequence[str]], *, min_txs: int | None = None
             "feed_counters": dict(sorted(st.counters.items())), "tx_errors": dict(sorted(errors.items())), "failures": fails, "verdict": "FAIL" if fails else "PASS"}
 
 
-def parity_failures(sample: Sequence[Sequence[str]], *, min_txs: int | None = None) -> list[str]:
+def parity_failures(sample: Sequence[Sequence[str]], *, min_txs: int | None = None, require_venues: bool = True) -> list[str]:
     """The `adapter_check` callable of `r4bt_decode_check.check_write`: [] only on exact structural parity (see the module docstring)."""
-    return parity_report(sample, min_txs=min_txs)["failures"]
+    return parity_report(sample, min_txs=min_txs, require_venues=require_venues)["failures"]

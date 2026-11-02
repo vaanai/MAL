@@ -7,12 +7,21 @@ printed, never in argv, never in an error message), then:
                                                             write the PARITY INPUT {"schema": "r4bt_parity_input_v1", "write", "start_slot", "slots_scanned", "n_txs", "sample"}
   parity  --input SAMPLE.json [--out REPORT.json]           run `tools/r4bt_decode_parity.parity_report` on a parity input, offline (exit 0 PASS, 10 FAIL)
   run     --writes W.json --pins A3PINS --r4bt-pins R4PINS --out RESULT.json [--save-input SAMPLE.json]
-                                                            the full decode check (`r4bt_decode_check.check_write` with the parity function as `adapter_check`) for the NEWEST write
-                                                            of each program in W.json (the `r4bt_writes` output); deploy_ms = that program's EARLIEST write in the file. RESULT.json is
-                                                            `r4bt_decode_check.collect(results)`: the file `tools/r4bt_a3.py classify --decode-checks` reads. Exit 0 whatever the verdict
-                                                            (the classifier decides); 11 on a usage / input error.
+                                                            the full decode check (`r4bt_decode_evidence.check_all`: decode evidence only, no BOOST terms, QP D1) for EVERY pump / pumpswap
+                                                            write in W.json (the `r4bt_writes` output), each on its OWN live interval [slot + 150, next write of the program) (Addendum 1 A);
+                                                            every write's deploy_ms = the EARLIEST write in the file. RESULT.json is `collect(results)`, one entry per write: the file
+                                                            `tools/r4bt_a3_writes.py classify --decode-checks` reads. Exit 0 whatever the verdict (the classifier decides); 11 on a usage / input error.
 
 Files are never overwritten (an existing --out is refused). A --rpc-url containing "helius" is refused (a key in argv); use --rpc-env-file. Output is counts and names only.
+
+DRY RUN for the manager, after this file is in main and BEFORE the registration record: the parity function on a REAL post-redeploy sample, public RPC, outcome-free (the sample is
+public chain log lines; the report is counts and names only; no book data, tape, tip file or decision log is read). One MiScusi job (sh, no bash-isms; about 300 getBlock calls at
+0.5 s, so a few minutes; small memory; fast-0 at <= 0.5 CPU or research-0). WRITE_SLOT = the slot of any real past upgrade write of the pump program that is at least 150 slots old
+(for example the newest `slot` of the `r4bt_writes` output); the install tree is a clean checkout at the merge commit of this PR; keep the sample file in the job's scratch dir:
+
+    cd "$INSTALL_TREE" && D="$SCRATCH/r4bt-parity-$WRITE_SLOT" && mkdir "$D" && /data/mal/arena/venv-hv4/bin/python -m tools.r4bt_decode_cli fetch --write-name pump --write-slot "$WRITE_SLOT" --out "$D/sample.json" && /data/mal/arena/venv-hv4/bin/python -m tools.r4bt_decode_cli parity --input "$D/sample.json" --out "$D/report.json"
+
+The job exit is 0 on PASS and 10 on FAIL (the report's `failures` names the column or key). A FAIL on a real sample before any redeploy is a finding for QP, not a result to tune around.
 """
 from __future__ import annotations
 
@@ -31,7 +40,7 @@ from typing import Any, Callable, Sequence
 
 from tools import a3_redeploy_check as ARC
 from tools import pump_structure_monitor as mon
-from tools import r4bt_decode_check as DC
+from tools import r4bt_decode_evidence as DE
 from tools import r4bt_decode_parity as PAR
 
 INPUT_SCHEMA = "r4bt_parity_input_v1"
@@ -74,20 +83,6 @@ def _load(path: str | Path) -> Any:
         raise CliRefused(f"cannot read {Path(path).name}: {type(exc).__name__}") from None
 
 
-def newest_writes(writes: Sequence[dict]) -> list[dict]:
-    """[{name, slot, at_ms}] -> per program: the NEWEST write (the sample starts after it) with deploy_ms = that program's EARLIEST write."""
-    out: dict[str, dict] = {}
-    for w in writes:
-        if not (isinstance(w.get("name"), str) and isinstance(w.get("slot"), int) and isinstance(w.get("at_ms"), int)):
-            raise CliRefused("a write needs name (str), slot (int) and at_ms (int)")
-        cur = out.get(w["name"])
-        if cur is None:
-            out[w["name"]] = {"name": w["name"], "slot": w["slot"], "deploy_ms": w["at_ms"]}
-        else:
-            cur["slot"], cur["deploy_ms"] = max(cur["slot"], w["slot"]), min(cur["deploy_ms"], w["at_ms"])
-    return [out[k] for k in sorted(out)]
-
-
 def cmd_fetch(a: argparse.Namespace, client: Any) -> int:
     start = int(a.write_slot) + ARC.SAMPLE_START_OFFSET_SLOTS
     sample, scanned = ARC.fetch_sample(client, start)
@@ -113,21 +108,25 @@ def cmd_run(a: argparse.Namespace, client: Any, http_get: Callable, now_ms: Call
     if not isinstance(writes, list) or not writes:
         raise CliRefused("--writes must be the non-empty JSON list of the r4bt_writes output")
     pins, r4pins = _load(a.pins), _load(a.r4bt_pins)
-    results = []
-    for w in newest_writes(writes):
-        captured: list[Any] = []
+    captured: list[Any] = []
 
-        def adapter(sample: Sequence[Sequence[str]], _c=captured) -> list[str]:
-            _c.append(sample)
-            return PAR.parity_failures(sample)
+    def adapter(sample: Sequence[Sequence[str]], population: bool = False) -> list[str]:
+        captured.append(sample)
+        return PAR.parity_failures(sample, min_txs=0, require_venues=False) if population else PAR.parity_failures(sample)
 
-        res = DC.check_write({"name": w["name"], "slot": w["slot"]}, pins, r4pins, client=client, http_get=http_get, now_ms=now_ms, deploy_ms=w["deploy_ms"], adapter_check=adapter)
-        results.append(res)
-        if a.save_input and captured:
-            _write_new(Path(a.save_input).with_name(f"{w['name']}-{Path(a.save_input).name}"),
-                       {"schema": INPUT_SCHEMA, "write": {"name": w["name"], "slot": w["slot"]}, "n_txs": len(captured[0]), "sample": [list(x) for x in captured[0]]})
-    _write_new(a.out, DC.collect(results))
-    print(json.dumps({"results": [{"name": r["name"], "slot": r["slot"], "verdict": r["verdict"], "n_reasons": len(r["reasons"])} for r in results]}, sort_keys=True))
+    try:
+        results = DE.check_all(writes, pins, r4pins, client=client, http_get=http_get, now_ms=now_ms, adapter_check=adapter)
+    except ValueError as exc:
+        raise CliRefused(str(exc)) from None
+    if not results:
+        raise CliRefused("--writes holds no pump / pumpswap write to check")
+    if a.save_input:
+        for i, smp in enumerate(captured):
+            sp = Path(a.save_input)
+            _write_new(sp.with_name(f"{sp.stem}-{i:02d}{sp.suffix}"), {"schema": INPUT_SCHEMA, "n_txs": len(smp), "sample": [list(x) for x in smp]})
+    _write_new(a.out, DE.collect(results))
+    print(json.dumps({"results": [{"name": r["name"], "slot": r["slot"], "verdict": r["verdict"], "mode": r.get("mode"), "slot_range": r.get("slot_range"),
+                                   "n_reasons": len(r["reasons"])} for r in results]}, sort_keys=True))
     return 0
 
 

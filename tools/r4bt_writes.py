@@ -10,8 +10,12 @@ no halt flag, count or other field is read. Programs listed: pump, pumpswap, fee
 
     python -m tools.r4bt_writes --daily DAILY.jsonl --monitor-pins PINS.json [--run-utc U] [--out W.json] [--rpc-url U | --rpc-env-file F [--rpc-var V]]
 
-Output: the JSON list [{"name", "slot", "at_ms"}] oldest first (an empty list when no program differs). Exit 0 complete; 3 PARTIAL (a program's enumeration failed: its entries are
-absent and the classifier falls back to its earlier-or-equal floor, the last clean run or the pinned instant: conservative; the failed names go to stderr); 2 refused/unreadable.
+Output: the JSON list [{"name", "slot", "at_ms"}] oldest first (an empty list when no program differs), and ONE status line on stderr, always:
+  r4bt_writes: STATUS=COMPLETE n_writes=N                          or
+  r4bt_writes: STATUS=PARTIAL failed={"pump": "CheckError"} n_writes=N
+Exit 0 for COMPLETE and for PARTIAL: a chained `r4bt_a3 classify` job runs only after an exit 0, and a missing program is safe (the classifier falls back to its earlier-or-equal
+floor, the last clean run or the pinned instant, so the halt can only be earlier, never later; the status line is the loud part and the daily job's log keeps it). `--strict` makes
+PARTIAL exit 3 instead (for a gate job that wants to stop). Exit 2: refused or unreadable input (nothing written).
 NEEDS QP OK BEFORE FIRST USE (the reviewer's pin: the registration pins --writes and --last-clean-run-utc for the daily A3 job).
 """
 from __future__ import annotations
@@ -62,6 +66,7 @@ def main(argv: Sequence[str] | None = None, *, client: Any = None) -> int:
     ap.add_argument("--monitor-pins", required=True)
     ap.add_argument("--run-utc", default=None, help="the record to read (default: the newest)")
     ap.add_argument("--out", default=None)
+    ap.add_argument("--strict", action="store_true", help="exit 3 on a PARTIAL result (default: exit 0 with the STATUS line, so a chained classify job still runs)")
     add_rpc_args(ap)
     a = ap.parse_args(argv)
     try:
@@ -76,8 +81,9 @@ def main(argv: Sequence[str] | None = None, *, client: Any = None) -> int:
             _write_new(a.out, writes)
         print(text)
         if failed:
-            print(f"r4bt_writes: PARTIAL, enumeration failed for {json.dumps(failed, sort_keys=True)}", file=sys.stderr)
-            return 3
+            print(f"r4bt_writes: STATUS=PARTIAL failed={json.dumps(failed, sort_keys=True)} n_writes={len(writes)}", file=sys.stderr)
+            return 3 if a.strict else 0
+        print(f"r4bt_writes: STATUS=COMPLETE n_writes={len(writes)}", file=sys.stderr)
         return 0
     except (CliRefused, ARC.CheckError, OSError, ValueError, KeyError) as exc:
         print(f"r4bt_writes: REFUSED: {type(exc).__name__}: {exc if isinstance(exc, CliRefused) else ''}", file=sys.stderr)
