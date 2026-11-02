@@ -49,9 +49,9 @@ def seed_for_r_open():
     return next(s for s in range(1000) if not dc.r_skip(s, cid, 0.5))
 
 
-def mk(tmp_path, price=False, caller=None, haiku_on=True, like=None, like_fc=None, **kw):
+def mk(tmp_path, price=False, caller=None, haiku_on=True, like=None, like_fc=None, tr_factory=None, **kw):
     fc = Clock()
-    tr = Price(fc) if price else fx.transport
+    tr = tr_factory(fc) if tr_factory else (Price(fc) if price else fx.transport)
     ds, gt, jup = DexScreener(tr, fc.sleep, fc.now), Gecko(tr, fc.sleep, fc.now), Jupiter(tr, fc.sleep, fc.now, per_min=60000)
     if like is not None:  # reuse the HTTP clients (their rate buckets) and the virtual clock; all run state is reloaded from disk
         ds, gt, jup, fc = like.ds, like.gt, like.jup, like_fc
@@ -141,9 +141,9 @@ def test_failed_and_late_q2_counted_and_failed_refuses_entry(tmp_path):
             "token_out": 7}
     assert r._entry_from_quotes(c, [q(ok=False), dict(fill, failed_entry=True)]) is None
     assert r._entry_from_quotes(c, [q(offset_ok=False), fill])["out_lamports"] == 7  # late: kept and counted
-    assert r._entry_from_quotes(c, []) is None
+    assert r._entry_from_quotes(c, []) is None  # no rows at all: not a failed quote
     ct = r.rs["counters"]
-    assert (ct["q2_total"], ct["q2_failed"], ct["q2_late"]) == (3, 2, 1)
+    assert (ct["q2_total"], ct["q2_failed"], ct["q2_late"], ct["no_fill_row"]) == (3, 1, 1, 1)
 
 
 def test_dedupe_rebuilt_from_today_and_yesterday_candidates(tmp_path):
@@ -203,3 +203,114 @@ def test_heartbeat_writes_progress(tmp_path):
     r.run(duration=40)
     d = json.load(open(pp))
     assert d["pct"] == 100 and "slowbot paper" in d["note"]
+
+
+@pytest.mark.parametrize("phase", ["scan_cycle", "poll_once", "maybe_report", "heartbeat", "process_new_candidates", "recover_pending"])
+def test_every_loop_stage_is_guarded(tmp_path, phase):
+    r, fc = mk(tmp_path, haiku_on=False, progress_path=str(tmp_path / "p.json"))
+
+    def boom(*a, **k):
+        raise RuntimeError("injected")
+    setattr(r, phase, boom)
+    r.run(duration=70)  # must reach the end of the duration
+    assert fc.t >= 69
+    stage = {"process_new_candidates": "process_candidates"}.get(phase, phase)
+    if phase == "poll_once":
+        stage = "poll"
+    if phase == "maybe_report":
+        stage = "report"
+    if phase == "scan_cycle":
+        stage = "scan_cycle"
+    assert r.rs["counters"].get("errors_" + stage, 0) >= 1
+
+
+def test_open_and_decide_exceptions_do_not_stop_the_loop(tmp_path):
+    r, fc = mk(tmp_path, haiku_on=False)
+
+    def boom(*a, **k):
+        raise RuntimeError("injected")
+    r.pm.open_all = boom
+    r.run(duration=70)
+    assert r.rs["counters"]["errors_candidate"] >= 1 and not r.rs["pending"]
+    r2, fc2 = mk(tmp_path / "b", caller=FakeCaller())
+    r2.caller.call = boom
+    r2.run(duration=70)  # a raising caller becomes SKIP with decision_error inside decide(); the loop is fine
+    assert fc2.t >= 69
+
+
+def test_slow_scan_does_not_drop_its_own_candidates(tmp_path):
+    def slow(fc):
+        def tr(url):
+            if "geckoterminal" in url:
+                fc.t += 40.0  # a 120 s+ scan from rate-limit waits
+            return fx.transport(url)
+        return tr
+    r, fc = mk(tmp_path, haiku_on=False, tr_factory=slow)
+    r.run(duration=5)
+    assert fc.t > 125
+    assert r.rs["counters"]["missed_restart"] == 0 and r.rs["counters"]["candidates"] == 1
+    assert "T" in [x["arm"] for x in rows(tmp_path / "positions.jsonl") if x["kind"] == "open"]
+
+
+def test_budget_cap_is_h_unavailable_not_a_model_skip(tmp_path):
+    from tools.haiku_caller import BudgetExceeded
+
+    class Capped:
+        def call(self, **kw):
+            raise BudgetExceeded("cap")
+    r, fc = mk(tmp_path, caller=Capped())
+    r.run(duration=40)
+    dec = rows(tmp_path / "decisions.jsonl")
+    u = [x for x in dec if x.get("kind") == "h_unavailable"]
+    assert [x["reason"] for x in u] == ["budget_cap"]
+    ct = r.rs["counters"]
+    assert ct["h_unavailable"] == 1 and ct["h_budget_cap"] == 1 and ct["h_buys"] == 0
+    assert "H" not in [x["arm"] for x in rows(tmp_path / "positions.jsonl") if x["kind"] == "open"]
+
+
+def test_pending_decision_retried_when_fresh_else_orphan(tmp_path):
+    r, fc = mk(tmp_path, haiku_on=False)
+    now = r.clock()
+    c = {"mint": "MP", "ts_utc": iso(now - 5), "liq_usd": 5e4, "candidate_id": "MP:x", "arms": ["T"]}
+    r.rs["pending"] = {"MP:x": {"c": c, "t": now - 5}, "MO:y": {"c": dict(c, mint="MO", candidate_id="MO:y"), "t": now - 900}}
+    r.recover_pending()
+    ct = r.rs["counters"]
+    assert ct["pending_retried"] == 1 and ct["h_decision_orphan"] == 1 and not r.rs["pending"]
+    assert [x["kind"] for x in rows(tmp_path / "decisions.jsonl")].count("h_decision_orphan") == 1
+    assert any(x["kind"] == "refused" and x["mint"] == "MP" for x in rows(tmp_path / "positions.jsonl"))  # retried, no fill rows
+
+
+def test_entry_quote_is_taken_after_the_model_call_and_age_logged(tmp_path):
+    class Slow(FakeCaller):
+        def __init__(self, fc):
+            super().__init__()
+            self.fc = fc
+
+        def call(self, **kw):
+            self.fc.t += 3.0
+            return super().call(**kw)
+    fc0 = Clock()
+    r, fc = mk(tmp_path, caller=None)
+    r.caller = Slow(fc)
+    r.run(duration=60)
+    opens = [x for x in rows(tmp_path / "positions.jsonl") if x["kind"] == "open"]
+    assert sorted(x["arm"] for x in opens) == ["H", "R", "T"]
+    assert all(0 <= x["quote_age_s"] <= 5 for x in opens)
+    eq = [x for x in rows(tmp_path / "decisions.jsonl") if x.get("kind") == "entry_quote"]
+    assert len(eq) == 1 and eq[0]["post_rt_ts"] >= NOW + 3.0 and eq[0]["fill_from"] in ("scanner", "post_decision")
+    assert fc0 is not None
+
+
+def test_four_candidates_one_scan_no_arm_full(tmp_path):
+    r, fc = mk(tmp_path, haiku_on=False)
+    r.jup.round_trip = lambda mint, now=None: {"ok": True, "ts": r.clock(), "quote_in_lamports": 25_000_000, "token_out": 1000}
+    qs = []
+    for i in range(4):
+        m = f"M{i}"
+        qs.append({"ts_utc": iso(NOW), "mint": m, "kind": "paper_fill", "failed_entry": False, "in_lamports": 25_000_000,
+                   "token_out": 1000})
+        r._handle_candidate({"mint": m, "ts_utc": iso(NOW), "liq_usd": 5e4, "candidate_id": f"{m}:t"}, qs)
+    pos = rows(tmp_path / "positions.jsonl")
+    assert len([x for x in pos if x["kind"] == "open" and x["arm"] == "T"]) == 4
+    assert not [x for x in pos if x["kind"] == "refused" and x["reason"] == "arm_full"]
+    assert r.pm.max_per_arm == 25

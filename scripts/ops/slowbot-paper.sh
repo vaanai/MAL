@@ -3,6 +3,7 @@
 # PAPER ONLY: no wallet, no trading key, no send. It reads public price APIs and writes JSONL under $OUT.
 # Suggested job: resumable true. The runner is its own checkpoint (OUT holds the position state, the decision log, the
 # processed-candidate set and the scanner state); MISCUSI_RESUME=1 or a plain re-run both continue from them.
+# MISCUSI_RESUME is informational only (it changes the echo below): the state dir is the checkpoint, so a plain re-run resumes too.
 # MISCUSI_PROGRESS, when set, gets a {"pct","note"} heartbeat from the runner.
 #
 # Environment (all optional):

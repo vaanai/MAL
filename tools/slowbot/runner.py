@@ -16,7 +16,13 @@ State, all under DIR: scan files (candidates-, checks-, quotes-, rejects-, scans
 decisions.jsonl, haiku/ ledger, runner-state.json (processed candidates, counters, last report day), reports/. Resume: a restart
 reloads all of it; the 24 h mint dedupe is rebuilt from today's and yesterday's candidates-*.jsonl first (the scanner saves its
 `admitted` map only at the end of a scan); a candidate written before a crash but not processed, and older than STALE_S, is logged
-`missed_restart` and not opened. Daily report at 00:05Z: reports/arms-DAY.{json,txt} and reports/console-slowbot.json, with the
+`missed_restart` and not opened (a scan's own candidates are never stale however long the scan took).
+Entry: one fresh round-trip quote after the Haiku call returns, worse-of with the scanner fill, shared by T/H/R; its real age is
+logged on the open row and refused above 5 s. The decision is persisted in runner-state `pending` before the open: retried after a
+restart within STALE_S, else `h_decision_orphan`. Paper per-arm cap is 25; arm_full hits are logged and counted (`arm_full_hits`).
+Every loop stage is guarded: an exception is logged by class, counted as errors_<stage>, and the loop goes on. A report missed
+while the runner was down is not backfilled (the next is cumulative, labelled as_of_utc). MISCUSI_RESUME is informational: the
+state dir is the checkpoint. Daily report at 00:05Z: reports/arms-DAY.{json,txt} and reports/console-slowbot.json, with the
 net both with the ATA rent refunded (the bot closes the account after the sell) and not refunded. Written-off positions
 (rug, no quote) are counted as not refunded.
 """
@@ -40,11 +46,13 @@ from tools.slowbot.sources import DexScreener, Gecko
 SCAN_PERIOD_S = 300.0
 REPORT_AFTER = (0, 5)  # 00:05Z
 STALE_S = 120.0
+PAPER_MAX_PER_ARM = 25  # paper only: every arm trades every candidate it selects, so arms stay matched (a live cap is separate)
 PROCESSED_KEEP_S = 3 * 86400
 HEARTBEAT_S = 30.0
 X_MAX = dc.MAX_X_CONTEXT
 COUNTERS = ("scans", "scan_failures", "candidates", "missed_restart", "q2_total", "q2_failed", "q2_late", "h_unavailable",
-            "h_calls", "h_buys", "r_draws", "r_skips", "polls", "liq_fetch_failed", "x_context_attached")
+            "h_calls", "h_buys", "h_budget_cap", "h_caller_error", "h_decision_orphan", "pending_retried",
+            "no_fill_row", "post_decision_quote_failed", "arm_full_hits", "r_draws", "r_skips", "polls", "liq_fetch_failed", "x_context_attached")
 
 
 def _epoch(ts: str) -> float:
@@ -197,7 +205,8 @@ class Runner:
         self._liq = {}     # mint -> liq_usd from the latest DexScreener batch
         self._last_hb = 0.0
         self.pm = PositionManager(os.path.join(self.out, "positions-state.json"), os.path.join(self.out, "positions.jsonl"),
-                                  self._sell_quote, buy_quote_fn=self._buy_quote, now_fn=clock)
+                                  self._sell_quote, buy_quote_fn=self._buy_quote, now_fn=clock,
+                                  max_per_arm=PAPER_MAX_PER_ARM)
         self.restored = rebuild_admitted(self.out, clock())
 
     # -- state
@@ -250,16 +259,30 @@ class Runner:
         except Exception:
             self._bump("liq_fetch_failed")
 
+    # -- guards
+    def _guard(self, name, fn, *args, **kw):
+        """Run one loop stage. An exception is logged by class name, counted, and the loop goes on."""
+        try:
+            return fn(*args, **kw)
+        except Exception as e:
+            try:
+                self._bump("errors_" + name)
+                self.log(f"stage {name} failed: {type(e).__name__}")
+            except Exception:
+                pass
+            return None
+
     # -- one poll
     def poll_once(self):
-        self._refresh_liq()
-        self.pm.tick()
+        self._guard("refresh_liq", self._refresh_liq)
+        self._guard("tick", self.pm.tick)
         self._bump("polls")
-        self._save()
+        self.rs["last_alive"] = self.clock()
+        self._guard("save", self._save)
 
     # -- one scan + decisions + entries
     def scan_cycle(self):
-        t_scan = self.clock()
+        scan_start = self.clock()
         try:
             counts = scan.scan_once(self.ds, self.gt, self.jup, self.out, top_holders=self.top_holders,
                                     requote_delays=self.requote_delays, sleep=self.sleep, clock=self.clock,
@@ -267,12 +290,12 @@ class Runner:
         except Exception as e:
             self._bump("scan_failures")
             self.log("scan failed:", type(e).__name__)
-            self._save()
+            self._guard("save", self._save)
             return None
         self._bump("scans")
-        self.process_new_candidates()
-        self._prune_processed()
-        self._save()
+        self._guard("process_candidates", self.process_new_candidates, scan_start)
+        self._guard("prune", self._prune_processed)
+        self._guard("save", self._save)
         return counts
 
     def _prune_processed(self):
@@ -281,14 +304,14 @@ class Runner:
         for k in [k for k, v in pr.items() if now - v > PROCESSED_KEEP_S]:
             del pr[k]
 
-    def process_new_candidates(self):
+    def process_new_candidates(self, scan_start=None):
+        """scan_start: when the scan that just ran began. A candidate written by it (ts_utc >= scan_start, to the second) belongs to
+        this cycle and is never stale however long the scan took; STALE_S applies only to older, unprocessed candidates, which exist
+        only after a restart."""
         now = self.clock()
         pr = self.rs["processed"]
-        days = []
         for back in (1, 0):  # yesterday first, so a restart across midnight keeps order
-            ts = ps.utc_iso(dt.datetime.fromtimestamp(now - back * 86400, dt.timezone.utc))
-            days.append(ts)
-        for ts_day in days:
+            ts_day = ps.utc_iso(dt.datetime.fromtimestamp(now - back * 86400, dt.timezone.utc))
             cands = _read_jsonl(ps.day_file(self.out, "candidates", ts_day))
             if not cands:
                 continue
@@ -298,46 +321,80 @@ class Runner:
                 if cid in pr or not c.get("mint") or not c.get("ts_utc"):
                     continue
                 pr[cid] = now
-                self._save()  # at most once: a crash after this point never double-opens or double-calls the model
-                try:
-                    age = now - _epoch(c["ts_utc"])
-                except ValueError:
-                    age = 1e9
-                if age > STALE_S:
-                    self._bump("missed_restart")
-                    self._append_decision({"kind": "missed_restart", "ts_utc": c["ts_utc"], "mint": c["mint"], "age_s": age})
-                    continue
-                self._handle_candidate(dict(c, candidate_id=cid), quotes)
+                self._guard("save", self._save)  # at most once: a crash after this point never double-opens or double-calls the model
+                self._guard("candidate", self._process_one, c, cid, quotes, scan_start, now)
 
-    def _entry_from_quotes(self, c, quotes):
+    def _process_one(self, c, cid, quotes, scan_start, now):
+        try:
+            t_c = _epoch(c["ts_utc"])
+        except ValueError:
+            t_c = None
+        fresh = scan_start is not None and t_c is not None and t_c >= int(scan_start)
+        if not fresh and (t_c is None or now - t_c > STALE_S):
+            self._bump("missed_restart")
+            self._append_decision({"kind": "missed_restart", "ts_utc": c["ts_utc"], "mint": c["mint"],
+                                   "age_s": None if t_c is None else now - t_c})
+            return
+        self._handle_candidate(dict(c, candidate_id=cid), quotes)
+
+    def _scanner_fill(self, c, quotes):
         """The scanner's paper fill for this candidate (rows of the same scan: same ts_utc and mint). Counts the +2 s quote."""
         mint, ts = c["mint"], c["ts_utc"]
         rows = [q for q in quotes if q.get("mint") == mint and q.get("ts_utc") == ts]
         q2 = next((q for q in rows if q.get("kind") == "quote" and q.get("delay_s") == 2), None)
         fill = next((q for q in reversed(rows) if q.get("kind") == "paper_fill"), None)
         self._bump("q2_total")
-        if q2 is None or not q2.get("ok"):
+        if q2 is None and fill is None:
+            self._bump("no_fill_row")  # e.g. a crash during the re-quote wait: not a failed quote
+        elif q2 is None or not q2.get("ok"):
             self._bump("q2_failed")
         elif not q2.get("offset_ok", True):
             self._bump("q2_late")
+        info = {"q2_ok": bool(q2 and q2.get("ok")), "q2_offset_ok": None if q2 is None else q2.get("offset_ok")}
         if fill is None or fill.get("failed_entry"):
-            return None
-        return {"in_lamports": fill.get("in_lamports"), "out_lamports": fill.get("token_out"), "liq_usd": None}
+            return None, info
+        return {"in_lamports": fill.get("in_lamports"), "out_lamports": fill.get("token_out")}, info
+
+    def _entry_from_quotes(self, c, quotes):
+        """Scanner fill only (kept for tests)."""
+        return self._scanner_fill(c, quotes)[0]
+
+    def _post_decision_entry(self, c, quotes):
+        """One entry quote for all arms, taken after the Haiku call returned: the worse (lower token_out) of the scanner's fill and a
+        fresh round trip. H pays its decision latency; T and R take the same quote, so the pairing holds."""
+        sf, info = self._scanner_fill(c, quotes)
+        rt = self.jup.round_trip(c["mint"], now=self.clock)
+        row = {"kind": "entry_quote", "ts_utc": ps.utc_iso(dt.datetime.fromtimestamp(self.clock(), dt.timezone.utc)),
+               "mint": c["mint"], "candidate_id": c["candidate_id"], "scanner_fill": sf, "post_rt_ok": bool(rt.get("ok")),
+               "post_rt_ts": rt.get("ts"), "post_rt_token_out": rt.get("token_out"), "fill_from": None, **info}
+        entry = None
+        if sf is not None and rt.get("ok"):
+            use_rt = rt["token_out"] <= sf["out_lamports"]
+            entry = {"in_lamports": rt["quote_in_lamports"] if use_rt else sf["in_lamports"],
+                     "out_lamports": min(rt["token_out"], sf["out_lamports"]), "liq_usd": None, "quote_ts": rt["ts"]}
+            row["fill_from"] = "post_decision" if use_rt else "scanner"
+        elif sf is not None:
+            self._bump("post_decision_quote_failed")
+        row["entry"] = entry
+        self._append_decision(row)
+        return entry
 
     def _handle_candidate(self, c, quotes):
         self._bump("candidates")
-        self._fills = {c["mint"]: self._entry_from_quotes(c, quotes)}
         ts = ps.utc_iso(dt.datetime.fromtimestamp(self.clock(), dt.timezone.utc))
         cid = c["candidate_id"]
         # R draw first, at H's trailing skip rate over the decisions logged before this candidate
-        rate = dc.trailing_skip_rate(_read_jsonl(self.decisions_path))
+        drows = _read_jsonl(self.decisions_path)
+        rate = dc.trailing_skip_rate(drows)
+        valid = any(r.get("decision_error") is None and r.get("action") in dc.ACTIONS for r in drows)
+        src = "h_trailing" if valid else "default_0.5"
+        self.rs["r_rate_source"] = src
         skipped = dc.r_skip(self.seed, cid, rate)
         self._append_decision({"kind": "r_draw", "ts_utc": ts, "mint": c["mint"], "candidate_id": cid, "seed": self.seed,
-                               "skip_rate": rate, "skipped": skipped})
+                               "skip_rate": rate, "skipped": skipped, "rate_source": src})
         self._bump("r_draws")
         self._bump("r_skips", 1 if skipped else 0)
         arms = ["T"]
-        # H
         if not self.haiku_on or self.caller is None:
             self._bump("h_unavailable")
             self._append_decision({"kind": "h_unavailable", "ts_utc": ts, "mint": c["mint"], "candidate_id": cid,
@@ -350,13 +407,57 @@ class Runner:
                     self._bump("x_context_attached")
             row = dc.decide(dict(c, arm="H"), self.caller, x_context=xc, log_path=self.decisions_path)
             self._bump("h_calls")
-            if row["h_buy"]:
+            err = row.get("decision_error") or ""
+            if err.startswith("caller_"):  # cap hit, missing key, transport: the model never judged this candidate
+                budget = "BudgetExceeded" in err
+                self._bump("h_unavailable")
+                self._bump("h_budget_cap" if budget else "h_caller_error")
+                self._append_decision({"kind": "h_unavailable", "ts_utc": ts, "mint": c["mint"], "candidate_id": cid,
+                                       "reason": "budget_cap" if budget else "caller_error", "decision_error": err})
+            elif row["h_buy"]:
                 self._bump("h_buys")
                 arms.append("H")
         if not skipped:
             arms.append("R")
         c["arms"] = [a for a in ("T", "H", "R") if a in arms]
-        self.pm.open_all(c)
+        # persist the decision BEFORE the open, so a crash in between is retried or logged, never silent
+        self.rs.setdefault("pending", {})[cid] = {"c": c, "t": self.clock()}
+        self._save()
+        self._open_pending(cid, quotes)
+
+    def _open_pending(self, cid, quotes):
+        ent = self.rs.get("pending", {}).get(cid)
+        if ent is None:
+            return
+        c = ent["c"]
+        try:
+            self._fills = {c["mint"]: self._post_decision_entry(c, quotes)}
+            res = self.pm.open_all(c)
+            for arm, (pos, why) in res.items():
+                if pos is None and why == "arm_full":
+                    self._bump("arm_full_hits")
+        finally:
+            self.rs["pending"].pop(cid, None)  # a failed open is not retried again; the guard counts the error
+            self._save()
+
+    def recover_pending(self):
+        """After a restart: a decision persisted but not opened is retried while within STALE_S, else logged h_decision_orphan."""
+        now = self.clock()
+        for cid, ent in list(self.rs.get("pending", {}).items()):
+            c = ent["c"]
+            if now - ent["t"] <= STALE_S:
+                self._bump("pending_retried")
+                try:
+                    quotes = _read_jsonl(ps.day_file(self.out, "quotes", c["ts_utc"]))
+                except Exception:
+                    quotes = []
+                self._guard("open_pending", self._open_pending, cid, quotes)
+            else:
+                self._bump("h_decision_orphan")
+                self._append_decision({"kind": "h_decision_orphan", "candidate_id": cid, "mint": c.get("mint"),
+                                       "arms": c.get("arms"), "age_s": now - ent["t"]})
+            self.rs["pending"].pop(cid, None)
+        self._guard("save", self._save)
 
     # -- reports
     def make_report(self, day):
@@ -371,7 +472,8 @@ class Runner:
             f.write(text + "\n")
         atomic_write_json(os.path.join(rdir, "console-slowbot.json"), {
             "schema": "console.slowbot.v1", "generated_utc": ps.utc_iso(dt.datetime.fromtimestamp(self.clock(), dt.timezone.utc)),
-            "report_day": day, "paper_only": True, "live_path": False, "report": rep,
+            "report_day": day, "as_of_utc": ps.utc_iso(dt.datetime.fromtimestamp(self.clock(), dt.timezone.utc)),
+            "r_rate_source": self.rs.get("r_rate_source", "none_yet"), "paper_only": True, "live_path": False, "report": rep,
             "runner_counters": self.rs["counters"], "open_positions": len(self.pm.open_positions()),
             "note": "in-sample paper; no promotion-gate claim"})
         return rep
@@ -404,6 +506,12 @@ class Runner:
     # -- loop
     def run(self, duration=None):
         t0 = self.clock()
+        last = self.rs.get("last_alive")
+        if last is not None:  # a restart: positions were not polled while the runner was down
+            self._append_decision({"kind": "restart", "ts_utc": ps.utc_iso(dt.datetime.fromtimestamp(t0, dt.timezone.utc)),
+                                   "downtime_s": t0 - last})
+        self.rs["last_alive"] = t0
+        self._guard("recover_pending", self.recover_pending)
         next_scan = t0
         next_poll = t0 + self.poll
         self.log(f"runner start restored_admitted={self.restored} haiku={'on' if (self.haiku_on and self.caller) else 'off'}")
@@ -412,19 +520,18 @@ class Runner:
             if duration is not None and now - t0 >= duration:
                 break
             if now >= next_scan:
-                self.scan_cycle()
+                self._guard("scan_cycle", self.scan_cycle)
                 next_scan = max(next_scan + self.period, self.clock())
                 next_poll = self.clock()  # poll right after a scan that blocked it
-            now = self.clock()
-            if now >= next_poll:
-                self.poll_once()
+            if self.clock() >= next_poll:
+                self._guard("poll", self.poll_once)
                 next_poll = self.clock() + self.poll
-            self.maybe_report()
+            self._guard("report", self.maybe_report)
             pct = 50 if duration is None else min(99, int(100 * (self.clock() - t0) / duration))
-            self.heartbeat(pct)
+            self._guard("heartbeat", self.heartbeat, pct)
             self.sleep(min(1.0, max(0.0, min(next_scan, next_poll) - self.clock())) or 0.1)
-        self._save()
-        self.heartbeat_final()
+        self._guard("save", self._save)
+        self._guard("heartbeat", self.heartbeat_final)
 
     def heartbeat_final(self):
         self._last_hb = 0.0
