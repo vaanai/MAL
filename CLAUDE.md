@@ -8,14 +8,14 @@ Pump.fun / Solana research lab. GitHub `vaanai/MAL` is the source of truth. This
 
 The path is fixed: trade tape → honest simulator → signals → forward paper → gated live.
 
-Live trading does not start until a book clears the promotion gate and the owner approves. Speed matters. The standard does not drop to buy speed.
+Scaling live trading needs a book that clears the promotion gate and the owner's word. Micro-size live trading runs before the gate in the live-learning lane ([DEC-035](DEC/DEC-035-live-learning-lane.md), owner-approved 2026-11-02); its limits are in DEC-035 §2, and DEC-035 controls. Real fills beat more weeks of paper. Speed matters. The standard does not drop to buy speed.
 
 ## Reload order
 
 Read these at the start of a session, in this order:
 
 0. [docs/HANDOFF.md](docs/HANDOFF.md) — current manager handoff, while it exists. Remove this line and the file once it goes stale.
-1. [LAB_STATE.md](LAB_STATE.md)
+1. [LAB_STATE.md](LAB_STATE.md): the "Now" section only (the file is ~90 KB)
 2. [CONSTITUTION.md](CONSTITUTION.md)
 3. [ARTIFACTS/SUMMARY.md](ARTIFACTS/SUMMARY.md)
 4. The DEC sections that docs/HANDOFF.md names for the current work (not every DEC file in full); with no HANDOFF, the DECs that LAB_STATE "Now" and its decisions index list as in effect
@@ -25,16 +25,18 @@ Then the one experiment or host you are touching. Daily briefs are in [ARTIFACTS
 
 ## Hard rules
 
-- Paper only on both hosts. No trading keys, wallet keys, or X keys.
+- Paper only on both hosts, except the DEC-035 live-learning lane on `mal-fast-0`. Its wallet key is placed root-only by Helm; no Claude session reads, prints or copies it. Only the manager starts a lane book; workers never start, fund, configure or restart a lane executor. No X keys.
 - Postgres stays on localhost. Never print or commit the DB password.
 - Port 22 is never opened to the world. SSH is Cloudflare Access.
 - Stop on a host-key mismatch. Pins are in [docs/HOSTS.md](docs/HOSTS.md).
 - `/opt/miscusi` on `mal-fast-0` is a separate project, `vaanai/MiScusi`, led by the same Claude manager. Do not modify it from MAL work. Changes to it follow that repo's own deploy docs.
 - Do not commit `.env` files, API keys, or private keys. The Helius key on the hosts is `/var/lib/mal/backfill/helius.env` (Oracle) and `/var/lib/mal/fast-listener/helius.env` (fast). It stays there.
-- Do not edit `ufw`/firewall, `sshd_config`, cloudflared config, or Cloudflare Access. Those, plus the Oracle server's admin, are Helm's. Requests go to the owner, who relays to Helm.
+- Do not edit `ufw`/firewall, `sshd_config`, cloudflared config, or Cloudflare Access. Those, plus the Oracle server's admin, are Helm's. Requests go to the owner, who relays to Helm. For the DEC-035 lane the manager may contact Helm directly (owner, 2026-11-02); the firewall, sshd, cloudflared and Cloudflare fences are unchanged.
 - Workers do not merge. The manager merges after review ([DEC-013](DEC/DEC-013-claude-manager-merges.md)).
 
 ## Promotion gate
+
+Running a book in the live-learning lane (DEC-035) is not a promotion and does not by itself clear this gate. Lane trades count toward a gate read only under a registration as set out in DEC-035 §6, which also sets how real-fill failures are scored against the two fail models; no threshold here changes.
 
 A book promotes only if all of these hold, under **both** the flat 15% fail model and the pressure-fail model at slope scale 1:
 
@@ -49,6 +51,8 @@ Forward-paper rows from 2026-09-25T19:00:00Z through 2026-09-27T06:58:12Z are vo
 
 ## How to work
 
+- **Cost discipline (2026-11-02 usage audit: subagents were 71% of usage, open-ended Opus lane agents 60% alone).** Subagents run on Sonnet by default, Haiku for lookups and checks, Opus only for verdict lines (reviewer and quant-proof), QP rulings, design, registrations and the manager (DEC-013 Amendment 1 §3). One scoped task per agent, about 40 turns; no open-ended lane agents. Read big files by section (`grep -n` then `sed -n`), never whole: DEC-031 is ~440 KB, LAB_STATE ~90 KB. Wait for PR verdicts with one `gh pr view --json comments` check per agent completion, not polling loops.
+- **Records batch.** Records-only changes with no T1 trigger (lab notes, daily briefs, LAB_STATE rows outside DEC-013 Amendment 1 item 4, Console data) may share one daily `claude/records-<date>` PR; this is the one exception to one topic per branch, and it is T0. Anything with a T1 trigger (HOLDOUT_LEDGER lines, DEC or EXP errata, pins, seals text, read rules) stays in its own T1 PR. The manager sets the tier.
 - Branch: `claude/<topic>`. One topic per branch. Small pull requests.
 - Workers open the PR and stop. The manager (the Claude session on `mal-fast-0`) reviews and merges. Every PR needs `QP VERDICT … OK` and `REVIEWER VERDICT … APPROVE` on the PR at the exact head. They come from separate agents (T1) or, for PRs with no T1 trigger, one combined agent (T0); see [DEC-013 Amendment 1](DEC/DEC-013-claude-manager-merges.md).
 - Commit and push often, at a green unit test, not at the end of a long uncommitted pile.
