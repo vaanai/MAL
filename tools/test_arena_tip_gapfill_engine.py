@@ -323,3 +323,27 @@ def test_arena_paper_is_byte_identical_to_the_pinned_file_and_the_f2_engine_is_i
         run_trade(eng, tape(), sell_slot=190)
         rows[name] = [(r["kind"], r.get("stake_sol"), r.get("legs"), r.get("calc")) for r in eng.ledger.read_bot("botA") if r["kind"] != "start"]
     assert rows["f2"] == rows["base"] and len(rows["f2"]) >= 4
+
+
+# ------------------------------------------------------------------------------------------------------------------------------------ F1: a filled range is remembered for the whole window
+def long_tape(second_lo: int, end: int) -> list[dict]:
+    """P1 prints for slots 90..end-1; a backlog-style fill [148, 160] (back 50) and a second fill [second_lo, second_lo + 10] (back 0), each marker before its repair rows."""
+    rows = []
+    marks = {148: marker(148, 160, 50), second_lo: marker(second_lo, second_lo + 10, 0)}
+    for i, s in enumerate(range(90, end)):
+        r = _row(i, s)
+        if s in marks:
+            rows.append(marks[s])
+        if any(lo <= s <= lo + (12 if lo == 148 else 10) for lo in marks):
+            r["fill"], r["src"] = True, "tip_fill"
+        rows.append(r)
+    return rows
+
+
+@pytest.mark.parametrize("gap_slots_later", [5_000, 30_000])
+def test_a_long_hold_still_meets_the_margin_exclusion_of_a_range_filled_long_before(tmp_path, gap_slots_later):
+    """QP probe: bought at 100 (entry leg in [98, 160]), sold after a SECOND fill 5,000 or 30,000 slots later: excluded either way (pruning by age priced the 30,000 case)."""
+    second = 148 + gap_slots_later
+    eng = run(tmp_path, f"long{gap_slots_later}", long_tape(second, second + 300), buy=100, sell=second + 60)
+    assert trades(eng) == [] and excluded_reasons(eng) == {"feed_gap"}, gap_slots_later
+    assert len(eng.fills) == 2 and eng._active == []  # both remembered; none still extends the slot-jump walk
