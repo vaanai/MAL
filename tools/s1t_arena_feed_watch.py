@@ -16,6 +16,10 @@ OTHER. A `pid` change (or a counter that went down) is a feed restart: the histo
 printed; it is not a trigger. A status older than 300 s (wall clock against `updated_ms`) prints `STALE` and a missing or unreadable file prints
 `UNREADABLE`; neither is a trigger, and either resets the consecutive-check count. With --seconds N it exits 0 after N s (printing
 `S1T_SIDE_FEED_OK`).
+BLIND (reviewer M5: the rule must not be off for the whole smoke while the job looks healthy). It prints `S1T_SIDE_FEED_BLIND ...` and exits 5 when
+  (a) BLIND_CHECKS (10) consecutive checks are UNREADABLE or STALE (10 min at the 60 s sampling), or
+  (b) REBASE_MAX (3) or more re-baselines (pid changes or counter resets) fall inside any REBASE_WINDOW_S (60 min).
+Exit codes: 0 done (--seconds), 2 usage, 4 STOP, 5 BLIND.
 """
 from __future__ import annotations
 
@@ -30,6 +34,10 @@ from typing import Any, Callable, Sequence
 STATUS_NAME = "arena-feed-status.json"
 STATUS_DEFAULT = "/data/mal/arena/tape/" + STATUS_NAME
 EXIT_STOP = 4
+EXIT_BLIND = 5
+BLIND_CHECKS = 10  # consecutive UNREADABLE or STALE checks
+REBASE_MAX = 3  # re-baselines inside REBASE_WINDOW_S
+REBASE_WINDOW_S = 3600.0
 STALE_MS = 300_000
 YOUNG_H = 6.0
 WINDOW_S = 3600.0
@@ -78,25 +86,41 @@ class Watcher:
         self.samples: collections.deque = collections.deque()  # (t, gaps, reconnects)
         self.base: tuple[float, float] | None = None
         self.streak = 0
+        self.bad_run = 0  # consecutive UNREADABLE / STALE checks
+        self.rebases: collections.deque = collections.deque()  # watcher times of the re-baselines in the last REBASE_WINDOW_S
 
     def _reset(self) -> None:
         self.samples.clear()
         self.base, self.streak = None, 0
 
+    def _bad(self, word: str) -> list[str]:
+        self.streak = 0
+        self.bad_run += 1
+        out = [word]
+        if self.bad_run >= BLIND_CHECKS:
+            out.append(f"S1T_SIDE_FEED_BLIND reason=unreadable_or_stale consecutive_checks={self.bad_run}")
+        return out
+
     def step(self, st: Any, t: float, wall_ms: float) -> list[str]:
-        """One check at watcher time t (s). Returns the lines to print; a line starting S1T_SIDE_FEED_STOP means stop."""
+        """One check at watcher time t (s). Returns the lines to print; S1T_SIDE_FEED_STOP means stop (exit 4), S1T_SIDE_FEED_BLIND means blind (exit 5)."""
         ex = extract(st)
         if ex is None:
-            self.streak = 0
-            return ["UNREADABLE"]
+            return self._bad("UNREADABLE")
         if wall_ms - ex["updated_ms"] > self.stale_ms:
-            self.streak = 0
-            return ["STALE"]
+            return self._bad("STALE")
+        self.bad_run = 0
         out: list[str] = []
         went_down = bool(self.samples) and (ex["gaps"] < self.samples[-1][1] or ex["rec"] < self.samples[-1][2])
         if self.seen and (ex["pid"] != self.pid or went_down):
             self._reset()
             out.append("S1T_SIDE_FEED_REBASELINE")
+            self.rebases.append(t)
+            while self.rebases and self.rebases[0] <= t - REBASE_WINDOW_S:
+                self.rebases.popleft()
+            if len(self.rebases) >= REBASE_MAX:
+                out.append(f"S1T_SIDE_FEED_BLIND reason=rebaselines count={len(self.rebases)} window_s={int(REBASE_WINDOW_S)}")
+                self.pid = ex["pid"]
+                return out
         self.pid, self.seen = ex["pid"], True
         self.samples.append((t, ex["gaps"], ex["rec"]))
         if self.base is None:
@@ -137,6 +161,8 @@ def run_watch(read: Callable[[], Any], seconds: float | None, interval_s: float,
             emit(ln)
         if any(ln.startswith("S1T_SIDE_FEED_STOP") for ln in lines):
             return EXIT_STOP
+        if any(ln.startswith("S1T_SIDE_FEED_BLIND") for ln in lines):
+            return EXIT_BLIND
         if seconds is not None and clock() - t0 >= seconds:
             emit("S1T_SIDE_FEED_OK")
             return 0
