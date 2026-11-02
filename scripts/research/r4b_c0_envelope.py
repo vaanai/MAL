@@ -23,7 +23,9 @@ Model (fixed in code, before any of the data it judges exists past catch-up end 
       H >  h_last, tail known  fitted tail at h_last + max(tail slope, 0) x (H - h_last) (label "tail");
       H >  h_last, no tail     fitted pre-plateau line at h_last + pre slope x (H - h_last) (label "linear", the conservative case).
     The no-plateau figure (the pre-plateau line extended to H) is always reported beside it as `proj_no_plateau_mib`.
-  * The needed cap: ceil(projection / 0.85 / 256) x 256 MiB. FITS iff projection <= 0.85 x the candidate cap (default 5,120 MiB, the long run's cap).
+  * The deciding figure is max(projection, the highest anon observed anywhere in the record, catch-up included): a run that already went over the line never
+    FITS on a lower projection. The needed cap: ceil(deciding / 0.85 / 256) x 256 MiB. FITS iff deciding <= 0.85 x the candidate cap (default 5,120 MiB, the
+    long run's cap). The no-plateau figure is judged the same way.
   * Lifetime: MiScusi refuses a job longer than 14 days (1,209,600 s; job #1036 and #1516 hit it). FITS iff RUN_END <= HOST_JOB_START + 14 d. The report gives
     the latest possible run end and, with --first-send-epoch, the longest canary that fits.
 Which verdict binds, the plateau model or the no-plateau one, is quant-proof's ruling, not this tool's; it prints both and decides nothing about a send.
@@ -142,13 +144,23 @@ def envelope(samples: list[tuple[float, float]], catchup_end: float, *, origin: 
         out["notes"].append("plateau not measured: the projection extends the pre-plateau line (conservative)")
     out["projection_label"] = label
     out["projection_mib"] = round(proj, 1)
-    need = math.ceil(proj / alert_frac / CAP_STEP_MIB) * CAP_STEP_MIB
+    # The verdict never rests on a projection below memory the run actually reached (reviewer on #1173): the deciding figure is the larger of the model's projection
+    # and the highest anon in the WHOLE record (catch-up and settle hour included). A run that went over the 85 % line and then flattened below it does not FIT.
+    observed = max(a for _, a in samples) / MIB
+    out["anon_max_observed_mib"] = round(observed, 1)
+    deciding = max(proj, observed)
+    out["deciding_mib"] = round(deciding, 1)
+    out["deciding_basis"] = "observed_max" if observed > proj else "projection"
+    need = math.ceil(deciding / alert_frac / CAP_STEP_MIB) * CAP_STEP_MIB
     out["needed_cap_mib"] = need
     out["alert_line_mib"] = round(cap_mib * alert_frac, 1)
-    out["envelope_fits"] = proj <= cap_mib * alert_frac
+    out["envelope_fits"] = deciding <= cap_mib * alert_frac
+    if observed > cap_mib * alert_frac:
+        out["notes"].append(f"the record's own peak {observed:.1f} MiB is above the {cap_mib * alert_frac:.1f} MiB line: NO_FIT at this cap whatever the projection")
     if out["proj_no_plateau_mib"] is not None:
-        out["needed_cap_no_plateau_mib"] = math.ceil(out["proj_no_plateau_mib"] / alert_frac / CAP_STEP_MIB) * CAP_STEP_MIB
-        out["envelope_fits_no_plateau"] = out["proj_no_plateau_mib"] <= cap_mib * alert_frac
+        np_dec = max(out["proj_no_plateau_mib"], observed)
+        out["needed_cap_no_plateau_mib"] = math.ceil(np_dec / alert_frac / CAP_STEP_MIB) * CAP_STEP_MIB
+        out["envelope_fits_no_plateau"] = np_dec <= cap_mib * alert_frac
     life_ok = True
     if host_job_start is not None:
         latest = host_job_start + MISCUSI_MAX_S
