@@ -22,7 +22,7 @@ def test_the_job_script_is_plain_sh_with_a_scope_cap_and_no_pipe_or_bashism(name
     p = SCRIPTS[name]
     text, code = p.read_text(), code_lines(p)
     assert text.startswith("#!/bin/sh\n") and "set -eu" in code
-    assert re.search(r"systemd-run --user --scope -q -p MemoryMax=\d+G -p MemorySwapMax=0 nice -n 19 ionice -c3 timeout \d+", code)
+    assert re.search(r"systemd-run --user --scope -q -p MemoryMax=\d+G -p MemorySwapMax=0 nice -n 19 ionice -c3 timeout (\d+|\"\$TMO\")", code)
     assert f"-m {EXEC[name]}" in code and "/data/mal/venv/bin/python -s -B" in code
     for bad in ("[[", "PIPESTATUS", "<<<", "$((", "&>", "source ", "function ", "declare ", "local "):
         assert bad not in code, bad
@@ -54,4 +54,14 @@ def test_the_p0_job_carries_qps_pins_and_the_sizing_from_the_receivers_hour_size
     text = SCRIPTS["p0"].read_text()
     for needle in ("2026-10-29T09 (1793264400000", "2026-11-03,2026-11-04,2026-11-05", "150/14 = 10.714285714285714", "8,961.0 MB", "mean 103.0 MB", "183 hour files", "18.8 GB compressed", "23.6 GB at p90", "740,168.6 an hour", "135.5M trades", "about 1.5 h", "the 144 screens",
                    "MemoryMax=16G", "timeout 21600", "NOT measured"):
+        assert needle in text, needle
+
+
+
+def test_the_equiv_job_passes_the_legs_and_sizes_the_timeout_to_them_and_names_job_a_and_job_b():
+    text, code = SCRIPTS["equiv"].read_text(), code_lines(SCRIPTS["equiv"])
+    assert '--legs "$LEGS"' in code and '--hours "$HOURS"' in code and '--min-periods "$FLOOR"' in code
+    assert "*f3d*) TMO=43200" in code and "*) TMO=21600" in code                      # F_3D (three runs x three days) gets 12 h, the other legs 6 h
+    assert 'LEGS="${4:-equiv,e1,rc}"' in code and "2026-08-14T12..2026-08-15T14" in code
+    for needle in ("Job A", "Job B", "2026-08-14T12..2026-08-17T14", "floor 30 in EACH", "floor 8", "COMPACTED", "c8fcf761", "ceiling, not an estimate"):
         assert needle in text, needle
