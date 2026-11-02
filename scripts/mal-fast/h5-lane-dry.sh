@@ -25,8 +25,12 @@ L.H5LaneExecutor._seal_reason = lambda self, trg, now: None  # dry proof only
 sys.exit(L.main(sys.argv[1:]))
 EOP
 set +e
-PYTHONPATH="$ROOT" timeout "$SECS" "$PY" "$D/run.py" --config "$D/config.json" --dry-run > "$D/executor.out" 2>&1
-echo "executor exit $? (124 = time limit reached)"
-PYTHONPATH="$ROOT" "$PY" "$D/run.py" --config "$D/config.json" --status 2>&1 | head -80
+PYTHONPATH="$ROOT" timeout "$SECS" "$PY" "$D/run.py" --config "$D/config.json" --env-file "${LANE_ENV_FILE:-/var/lib/mal/fast-listener/helius.env}" --dry-run > "$D/executor.out" 2>&1
+RC=$?
+echo "executor exit $RC (124 = time limit reached)"
+PYTHONPATH="$ROOT" "$PY" "$D/run.py" --config "$D/config.json" --env-file "${LANE_ENV_FILE:-/var/lib/mal/fast-listener/helius.env}" --status 2>&1 | head -80
 echo "--- ledger rows by kind"; [ -f "$D/lane-ledger.jsonl" ] && grep -o '"ev": *"[a-z_]*"' "$D/lane-ledger.jsonl" | sort | uniq -c || echo "no lane ledger file"
 echo "--- executor.out line kinds"; awk '{print $2,$3}' "$D/executor.out" | sort | uniq -c | sort -rn | head -30
+
+# a dry run that ended for any reason but the time limit is a failure, never a pass
+if [ "$RC" -ne 124 ] && [ "$RC" -ne 0 ]; then echo "FAIL: executor exit $RC"; tail -20 "$D/executor.out"; exit 1; fi
