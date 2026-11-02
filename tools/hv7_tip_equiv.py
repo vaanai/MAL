@@ -3,7 +3,8 @@
 `tools/drill_hv7_real_layout.py`, `tools/hv7_p0_count.py` and `scripts/ops/hv7-real-layout-replay.sh` keep their bytes and their public-tape refusals. PAPER only: StubModel (no API),
 fake chain (no RPC), no network, no key.
 
-INPUT. The pinned WRITER's output built from EXPLORATION walker hours (explore-0814, `scripts/research/arena_tip_equiv.py`'s loader) through a FAKE tip dir and state dir (the qp-1165 arm-T
+INPUT. (Closed hours are COMPACTED to .jsonl.zst as in production, `Writer(compress=True)`; the legs read that path. The offline reference stays .jsonl.)
+The pinned WRITER's output built from EXPLORATION walker hours (explore-0814, `scripts/research/arena_tip_equiv.py`'s loader) through a FAKE tip dir and state dir (the qp-1165 arm-T
 pattern): walker rows -> trades-/creates-/migrations-<hour> files -> `tools.arena_tip_reader.TipReader` -> `ArenaTipSource` -> `tools.arena_tip_tape_writer.Writer` (in process, an injected
 clock, the production code path: hour files, closing, the counts row) -> a derived tape dir. The exploration walker rows carry no PumpSwap V; the harness stamps the registered
 V on every PumpSwap trade row that lacks one (a disclosed fixture value, `V_LAMPORTS`), as the tip decoder's event V would. Nothing sealed is read: refusals are in `check_scratch`, `check_tape`
@@ -48,6 +49,7 @@ from tools import arena_tip_adapter as ta  # noqa: E402
 from tools import arena_tip_reader as tr  # noqa: E402
 from tools import arena_tip_tape_writer as aw  # noqa: E402
 from tools import drill_hv7_real_layout as D  # noqa: E402
+from tools import hv7_rank as RK  # noqa: E402
 from tools import hv7_runner as R  # noqa: E402
 from tools.drill_hv6_item6 import cards_md5, log_md5  # noqa: E402
 
@@ -121,7 +123,7 @@ def _source(tip: Path, state: Path, first_hour: str, clock: Any) -> ta.ArenaTipS
     return ta.ArenaTipSource(reader, state, now_ms=clock, io_hook=lambda: True, require_io_idle=False)
 
 
-def build_derived(seq: Iterable[tuple[str, dict]], scratch: Path, first_hour: str, *, compress: bool = False, skip_every: int = 0) -> dict[str, Any]:
+def build_derived(seq: Iterable[tuple[str, dict]], scratch: Path, first_hour: str, *, compress: bool = True, skip_every: int = 0) -> dict[str, Any]:
     """Walker rows -> fake tip dir -> the pinned Writer (in process) -> <scratch>/derived; and the adapter's rows written offline to <scratch>/offline (the EQUIV_1D reference)."""
     tip, state, out, off = scratch / "tip", scratch / "state", scratch / "derived", scratch / "offline"
     built = eq.build_tip_dir(seq, tip, state, skip_every=skip_every)
@@ -158,7 +160,10 @@ def build_derived(seq: Iterable[tuple[str, dict]], scratch: Path, first_hour: st
     for f in fh.values():
         f.close()
     hours = sorted(p.name for p in out.iterdir() if p.name.startswith("tape-"))
-    return {"rows": built["rows"], "walker_rows_no_tx_index": built["walker_rows_no_tx_index"], "derived_hour_files": len(hours), "offline_rows": n_off, "offline_hour_files": len(fh),
+    n_zst = sum(1 for h in hours if h.endswith(".jsonl.zst"))
+    if compress and len(hours) >= 2 and n_zst < 1:
+        raise Refused("compaction_did_not_run")              # QP E1: the production writer compacts closed hours, and the legs must read that path
+    return {"derived_zst_files": n_zst, "rows": built["rows"], "walker_rows_no_tx_index": built["walker_rows_no_tx_index"], "derived_hour_files": len(hours), "offline_rows": n_off, "offline_hour_files": len(fh),
             "writer_totals": dict(sorted(w.totals.items())) if hasattr(w, "totals") else {}}
 
 
@@ -234,15 +239,25 @@ def child_one_run(tag: str, tape: str, days: list[str], start: int, end: int, sh
     return 0 if "error_class" not in res else 3
 
 
-def leg_f_3d(scratch: Path, days: list[str], start: int, end: int, sha: str, rss_cap_mb: float = D.RSS_CAP_MB) -> dict:
+F3D_MIN_SPAN_MS = 72 * 3_600_000          # F_3D is a THREE-DAY replay (72 hourly screens); a shorter span is refused (QP E2)
+RC_DROP_KEYS = ("sha", "prev", "frozen_sha")        # names-only rule for EQUIV_RC, pinned before any run: these keys may differ in any decision-log row (the hash chain and the pin) ...
+RC_DROP_L = ("request_sha256",)                    # ... and L's request hash (max_tokens is in the request body, so it changes); nothing else may differ
+RC_PREFIX = ()                                     # no id mapping: the leg runs the F1 runner under the proven runner's id prefix instead (below), because order ids and position ids are hashes of the bot id
+RC_REF_PREFIX = "hv7.0-"                           # the proven runner's BOT_PREFIX; `R.BOT_PREFIX` is set to it for the duration of the leg (a harness-only setting)
+LAST_PROVEN_SHA = "c8fcf761"                       # the last proven HV7 runner (public-tape EQUIV_1D #1739/#1743/#1772, F_3D #1744, E1 #1749)
+
+
+def leg_f_3d(scratch: Path, days: list[str], start: int, end: int, sha: str, min_periods: int, rss_cap_mb: float = D.RSS_CAP_MB, min_span_ms: int = F3D_MIN_SPAN_MS) -> dict:
+    if end - start < min_span_ms:
+        raise Refused("f3d_needs_a_72_hour_span")
     base = scratch / "drill"
     base.mkdir(parents=True, exist_ok=True)
     _fresh(base, *TAGS)
     runs = []
     for tag, seed in zip(TAGS, HASHSEEDS):
         r = subprocess.run([sys.executable, "-B", "-m", "tools.hv7_tip_equiv", "--one-run", tag, "--tape", str(scratch / "derived"), "--days", ",".join(days), "--start-ms", str(start),
-                            "--end-ms", str(end), "--sha", sha, "--base", str(base), "--scratch", str(scratch)], cwd=str(Path(__file__).resolve().parent.parent), env={**os.environ, "PYTHONHASHSEED": seed},
-                           stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                            "--end-ms", str(end), "--sha", sha, "--base", str(base), "--scratch", str(scratch)], cwd=str(Path(__file__).resolve().parent.parent),
+                           env={**os.environ, "PYTHONHASHSEED": seed}, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         f = base / f"{tag}.json"
         if r.returncode != 0 or not f.exists():
             raise Refused(f"child_{tag}_rc{r.returncode}")
@@ -252,12 +267,15 @@ def leg_f_3d(scratch: Path, days: list[str], start: int, end: int, sha: str, rss
         runs.append(res)
     a, b, c = runs
     v = D.verdict(a, b, c, max(x["peak_rss_mb"] for x in runs), rss_cap_mb)
-    return {"leg": "F_3D", "verdict": v.get("result", "FAIL"), "detail": v,
-            "log_md5": [x["log_md5"] for x in runs], "cards_md5": [x["cards_md5"] for x in runs], "periods_ge3": a["periods_ge3"]}
+    floors = [x["periods_ge3"] for x in runs]
+    floor_ok = all(n >= min_periods for n in floors)                                  # QP E3: the pinned floor holds in EACH of the three runs
+    return {"leg": "F_3D", "verdict": "PASS" if v.get("result") == "PASS" and floor_ok else "FAIL", "detail": v, "floor": min_periods, "periods_ge3_per_run": floors, "floor_ok": floor_ok,
+            "span_h": (end - start) // 3_600_000, "log_md5": [x["log_md5"] for x in runs], "cards_md5": [x["cards_md5"] for x in runs], "periods_ge3": a["periods_ge3"]}
 
 
-def leg_e1(scratch: Path, days: list[str], start: int, end: int, sha: str, kill_at: int) -> dict:
-    """The uninterrupted run against the run killed at kill_at and resumed by a NEW runner on the same dirs (the shape of tools/test_hv7_resume.py::interrupted), on the tip source."""
+def leg_e1(scratch: Path, days: list[str], start: int, end: int, sha: str, kill_at: int, min_periods: int = 1, min_side: int = 2) -> dict:
+    """The uninterrupted run against the run killed at kill_at and resumed by a NEW runner on the same dirs (the shape of tools/test_hv7_resume.py::interrupted), on the tip source.
+    QP E3: the run must reach the pinned floor, with at least `min_side` periods with >= 3 candidates on EACH side of the cut."""
     base, tape = scratch / "drill", scratch / "derived"
     _fresh(base, "e1-whole", "e1-cut")
     with _roots(scratch):
@@ -272,29 +290,160 @@ def leg_e1(scratch: Path, days: list[str], start: int, end: int, sha: str, kill_
             one.log.verify(x)
             second.log.verify(x)
         w, c = (log_md5(Path(one.cfg.root)), cards_md5(Path(one.cfg.root))), (log_md5(Path(second.cfg.root)), cards_md5(Path(second.cfg.root)))
-        ok = w == c and D.summarize(one)["periods_ge3"] > 0
-    return {"leg": "E1", "verdict": "PASS" if ok else "FAIL", "log_md5": {"whole": w[0], "resumed": c[0]}, "cards_md5": {"whole": w[1], "resumed": c[1]},
-            "periods_ge3": D.summarize(one)["periods_ge3"], "kill_at_ms": kill_at}
+        cut = RK.iso_from_ms(kill_at)
+        per = [r for r in one.log.rows("SCAN") if r.get("kind") == "period" and not r.get("no_trade")]
+        before, after = sum(1 for r in per if r["t_d"] < cut), sum(1 for r in per if r["t_d"] >= cut)
+        n_ge3 = D.summarize(one)["periods_ge3"]
+    floor_ok = n_ge3 >= min_periods and before >= min_side and after >= min_side
+    ok = w == c and floor_ok
+    return {"leg": "E1", "verdict": "PASS" if ok else "FAIL", "log_md5": {"whole": w[0], "resumed": c[0]}, "cards_md5": {"whole": w[1], "resumed": c[1]}, "periods_ge3": n_ge3,
+            "floor": min_periods, "min_side": min_side, "periods_ge3_before_cut": before, "periods_ge3_after_cut": after, "floor_ok": floor_ok, "kill_at_ms": kill_at}
+
+
+def norm_md5(root: Path) -> str:
+    """md5 of the decision logs under the EQUIV_RC names-only rule: per file (sorted by name), per row, the keys RC_DROP_KEYS (and RC_DROP_L on L rows) removed,
+    JSON with sorted keys. Nothing else is dropped, so any other difference changes the md5."""
+    import hashlib
+
+    h = hashlib.md5()
+    for f in sorted(Path(root, "decisions").rglob("*.jsonl")):
+        name = f.relative_to(root).as_posix()
+        for a, b in RC_PREFIX:
+            name = name.replace(a, b)
+        h.update(name.encode() + b"\0")
+        for line in f.read_text().splitlines():
+            row = json.loads(line)
+            for k in RC_DROP_KEYS:
+                row.pop(k, None)
+            if row.get("kind") == "rank":
+                for k in RC_DROP_L:
+                    row.pop(k, None)
+            text = json.dumps(row, sort_keys=True, separators=(",", ":"))
+            for a, b in RC_PREFIX:
+                text = text.replace(a, b)
+            h.update(text.encode() + b"\n")
+    return h.hexdigest()
+
+
+def _norm_rows(root: Path) -> dict[str, list[dict]]:
+    out: dict[str, list[dict]] = {}
+    for f in sorted(Path(root, "decisions").rglob("*.jsonl")):
+        name = f.relative_to(root).as_posix()
+        for a, b in RC_PREFIX:
+            name = name.replace(a, b)
+        rows = []
+        for line in f.read_text().splitlines():
+            row = json.loads(line)
+            for k in RC_DROP_KEYS:
+                row.pop(k, None)
+            if row.get("kind") == "rank":
+                for k in RC_DROP_L:
+                    row.pop(k, None)
+            rows.append(row)
+        out[name] = rows
+    return out
+
+
+def diff_keys(ref: Path, new: Path) -> dict[str, Any]:
+    """NAMES ONLY (never a value): per decision-log file, the row counts and the sorted set of keys whose value differs between the two normalised logs."""
+    a, b = _norm_rows(ref), _norm_rows(new)
+    out: dict[str, Any] = {}
+    for name in sorted(set(a) | set(b)):
+        ra, rb = a.get(name, []), b.get(name, [])
+        keys: set[str] = set()
+        n_diff = 0
+        for x, y in zip(ra, rb):
+            if x != y:
+                n_diff += 1
+                keys |= {k for k in set(x) | set(y) if x.get(k) != y.get(k)}
+        if ra != rb:
+            out[name] = {"rows_ref": len(ra), "rows_new": len(rb), "rows_differing": n_diff, "differing_keys": sorted(keys)}
+    return out
+
+
+def _ref_tree(scratch: Path, ref_sha: str) -> Path:
+    """The proven runner's code: `git archive <ref_sha> tools observe` extracted under the scratch tree (the rest of the repo is not needed)."""
+    import io
+    import tarfile
+
+    repo = Path(__file__).resolve().parent.parent
+    out = subprocess.run(["git", "archive", ref_sha, "tools", "observe"], cwd=str(repo), capture_output=True)
+    if out.returncode != 0:
+        raise Refused("ref_sha_not_found")
+    dst = scratch / "ref-tree"
+    shutil.rmtree(dst, ignore_errors=True)
+    dst.mkdir(parents=True)
+    with tarfile.open(fileobj=io.BytesIO(out.stdout)) as tf:
+        tf.extractall(dst)
+    return dst
+
+
+_REF_DRIVER = """
+import json, os, sys
+from pathlib import Path
+os.environ["MAL_ARENA_TEST"] = "1"
+from tools import hv7_runner as R
+from tools import drill_hv7_real_layout as D
+scratch, base, tag, tape, days, start, end, sha = sys.argv[1:9]
+R.READ_ROOTS = R.WRITE_ROOTS = (str(Path(scratch).resolve()),)
+res = D.one_run(Path(base), tag, sha, days.split(","), Path(tape), start_ms=int(start), end_ms=int(end))
+print(json.dumps({k: res[k] for k in ("periods", "periods_ge3", "entries", "cards_md5")}, sort_keys=True))
+"""
+
+
+def leg_equiv_rc(scratch: Path, days: list[str], start: int, end: int, sha: str, min_periods: int, ref_sha: str = LAST_PROVEN_SHA) -> dict:
+    """EQUIV_RC (QP ruling 1(a)): the F1 runner with U2 OFF against the last proven runner (`ref_sha`), on the same writer-built tape; the arm decision logs must be md5-equal under the
+    names-only rule (RC_DROP_KEYS, RC_DROP_L; the F1 runner runs under the proven runner's id prefix RC_REF_PREFIX) and the cards md5 and entries equal. A runner-change proof; EQUIV_1D is the source-path leg."""
+    import functools
+
+    base = scratch / "drill"
+    base.mkdir(parents=True, exist_ok=True)
+    _fresh(base, "rc-ref", "rc-new")
+    tree = _ref_tree(scratch, ref_sha)
+    env = {**os.environ, "PYTHONHASHSEED": "0", "PYTHONPATH": str(tree)}
+    r = subprocess.run([sys.executable, "-B", "-c", _REF_DRIVER, str(scratch), str(base), "rc-ref", str(scratch / "derived"), ",".join(days), str(start), str(end), sha[:13]], cwd=str(tree),
+                       env=env, capture_output=True, text=True)
+    if r.returncode != 0:
+        raise Refused(f"reference_runner_rc{r.returncode}: " + (r.stderr.strip().splitlines() or [""])[-1][:240])
+    ref = json.loads(r.stdout.strip().splitlines()[-1])
+    orig_cfg, orig_prefix = R.Hv7Config, R.BOT_PREFIX
+    R.Hv7Config = functools.partial(orig_cfg, u2=False)          # the F1 runner with rule U2 OFF: a clean pass-through (no patch, no U2 key)
+    R.BOT_PREFIX = RC_REF_PREFIX                                  # same bot ids as the proven runner, so every id-derived hash (order and position ids) is comparable
+    try:
+        with _roots(scratch):
+            new = D.one_run(base, "rc-new", sha, days, scratch / "derived", start_ms=start, end_ms=end)
+    finally:
+        R.Hv7Config, R.BOT_PREFIX = orig_cfg, orig_prefix
+    m_ref, m_new = norm_md5(base / "rc-ref" / "v7"), norm_md5(base / "rc-new" / "v7")
+    equal = {"decision_logs_norm_md5": m_ref == m_new, "cards_md5": ref["cards_md5"] == new["cards_md5"], "entries": ref["entries"] == new["entries"], "periods": ref["periods"] == new["periods"]}
+    ok = all(equal.values()) and new["periods_ge3"] >= min_periods
+    return {"leg": "EQUIV_RC", "verdict": "PASS" if ok else "FAIL", "equal": equal, "ref_sha": ref_sha, "floor": min_periods, "periods_ge3": new["periods_ge3"], "periods": new["periods"],
+            "norm_md5": {"ref": m_ref, "new": m_new}, "diff_names_only": {} if m_ref == m_new else diff_keys(base / "rc-ref" / "v7", base / "rc-new" / "v7"), "cards_md5": {"ref": ref["cards_md5"], "new": new["cards_md5"]}, "entries": new["entries"],
+            "rule": {"drop_keys": list(RC_DROP_KEYS), "drop_on_L_rank_rows": list(RC_DROP_L), "bot_prefix_used_by_the_f1_runner_in_this_leg": RC_REF_PREFIX}}
 
 
 def run_all(seq: Iterable[tuple[str, dict]], scratch: Path, first_hour: str, last_hour: str, sha: str, *, start_ms: int, end_ms: int, kill_at: int, min_periods: int,
-            legs: Iterable[str] = ("equiv", "f3d", "e1"), keep: bool = False) -> dict[str, Any]:
+            min_side: int = 2, ref_sha: str = LAST_PROVEN_SHA, legs: Iterable[str] = ("equiv", "e1", "rc"), keep: bool = False, compress: bool = True,
+            f3d_min_span_ms: int = F3D_MIN_SPAN_MS) -> dict[str, Any]:
     t0 = time.monotonic()
     scratch.mkdir(parents=True, exist_ok=True)
-    built = build_derived(with_v(seq), scratch, first_hour)
+    legs = tuple(legs)
+    built = build_derived(with_v(seq), scratch, first_hour, compress=compress)
     days = _days(first_hour, last_hour)
     reports = []
     if "equiv" in legs:
         reports.append(leg_equiv_1d(scratch, days, start_ms, end_ms, sha, min_periods))
     if "f3d" in legs:
-        reports.append(leg_f_3d(scratch, days, start_ms, end_ms, sha))
+        reports.append(leg_f_3d(scratch, days, start_ms, end_ms, sha, min_periods, min_span_ms=f3d_min_span_ms))
     if "e1" in legs:
-        reports.append(leg_e1(scratch, days, start_ms, end_ms, sha, kill_at))
-    rep = {"schema": "hv7_tip_equiv_v1", "sha": sha, "built": built, "legs": reports, "verdict": "PASS" if reports and all(r["verdict"] == "PASS" for r in reports) else "FAIL",
+        reports.append(leg_e1(scratch, days, start_ms, end_ms, sha, kill_at, min_periods, min_side))
+    if "rc" in legs:
+        reports.append(leg_equiv_rc(scratch, days, start_ms, end_ms, sha, min_periods, ref_sha))
+    rep = {"schema": "hv7_tip_equiv_v2", "sha": sha, "built": built, "legs": reports, "verdict": "PASS" if reports and all(r["verdict"] == "PASS" for r in reports) else "FAIL",
            "v_fixture_lamports": V_LAMPORTS, "peak_rss_mb": _rss_mb(), "seconds": round(time.monotonic() - t0, 1),
            "note": "md5s, counts, timings and RSS only; no price, P&L, fill or exit state is reported. Exploration hours; V stamped from a fixture value."}
     if not keep:
-        for d in ("tip", "state", "derived", "offline", "drill"):
+        for d in ("tip", "state", "derived", "offline", "drill", "ref-tree"):
             shutil.rmtree(scratch / d, ignore_errors=True)
     return rep
 
@@ -311,10 +460,12 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--base")
     ap.add_argument("--scratch")
     ap.add_argument("--out")
-    ap.add_argument("--hours", default="2026-08-16T12..2026-08-17T12", help="h0..h1 (h1 exclusive), inside the exploration block")
+    ap.add_argument("--hours", default="2026-08-14T12..2026-08-15T14", help="h0..h1 (h1 exclusive), inside the exploration block")
     ap.add_argument("--clean", default=str(eq.CLEAN))
     ap.add_argument("--min-periods", type=int, default=None, help="the min-decisions floor, pinned in a notebook entry BEFORE the job (required)")
-    ap.add_argument("--legs", default="equiv,f3d,e1")
+    ap.add_argument("--legs", default="equiv,e1,rc", help="Job A: equiv,e1,rc (--hours 2026-08-14T12..2026-08-15T14, --min-periods 8); Job B: f3d (--hours 2026-08-14T12..2026-08-17T14, --min-periods 30)")
+    ap.add_argument("--min-side", type=int, default=2, help="E1: periods with >= 3 candidates required on each side of the cut")
+    ap.add_argument("--ref-sha", default=LAST_PROVEN_SHA, help="EQUIV_RC: the last proven runner")
     ap.add_argument("--keep-scratch", action="store_true")
     a = ap.parse_args(argv)
     if a.one_run is not None:
@@ -341,7 +492,7 @@ def main(argv: list[str] | None = None) -> int:
     kill_at = start + (end - start) // 2
     kill_at -= kill_at % 60_000
     rep = run_all(eq.load_walker(Path(a.clean), eq.WINDOWS, h0, h1), scratch, h0, ms_to_hour(end - 1), sha[:13], start_ms=start, end_ms=end, kill_at=kill_at,
-                  min_periods=a.min_periods, legs=a.legs.split(","), keep=a.keep_scratch)
+                  min_periods=a.min_periods, min_side=a.min_side, ref_sha=a.ref_sha, legs=a.legs.split(","), keep=a.keep_scratch)
     (scratch / "report.json").write_text(json.dumps(rep, indent=1, sort_keys=True, default=str) + "\n")
     print(json.dumps({"hv7_tip_equiv": "done", "verdict": rep["verdict"], "legs": {r["leg"]: r["verdict"] for r in rep["legs"]}, "peak_rss_mb": rep["peak_rss_mb"], "seconds": rep["seconds"]},
                      sort_keys=True))
