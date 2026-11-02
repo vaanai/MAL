@@ -44,7 +44,7 @@ def check_url(url: str) -> str:
     if not isinstance(url, str) or not url.startswith("wss://"):
         raise ValueError("refused: the URL must start with wss://")
     sp = urlsplit(url)
-    host = (sp.hostname or "").lower()
+    host = (sp.hostname or "").lower().rstrip(".")  # the DNS root dot (api.mainnet-beta.solana.com.) names the same host
     if not host:
         raise ValueError("refused: no host in the URL")
     if sp.query or sp.fragment or "?" in url or "#" in url:
