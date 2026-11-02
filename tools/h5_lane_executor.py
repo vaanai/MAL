@@ -10,9 +10,15 @@ Limits (all DEC-035 s2, enforced IN ADDITION to the tier limits, TIER_WALLET_FRA
   - daily stop: -0.10 SOL from the 00:00Z snapshot, measured two ways (marks, and cost basis) and also as a worst case before a send.
   - max open 3 from the shared ledger; stake in [0.02, 0.03] SOL; marks older than mark_stale_s (<= 60) are worth 0; lane STOP file before every send.
   - write-ahead: the `send_intent` row is fsynced BEFORE the send; every other row goes through a persisted backlog; a malformed ledger fails closed.
-  - optional `waive_pool_gap` (default false): a trigger whose POOL was flagged by a past feed gap (trg.gap) is not refused for that alone. The executor's
-    CURRENT feed gap, the 20 s gap hold, feed_stale and every other refusal are unchanged, and the on-chain entry price check still applies. Every lane
-    `send_intent` row and the `decision` log row carry `pool_gap_waived` true|false so analysis can split waived from clean trades.
+  - optional `waive_pool_gap` (default false): a trigger whose POOL was flagged by past FEED-LOSS gaps is not refused for that alone. Fail closed: the pinned
+    parser drops the shadow row's `gaps` list, so the lane captures it from the raw row (intent_tick) and waives only when the list is a non-empty list of
+    entries ALL of a feed-loss kind (LANE_FEED_GAP_KINDS = the kinds tools/h5_shadow.py Engine._gap writes: slot_jump, silence, feed_restart, socket_reconnect).
+    `announced_before_gap`, `ambiguous_mint`, `slot_below_s0`, any unknown kind, a missing, empty or malformed list, or a trigger not read from a shadow row
+    (no captured record) are refused as feed_gap as before. The executor's CURRENT feed gap, the 20 s gap hold, feed_stale and every other refusal are
+    unchanged, and the on-chain entry price check still applies. Every lane `send_intent` row and the `decision` log row carry `pool_gap_waived` true|false
+    (the decision row also `pool_gap_kinds`) so analysis can split waived from clean trades. The tag is for analysis only: under a DEC-035 s6 registration
+    every send of the bot_id is in the read. This code is a new bot_id (DEC-035 s3): the example config uses `h5-lane-2`; h5-lane-1 (executor sha 8481b496)
+    never runs it, and a new HOLDOUT_LEDGER s7 entry for h5-lane-2 is filed separately by the manager.
 Everything is keyed by (bot_id, mint); `lane_fold` ignores `start` and `snap` rows for positions.
 """
 
@@ -50,6 +56,10 @@ LANE_RECONCILE_EVERY_MS = 5_000
 # What one position can cost beyond its stake: ATA rent up front, the buy fee, and every sell attempt at the escalated priority.
 LANE_MIN_FEE_RESERVE = (pe.FEEARM_RENT_RESERVE_LAMPORTS + tx.BASE_FEE_PER_SIGNATURE + h.H5_DEFAULT["buy_priority_lamports"]
                         + pl.SELL_MAX_ATTEMPTS * (tx.BASE_FEE_PER_SIGNATURE + h.H5_DEFAULT["escalated_priority_lamports"]))
+# tools/h5_shadow.py Engine._gap (lines ~1327-1335) appends {"kind": kind} to every open pool's `gaps` for these: slot_jump (:1300), silence (:1312),
+# feed_restart (:1324), socket_reconnect (:1379, flag_pools only). The integrity entries ambiguous_mint (:1466), announced_before_gap (:1470) and
+# slot_below_s0 (:1803) are NOT feed loss and are never waived.
+LANE_FEED_GAP_KINDS = frozenset({"slot_jump", "silence", "feed_restart", "socket_reconnect"})
 LANE_KEYS = {"ledger_path", "stop_path", "bot_id", "stake_lamports", "max_open", "budget_lamports", "daily_loss_lamports", "fee_reserve_lamports",
              "mark_stale_s", "seal_disclosure", "waive_pool_gap"}
 
@@ -385,7 +395,8 @@ class H5LaneExecutor(_Base):
         self._lane_recon_ms = 0
         self._lane_last_fee_sig: str | None = None
         self._lane_prior_unresolved: list[str] = []
-        self._pool_gap_waived: dict[str, bool] = {}  # mint -> whether the latest trigger's pool gap flag was waived (set in _hard_refusal, read at the send and the decision row)
+        self._pool_gap_waived: dict[str, tuple[str, ...]] = {}  # mint -> gap kinds of the latest trigger's waived pool flag; present only when waived (set in _hard_refusal, consumed by the decision row)
+        self._lane_raw_gaps: dict[int, tuple[Any, Any]] = {}  # id(trigger) -> (trigger, raw `gaps` of its shadow row): captured in intent_tick, one tick only
         if "lane" in cfg:  # parsed before the base __init__, which reads `self.h5`
             try:
                 self._lane_cfg = LaneConfig.parse(cfg["lane"])
@@ -451,11 +462,51 @@ class H5LaneExecutor(_Base):
             return None
         return why
 
+    def _waivable_gap_kinds(self, trg: h.H5Trigger, now: int) -> tuple[str, ...] | None:
+        """The gap kinds if this trigger's pool gap flag may be waived, else None. Fail closed on everything unexpected."""
+        if self._lane_cfg is None or not self._lane_cfg.waive_pool_gap or trg.gap is not True or self.feed_gap or now < self._gap_until_ms:
+            return None
+        got = self._lane_raw_gaps.get(id(trg))
+        if got is None or got[0] is not trg:
+            return None  # not read from a shadow row this tick: no record of why the pool was flagged
+        gaps = got[1]
+        if not isinstance(gaps, list) or not gaps:
+            return None
+        kinds = []
+        for g in gaps:
+            k = g.get("kind") if isinstance(g, dict) else None
+            if not isinstance(k, str) or k not in LANE_FEED_GAP_KINDS:
+                return None
+            kinds.append(k)
+        return tuple(kinds)
+
+    def intent_tick(self) -> int:
+        """The parent's tick with the shadow-trigger parser wrapped for its duration, so the raw `gaps` list the pinned parser drops is kept (lane-side
+        capture; nothing pinned is edited). Single-threaded; the module attribute is restored in `finally`."""
+        if self._lane_cfg is None or not self._lane_cfg.waive_pool_gap:
+            return super().intent_tick()
+        orig = h.parse_shadow_trigger
+        self._lane_raw_gaps = {}
+
+        def capture(row, *a, **kw):
+            trg, bad = orig(row, *a, **kw)
+            if trg is not None and trg.gap is True and isinstance(row, dict):
+                self._lane_raw_gaps[id(trg)] = (trg, row.get("gaps"))
+            return trg, bad
+
+        h.parse_shadow_trigger = capture
+        try:
+            return super().intent_tick()
+        finally:
+            h.parse_shadow_trigger = orig
+            self._lane_raw_gaps = {}
+
     def _hard_refusal(self, trg: h.H5Trigger, now: int) -> str | None:
-        waived = False
-        if self._lane_cfg is not None and self._lane_cfg.waive_pool_gap and trg.gap is True and not self.feed_gap and now >= self._gap_until_ms:
-            trg, waived = replace(trg, gap=False), True  # only the pool's past gap flag is cleared; the current feed's state was just checked healthy
-        self._pool_gap_waived[trg.mint] = waived
+        kinds = self._waivable_gap_kinds(trg, now)
+        self._pool_gap_waived.pop(trg.mint, None)  # every trigger resets its mint's record
+        if kinds is not None:
+            self._pool_gap_waived[trg.mint] = kinds
+            trg = replace(trg, gap=False)  # only the pool's feed-loss flag is cleared; the current feed's state was just checked healthy
         why = super()._hard_refusal(trg, now)
         if why or self.lane is None or self.dry_run:
             return why
@@ -469,7 +520,7 @@ class H5LaneExecutor(_Base):
         if self._kill_reason() or self._live_gate() or self._halt_present():
             return super()._send(p, mint)  # the base refuses and cancels the unsent buy by its own rules
         why = self.lane.reserve(mint, p["signature"], self._lane_marks, self.now_ms(), self.h5.stake_lamports,
-                            self._pool_gap_waived.get(mint, False))  # check + fsynced intent row
+                            mint in self._pool_gap_waived)  # check + fsynced intent row
         if why:
             self.state.pending.pop(mint, None)
             self._log("send_blocked", mint, reason=why, kind_="buy")
@@ -553,7 +604,10 @@ class H5LaneExecutor(_Base):
 
     def _log(self, kind: str, mint: str, **kw: Any) -> None:
         if kind == "decision" and self.lane is not None:
-            kw.setdefault("pool_gap_waived", self._pool_gap_waived.get(mint, False))
+            kinds = self._pool_gap_waived.pop(mint, None)  # consumed by the decision row
+            kw.setdefault("pool_gap_waived", kinds is not None)
+            if kinds is not None:
+                kw.setdefault("pool_gap_kinds", list(kinds))
         super()._log(kind, mint, **kw)
         if kind == "sell_prior_unresolved" and self.lane is not None:
             self._lane_prior_unresolved.append(str(kw.get("signature")))
