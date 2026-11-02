@@ -201,11 +201,15 @@ def fill(gaps: Iterable[Mapping[str, Any]], fetch: ftf.Fetcher, segment_dir: str
     f = ftf.TipFollower(out_dir=rows_dir, state_dir=work, fetch=fetch, get_tip=lambda: 0, lookup=lookup, v_lookup=lambda pools: {}, credits=credits, clock_ms=lambda: t_now["t"],
                         sleep=sleep, max_retries=3, backoff_s=0.0, backoff_cap_s=0.0, breaker_pause_s=0.0, trade_event_v=True, log=lambda m: None)
     outcome: dict[int, str] = {}
+    prev = None
     for g in plan.fill:  # slot order; each range stamped with its own follower time, kept non-decreasing by the follower's max()
         t_now["t"] = int(g.t_recv_ms)  # type: ignore[arg-type]
         for s in range(g.lo, g.hi + 1):  # type: ignore[arg-type]
             if s in outcome:
                 continue
+            if prev is None or s != prev + 1:
+                f._pending_skips.clear()  # skips pending from a range that is not contiguous with this one are not contradicted by this block's parentSlot (QP/reviewer #1182)
+            prev = s
             b0, k0 = f.blocks, f.skipped
             block, out = f._fetch_with_retry(s)  # the follower's own fetch / retry / skip handling, then the same commit as process_slot
             if out == "ok" and block is not None:
