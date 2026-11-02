@@ -13,6 +13,8 @@ allow-listed walker rows. Every directory argument also passes gapfill.refused_p
   P3  ranges deleted from the rows (every requested fillable reason; unresolved_dropped removes ONE pool's prints of a slot and keeps the rest on both sides of the gap row), filled from the
       deleted rows, spliced, and run through the F2 engine with the same book, in four cells: detection off / on x pre-gap rows with a lag rising to B slots before a backlog_jump (applied in both
       streams) off / on. The expected change of every position is COMPUTED from the unbroken run's legs and the plan (Amendment 26 item 6) and the actual classes must equal it exactly.
+      A fifth, LONG-HOLD cell (R7) puts the first range early and the last range late and holds the book for `--long-hold-slots`, so a position bought in the first range's margin is priced after
+      the last range: an engine that forgets old filled ranges prices it and fails. A long-hold cell that exposes no such position fails as vacuous.
 """
 
 from __future__ import annotations
@@ -279,7 +281,7 @@ def walker_of(r: Mapping[str, Any]) -> dict[str, Any]:
     return w
 
 
-def plan_cuts(rows: Sequence[Mapping[str, Any]], reasons: Sequence[str], *, span: int = 12, lag: bool = False) -> list[dict[str, Any]]:
+def plan_cuts(rows: Sequence[Mapping[str, Any]], reasons: Sequence[str], *, span: int = 12, lag: bool = False, far: bool = False) -> list[dict[str, Any]]:
     """Deterministic cuts: reason i takes the distinct slots from position (i + 1) / (n + 1) of the slot list. unresolved_dropped is one slot with at least 3 pools; a backlog_jump is
     max(span, B) slots long in the lag variant (the follower jumps only when it is more than B behind)."""
     trades = [r for r in rows if r.get("type", "trade") == "trade" and _is_int(r.get("slot"))]
@@ -288,8 +290,10 @@ def plan_cuts(rows: Sequence[Mapping[str, Any]], reasons: Sequence[str], *, span
     for r in trades:
         pools.setdefault(r["slot"], set()).add(r.get("pool") or r.get("mint"))
     cuts: list[dict[str, Any]] = []
+    n = len(reasons)
     for i, reason in enumerate(reasons):
-        j = slots[(i + 1) * len(slots) // (len(reasons) + 1)]
+        # far (the long-hold cell): the first range at 1/6 of the slots and the last at 5/6, the others evenly between; otherwise (i + 1) / (n + 1)
+        j = slots[(1 + (4 * i) // max(n - 1, 1)) * len(slots) // 6] if far and n > 1 else slots[(i + 1) * len(slots) // (n + 1)]
         if reason == "unresolved_dropped":
             j2 = next((s for s in slots if s >= j and len(pools[s]) >= 3), None)
             if j2 is None:
@@ -431,8 +435,8 @@ def by_position(eng: Any) -> dict[str, list[dict[str, Any]]]:
     return out
 
 
-def p3_cell(rows: Sequence[Mapping[str, Any]], root: Path, reasons: Sequence[str], detect: bool, lag: bool, **book) -> dict[str, Any]:
-    cuts = plan_cuts(rows, reasons, lag=lag)
+def p3_cell(rows: Sequence[Mapping[str, Any]], root: Path, reasons: Sequence[str], detect: bool, lag: bool, *, far: bool = False, **book) -> dict[str, Any]:
+    cuts = plan_cuts(rows, reasons, lag=lag, far=far)
     lagged = apply_rising_lag(rows, cuts) if lag else [dict(r) for r in rows]
     stream, seg, expect = delete_ranges(lagged, cuts)
     counts: Counter = Counter()
@@ -451,17 +455,20 @@ def p3_cell(rows: Sequence[Mapping[str, Any]], root: Path, reasons: Sequence[str
     rescued = sum(1 for pid, i in infos.items() if i["priced"] and exp[pid] == "unchanged" and act.get(pid) == "unchanged"
                   and any(prog_match(c["prog"], i["prog"]) and max(i["lands"]) < c["lo"] - c["back"] and i["x_trig"] is not None and i["x_trig"] > c["hi"] for c in cuts))
     mixed = gf.mixed_groups(spliced)
+    last_hi = max(c["hi"] for c in cuts)
+    exposed = sum(1 for pid, i in infos.items() if exp[pid] != "unchanged" and i["x_trig"] is not None and i["x_trig"] > last_hi and any(
+        prog_match(c["prog"], i["prog"]) and (any(c["lo"] - c["back"] <= x <= c["hi"] for x in i["lands"]) or c["lo"] - c["back"] <= i["x_trig"] < c["lo"]) and c["hi"] < last_hi for c in cuts))
     ok = (not wrong and not extra and counts["fill_rows"] == expect["fill_rows"] and counts["fill_rows_dup_dropped"] == expect["twin_rows"] and counts["filled_ranges"] == len(cuts)
-          and fill_eng.counters.get("rows_dup", 0) == 0 and mixed == 0 and len(fill_eng.gaps) == len(base_eng.gaps) and len(fill_eng.fills) == len(cuts) and len(a) > 0)
+          and fill_eng.counters.get("rows_dup", 0) == 0 and mixed == 0 and len(fill_eng.gaps) == len(base_eng.gaps) and len(fill_eng.fills) == len(cuts) and len(a) > 0 and (not far or exposed >= 1))  # a long-hold cell that exposes nothing proves nothing
     return {"plan": [{k: c[k] for k in ("reason", "lo", "hi", "back")} for c in cuts], "splice": dict(counts), "expected_fill_rows": expect["fill_rows"], "expected_twin_rows": expect["twin_rows"],
             "positions": len(a), "expected_classes": dict(Counter(exp.values())), "actual_classes": dict(Counter(act.values())), "mismatched_positions": len(wrong), "mismatch_digest": md5(wrong),
             "extra_positions_in_filled_run": len(extra), "late_prints": {"unbroken": late_print_kinds(base_eng), "filled": late_print_kinds(fill_eng)},
             "spanning_priced_unchanged": rescued, "rows_dup": fill_eng.counters.get("rows_dup", 0), "mixed_groups": mixed, "gaps": {"unbroken": len(base_eng.gaps), "filled": len(fill_eng.gaps)},
-            "fills_seen": len(fill_eng.fills), "ledger_unbroken": ledger_digest([canon_line(r) for r in ledger_rows(base_eng)]),
+            "fills_seen": len(fill_eng.fills), "long_hold_exposed": exposed if far else None, "ledger_unbroken": ledger_digest([canon_line(r) for r in ledger_rows(base_eng)]),
             "ledger_filled": ledger_digest([canon_line(r) for r in ledger_rows(fill_eng)]), "pass": ok}
 
 
-def p3(rows: Sequence[Mapping[str, Any]], root: Path, reasons: Sequence[str], *, min_rows: int = 1, **book) -> dict[str, Any]:
+def p3(rows: Sequence[Mapping[str, Any]], root: Path, reasons: Sequence[str], *, min_rows: int = 1, long_hold_slots: int | None = None, **book) -> dict[str, Any]:
     enforce_hours(rows, "p3 rows")
     res: dict[str, Any] = {"proof": "p3", "schema": SCHEMA, "input_rows": len(rows), "min_rows": min_rows, "reasons": list(reasons),
                            "engine_sha256": {Path(f).name: sha256_file(f) for f in (base_engine.__file__, f2_engine.__file__)}}
@@ -474,6 +481,11 @@ def p3(rows: Sequence[Mapping[str, Any]], root: Path, reasons: Sequence[str], *,
         for detect in (False, True):
             name = f"lag_{'rising' if lag else 'none'}_detection_{'on' if detect else 'off'}"
             res["cells"][name] = p3_cell(rows, root / name, reasons, detect, lag, **book)
+    if long_hold_slots is not None:  # R7
+        if len(reasons) < 2:
+            raise Refused("p3: the long-hold cell needs at least two reasons (an early range and a late one)")
+        res["cells"]["long_hold_detection_on"] = p3_cell(rows, root / "long_hold", reasons, True, False, far=True, **dict(book, hold_slots=long_hold_slots))
+        res["long_hold_slots"] = long_hold_slots
     res["pass"] = bool(res["cells"]) and all(c["pass"] for c in res["cells"].values())
     return res
 
@@ -503,6 +515,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     a3.add_argument("--hours-dir", required=True)
     a3.add_argument("--reasons", required=True)
     a3.add_argument("--book", **book)
+    a3.add_argument("--long-hold-slots", type=int, default=30_000, help="the hold of the long-hold cell (R7); 0 turns the cell off (a notebooked exception)")
     a3.add_argument("--min-rows", type=int, required=True)
     a3.add_argument("--out", required=True)
     for sp in (a1, a2, a3):
@@ -522,7 +535,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 res = p1(read_rows(a.hours_dir), load_engine_at(a.old_sha, a.repo), root, min_rows=a.min_rows)
                 res["harness_head"] = head_of(a.repo)
             elif a.cmd == "p3":
-                res = p3(read_rows(a.hours_dir), root, [x for x in a.reasons.split(",") if x], min_rows=a.min_rows)
+                res = p3(read_rows(a.hours_dir), root, [x for x in a.reasons.split(",") if x], min_rows=a.min_rows, long_hold_slots=a.long_hold_slots or None)
             else:
                 walker = read_rows(a.walker_hours_dir, "--walker-hours-dir")
                 url, kind = ftf.resolve_rpc_url(None, gf.read_env_file(a.helius_env))
