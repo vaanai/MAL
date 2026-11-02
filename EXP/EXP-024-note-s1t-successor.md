@@ -67,7 +67,7 @@ No s1t trigger or outcome exists on any pool at writing. Q50's outcomes have bee
     - the early form, with its start at or before 2026-11-05T12:00:00Z;
     - on the 2026-11-10 slip, quant-proof's form, with its fresh start at or after 2026-11-06T00:00:00Z and before that clock.
 
-    Both run with `--smoke` (reviewer R1 option (a) on #1190; quant-proof may instead rule option (b), quant-proof's form with pricing on in a scratch root never opened, counted, scored or read).
+    Both run with `--smoke` (option (a): QP-NOTE-1102-tip-readers Note 2 §N2.4).
     - `--smoke` puts S\*'s H5 Look-2 seal on every pool, so no outcome, ladder, strip or min-Q is computed on any pool. Trigger and pool records are written flagged `h5_look2_sealed`, and the wrapper halts the process if an outcome-type record is produced.
     - The smoke therefore computes no Q50-rule outcome, on Q50's counted window or elsewhere. This note covers it all the same, as the s1 note covered s1's smoke.
     - Its records are never opened, never counted, scored or read. Before s1t's first read, no count of them is printed or notebooked as a number (Amendment 24 item 6).
@@ -76,7 +76,7 @@ No s1t trigger or outcome exists on any pool at writing. Q50's outcomes have bee
     - it runs only on the 2026-11-10 slip;
     - it covers only the days [2026-11-06T00:00Z, 2026-11-09T00:00Z), outside Q50's counted window;
     - it runs after 2026-11-09T00:00Z, so the smoke's start-instant conditions do not apply to it;
-    - it runs at the same code with `--smoke`, counts only;
+    - it is the pinned tip-source P0 counter of Amendment 23 item 9 (its file and sha256 notebooked with the fixed-first text before it runs), running S\*'s engine (`tools/h5_shadow.py` blob `7f859b12deef87573a7314e49e125b5121eaa645`) under item 6's pricing-off switch over the closed days [2026-11-06T00:00Z, 2026-11-09T00:00Z); it computes no outcome; a counter at any other engine bytes, or one that can write an outcome-type record, is not covered;
     - it prints its per-day counts, the P0's purpose and nothing else (SEALS-BRIEF S1T READERS).
   - **Pools with s0 in [2026-11-06T00Z, 2026-11-14T00Z)** are covered only by this note (R7(c)). Pools with s0 at or after 2026-11-14T00:00Z are outside every H5 seal of this file.
   - **Where outcomes go.** To s1t's arena output and ledger only. They may be observed in real time, by anyone, as in Amendment 2. They are gate-read once by s1t's scoring wrapper and read tool under DEC-031 §2 and Amendment 11, as DEC-031 Amendment 18 item 7 applies it (carried by Amendment 24 item 2).
