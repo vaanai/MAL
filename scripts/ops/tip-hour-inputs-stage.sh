@@ -15,8 +15,13 @@
 #
 # Env: OUTDIR (default $HOME/mal-data/arena-tipfeed/tape), OPS ($HOME/mal-data/ops), SAMPLERS (default the three segments below), DEST, RSH (command prefix that runs
 #      one program on the destination host; default `ssh -o BatchMode=yes mal-research-0`), PERIOD (seconds, capped at 300), ONCE=1 (one pass), END (UTC ISO, loop end).
-# Run it as its own MiScusi job on mal-fast-0, chained across the 14-day limit, under its own small MemoryMax at nice 19 / ionice idle:
-#   systemd-run --user --scope -q -p MemoryMax=64M nice -n 19 ionice -c3 sh scripts/ops/tip-hour-inputs-stage.sh
+# Run it as its own MiScusi job on mal-fast-0, chained across the 14-day limit, under its own small MemoryMax at nice 19 / ionice idle. The fixed --unit name makes systemd
+# refuse a second scope, and a flock single-instance lock ($LOCK, default ${XDG_RUNTIME_DIR:-/tmp}/tip-hour-inputs-stage.lock) refuses a second copy (exit 9, ALREADY_RUNNING)
+# even when a MiScusi cancel left the old scope alive:
+#   systemd-run --user --scope --unit=tip-hour-inputs-stage -q -p MemoryMax=64M nice -n 19 ionice -c3 env PERIOD=240 sh scripts/ops/tip-hour-inputs-stage.sh
+# Runbook check (exactly ONE line must show; two means a stale copy, stop the older with `systemctl --user stop tip-hour-inputs-stage.scope` or kill its pid):
+#   ps -eo pid,etimes,args | grep '[t]ip-hour-inputs-stage.sh'
+# SIGTERM/SIGINT exit at once (143/130) and remove the snapshot dir; a pass already running finishes its current command first.
 set -u
 umask 027
 OUTDIR=${OUTDIR:-$HOME/mal-data/arena-tipfeed/tape}
@@ -43,8 +48,21 @@ for s in $SAMPLERS; do
   esac
 done
 
+command -v flock > /dev/null || { echo "REFUSED flock not found (no single-instance lock)"; exit 1; }
+LOCK=${LOCK:-${XDG_RUNTIME_DIR:-/tmp}/tip-hour-inputs-stage.lock}
+exec 9> "$LOCK" || exit 1
+flock -n 9 || { echo "ALREADY_RUNNING lock=$LOCK at=$(now)"; exit 9; }
+
 TMPD=$(mktemp -d) || exit 1
-trap 'rm -rf "$TMPD"' EXIT INT TERM
+SLP=
+cleanup() {
+  [ -n "$SLP" ] && kill "$SLP" 2> /dev/null
+  rm -rf "$TMPD"
+}
+# the handlers must EXIT (a bare trap on TERM would let the loop go on); EXIT runs cleanup once
+trap cleanup EXIT
+trap 'exit 143' TERM
+trap 'exit 130' INT
 
 # stage_one <source path> <dest name> <req|opt>   rc: 0 ok/skipped, 1 retry next pass, 2 prefix violation (stop)
 stage_one() {
@@ -146,5 +164,9 @@ while :; do
     echo "STOPPED prefix violation at=$(now)"
     exit 3
   fi
-  sleep "$PERIOD"
+  # sleep in the background WITHOUT the lock fd, and wait: a signal interrupts `wait` at once (a foreground sleep would delay the trap by up to PERIOD)
+  sleep "$PERIOD" 9>&- &
+  SLP=$!
+  wait "$SLP"
+  SLP=
 done

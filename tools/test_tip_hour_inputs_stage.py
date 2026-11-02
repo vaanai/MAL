@@ -1,8 +1,13 @@
 """Tests for scripts/ops/tip-hour-inputs-stage.sh (QP on #1191, S1 to S8): synthetic files, the destination is a local dir (RSH=env), no real tip data."""
 import hashlib
 import os
+import shutil
+import signal
 import subprocess
+import time
 from pathlib import Path
+
+import pytest
 
 SCRIPT = Path(__file__).resolve().parent.parent / "scripts" / "ops" / "tip-hour-inputs-stage.sh"
 MARK = "SECRET-LOOKING-CONTENT-MARK"  # appears in the source files; the logs must never echo file content
@@ -18,7 +23,7 @@ def setup(tmp_path):
     (ops / "tip-health-1101.jsonl").write_bytes(b'{"t":1}\n{"t":2}\n')
     (ops / "tip-health-1102.jsonl").write_bytes(b'{"t":3}\n')
     (ops / "tip-pool-cache-daily.jsonl").write_bytes(b'{"utc":"2026-11-03T00:30:00Z","pool_cache":1}\nNRestarts=0\n')
-    env = {**os.environ, "OUTDIR": str(out), "OPS": str(ops), "DEST": str(dest), "RSH": "env", "ONCE": "1", "SAMPLERS": "tip-health-1101.jsonl tip-health-1102.jsonl tip-health-1107.jsonl"}
+    env = {**os.environ, "OUTDIR": str(out), "OPS": str(ops), "DEST": str(dest), "RSH": "env", "ONCE": "1", "LOCK": str(tmp_path / "stage.lock"), "SAMPLERS": "tip-health-1101.jsonl tip-health-1102.jsonl tip-health-1107.jsonl"}
     env.pop("END", None)
     return env, out, ops, dest
 
@@ -90,6 +95,42 @@ def test_refuses_state_tape_traversal_and_sealed_paths_in_code(tmp_path):
         p = run({**env, key: "/var/lib/mal/sealed/fast-trades-tip"})
         assert p.returncode == 4 and "REFUSED" in p.stdout
     assert not dest.exists()
+
+
+@pytest.mark.skipif(shutil.which("flock") is None, reason="util-linux flock not installed")
+@pytest.mark.parametrize("sig,rc", [(signal.SIGTERM, 143), (signal.SIGINT, 130)])
+def test_second_copy_is_refused_and_a_signal_ends_the_loop_at_once(tmp_path, sig, rc):
+    """Reviewer R1: a trap on TERM/INT must EXIT (the loop used to keep going), and a second copy must be refused while the first lives (a MiScusi cancel leaves scopes alive)."""
+    env, out, ops, dest = setup(tmp_path)
+    env.pop("ONCE")
+    env["PERIOD"] = "250"  # the loop sleeps ~250 s between passes: the signal must still end it within seconds
+    first = subprocess.Popen(["sh", str(SCRIPT)], env=env, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    try:
+        for _ in range(100):
+            if (dest / "counts.jsonl").exists() and (dest / "tip-pool-cache-daily.jsonl").exists():
+                break
+            time.sleep(0.1)
+        time.sleep(0.5)  # it is now in its sleep
+        second = run({**env, "ONCE": "1"})
+        assert second.returncode == 9 and "ALREADY_RUNNING" in second.stdout
+        second_loop = subprocess.run(["sh", str(SCRIPT)], env=env, capture_output=True, text=True, timeout=10)  # a second LOOP copy is refused too, it does not start looping
+        assert second_loop.returncode == 9
+        t0 = time.time()
+        first.send_signal(sig)
+        assert first.wait(timeout=10) == rc and time.time() - t0 < 5
+    finally:
+        if first.poll() is None:
+            first.kill()
+            first.wait()
+    # the lock is free again (the orphaned background sleep does not hold it) and the snapshot dir is gone
+    third = run({**env, "ONCE": "1"})
+    assert third.returncode == 0 and "ALREADY_RUNNING" not in third.stdout
+
+
+def test_header_carries_the_unit_name_the_lock_and_the_ps_check():
+    body = SCRIPT.read_text()
+    assert "--unit=tip-hour-inputs-stage" in body and "flock -n 9" in body and "ps -eo pid,etimes,args | grep '[t]ip-hour-inputs-stage.sh'" in body
+    assert "trap 'exit 143' TERM" in body and "trap 'exit 130' INT" in body and "EXIT INT TERM" not in body
 
 
 def test_missing_counts_log_is_an_alert_and_stages_nothing_from_it(tmp_path):
