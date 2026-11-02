@@ -8,7 +8,7 @@
 set -eu
 HERE="$(cd "$(dirname "$0")" && pwd)"; ROOT="$(cd "$HERE/../.." && pwd)"
 SH="${LANE_SHADOW:-$HOME/data/h5-shadow-lane1}"; D="${LANE_DRY:-$HOME/data/h5-lane-dry}"; SECS="${LANE_DRY_SECONDS:-3600}"
-PY="${H5_PYTHON:-/var/lib/mal/fast-listener/.venv/bin/python}"
+PY="${H5_PYTHON:-/usr/local/lib/mal-h5-exec/venv/bin/python}"
 mkdir -p "$D/state"; printf 'T1\n' > "$D/state/TIER"
 cat > "$D/config.json" <<EOC
 {"mode":"dryrun","intents_file":"$SH","state_dir":"$D/state","commitment":"confirmed","poll_s":5.0,"intent_poll_ms":25,"rps":8.0,
