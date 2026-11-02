@@ -53,6 +53,7 @@ MAX_TOTAL_SLOTS = 20_000  # per run: a runaway guard, not a rule (a range list a
 FILLABLE_REASONS = frozenset({"backlog_jump", "unfetchable", "skip_contradicted", "skip_contradicted_refetch", "unresolved_dropped", "writer_hole"})
 BACKLOG_SLOTS = 50  # the follower's registered --backlog-slots (fast_tip_follower default): a backlog_jump's pre-gap rows arrive up to this many slots late
 ROWS_DIR, MANIFEST = "rows", "manifest.json"
+TRAILING_PROBE_MAX = 64  # slots probed past the end of a range to find the next block that verifies its trailing skips
 LOOKAHEAD_MAX = 100_000  # splice: rows read ahead of a fillable gap row, looking for the first row of slot > to_slot
 LOOKBEHIND_SLOTS = 256  # splice: how many slots of already-yielded follower rows it remembers
 REFUSED_PATH_PARTS = ("/var/lib/mal/sealed",)  # the CLI never reads or writes under the tip dir, the archive or the writer's derived copy (SEALS-BRIEF 2026-11-01)
@@ -185,6 +186,28 @@ def warm_pool_cache(f: ftf.TipFollower, block: dict[str, Any], slot: int) -> int
     return len(need)
 
 
+def verify_trailing_skips(f: ftf.TipFollower, start: int, outcome: dict[int, str], *, max_probe: int = TRAILING_PROBE_MAX) -> int:
+    """QP on #1182, F2: a skipped slot is only known to be skipped when the NEXT fetched block's parentSlot says so (the follower's _verify_skips). A skip at the end of a range
+    has no later block in the fill, so a block the RPC wrongly reported as skipped could hide inside a range marked complete. Fetch forward from `start` (the slot after the range)
+    to the first block and verify the pending skips against it: a contradicted skip is logged and refetched by the follower (its rows are written), a refetch that is skipped again is
+    a failure. If no block is found within `max_probe` slots, or one cannot be fetched, the trailing skips are marked failed and the range is NOT complete. The probe block itself is
+    never committed: nothing outside the range is written. Returns the number of probe fetches."""
+    pending = list(f._pending_skips)
+    probes = 0
+    for s in range(start, start + max_probe):
+        probes += 1
+        block, out = f._fetch_with_retry(s)
+        if out == "ok" and block is not None:
+            f._verify_skips(block)
+            return probes
+        if out == "gap":
+            break  # cannot fetch: unverified
+    for s in pending:
+        outcome[s] = "failed"
+    f._pending_skips.clear()
+    return probes
+
+
 def fill(gaps: Iterable[Mapping[str, Any]], fetch: ftf.Fetcher, segment_dir: str | os.PathLike, *, max_missed: int = MAX_MISSED_SLOTS, max_total: int = MAX_TOTAL_SLOTS,
          lookup: Callable[[list[str]], dict[str, tuple[str, str]]] | None = None, blobs_fn: Callable[[], Mapping[str, Any]] = ftf.decoder_blobs,
          pinned: Mapping[str, str] = ftf.PINNED_DECODER_BLOBS, sleep: Callable[[float], None] = lambda s: None, credits: Callable[[], int] = lambda: 0,
@@ -202,13 +225,16 @@ def fill(gaps: Iterable[Mapping[str, Any]], fetch: ftf.Fetcher, segment_dir: str
                         sleep=sleep, max_retries=3, backoff_s=0.0, backoff_cap_s=0.0, breaker_pause_s=0.0, trade_event_v=True, log=lambda m: None)
     outcome: dict[int, str] = {}
     prev = None
+    probes = 0
     for g in plan.fill:  # slot order; each range stamped with its own follower time, kept non-decreasing by the follower's max()
         t_now["t"] = int(g.t_recv_ms)  # type: ignore[arg-type]
         for s in range(g.lo, g.hi + 1):  # type: ignore[arg-type]
             if s in outcome:
                 continue
             if prev is None or s != prev + 1:
-                f._pending_skips.clear()  # skips pending from a range that is not contiguous with this one are not contradicted by this block's parentSlot (QP/reviewer #1182)
+                if prev is not None and f._pending_skips:
+                    probes += verify_trailing_skips(f, prev + 1, outcome)  # the trailing skips of the range just finished, checked against the next block
+                f._pending_skips.clear()  # skips pending from a range that is not contiguous with this one are not contradicted by this block's parentSlot (reviewer #1182)
             prev = s
             b0, k0 = f.blocks, f.skipped
             block, out = f._fetch_with_retry(s)  # the follower's own fetch / retry / skip handling, then the same commit as process_slot
@@ -216,6 +242,8 @@ def fill(gaps: Iterable[Mapping[str, Any]], fetch: ftf.Fetcher, segment_dir: str
                 warm_pool_cache(f, block, s)
             f._commit(s, block, out)
             outcome[s] = "ok" if f.blocks > b0 else "skipped" if f.skipped > k0 else "failed"
+    if prev is not None and f._pending_skips:
+        probes += verify_trailing_skips(f, prev + 1, outcome)
     # the follower's own gaps.jsonl in the segment: a slot it could not decode in full is NOT filled; a skip it contradicted and then refetched is ok
     bad: set[int] = set()
     gp = rows_dir / "gaps.jsonl"
@@ -246,7 +274,7 @@ def fill(gaps: Iterable[Mapping[str, Any]], fetch: ftf.Fetcher, segment_dir: str
         if p.is_file() and p.stat().st_size == 0:
             p.unlink()  # the follower pre-creates next-hour files; an empty file is not part of a segment
     no_tx = sum(1 for p in sorted(rows_dir.glob("trades-*.jsonl")) for r in _read_jsonl(p) if r.get("tx_index") is None)
-    man = {"schema": SCHEMA, "decoder_blobs": blobs, "max_missed_slots": max_missed, "backlog_slots": backlog_slots, "rows_no_tx_index": no_tx, "slots_fetched": len(outcome), "outcomes": dict(Counter(outcome.values())),
+    man = {"schema": SCHEMA, "decoder_blobs": blobs, "max_missed_slots": max_missed, "backlog_slots": backlog_slots, "rows_no_tx_index": no_tx, "trailing_probes": probes, "slots_fetched": len(outcome), "outcomes": dict(Counter(outcome.values())),
            "ranges": ranges, "files": files, "complete": all(r["filled"] for r in ranges if not r.get("refused")), "credits": int(credits())}
     (seg / MANIFEST).write_text(json.dumps(man, sort_keys=True, indent=1) + "\n")
     _lock_down(seg)
