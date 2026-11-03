@@ -6,7 +6,7 @@ Ruling: /data/mal/hunt-1008/ops/manager19/QP-RULING-1103-synthetic-lane.md (C1, 
   - SynEngine (a subclass of tools.h5_shadow.Engine) is installed in place of Engine for the run (run_live builds `Engine(` by global name, like the lane
     wrapper's oracle). Its `_fire` writes a trigger ONLY when the pool's class is the literal True with `synthetic_src` in {"ws", "rpc"} AND the pool's
     s0 block time is at or after SYN_CUT_MS (2026-11-06T00:00:00Z). The stock `_fire` writes the record: during that call `_syn` answers the flipped class so the
-    decision fields are those of the stock code (a drill compares their md5), and `emit` then sets `synthetic` true, `population` "synthetic" and adds
+    decision fields are those of the stock code (a drill compares their md5), and `emit` then sets `synthetic` true, `population` "synthetic_only" and adds
     `s0_block_time` (the pool's s0 block time in seconds, for the executor's own re-check). Nothing else in the record changes.
   - Everything else is an `excluded` record, no Q, price or V: reason `plain` (class False), `unclassified` (None, or True with a source that cannot write True),
     `syn_pre_window` (s0 block time missing or before the cut). No trigger record in this dir ever says synthetic false or null (emit drops one that does).
@@ -18,6 +18,7 @@ Ruling: /data/mal/hunt-1008/ops/manager19/QP-RULING-1103-synthetic-lane.md (C1, 
 """
 from __future__ import annotations
 
+import hashlib
 import os
 import sys
 from datetime import datetime, timezone
@@ -28,11 +29,16 @@ from tools import h5_lane_shadow as ls
 from tools import h5_shadow as hs
 
 BOT_ID = "h5-lane-syn"
-POPULATION = "synthetic"  # the trigger tag
-POPULATION_SEAL = "synthetic_only"  # the start record tag
+POPULATION = "synthetic_only"  # the tag on the start record, every trigger and every lane-ledger row (ruling C3/C5)
+POPULATION_SEAL = POPULATION
 SYN_CUT_MS = int(datetime(2026, 11, 6, 0, 0, tzinfo=timezone.utc).timestamp() * 1000)  # 1793923200000
 SYN_SRC_OK = ("ws", "rpc")  # the only sources that can write True (h5_shadow.py SynClassifier)
 OUT_DIR_NAME = "h5-shadow-lane-syn"
+WRAPPER_MODULE = "tools.h5_lane_syn_shadow"
+
+
+def wrapper_sha256() -> str:
+    return hashlib.sha256(Path(__file__).read_bytes()).hexdigest()
 
 
 def s0_ms_of(s0_block_time: Any) -> int | None:
@@ -98,6 +104,8 @@ class SynEngine(hs.Engine):
             rec["seal"] = seal
             rec["bot_id"] = BOT_ID
             rec["syn_cut_ms"] = SYN_CUT_MS
+            rec["wrapper_module"] = WRAPPER_MODULE  # the executor re-checks module identity and file hash against its own checkout
+            rec["wrapper_sha256"] = wrapper_sha256()
         super().emit(rec)
 
 
