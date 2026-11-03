@@ -60,6 +60,7 @@ LANE_MIN_FEE_RESERVE = (pe.FEEARM_RENT_RESERVE_LAMPORTS + tx.BASE_FEE_PER_SIGNAT
 # feed_restart (:1324), socket_reconnect (:1379, flag_pools only). The integrity entries ambiguous_mint (:1466), announced_before_gap (:1470) and
 # slot_below_s0 (:1803) are NOT feed loss and are never waived.
 LANE_FEED_GAP_KINDS = frozenset({"slot_jump", "silence", "feed_restart", "socket_reconnect"})
+LANE_GAPS_RECORD_MAX = 5  # h5_shadow.py:2013 writes p.gaps[:5]; a list of 5 or more is refused (it may be cut)
 LANE_KEYS = {"ledger_path", "stop_path", "bot_id", "stake_lamports", "max_open", "budget_lamports", "daily_loss_lamports", "fee_reserve_lamports",
              "mark_stale_s", "seal_disclosure", "waive_pool_gap"}
 
@@ -464,13 +465,13 @@ class H5LaneExecutor(_Base):
 
     def _waivable_gap_kinds(self, trg: h.H5Trigger, now: int) -> tuple[str, ...] | None:
         """The gap kinds if this trigger's pool gap flag may be waived, else None. Fail closed on everything unexpected."""
-        if self._lane_cfg is None or not self._lane_cfg.waive_pool_gap or trg.gap is not True or self.feed_gap or now < self._gap_until_ms:
+        if self._lane_cfg is None or not self._lane_cfg.waive_pool_gap or trg.gap is not True or trg.pre_unlinked or self.feed_gap or now < self._gap_until_ms:  # pre_unlinked: a feed_restart longer than the hold could let a missing predecessor print through
             return None
         got = self._lane_raw_gaps.get(id(trg))
         if got is None or got[0] is not trg:
             return None  # not read from a shadow row this tick: no record of why the pool was flagged
         gaps = got[1]
-        if not isinstance(gaps, list) or not gaps:
+        if not isinstance(gaps, list) or not gaps or len(gaps) >= LANE_GAPS_RECORD_MAX:  # the shadow writes gaps[:5]: a full list may hide an integrity entry past the cut
             return None
         kinds = []
         for g in gaps:
