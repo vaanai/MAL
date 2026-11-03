@@ -228,7 +228,7 @@ class LatencyBoundTests(OCCase):
         self.slow(e, 700)  # calls start at 0.7, 1.4, 2.1?? the third starts at 1.4 s (in budget) and ends at 2.1 s > 1.5 s
         self.feed(e, self.rescue(e))
         self.assertEqual(e.rpc.sent, [])
-        self.assertIn(e.refusals()[0], ("oc_rpc_slow", "stale_trigger", "oc_boost_unreadable"))
+        self.assertIn(e.refusals()[0], ("oc_rpc_slow", "oc_rpc_timeout", "stale_trigger", "oc_boost_unreadable"))
 
     def test_the_3_5_s_limit_is_rechecked_after_the_reads(self):
         e = self.oc_env()
@@ -424,3 +424,108 @@ class PathGuardAndConfigTests(OCCase):
         self.assertIs(seen["cls"], X.H5LaneOCExecutor)
         self.assertIs(L.H5LaneExecutor, orig)
         self.assertTrue(issubclass(X.H5LaneOCExecutor, L.H5LaneExecutor))
+
+
+class MutualExclusionTests(OCCase):
+    def test_a_held_h5_lane_2_or_h5_lane_3_lock_stops_the_start_with_exit_2(self):
+        import fcntl
+        for other in X.EXCLUDED_BOTS:
+            sub = self.tmp / other
+            sub.mkdir()
+            d = sub / "lane"
+            d.mkdir()
+            f = open(f"{d / 'ledger.jsonl'}.bot.{other}.lock", "a")
+            fcntl.flock(f, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            with self.assertRaises(SystemExit, msg=other) as cm:
+                OCEnv(sub, lane=self.lane_cfg(d), lane_oc=self.oc_cfg(d))
+            self.assertEqual(cm.exception.code, 2, other)
+            f.close()
+            e = OCEnv(sub, lane=self.lane_cfg(d), lane_oc=self.oc_cfg(d))  # released: it starts
+            e.ex.release_lane_lock()
+
+    def test_while_h5_lane_oc_runs_h5_lane_2_and_h5_lane_3_refuse_to_start(self):
+        e = self.oc_env()
+        for other in X.EXCLUDED_BOTS:
+            (self.tmp / other).mkdir()
+            with self.assertRaises(SystemExit, msg=other):
+                Lane2Env(self.tmp / other, lane=self.lane_cfg(self.tmp / "lane", bot=other))  # same ledger: the pinned _take_bot_lock refuses
+        e.ex.release_lane_lock()
+        (self.tmp / "after").mkdir()
+        Lane2Env(self.tmp / "after", lane=self.lane_cfg(self.tmp / "lane", bot="h5-lane-2"))  # released: h5-lane-2 may start
+
+    def test_a_second_h5_lane_oc_is_refused(self):
+        first = self.oc_env()
+        (self.tmp / "second").mkdir()
+        with self.assertRaises(SystemExit):
+            OCEnv(self.tmp / "second", lane=self.lane_cfg(self.tmp / "lane"), lane_oc=self.oc_cfg(self.tmp / "lane"))
+
+
+class _FakeProbeRpc:
+    """Stands in for pe.ProbeRpc under a real LimitedRpc: records the timeout it was given; every call times out."""
+
+    def __init__(self):
+        self._timeout = 15.0
+        self.seen = []
+
+    def __call__(self, method, params):
+        self.seen.append(self._timeout)
+        raise pe.RpcError("timeout")
+
+
+class RpcTimeoutTests(OCCase):
+    def test_per_call_timeout_is_cut_and_a_timeout_refuses_with_a_tag(self):
+        e = self.oc_env()
+        inner = _FakeProbeRpc()
+        e.ex.rpc = pe.LimitedRpc(inner, rps=1000, sleep=lambda s: None)  # the client default: 15 s timeout, 3 retries
+        self.feed(e, self.rescue(e))
+        self.assertEqual((e.refusals(), e.rpc.sent), (["oc_rpc_timeout"], []))
+        self.assertEqual(inner.seen[-1], X.OC_CALL_TIMEOUT_S)  # the re-check call: cut from 15 s
+        self.assertEqual(inner.seen.count(X.OC_CALL_TIMEOUT_S), 1)  # one attempt: retries are off for the re-check
+        self.assertEqual(e.ex.rpc.retries, 3)  # and restored
+        self.assertEqual(inner._timeout, 15.0)
+
+    def test_slow_fake_hits_the_shared_deadline_and_is_tagged(self):
+        e = self.oc_env()
+        e.rpc.__class__ = SlowRpc
+        e.rpc.slow_ms = 1_000
+        self.feed(e, self.rescue(e))
+        self.assertEqual(e.rpc.sent, [])
+        self.assertIn(e.refusals()[0], ("oc_rpc_timeout", "oc_rpc_slow"))
+
+
+class TagRecordTests(OCCase):
+    def test_the_per_mint_record_is_consumed_by_the_decision_and_by_a_refusal(self):
+        e = self.oc_env()
+        self.feed(e, self.rescue(e))
+        self.assertEqual(len(e.rpc.sent), 1)
+        self.assertNotIn(MINT, e.ex._oc_mints)  # consumed by the decision row
+        e.ex.state.pending.clear()  # rows of a held position are still tagged, from the durable plan
+        e2 = self.oc_env(sub="ref", boost=0)
+        self.feed(e2, self.rescue(e2))
+        self.assertEqual(e2.refusals(), ["oc_boost_exhausted"])
+        self.assertNotIn(MINT, e2.ex._oc_mints)
+        self.assertEqual(e2.ledger("skip")[0]["gate_path"], "onchain_recheck")  # the refusal row itself was tagged before the record was dropped
+        e2.ex._log("note", MINT)  # a later row of the mint with no position: untagged
+        self.assertNotIn("gate_path", e2.ledger("note")[-1])
+
+    def test_rows_of_a_held_position_stay_tagged_after_the_record_is_gone(self):
+        e = self.oc_env()
+        self.feed(e, self.rescue(e))
+        self.assertNotIn(MINT, e.ex._oc_mints)
+        e.ex._log("probe_row", MINT)
+        r = e.ledger("probe_row")[-1]
+        self.assertEqual(r["gate_path"], "onchain_recheck")
+        self.assertIn("oc_q_lamports", r)
+
+
+class BotIdTagTests(OCCase):
+    def test_every_executor_row_carries_bot_id_including_settled_0(self):
+        e = self.oc_env()
+        self.feed(e, shadow_trigger(e.clock, base_breaks_unresolved_settled=0))
+        rows = e.ledger()
+        self.assertTrue(rows)
+        self.assertEqual({r.get("bot_id") for r in rows}, {BOT})
+        self.assertNotIn("gate_path", e.ledger("decision")[0])
+        e2 = self.oc_env(sub="r")
+        self.feed(e2, self.rescue(e2))
+        self.assertEqual({r.get("bot_id") for r in e2.ledger()}, {BOT})

@@ -26,6 +26,14 @@ Lane limits (DEC-035 s2, shared lane ledger, unchanged and binding): stake fixed
 for are refused, and a sub-budget of 50_000_000 lamports net loss (config can only lower it) with its OWN STOP file (`lane_oc.stop_path`), written when bot
 P&L <= -budget, never removed by this code, re-derived from the ledger if deleted; raising it is a new bot_id (pattern of tools/h5_lane_syn_executor.py).
 Recorded risk (as h5-lane-syn): the refusal of a mint another bot traded is one-way; the pinned h5-lane-2 does not refuse a mint this book holds.
+
+MUTUAL EXCLUSION. h5-lane-oc REPLACES h5-lane-2 and h5-lane-3 and NEVER RUNS BESIDE THEM: it trades every settled = 0 trigger exactly as h5-lane-2 does, so two of
+them on one shadow would double-buy each trigger. At startup it takes, and holds for its life, the bot lock files of h5-lane-2 and h5-lane-3
+(`<ledger>.bot.<bot_id>.lock`, the files the pinned `_take_bot_lock` uses, so the pinned executors refuse to start while this one runs) next to its own, and
+exits 2 (no restart loop) if either is held.
+RPC bound. During the re-check the client's per-call timeout is cut to the time left of OC_RPC_BUDGET_MS (at most OC_CALL_TIMEOUT_S) and its retries to 0, then
+restored; a timeout refuses with `oc_rpc_timeout`.
+Every executor-ledger row of this bot carries bot_id "h5-lane-oc"; the rows of a rescued trigger also carry gate_path "onchain_recheck".
 """
 from __future__ import annotations
 
@@ -53,6 +61,8 @@ OC_SUB_BUDGET_LAMPORTS = 50_000_000
 OC_MAX_OPEN = 1
 OC_MAX_CALLS = 3  # the pinned snapshot is 2 calls, the BOOST vault read is 1
 OC_RPC_BUDGET_MS = 1_500  # all chain reads of one re-check; the 3.5 s pre-send limit is re-checked after them
+OC_CALL_TIMEOUT_S = 1.5  # per call, and never more than what is left of OC_RPC_BUDGET_MS
+EXCLUDED_BOTS = ("h5-lane-2", "h5-lane-3")  # bots whose settled = 0 trading this book replaces
 OC_KEYS = {"stop_path", "sub_budget_lamports"}
 BOOST_FLOOR_LAMPORTS = int(round((1.0 - h.BOOST_DONE_FRAC) * h.BOOST_BUDGET_SOL * 1e9))  # the rule's condition: spent < 0.999 x budget
 H5_LANE_SYN_PATHS = ("/var/lib/mal-live/h5-lane-syn",)
@@ -222,13 +232,30 @@ class _Guard:
     """The RPC callable for the duration of one re-check: at most OC_MAX_CALLS calls, none started after OC_RPC_BUDGET_MS."""
 
     def __init__(self, real, now_ms, t0: int):
-        self._real, self._now, self._t0, self.calls = real, now_ms, t0, 0
+        self._real, self._now, self._t0, self.calls, self.timed_out = real, now_ms, t0, 0, False
 
     def __call__(self, method, params):
         if self.calls >= OC_MAX_CALLS or self._now() - self._t0 > OC_RPC_BUDGET_MS:
+            self.timed_out = True
             raise pe.RpcError("oc_budget")
         self.calls += 1
-        return self._real(method, params)
+        inner = getattr(self._real, "rpc", None)  # a LimitedRpc: cut the client's own timeout (15 s) and retries for this call, then restore
+        saved = (getattr(inner, "_timeout", None), getattr(self._real, "retries", None))
+        if saved[0] is not None:
+            inner._timeout = max(0.05, min(OC_CALL_TIMEOUT_S, (OC_RPC_BUDGET_MS - (self._now() - self._t0)) / 1000.0))
+        if saved[1] is not None:
+            self._real.retries = 0
+        try:
+            return self._real(method, params)
+        except pe.RpcError as exc:
+            if "timeout" in str(exc.args[0] if exc.args else exc) or "oc_budget" in str(exc):
+                self.timed_out = True
+            raise
+        finally:
+            if saved[0] is not None:
+                inner._timeout = saved[0]
+            if saved[1] is not None:
+                self._real.retries = saved[1]
 
     def __getattr__(self, name):
         return getattr(self._real, name)
@@ -255,6 +282,29 @@ class H5LaneOCExecutor(_Base):
             super().__init__(rpc, cfg, keypair, **kw)
         finally:
             L.LaneLedger = orig  # type: ignore[misc]
+        self._oc_excl: list[Any] = []
+        if self.lane is not None:
+            self._take_exclusion_locks()
+
+    def _take_exclusion_locks(self) -> None:
+        """Hold the bot locks of the books this one replaces; refuse to start (exit 2) if any is held."""
+        import fcntl
+        for bot in EXCLUDED_BOTS:
+            f = open(f"{self.lane.path}.bot.{bot}.lock", "a")  # type: ignore[union-attr]
+            try:
+                fcntl.flock(f, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except OSError:
+                f.close()
+                self.release_lane_lock()
+                print(f"lane_oc refused: {bot} holds its bot lock; h5-lane-oc replaces it and never runs beside it", file=sys.stderr)
+                raise SystemExit(2) from None
+            self._oc_excl.append(f)
+
+    def release_lane_lock(self) -> None:
+        for f in getattr(self, "_oc_excl", []):
+            f.close()
+        self._oc_excl = []
+        super().release_lane_lock()
 
     @property
     def h5(self) -> h.H5Limits:
@@ -331,6 +381,8 @@ class H5LaneOCExecutor(_Base):
             self.rpc = real
         ms = self.now_ms() - t0
         meta: dict[str, Any] = dict(oc_rpc_ms=ms, oc_rpc_calls=guard.calls, oc_q_shadow_lamports=trg.q_lamports)
+        if guard.timed_out and (snap is None or boost is None):
+            return self._oc_refuse(trg, "oc_rpc_timeout", oc_q_error=err, **meta)  # a call hit its timeout or the shared deadline
         if snap is None:
             return self._oc_refuse(trg, "oc_q_unreadable", oc_q_error=err, **meta)
         if snap.quote_priced is None:
@@ -380,7 +432,10 @@ class H5LaneOCExecutor(_Base):
         if tag is not None:
             kw = {**tag, **kw}
             kw["gate_path"] = GATE_PATH_OC
+        kw.setdefault("bot_id", BOT_ID)  # every row of this book, tagged class or not
         super()._log(kind, mint, **kw)
+        if kind in ("decision", "skip") and mint:
+            self._oc_mints.pop(mint, None)  # consumed by the row that ends the trigger; later rows of a held position re-derive it from the durable plan
 
 
 def main(argv: list[str] | None = None) -> int:
