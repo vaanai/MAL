@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 import os
 from pathlib import Path
 from unittest import mock
@@ -14,6 +15,7 @@ from tools import h5_executor as h
 from tools import h5_lane_executor as L
 from tools import pumpswap_tx as tx
 from tools.test_h5_executor import MINT, T0, Case, Env, buy_args
+from tools.test_h5_executor_shadow import shadow_trigger
 from tools.test_probe_live import RENT, meta_result
 
 LANE_STAKE = 25_000_000
@@ -768,3 +770,147 @@ class SealTests(LaneCase):
         self.assertEqual(e.refusals(), [])  # skips are counted only
         self.assertEqual(e.ex.counters.seal_skips, 1)
         self.assertEqual(e.ex._seal_reason(None, e.clock()), "seal_window_no_oracle")
+
+class PoolGapWaiverTests(LaneCase):
+    """waive_pool_gap: fail closed. Only a shadow row whose `gaps` are all feed-loss kinds (L.LANE_FEED_GAP_KINDS) is waived."""
+
+    ABSENT = object()
+    FEED = [{"kind": "slot_jump", "from_slot": 1, "to_slot": 99, "missed_slots": 97}]
+
+    def env(self, waive, sub):
+        d = self.tmp / sub
+        d.mkdir()
+        lane = self.lane_cfg(ledger_path=str(d / "l.jsonl"), stop_path=str(d / "S"))
+        if waive is not self.ABSENT:
+            lane["waive_pool_gap"] = waive
+        e = self.lane_env(sub=None, lane=lane)
+        Path(e.conf["intents_file"]).write_text("")
+        e.ex.intent_tick()  # the tail starts here
+        return e
+
+    def feed_row(self, e, drop=(), **kw):
+        row = shadow_trigger(e.clock, **kw)
+        for k in drop:
+            row.pop(k, None)
+        with Path(e.conf["intents_file"]).open("a") as fh:
+            fh.write(json.dumps(row) + "\n")
+        return e.ex.intent_tick()
+
+    @staticmethod
+    def tags(e, ev):
+        rows = LaneCase.rows(e, ev) if ev == "send_intent" else e.ledger(ev)
+        return [r.get("pool_gap_waived") for r in rows]
+
+    def assertRefusedGap(self, e):
+        self.assertEqual(e.refusals()[-1:], ["feed_gap"])
+        self.assertEqual(e.rpc.sent, [])
+        self.assertEqual(self.rows(e, "send_intent"), [])
+
+    def test_kinds_are_the_shadows_feed_loss_kinds(self):
+        src = (Path(__file__).parent / "h5_shadow.py").read_text()
+        emitted = set(re.findall(r'\._gap\(\s*"([a-z_0-9]+)"', src))  # every kind Engine._gap is called with
+        self.assertTrue(emitted)
+        self.assertTrue(L.LANE_FEED_GAP_KINDS <= emitted, L.LANE_FEED_GAP_KINDS - emitted)
+        integrity = set(re.findall(r'p\.gaps\.append\(\{"kind": "([a-z_0-9]+)"', src))  # entries appended directly, not feed loss
+        self.assertTrue({"ambiguous_mint", "announced_before_gap", "slot_below_s0"} <= integrity, integrity)
+        self.assertFalse(L.LANE_FEED_GAP_KINDS & integrity)
+        self.assertEqual(L.LANE_FEED_GAP_KINDS, {"slot_jump", "silence", "feed_restart", "socket_reconnect"})
+
+    def test_a_full_gaps_list_is_refused_because_the_shadow_cuts_at_five(self):
+        self.assertEqual(L.LANE_GAPS_RECORD_MAX, 5)
+        e = self.env(True, "five")
+        self.feed_row(e, gap=True, gaps=[{"kind": "slot_jump"}] * 5)
+        self.assertRefusedGap(e)
+        e = self.env(True, "four")
+        self.feed_row(e, gap=True, gaps=[{"kind": "slot_jump"}] * 4)
+        self.assertEqual(len(e.rpc.sent), 1)  # (the executor ledger is shared with the env above, so its refusal rows are still there)
+        self.assertEqual(self.tags(e, "send_intent"), [True])
+
+    def test_a_pre_unlinked_trigger_is_not_waived(self):
+        e = self.env(True, "unl")
+        self.feed_row(e, gap=True, gaps=self.FEED, base_breaks_unresolved=1, base_breaks_unresolved_settled=0)
+        self.assertRefusedGap(e)
+        e = self.env(True, "lnk")  # linked (unresolved 0): waived as usual
+        self.feed_row(e, gap=True, gaps=self.FEED, base_breaks_unresolved=0, base_breaks_unresolved_settled=0)
+        self.assertEqual(len(e.rpc.sent), 1)
+        self.assertEqual(self.tags(e, "send_intent"), [True])
+
+    def test_default_false_refuses_a_gap_pool_as_before(self):
+        for i, waive in enumerate((self.ABSENT, False)):
+            e = self.env(waive, f"d{i}")
+            self.feed_row(e, gap=True, gaps=self.FEED)
+            self.assertRefusedGap(e)
+
+    def test_shadow_row_with_feed_loss_gaps_passes_and_is_tagged(self):
+        e = self.env(True, "w")
+        orig = h.parse_shadow_trigger
+        gaps = self.FEED + [{"kind": "silence"}, {"kind": "feed_restart"}, {"kind": "socket_reconnect"}]
+        self.assertEqual(self.feed_row(e, gap=True, gaps=gaps), 1)
+        self.assertEqual(e.refusals(), [])
+        self.assertEqual(len(e.rpc.sent), 1)
+        self.assertEqual(self.tags(e, "send_intent"), [True])
+        self.assertEqual(self.tags(e, "decision"), [True])
+        dec = e.ledger("decision")[0]
+        self.assertEqual(dec["pool_gap_kinds"], ["slot_jump", "silence", "feed_restart", "socket_reconnect"])
+        self.assertIs(dec["gap"], True)  # the logged trigger keeps the detector's flag
+        self.assertIs(e.ex.state.pending[MINT]["h5"]["trigger"]["gap"], True)  # and so does the stored one
+        self.assertEqual(e.ex._pool_gap_waived, {})  # the per-mint record is consumed by the decision row
+        self.assertIs(h.parse_shadow_trigger, orig)  # the module's parser is restored
+
+    def test_integrity_kinds_and_bad_lists_are_refused(self):
+        cases = {"announced": [{"kind": "announced_before_gap"}], "ambiguous": [{"kind": "ambiguous_mint"}], "below": [{"kind": "slot_below_s0", "s0": 1, "slot": 0}],
+                 "unknown": [{"kind": "novel_gap"}], "mixed": self.FEED + [{"kind": "announced_before_gap"}], "mixed2": [{"kind": "ambiguous_mint"}] + self.FEED,
+                 "empty": [], "string": "slot_jump", "nokind": [{"x": 1}], "notdict": ["slot_jump"], "nonstrkind": [{"kind": 5}], "none": None}
+        for name, gaps in cases.items():
+            e = self.env(True, f"r{name}")
+            self.feed_row(e, gap=True, gaps=gaps)
+            self.assertRefusedGap(e)
+
+    def test_missing_gaps_field_is_refused(self):
+        e = self.env(True, "m")
+        self.feed_row(e, drop=("gaps",), gap=True)
+        self.assertRefusedGap(e)
+
+    def test_a_trigger_not_read_from_a_shadow_row_is_refused(self):
+        e = self.env(True, "n")
+        e.fire(gap=True)  # handed in directly: no captured gap record
+        self.assertRefusedGap(e)
+
+    def test_gap_false_trigger_is_tagged_false(self):
+        e = self.env(True, "c")
+        self.feed_row(e, gap=False, gaps=[])
+        self.assertEqual(self.tags(e, "send_intent"), [False])
+        self.assertEqual(self.tags(e, "decision"), [False])
+        self.assertNotIn("pool_gap_kinds", e.ledger("decision")[0])
+
+    def test_current_feed_gap_still_refuses(self):
+        e = self.env(True, "f")
+        e.ex.on_feed_status(True)
+        self.feed_row(e, gap=True, gaps=self.FEED)
+        self.assertRefusedGap(e)
+
+    def test_inside_the_gap_hold_still_refuses(self):
+        e = self.env(True, "h")
+        e.ex._gap_until_ms = e.clock() + 5_000
+        self.feed_row(e, gap=True, gaps=self.FEED)
+        self.assertRefusedGap(e)
+
+    def test_waived_still_hits_other_refusals(self):
+        e = self.env(True, "s")
+        self.feed_row(e, gap=True, gaps=self.FEED, q_trigger_sol=(40 * 10**9 + 1) / 1e9)
+        self.assertEqual(e.refusals(), ["q_above_rule_max"])
+        self.assertEqual(e.rpc.sent, [])
+
+    def test_a_later_clean_trigger_on_the_same_mint_is_not_tagged_waived(self):
+        e = self.env(True, "two")
+        self.feed_row(e, gap=True, gaps=self.FEED, q_trigger_sol=(40 * 10**9 + 1) / 1e9)  # waived, then refused for q: no decision row, the record is replaced next
+        self.assertEqual(MINT in e.ex._pool_gap_waived, True)
+        self.feed_row(e, gap=False, gaps=[])
+        self.assertEqual(self.tags(e, "decision"), [False])
+        self.assertEqual(self.tags(e, "send_intent"), [False])
+        self.assertEqual(e.ex._pool_gap_waived, {})
+
+    def test_non_bool_config_refuses(self):
+        for i, bad in enumerate(("true", 1, 0, None)):
+            with self.assertRaises(SystemExit):
+                self.env(bad, f"b{i}")

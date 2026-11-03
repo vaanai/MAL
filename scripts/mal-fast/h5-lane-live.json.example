@@ -18,7 +18,7 @@
   "feed_heartbeat_max_age_ms": 150000,
   "end_ms": 1794787200000,
   "lane": {
-    "bot_id": "h5-lane-1",
+    "bot_id": "h5-lane-2",
     "ledger_path": "/var/lib/mal-live/h5-lane/lane-ledger.jsonl",
     "stop_path": "/var/lib/mal-live/h5-lane/STOP",
     "stake_lamports": 25000000,
@@ -27,6 +27,7 @@
     "daily_loss_lamports": 100000000,
     "fee_reserve_lamports": 4200000,
     "mark_stale_s": 60,
-    "seal_disclosure": ""
+    "seal_disclosure": "",
+    "waive_pool_gap": true
   }
 }
