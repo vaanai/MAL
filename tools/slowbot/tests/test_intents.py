@@ -17,6 +17,7 @@ def run_dir(path, **kw):
 
 def norm(raw):
     """The caller's wall-clock latency_ms is the only non-deterministic field in the paper files (tools/haiku_caller.py:854); mask it."""
+    raw = re.sub(rb'"ts_utc": "2026-[^"]*"', b'"ts_utc": "WALL"', raw)  # decide.py stamps the real wall clock
     return re.sub(rb'"latency_ms": \d+', b'"latency_ms": 0', raw)
 
 
@@ -68,3 +69,11 @@ def test_read_intents_skips_torn_and_foreign_rows(tmp_path):
     p.write_text(json.dumps(good) + "\nnot json\n" + json.dumps({"schema": "x", "mint": "M"}) + '\n{"schema": "' + itn.SCHEMA + '", "mint"')
     assert itn.read_intents(p) == [good]
     assert itn.read_intents(tmp_path / "none") == []
+
+
+def test_intent_carries_runner_sha_and_the_decision_rows_prompt_sha(tmp_path, monkeypatch):
+    monkeypatch.setenv("SLOWBOT_RUNNER_SHA", "a" * 40)
+    run_dir(tmp_path / "on", caller=FakeCaller(), live_intents=True)
+    (g,) = itn.read_intents(tmp_path / "on" / itn.FILENAME)
+    dec = [x for x in rows(tmp_path / "on" / "decisions.jsonl") if "prompt_sha256" in x][0]
+    assert g["runner_sha"] == "a" * 40 and g["prompt_sha256"] == dec["prompt_sha256"] and len(g["prompt_sha256"]) == 64

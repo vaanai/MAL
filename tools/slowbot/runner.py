@@ -363,6 +363,7 @@ class Runner:
         self.top_holders, self.log, self.requote_delays, self.helius_post = top_holders, log, requote_delays, helius_post
         self.progress_path = progress_path
         self.live_intents = bool(live_intents)  # default off: paper files are byte-identical
+        self.runner_sha = itn.runner_git_sha() if self.live_intents else None  # only computed when the flag is on
         self.stop = False
         self.decisions_path = os.path.join(self.out, "decisions.jsonl")
         self.state_path = os.path.join(self.out, "runner-state.json")
@@ -586,7 +587,7 @@ class Runner:
                 self._bump("h_buys")
                 arms.append("H")
                 if self.live_intents:
-                    c["h_decision"] = {"ts": self.clock(), "conviction": row.get("conviction")}
+                    c["h_decision"] = {"ts": self.clock(), "conviction": row.get("conviction"), "prompt_sha256": row.get("prompt_sha256")}
         if not skipped:
             arms.append("R")
         c["arms"] = [a for a in ("T", "H", "R") if a in arms]
@@ -608,7 +609,8 @@ class Runner:
                     self._bump("arm_full_hits")
             if self.live_intents and res.get("H", (None,))[0] is not None and c.get("h_decision"):
                 hd = c["h_decision"]
-                itn.append_intent(self.out, itn.build_intent(c, res["H"][0], decision_ts=hd["ts"], conviction=hd["conviction"], now=self.clock()))
+                itn.append_intent(self.out, itn.build_intent(c, res["H"][0], decision_ts=hd["ts"], conviction=hd["conviction"], now=self.clock(),
+                                                       runner_sha=self.runner_sha, prompt_sha256=hd.get("prompt_sha256")))
                 self._bump("live_intents_written")
         finally:
             self.rs["pending"].pop(cid, None)  # a failed open is not retried again; the guard counts the error

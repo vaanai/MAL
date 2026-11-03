@@ -45,19 +45,25 @@ from pathlib import Path
 from typing import Any, Callable
 
 from tools import h5_lane_executor as lane
+from tools import probe_executor as pe_mod
+from tools import pumpswap_tx as tx_mod
 from tools.slowbot import intents as itn
 from tools.slowbot import positions as pos
 from tools.slowbot.positions import PositionManager, atomic_write_json
 from tools.slowbot.quotes import WSOL
 
 BOT_ID = "slowbot-h-1"
+# Wallet-wide Helm files, the same constants the probe / H5 executors use (tools/probe_executor.py LIVE_DIR, Limits.stop_file / halt_file): STOP = no new
+# buys (exits continue); HALT = freeze everything. Config cannot redirect them.
+WALLET_STOP = pe_mod.LIVE_DIR / "STOP"
+WALLET_HALT = pe_mod.LIVE_DIR / "HALT"
 DEFAULTS = {
     "bot_id": BOT_ID, "stake_lamports": 20_000_000, "max_open": 2, "bot_budget_lamports": 60_000_000,
     "lane_budget_lamports": 300_000_000, "lane_daily_loss_lamports": 100_000_000, "lane_max_open": 3,
     "fee_reserve_lamports": lane.LANE_MIN_FEE_RESERVE, "mark_stale_s": 60,
     "max_intent_age_s": 90, "max_slippage_bps": 300, "sell_slippage_bps": 1500, "max_entry_vs_paper_bps": 1500,
     "requote_degrade_bps": 200, "max_price_impact_bps": 500, "buy_priority_lamports": 200_000, "sell_priority_lamports": 200_000,
-    "wallet_floor_lamports": 50_000_000, "confirm_timeout_s": 45, "intent_poll_s": 2.0, "reconcile_every_s": 5.0,
+    "wallet_floor_lamports": 50_000_000, "confirm_timeout_s": 45, "intent_poll_s": 2.0, "max_sell_attempts": None, "pin_runner_sha": "", "pin_prompt_sha256": "", "reconcile_every_s": 5.0,
     "unresolved_s": 600, "dry_run": True,
 }
 HARD_MAX_SLIPPAGE_BPS = 500
@@ -102,7 +108,24 @@ def parse_config(raw: Any) -> dict[str, Any]:
         raise ValueError("slippage cap out of range")
     if not 0 < c["max_intent_age_s"] <= 600:
         raise ValueError("max_intent_age_s must be in (0, 600]")
+    for k in ("pin_runner_sha", "pin_prompt_sha256"):
+        if not isinstance(c[k], str) or not c[k].strip() or c[k] == "unknown":
+            raise ValueError(f"{k} is required (the decision build this book is frozen to)")
+    cap = sell_attempt_cap(c)
+    if cap < 1:
+        raise ValueError("fee_reserve_lamports does not cover rent + the buy fee + one sell attempt")
+    if c["max_sell_attempts"] is None:
+        c["max_sell_attempts"] = cap
+    elif isinstance(c["max_sell_attempts"], bool) or not isinstance(c["max_sell_attempts"], int) or not 1 <= c["max_sell_attempts"] <= cap:
+        raise ValueError(f"max_sell_attempts must be 1..{cap}: fee_reserve_lamports must cover rent + buy fee + N x sell fee")
     return c
+
+
+def sell_attempt_cap(c: dict[str, Any]) -> int:
+    """Most sell sends one position may cost so that fee_reserve >= rent + (base + buy_priority) + N x (base + sell_priority) always holds."""
+    base = tx_mod.BASE_FEE_PER_SIGNATURE
+    left = c["fee_reserve_lamports"] - pe_mod.FEEARM_RENT_RESERVE_LAMPORTS - (base + c["buy_priority_lamports"])
+    return max(0, left // (base + c["sell_priority_lamports"]))
 
 
 def lane_config(c: dict[str, Any]) -> lane.LaneConfig:
@@ -274,10 +297,13 @@ class SlowbotLive:
         self.ledger = lane.LaneLedger(self.lc)
         sd = Path(cfg["state_dir"])
         sd.mkdir(parents=True, exist_ok=True)
+        self._sha = {"runner_sha": cfg["pin_runner_sha"], "prompt_sha256": cfg["pin_prompt_sha256"]}
+        self._bot_id_record(sd)
         self.state_path, self.log_path = sd / "executor-state.json", sd / "executor-log.jsonl"
         self.st = self._load()
         self.marks: dict[str, tuple[int, int]] = {}
         self._last_reconcile = 0.0
+        self._errors = 0
         self.pm = LivePositions(sd / "positions-state.json", sd / "positions-log.jsonl", self._sell_quote, sell_fn=self._live_sell,
                                 on_exit=self._on_exit, on_partial=self._on_partial, now_fn=now_fn)
 
@@ -297,7 +323,41 @@ class SlowbotLive:
         atomic_write_json(self.state_path, self.st)
 
     def log(self, kind: str, **kw: Any) -> None:
-        pos._append_jsonl(self.log_path, {"kind": kind, "t": self.now_fn(), "bot_id": BOT_ID, "dry": self.dry, **kw})
+        pos._append_jsonl(self.log_path, {"kind": kind, "t": self.now_fn(), "bot_id": BOT_ID, "dry": self.dry, **self._sha, **kw})
+
+    def _rec(self, ev, mint, marks, ms, **kw):
+        """LaneLedger.record with the pinned runner sha and prompt sha on every row this executor writes (send_intent comes from reserve(), which cannot
+        take extras: the `sent` log row carries the shas for it)."""
+        return self.ledger.record(ev, mint, marks, ms, **self._sha, **kw)
+
+    def _bot_id_record(self, sd: Path) -> None:
+        """DEC-035 s3: a code or prompt change is a new bot_id. The record names bot_id + both shas; a changed pin under the same bot_id is refused."""
+        rec = {"bot_id": BOT_ID, **self._sha}
+        path = sd / "bot-id-record.json"
+        try:
+            have = json.loads(path.read_text())
+        except FileNotFoundError:
+            atomic_write_json(path, rec)
+            return
+        if have != rec:
+            raise ValueError("pinned runner/prompt sha changed under the same bot_id: a new bot_id is required (DEC-035 s3)")
+
+    def alert(self, what: str, **kw: Any) -> None:
+        self.log("ALERT", what=what, **kw)
+        try:
+            (Path(self.cfg["state_dir"]) / f"ALERT-{what}").write_text(json.dumps({"t": self.now_fn(), **kw}, default=str) + "\n")
+        except OSError:
+            pass
+
+    @staticmethod
+    def _flag_present(path) -> bool:
+        try:
+            os.stat(path)
+            return True
+        except FileNotFoundError:
+            return False
+        except OSError:
+            return True  # unreadable counts as present (fail closed)
 
     # -- ledger views
     def _view(self) -> lane.LaneView:
@@ -366,7 +426,8 @@ class SlowbotLive:
                 out = f"error:{type(e).__name__}"
             self.st["done"][iid] = out
             self._save()
-            self.log("intent", intent_id=iid, mint=row.get("mint"), outcome=out)
+            self.log("intent", intent_id=iid, mint=row.get("mint"), outcome=out, intent_runner_sha=row.get("runner_sha"),
+                     intent_prompt_sha256=row.get("prompt_sha256"))
         return n
 
     def handle(self, row: dict) -> str:
@@ -378,6 +439,10 @@ class SlowbotLive:
         age = now - dts
         if age > self.cfg["max_intent_age_s"] or age < -5:
             raise Refused("stale_intent")
+        if self._flag_present(WALLET_HALT) or self._flag_present(WALLET_STOP):
+            raise Refused("wallet_stop")  # the wallet-wide Helm STOP / HALT: no new buys
+        if row.get("runner_sha") != self.cfg["pin_runner_sha"] or row.get("prompt_sha256") != self.cfg["pin_prompt_sha256"]:
+            raise Refused("sha_mismatch")  # a different decision build than the one this book is frozen to (fail closed)
         pe = row.get("paper_entry") or {}
         if not isinstance(pe.get("in_lamports"), int) or not isinstance(pe.get("out_tokens"), int) or pe["out_tokens"] <= 0:
             raise Refused("bad_paper_entry")
@@ -403,6 +468,8 @@ class SlowbotLive:
         out2 = self._check_quote(q2, stake, pe)
         if out2 < out1 * (1 - self.cfg["requote_degrade_bps"] / 1e4):
             raise Refused("requote_degraded")
+        if self._flag_present(WALLET_HALT) or self._flag_present(WALLET_STOP):  # last look before the write-ahead row and the send
+            raise Refused("wallet_stop")
         why = self.ledger.reserve(mint, sig, self.marks, _now_ms(self.now_fn()), stake)  # write-ahead send_intent row, fsynced, under the lock
         if why:
             raise Refused(why)
@@ -459,6 +526,8 @@ class SlowbotLive:
                 continue
             if st is not None and st.get("confirmationStatus") in ("confirmed", "finalized"):
                 self._settle(sig, e, st)
+            elif e.get("last_valid") and self._past_last_valid(e["last_valid"]):
+                self._release(sig, e)  # the chain is past the blockhash height and the signature is not found: it can never land
             elif now - e["t"] > self.cfg["unresolved_s"]:
                 self._expire(sig, e)
         self._recover_positions()
@@ -470,23 +539,35 @@ class SlowbotLive:
         mint, ms = e["mint"], _now_ms(self.now_fn())
         res = self.chain.result(sig, mint)
         if st.get("err") or res["err"] or res["token_delta"] <= 0:
-            self.ledger.record("fill", mint, self.marks, ms, ok=False, signature=sig, sol_out=max(res["fee"], -res["sol_delta"]), fee_network=res["fee"],
+            self._rec("fill", mint, self.marks, ms, ok=False, signature=sig, sol_out=max(res["fee"], -res["sol_delta"]), fee_network=res["fee"],
                                reason="tx_error")
             self.log("buy_failed", mint=mint, signature=sig)
         else:
             spent = -res["sol_delta"]
             rent = ATA_RENT if res["ata_created"] else 0
-            self.ledger.record("fill", mint, self.marks, ms, ok=True, signature=sig, sol_out=spent, fee_network=res["fee"], rent_unreclaimed=rent,
+            self._rec("fill", mint, self.marks, ms, ok=True, signature=sig, sol_out=spent, fee_network=res["fee"], rent_unreclaimed=rent,
                                tokens=res["token_delta"], cost_lamports=e["stake"], liq_usd=e.get("liq_usd"), opened_t=self.now_fn(),
                                intent_id=e.get("intent_id"))
             self._adopt(mint, e.get("intent_id"), res["token_delta"], e["stake"], e.get("liq_usd"), self.now_fn())
             self.log("buy_filled", mint=mint, signature=sig, tokens=res["token_delta"], spent_lamports=spent)
         self.st["pending"].pop(sig, None)
 
+    def _past_last_valid(self, last_valid) -> bool:
+        try:
+            return self.chain.block_height() > int(last_valid)
+        except Exception:
+            return False
+
+    def _release(self, sig: str, e: dict) -> None:
+        """The buy never landed (blockhash expired, signature not found): close it with no SOL moved, so the stake is released, not written off."""
+        self._rec("writeoff", e["mint"], self.marks, _now_ms(self.now_fn()), signature=sig, reason="buy_expired_blockhash")
+        self.log("buy_released", mint=e["mint"], signature=sig, last_valid=e.get("last_valid"))
+        self.st["pending"].pop(sig, None)
+
     def _expire(self, sig: str, e: dict) -> None:
         """No outcome after unresolved_s: closed at its FULL cost (lane_executor LANE_UNRESOLVED_MS convention). If it lands later the manager
         finds untracked tokens; that is logged as a loud event."""
-        self.ledger.record("writeoff", e["mint"], self.marks, _now_ms(self.now_fn()), signature=sig, sol_out=e["stake"], reason="unresolved_full_cost")
+        self._rec("writeoff", e["mint"], self.marks, _now_ms(self.now_fn()), signature=sig, sol_out=e["stake"], reason="unresolved_full_cost")
         self.log("unresolved_writeoff", mint=e["mint"], signature=sig)
         self.st["pending"].pop(sig, None)
 
@@ -531,6 +612,16 @@ class SlowbotLive:
             return None  # fail closed: no sell without a balance read
 
     def _live_sell(self, p: dict, tokens: int, reason: str) -> dict | None:
+        if self._flag_present(WALLET_HALT):  # HALT freezes everything, sells included (STOP only stops new buys)
+            self.log("sell_blocked_wallet_halt", mint=p["mint"], reason=reason)
+            return None
+        try:
+            return self._live_sell_inner(p, tokens, reason)
+        except Exception as e:  # an RPC / ledger error must not escape into the poll loop: the position stays open and the trigger fires again
+            self.log("sell_error", mint=p["mint"], reason=reason, error_class=type(e).__name__)
+            return None
+
+    def _live_sell_inner(self, p: dict, tokens: int, reason: str) -> dict | None:
         """One sell attempt. NEVER double-sells: (1) an unresolved earlier sell of this mint blocks a new one; (2) the wallet's on-chain token balance is read
         first and only min(wanted, balance) is sold; a zero balance means the position is closed. The `sell_intent` row (signature, fsynced via the
         ledger backlog) is on disk before the send. A sell that does not confirm in confirm_timeout_s stays followed by signature (reconcile_sells)."""
@@ -548,6 +639,9 @@ class SlowbotLive:
         if bal <= 0:
             self.log("zero_balance_closed", mint=mint, reason=reason)
             return {"closed": True, "proceeds": 0, "fee": 0, "signature": None, "estimated": True}
+        if p.get("sell_stuck") or p.get("sell_attempts", 0) >= self.cfg["max_sell_attempts"]:
+            self._mark_stuck(p)
+            return None
         amount = min(tokens, bal)
         try:
             q = self.jup.quote(mint, WSOL, amount, self.cfg["sell_slippage_bps"])
@@ -559,8 +653,10 @@ class SlowbotLive:
         now = self.now_fn()
         kind = "take_half" if reason == "take_half" else "exit"
         info = {"mint": mint, "tokens": amount, "reason": reason, "kind": kind, "t": now, "n": 0, "next": now + 5, "ratio": p.get("last_ratio")}
-        self.ledger.record("sell_intent", mint, self.marks, _now_ms(now), signature=sig, tokens=amount, kind=kind, reason=reason)  # write-ahead
+        self._rec("sell_intent", mint, self.marks, _now_ms(now), signature=sig, tokens=amount, kind=kind, reason=reason)  # write-ahead
         self.st["sells"][sig] = info
+        p["sell_attempts"] = p.get("sell_attempts", 0) + 1  # every sell SEND costs a fee; the cap keeps fee_reserve >= rent + buy fee + N x sell fee
+        self.pm._save()
         self._save()
         try:
             self.chain.send(signed_b64)
@@ -578,13 +674,39 @@ class SlowbotLive:
         self.log("sell_unconfirmed", mint=mint, signature=sig, reason=reason)
         return None  # position stays open; reconcile_sells keeps checking this signature
 
+    def _mark_stuck(self, p: dict) -> None:
+        if not p.get("sell_stuck"):
+            p["sell_stuck"] = True
+            self.pm._save()
+            self.alert("sell_stuck", mint=p["mint"], attempts=p.get("sell_attempts", 0), cap=self.cfg["max_sell_attempts"])
+        self._write_bot_stop("sell_stuck")  # no new entries for this bot until the manager clears it
+        self.log("sell_stuck", mint=p["mint"])
+
     def _sell_outcome(self, sig: str, st: dict) -> dict | None:
         """A confirmed sell signature: the real fill from the transaction meta (wallet SOL delta + fee, token delta). None if the transaction failed."""
-        info = self.st["sells"].pop(sig)
+        info = self.st["sells"][sig]
+        try:
+            res = self.chain.result(sig, info["mint"])
+        except Exception as e:
+            # The signature is confirmed but its transaction cannot be read: the fill is UNKNOWN, not zero. Keep it followed (never dead, never
+            # a zero-balance close), retry the read with bounded backoff, and block any re-sell of this mint meanwhile.
+            info["landed_unbooked"], info["st_err"] = True, st.get("err")
+            info["n"] = info.get("n", 0) + 1
+            info["next"] = self.now_fn() + min(5 * 2 ** info["n"], 60)
+            for x in self.pm.open_positions():
+                if x["mint"] == info["mint"]:
+                    x["sell_landed_unbooked"] = True
+            self.pm._save()
+            self._save()
+            if info["n"] == 1:
+                self.alert("sell_landed_unbooked", mint=info["mint"], signature=sig, error_class=type(e).__name__)
+            return None
+        self.st["sells"].pop(sig)
+        for x in self.pm.open_positions():
+            x.pop("sell_landed_unbooked", None)
         self._save()
-        res = self.chain.result(sig, info["mint"])
         if st.get("err") or res["err"]:
-            self.ledger.record("fee", info["mint"], self.marks, _now_ms(self.now_fn()), signature=sig, sol_out=res["fee"], fee_network=res["fee"],
+            self._rec("fee", info["mint"], self.marks, _now_ms(self.now_fn()), signature=sig, sol_out=res["fee"], fee_network=res["fee"],
                                reason="sell_failed_tx")
             self.log("sell_tx_failed", mint=info["mint"], signature=sig)
             return None
@@ -612,6 +734,11 @@ class SlowbotLive:
         for sig, info in list(self.st["sells"].items()):
             if not force and now < info["next"]:
                 continue
+            if info.get("landed_unbooked"):
+                r = self._sell_outcome(sig, {"err": info.get("st_err")})
+                if r is not None:
+                    self._close_from_late(info, r)
+                continue
             try:
                 st = self.chain.status(sig)
             except Exception:
@@ -633,7 +760,7 @@ class SlowbotLive:
         mint, now = info["mint"], self.now_fn()
         held = [x for x in self.pm.open_positions() if x["mint"] == mint]
         if not held:  # the position was closed another way; keep the ledger cash right
-            self.ledger.record("fee", mint, self.marks, _now_ms(now), signature=r["signature"], sol_in=r["proceeds"], sol_out=r["fee"], fee_network=r["fee"],
+            self._rec("fee", mint, self.marks, _now_ms(now), signature=r["signature"], sol_in=r["proceeds"], sol_out=r["fee"], fee_network=r["fee"],
                                reason="late_sell_no_position")
             return
         p = held[0]
@@ -648,14 +775,14 @@ class SlowbotLive:
     def _on_exit(self, p: dict, r: dict, row: dict) -> None:
         ms = _now_ms(self.now_fn())
         if row["reason"] == "no_quote_writeoff":
-            self.ledger.record("writeoff", p["mint"], self.marks, ms, reason="no_quote_writeoff")
+            self._rec("writeoff", p["mint"], self.marks, ms, reason="no_quote_writeoff")
         else:
-            self.ledger.record("exit", p["mint"], self.marks, ms, sol_in=r["proceeds"], sol_out=r["fee"], fee_network=r["fee"], signature=r.get("signature"),
+            self._rec("exit", p["mint"], self.marks, ms, sol_in=r["proceeds"], sol_out=r["fee"], fee_network=r["fee"], signature=r.get("signature"),
                                reason=row["reason"], estimated=bool(r.get("estimated")))
         self.marks.pop(p["mint"], None)
 
     def _on_partial(self, p: dict, r: dict) -> None:
-        self.ledger.record("partial_exit", p["mint"], self.marks, _now_ms(self.now_fn()), sol_in=r["proceeds"], sol_out=r["fee"],
+        self._rec("partial_exit", p["mint"], self.marks, _now_ms(self.now_fn()), sol_in=r["proceeds"], sol_out=r["fee"],
                            fee_network=r["fee"], signature=r.get("signature"), reason="take_half")
 
     # -- loop
@@ -663,14 +790,29 @@ class SlowbotLive:
         self.process_intents()
         self.reconcile()
 
+    def _stage(self, name: str, fn) -> bool:
+        """Run one loop stage. An exception (RPC, HTTP, ledger) is logged by class and counted; the loop and the open positions carry on."""
+        try:
+            fn()
+            return True
+        except Exception as e:
+            self._errors += 1
+            try:
+                self.log("stage_error", stage=name, error_class=type(e).__name__, consecutive=self._errors)
+            except Exception:
+                pass
+            return False
+
     def run(self, duration: float | None = None, poll_s: float = pos.POLL_S) -> None:
-        t0, last_tick = self.now_fn(), 0.0
+        t0, last_tick, self._errors = self.now_fn(), 0.0, 0
         while duration is None or self.now_fn() - t0 < duration:
-            self.step()
+            ok = self._stage("intents", self.process_intents) & self._stage("reconcile", self.reconcile)
             if self.now_fn() - last_tick >= poll_s:
                 last_tick = self.now_fn()
-                self.pm.tick()
-            self.sleep(self.cfg["intent_poll_s"])
+                ok &= self._stage("tick", self.pm.tick)  # a failing tick is retried at the next poll; exits are never skipped for good
+            if ok:
+                self._errors = 0
+            self.sleep(min(self.cfg["intent_poll_s"] * (2 ** min(self._errors, 5)), 30.0) if self._errors else self.cfg["intent_poll_s"])  # back off
 
 
 def main(argv: list[str] | None = None) -> int:

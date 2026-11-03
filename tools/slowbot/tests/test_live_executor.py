@@ -15,6 +15,7 @@ MINT = "MintAAAA"
 MINT2, MINT3 = "MintBBBB", "MintCCCC"
 STAKE = 20_000_000
 WALLET = "LaneWallet1111"
+RSHA, PSHA = "r" * 40, "p" * 64
 
 
 class Clock:
@@ -67,6 +68,7 @@ class FakeChain:
     def __init__(self, signer, ledger_probe=None):
         self.signer, self.sent, self.confirm, self.balance_lamports, self.probe = signer, [], True, 5_000_000_000, ledger_probe
         self.landed, self.fail_sigs, self.balance_override, self.send_log = set(), set(), {}, []
+        self.height, self.result_fails = 0, False
 
     def send(self, b64):
         sig = next(s for s, t in reversed(self.signer.signed) if base64.b64encode(t.encode()).decode() == b64)
@@ -100,7 +102,12 @@ class FakeChain:
     def balance(self):
         return self.balance_lamports
 
+    def block_height(self):
+        return self.height
+
     def result(self, sig, mint):
+        if self.result_fails:
+            raise OSError("getTransaction failed")
         kind, a, b = dict(self.signer.signed)[sig].split(":")
         if sig in self.fail_sigs:
             return {"sol_delta": -5_000, "fee": 5_000, "err": {"InstructionError": 1}, "token_delta": 0, "ata_created": False}
@@ -111,7 +118,7 @@ class FakeChain:
 
 def mkcfg(tmp_path, **kw):
     base = {"intents_path": str(tmp_path / "intents.jsonl"), "state_dir": str(tmp_path / "state"), "ledger_path": str(tmp_path / "lane" / "ledger.jsonl"),
-            "stop_path": str(tmp_path / "lane" / "STOP"), "dry_run": False, "user": WALLET}
+            "stop_path": str(tmp_path / "lane" / "STOP"), "dry_run": False, "user": WALLET, "pin_runner_sha": RSHA, "pin_prompt_sha256": PSHA}
     base.update(kw)
     return lx.parse_config(base)
 
@@ -136,7 +143,7 @@ def mkexec(tmp_path, dry=False, clock=None, jup=None, probe=False, **kw):
 def put_intent(tmp_path, mint=MINT, age=5.0, clock_t=NOW, paper_in=25_000_000, paper_out=1_250_000, n=[0]):
     n[0] += 1
     dts = clock_t - age
-    row = {"schema": itn.SCHEMA, "intent_id": f"{mint}:{int(dts)}:{n[0]}", "arm": "H", "mint": mint, "pool": "P", "decision_ts": dts, "conviction": 4,
+    row = {"schema": itn.SCHEMA, "intent_id": f"{mint}:{int(dts)}:{n[0]}", "arm": "H", "mint": mint, "pool": "P", "decision_ts": dts, "conviction": 4, "runner_sha": RSHA, "prompt_sha256": PSHA,
            "paper_entry": {"in_lamports": paper_in, "out_tokens": paper_out, "liq_usd": 50_000.0}}
     itn.append_intent(tmp_path, {**row}) if False else None
     with open(tmp_path / "intents.jsonl", "a") as f:
@@ -509,7 +516,7 @@ def test_filled_position_rebuilt_from_ledger_after_state_loss(tmp_path):
 
 
 def test_main_refuses_live_without_ok_file_and_keeps_dry_default(tmp_path):
-    cfg = {"intents_path": "i", "state_dir": str(tmp_path / "s"), "ledger_path": str(tmp_path / "l"), "stop_path": str(tmp_path / "x"), "dry_run": False}
+    cfg = {"pin_runner_sha": "a", "pin_prompt_sha256": "b", "intents_path": "i", "state_dir": str(tmp_path / "s"), "ledger_path": str(tmp_path / "l"), "stop_path": str(tmp_path / "x"), "dry_run": False}
     p = tmp_path / "c.json"
     p.write_text(json.dumps(cfg))
     with pytest.raises(SystemExit):

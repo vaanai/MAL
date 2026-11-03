@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import os
+import subprocess
 from pathlib import Path
 
 SCHEMA = "slowbot-live-intent.v1"
@@ -19,12 +20,24 @@ def intent_id(mint: str, decision_ts: float) -> str:
     return f"{mint}:{int(decision_ts)}"
 
 
-def build_intent(candidate: dict, pos: dict, *, decision_ts: float, conviction, now: float) -> dict:
+def runner_git_sha() -> str:
+    """The runner build: $SLOWBOT_RUNNER_SHA if set, else `git rev-parse HEAD` of this checkout, else 'unknown' (which no pin matches)."""
+    env = os.environ.get("SLOWBOT_RUNNER_SHA")
+    if env:
+        return env.strip()
+    try:
+        out = subprocess.run(["git", "-C", str(Path(__file__).resolve().parent), "rev-parse", "HEAD"], capture_output=True, text=True, timeout=10)
+        return out.stdout.strip() if out.returncode == 0 and out.stdout.strip() else "unknown"
+    except Exception:
+        return "unknown"
+
+
+def build_intent(candidate: dict, pos: dict, *, decision_ts: float, conviction, now: float, runner_sha=None, prompt_sha256=None) -> dict:
     """`pos` is the paper H position PositionManager.open returned (its entry quote is the paper fill)."""
     return {
         "schema": SCHEMA, "intent_id": intent_id(candidate["mint"], decision_ts), "arm": "H",
         "mint": candidate["mint"], "symbol": candidate.get("symbol"), "pool": candidate.get("pool"), "venue": candidate.get("venue"),
-        "candidate_id": candidate.get("candidate_id"), "decision_ts": decision_ts, "written_ts": now, "conviction": conviction,
+        "candidate_id": candidate.get("candidate_id"), "runner_sha": runner_sha, "prompt_sha256": prompt_sha256, "decision_ts": decision_ts, "written_ts": now, "conviction": conviction,
         "paper_position_id": pos.get("id"),
         "paper_entry": {"in_lamports": pos.get("cost_lamports"), "out_tokens": pos.get("tokens"), "entry_unit": pos.get("entry_unit"),
                         "liq_usd": pos.get("entry_liq_usd"), "opened_t": pos.get("opened_t")},
