@@ -161,6 +161,8 @@ class XFeed:
                     rows.append(json.loads(line))
                 except ValueError:
                     continue
+        if isinstance(rows, dict):  # a file holding exactly one JSON object
+            rows = [rows]
         return rows if isinstance(rows, list) else []
 
     def _file_rows(self):
