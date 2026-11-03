@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 import os
 from pathlib import Path
 from unittest import mock
@@ -14,7 +15,6 @@ from tools import h5_executor as h
 from tools import h5_lane_executor as L
 from tools import pumpswap_tx as tx
 from tools.test_h5_executor import MINT, T0, Case, Env, buy_args
-from tools.test_h5_executor_shadow import shadow_trigger
 from tools.test_h5_executor_shadow import shadow_trigger
 from tools.test_probe_live import RENT, meta_result
 
@@ -807,7 +807,33 @@ class PoolGapWaiverTests(LaneCase):
         self.assertEqual(self.rows(e, "send_intent"), [])
 
     def test_kinds_are_the_shadows_feed_loss_kinds(self):
+        src = (Path(__file__).parent / "h5_shadow.py").read_text()
+        emitted = set(re.findall(r'\._gap\(\s*"([a-z_0-9]+)"', src))  # every kind Engine._gap is called with
+        self.assertTrue(emitted)
+        self.assertTrue(L.LANE_FEED_GAP_KINDS <= emitted, L.LANE_FEED_GAP_KINDS - emitted)
+        integrity = set(re.findall(r'p\.gaps\.append\(\{"kind": "([a-z_0-9]+)"', src))  # entries appended directly, not feed loss
+        self.assertTrue({"ambiguous_mint", "announced_before_gap", "slot_below_s0"} <= integrity, integrity)
+        self.assertFalse(L.LANE_FEED_GAP_KINDS & integrity)
         self.assertEqual(L.LANE_FEED_GAP_KINDS, {"slot_jump", "silence", "feed_restart", "socket_reconnect"})
+
+    def test_a_full_gaps_list_is_refused_because_the_shadow_cuts_at_five(self):
+        self.assertEqual(L.LANE_GAPS_RECORD_MAX, 5)
+        e = self.env(True, "five")
+        self.feed_row(e, gap=True, gaps=[{"kind": "slot_jump"}] * 5)
+        self.assertRefusedGap(e)
+        e = self.env(True, "four")
+        self.feed_row(e, gap=True, gaps=[{"kind": "slot_jump"}] * 4)
+        self.assertEqual(len(e.rpc.sent), 1)  # (the executor ledger is shared with the env above, so its refusal rows are still there)
+        self.assertEqual(self.tags(e, "send_intent"), [True])
+
+    def test_a_pre_unlinked_trigger_is_not_waived(self):
+        e = self.env(True, "unl")
+        self.feed_row(e, gap=True, gaps=self.FEED, base_breaks_unresolved=1, base_breaks_unresolved_settled=0)
+        self.assertRefusedGap(e)
+        e = self.env(True, "lnk")  # linked (unresolved 0): waived as usual
+        self.feed_row(e, gap=True, gaps=self.FEED, base_breaks_unresolved=0, base_breaks_unresolved_settled=0)
+        self.assertEqual(len(e.rpc.sent), 1)
+        self.assertEqual(self.tags(e, "send_intent"), [True])
 
     def test_default_false_refuses_a_gap_pool_as_before(self):
         for i, waive in enumerate((self.ABSENT, False)):
