@@ -28,7 +28,7 @@ from collections import Counter, defaultdict
 from typing import Any, Callable
 
 from tools.h5_lane_oc_executor import boost_vault_address, parse_boost_vault
-from tools.h5_shadow import POOL_LIFE_S, SILENCE_S, housekeeping  # the shadow follows a pool from its first print to s0 + POOL_LIFE_S, then drops it
+from tools.h5_shadow import BOOST_BUDGET, POOL_LIFE_S, SILENCE_S, housekeeping  # the shadow follows a pool from its first print to s0 + POOL_LIFE_S, then drops it
 
 DEFAULT_RPC = "https://api.mainnet-beta.solana.com"
 FALLBACK_SPS = 0.5  # seconds per slot when a pool's slices carry no `sps`: conservative (a slower slot means FEWER slots inside POOL_LIFE_S)
@@ -366,6 +366,74 @@ def join(reads_path: str, shadow_dir: str) -> dict[str, Any]:
     return res
 
 
+LEVEL_MIN_READS, LEVEL_MIN_POOLS, LEVEL_MIN_LATE_POOLS = 30, 10, 5
+LATE_FRAC = 0.9
+BUDGET = int(BOOST_BUDGET)  # 17_585_000_000 lamports, the shadow's own constant
+
+
+def level(reads_path: str, shadow_dir: str) -> dict[str, Any]:
+    """QP-RULING-1103-oc-premise, Ruling 2 (level check). For each read with int ctx_slot c, int amount A and int t_ms: E = sum of deduped boost_slice
+    `lamports` of the pool with slot < c; K = A + E. A read is level-clean iff, in this order of precedence: the pool has >= 1 slice (else no_slices);
+    c <= s0 + horizon_slots(sps) (else beyond_horizon); Coverage.scored(c, c, t, t, horizon) holds (else gap: the pool's whole follow life, via the same
+    positive-coverage rule as `join`); no slice at slot == c (else boundary: a slice AT the read slot is ordering-ambiguous, so it is neither counted in E
+    nor scored; the read is excluded). Reads with a null / non-int field are `null`.
+    Ruling text: "c <= s0 + horizon_slots(sps)" is the follow-window bound (later reads are beyond_horizon, never clean). "Late in BOOST" is the
+    ruling's PASS clause "E >= 0.9 x 17.585e9" (the budget is nearly spent): `late_clean_reads` / `late_pools`.
+    PASS: >= 30 clean reads on >= 10 pools, >= 5 pools with a clean late read, and K == BUDGET on every clean read. FAIL: any clean read K != BUDGET.
+    Fewer reads: NOT YET."""
+    by_pool, reasons = load_reads(reads_path)
+    slices, meta, cov, dupes = load_shadow(shadow_dir, set(by_pool))
+    res: dict[str, Any] = {"reads_total": sum(reasons.values()), "pools_read": len(by_pool), "clean_reads": 0, "clean_pools": 0, "k_equal_budget": 0,
+                           "k_not_equal_budget": 0, "k_minus_budget": [], "late_clean_reads": 0, "late_pools": 0,
+                           "non_clean": {"null": 0, "no_slices": 0, "beyond_horizon": 0, "gap": 0, "boundary": 0}, "boundary": 0,
+                           "pool_k_min_max": {}, "slice_dupes_removed": dupes}
+    clean_pools: set = set()
+    late_pools: set = set()
+    for pool, rs in by_pool.items():
+        sl = slices.get(pool, [])
+        m = meta.get(pool)
+        for c, amt, t in rs:
+            if not (_ok_int(c) and _ok_int(amt) and _ok_int(t)):
+                res["non_clean"]["null"] += 1
+                continue
+            if not sl or m is None:
+                res["non_clean"]["no_slices"] += 1
+                continue
+            hz = horizon_slots(m[1])
+            if c > m[0] + hz:
+                res["non_clean"]["beyond_horizon"] += 1
+                continue
+            if not cov.scored(c, c, t, t, hz):
+                res["non_clean"]["gap"] += 1
+                continue
+            if any(s == c for s, _ in sl):
+                res["non_clean"]["boundary"] += 1
+                res["boundary"] += 1
+                continue
+            E = sum(lam for s, lam in sl if s < c)
+            K = amt + E
+            res["clean_reads"] += 1
+            clean_pools.add(pool)
+            lo, hi = res["pool_k_min_max"].get(pool, (K, K))
+            res["pool_k_min_max"][pool] = (min(lo, K), max(hi, K))
+            if K == BUDGET:
+                res["k_equal_budget"] += 1
+            else:
+                res["k_not_equal_budget"] += 1
+                res["k_minus_budget"].append(K - BUDGET)
+            if E >= LATE_FRAC * BUDGET:
+                res["late_clean_reads"] += 1
+                late_pools.add(pool)
+    res["clean_pools"], res["late_pools"] = len(clean_pools), len(late_pools)
+    if res["k_not_equal_budget"]:
+        res["verdict"] = "FAIL"
+    elif res["clean_reads"] >= LEVEL_MIN_READS and res["clean_pools"] >= LEVEL_MIN_POOLS and res["late_pools"] >= LEVEL_MIN_LATE_POOLS:
+        res["verdict"] = "PASS"
+    else:
+        res["verdict"] = "NOT YET"
+    return res
+
+
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description="BOOST vault premise probe (counts only)")
     sub = ap.add_subparsers(dest="cmd", required=True)
@@ -379,9 +447,16 @@ def main(argv: list[str] | None = None) -> int:
     j = sub.add_parser("join")
     j.add_argument("--reads", required=True)
     j.add_argument("--shadow-dir", required=True)
+    lv = sub.add_parser("level")
+    lv.add_argument("--reads", required=True)
+    lv.add_argument("--shadow-dir", required=True)
     a = ap.parse_args(argv)
     if a.cmd == "poll":
         print(f"reads written: {poll(a.shadow_dir, a.out, a.period_s, a.max_pools, a.end_epoch, http_rpc(a.rpc))}")
+        return 0
+    if a.cmd == "level":
+        for k, v in level(a.reads, a.shadow_dir).items():
+            print(f"{k}: {v}")
         return 0
     for k, v in join(a.reads, a.shadow_dir).items():
         print(f"{k}: {v}")

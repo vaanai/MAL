@@ -359,3 +359,99 @@ def test_join_output_has_no_forbidden_names(tmp_path, capsys):
     for word in ("price", "reserve", "pnl", "trigger", "outcome"):
         assert word not in out.lower()
     assert "pairs_total: 1" in out
+
+
+# ---- level subcommand (QP-RULING-1103-oc-premise Ruling 2) ----
+B = P.BUDGET
+
+
+def _lv(tmp_path, slices, reads, hb=True, extra=()):
+    sd = _shadow(tmp_path, list(slices) + list(extra), hb=hb)
+    rd = tmp_path / "lr.jsonl"
+    _reads(rd, reads)
+    return P.level(str(rd), str(sd))
+
+
+def test_level_budget_comes_from_the_shadow():
+    from tools.h5_shadow import BOOST_BUDGET
+    assert P.BUDGET == int(BOOST_BUDGET) == 17_585_000_000
+
+
+def test_level_k_is_amount_plus_earlier_slices_only(tmp_path):
+    A = pk(1)
+    # slices at 1010 (400) and 1015 (600); read at 1020 sees both; a slice at 1030 is after the read and ignored
+    res = _lv(tmp_path, [bs(A, 1010, 400), bs(A, 1015, 600), bs(A, 1030, 7)], [(A, 1020, B - 1000)])
+    assert res["clean_reads"] == 1 and res["k_equal_budget"] == 1 and res["k_not_equal_budget"] == 0
+
+
+def test_level_mismatch_lists_k_minus_budget_and_fails(tmp_path):
+    A = pk(1)
+    res = _lv(tmp_path, [bs(A, 1010, 400)], [(A, 1020, B - 400 + 3)])
+    assert res["k_minus_budget"] == [3] and res["verdict"] == "FAIL"
+
+
+def test_level_boundary_slice_at_read_slot_is_excluded(tmp_path):
+    A = pk(1)
+    res = _lv(tmp_path, [bs(A, 1010, 400), bs(A, 1020, 5)], [(A, 1020, B - 400)])
+    assert res["clean_reads"] == 0 and res["boundary"] == 1 and res["non_clean"]["boundary"] == 1
+
+
+def test_level_pool_without_slices_and_null_reads(tmp_path):
+    A, Bp = pk(1), pk(2)
+    res = _lv(tmp_path, [bs(A, 1010, 4)], [(Bp, 1020, B), (A, None, B), (A, 1020, None)])
+    assert res["non_clean"]["no_slices"] == 1 and res["non_clean"]["null"] == 2 and res["clean_reads"] == 0
+
+
+def test_level_beyond_horizon_is_not_clean(tmp_path):
+    A = pk(1)
+    far = 1000 + P.horizon_slots(0.4) + 1
+    res = _lv(tmp_path, [bs(A, 1010, 4)], [(A, far, B - 4), (A, 1000 + P.horizon_slots(0.4), B - 4)])
+    assert res["non_clean"]["beyond_horizon"] == 1 and res["clean_reads"] == 1
+
+
+def test_level_uses_positive_coverage_gap_and_no_hb(tmp_path):
+    A = pk(1)
+    gap = {"type": "gap", "t_ms": T0 - 100_000, "from_slot": 1, "to_slot": 2}
+    assert _lv(tmp_path, [bs(A, 1010, 4)], [(A, 1020, B - 4)], extra=[gap])["non_clean"]["gap"] == 1
+    d = tmp_path / "n"
+    d.mkdir()
+    assert _lv(d, [bs(A, 1010, 4)], [(A, 1020, B - 4)], hb=[])["non_clean"]["gap"] == 1
+
+
+def test_level_late_reads_pools_and_per_pool_min_max(tmp_path):
+    A = pk(1)
+    late = int(0.9 * B)
+    res = _lv(tmp_path, [bs(A, 1010, late), bs(A, 1015, 10)], [(A, 1012, B - late), (A, 1020, B - late - 10)])
+    assert res["clean_reads"] == 2 and res["late_clean_reads"] == 2 and res["late_pools"] == 1
+    assert res["pool_k_min_max"][A] == (B, B)
+
+
+def _many(tmp_path, n_pools, reads_each, late=True, bad=None):
+    tmp_path.mkdir()
+    rows, reads = [], []
+    for i in range(1, n_pools + 1):
+        p = pk(i)
+        e = int(0.95 * B) if late else 10
+        rows.append(bs(p, 1010, e))
+        for j in range(reads_each):
+            reads.append((p, 1020 + j, B - e + (bad if bad is not None and i == 1 and j == 0 else 0)))
+    return _lv(tmp_path, rows, reads)
+
+
+def test_level_pass_fail_not_yet(tmp_path):
+    assert _many(tmp_path / "a", 10, 3)["verdict"] == "PASS"
+    assert _many(tmp_path / "b", 10, 3, bad=1)["verdict"] == "FAIL"
+    assert _many(tmp_path / "c", 9, 4)["verdict"] == "NOT YET"      # 36 reads, 9 pools
+    assert _many(tmp_path / "d", 10, 2)["verdict"] == "NOT YET"     # 20 reads
+    assert _many(tmp_path / "e", 10, 3, late=False)["verdict"] == "NOT YET"  # no late pools
+
+
+def test_level_cli_prints_counts_only(tmp_path, capsys):
+    sd = _shadow(tmp_path, [bs(pk(1), 1010, 4)])
+    rd = tmp_path / "r.jsonl"
+    _reads(rd, [(pk(1), 1020, B - 4)])
+    assert P.main(["level", "--reads", str(rd), "--shadow-dir", str(sd)]) == 0
+    out = capsys.readouterr().out
+    assert "verdict: NOT YET" in out and "clean_reads: 1" in out
+    for word in ("price", "reserve", "pnl", "trigger", "outcome"):
+        assert word not in out.lower()
