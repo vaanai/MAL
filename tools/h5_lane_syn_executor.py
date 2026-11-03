@@ -333,7 +333,7 @@ class H5LaneSynExecutor(_Base):
         p = self.intents_path
         try:
             if p.is_dir():
-                return sorted(x for x in p.glob("h5-shadow-*.jsonl") if x.is_file())
+                return sorted(x for x in p.glob("h5-shadow-????-??-??T??.jsonl") if x.is_file())
         except OSError:
             return []
         return [p] if p.is_file() else []

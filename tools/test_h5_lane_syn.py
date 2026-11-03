@@ -80,7 +80,7 @@ class ShadowTests(unittest.TestCase):
             self.assertEqual(sorted(r["variant"] for r in trig), ["fv", "pv"], src)
             for r in trig:
                 self.assertIs(r["synthetic"], True)
-                self.assertEqual((r["synthetic_src"], r["population"], r["s0_block_time"]), (src, "synthetic", CUT_S + 1000))
+                self.assertEqual((r["synthetic_src"], r["population"], r["s0_block_time"]), (src, "synthetic_only", CUT_S + 1000))
                 self.assertTrue(r["h5_look2_sealed"])  # the Look-2 seal stays on: decision-time record only
                 self.assertTrue(S.trigger_ok(r))
             for t in ("outcome", "outcome_bx10", "strip", "excluded"):
@@ -184,8 +184,16 @@ class SynEnv(Env):
         return ex
 
 
+def start_rec(**over) -> dict:
+    rec = {"type": "start", "t_ms": 1, "out_dir": "/home/x/data/h5-shadow-lane-syn", "seal": {"reason": "x", "population": "synthetic_only", "lane": "DEC-035",
+           "oracle": "lane_dec035_not_a_pick"}, "bot_id": BOT, "syn_cut_ms": S.SYN_CUT_MS,
+           "h5_look2": {"reason": "r", "start_ms": hs.H5_LOOK2_START_MS, "end_ms": hs.H5_LOOK2_END_MS, "observed": False, "amendment_ref": None},
+           "wrapper_module": S.WRAPPER_MODULE, "wrapper_sha256": S.wrapper_sha256()}
+    return {**rec, **over}
+
+
 def syn_row(clock, **kw) -> dict:
-    return shadow_trigger(clock, **{**dict(synthetic=True, synthetic_src="ws", population="synthetic", s0_block_time=S0_OK), **kw})
+    return shadow_trigger(clock, **{**dict(synthetic=True, synthetic_src="ws", population="synthetic_only", s0_block_time=S0_OK), **kw})
 
 
 class SynCase(Case):
@@ -214,10 +222,10 @@ class SynCase(Case):
         return e
 
     @staticmethod
-    def feed(e: Env, *rows: dict) -> int:
+    def feed(e: Env, *rows: dict, start="default") -> int:
         p = Path(e.conf["intents_file"])
         if not p.exists():
-            p.write_text("")
+            p.write_text("" if start is None else json.dumps(start_rec() if start == "default" else start) + "\n")
             e.ex.intent_tick()
         with p.open("a") as fh:
             for r in rows:
@@ -255,7 +263,7 @@ class PopulationGateTests(SynCase):
         self.assertEqual(len(e.rpc.sent), 1)
 
     def test_population_class_and_source_gates_fail_closed(self):
-        bad = {"pop_missing": dict(population=None), "pop_plain": dict(population="plain"), "false": dict(synthetic=False), "null": dict(synthetic=None),
+        bad = {"pop_missing": dict(population=None), "pop_plain": dict(population="plain"), "pop_old_value": dict(population="synthetic"), "false": dict(synthetic=False), "null": dict(synthetic=None),
                "str": dict(synthetic="true"), "src_none": dict(synthetic_src=None), "src_junk": dict(synthetic_src="pre_event_binary")}
         for name, kw in bad.items():
             e = self.syn_env(sub=name)
@@ -421,7 +429,8 @@ class CrossBotAndPauseTests(SynCase):
         self.feed(e, syn_row(e.clock, synthetic_src="rpc"))
         intent = self.rows(e, "send_intent")[0]
         for r in self.rows(e):
-            self.assertEqual(r["population"], "synthetic_only")
+            if r["ev"] not in ("start", "snap"):
+                self.assertEqual(r["population"], "synthetic_only")
         self.assertEqual((intent["bot_id"], intent["synthetic_src"], intent["s0_block_time_ms"]), (BOT, "rpc", S0_OK * 1000))
 
     def test_main_installs_the_subclass_and_restores(self):
@@ -450,3 +459,139 @@ class ExampleConfigTests(unittest.TestCase):
         self.assertEqual((cfg["lane"]["ledger_path"], cfg["lane"]["stop_path"]), (other["ledger_path"], other["stop_path"]))  # one shared lane ledger and STOP
         self.assertTrue(cfg["intents_file"].endswith("/data/h5-shadow-lane-syn"))
         self.assertNotIn("tipauth_gate", cfg)
+
+
+class StartRecordTests(SynCase):
+    def test_a_real_wrapper_start_record_passes_the_executors_check(self):
+        eng, out = mk_engine(S.SynEngine, hs.StaticClassifier(True, "ws"))
+        rec = {"type": "start", "out_dir": "/home/x/data/h5-shadow-lane-syn", "seal": {"reason": "r", "start_ms": 1, "oracle": "lane_dec035_not_a_pick", "lane": "DEC-035"},
+               "h5_look2": hs.look2_start_info(None)}
+        eng.emit(rec)
+        self.assertIsNone(X.start_record_reason(types(out, "start")[0]))
+
+    def test_no_start_record_refuses_every_trigger(self):
+        e = self.syn_env()
+        self.feed(e, syn_row(e.clock), start=None)
+        self.assertEqual((e.rpc.sent, e.ex.syn_refusals), ([], {"syn_start_missing": 1}))
+
+    def test_each_missing_or_wrong_tag_refuses(self):
+        seal = start_rec()["seal"]
+        bad = {"seal.population": dict(seal={**seal, "population": "plain"}), "seal.lane": dict(seal={**seal, "lane": "DEC-036"}),
+               "seal.oracle": dict(seal={**seal, "oracle": "stub_always_true"}), "bot_id": dict(bot_id="h5-lane-2"), "syn_cut_ms": dict(syn_cut_ms=S.SYN_CUT_MS - 1),
+               "h5_look2.observed": dict(h5_look2={**start_rec()["h5_look2"], "observed": True, "amendment_ref": "EXP-024-Am2"}),
+               "h5_look2.window": dict(h5_look2={**start_rec()["h5_look2"], "start_ms": None}), "wrapper_module": dict(wrapper_module="tools.h5_lane_shadow"),
+               "wrapper_sha256": dict(wrapper_sha256="0" * 64), "out_dir": dict(out_dir="/home/x/data/h5-shadow-lane1"), "mode": dict(fresh_forward="ARENA"),
+               "mode2": dict(q_star_sol=50.0)}
+        for name, over in bad.items():
+            e = self.syn_env(sub=f"b{name.replace('.', '_')}")
+            self.feed(e, syn_row(e.clock), start=start_rec(**over))
+            self.assertEqual(e.rpc.sent, [], name)
+            self.assertEqual(list(e.ex.syn_refusals), [f"syn_start_bad:{name.rstrip('2')}"], name)
+        e = self.syn_env(sub="missing_key")
+        r = start_rec()
+        del r["wrapper_sha256"]
+        self.feed(e, syn_row(e.clock), start=r)
+        self.assertEqual(e.rpc.sent, [])
+
+    def test_directory_mode_follows_rolls_and_a_later_bad_start(self):
+        d = self.tmp / "shadow"
+        d.mkdir()
+        f0, f1 = d / "h5-shadow-2026-11-06T00.jsonl", d / "h5-shadow-2026-11-06T01.jsonl"
+        f0.write_text(json.dumps(start_rec()) + "\n")
+        e = self.syn_env(sub="dir", intents_file=str(d))
+        e.ex.intent_tick()
+        e.clock.t += 1_100  # the executor re-lists the directory once a second
+        f1.write_text(json.dumps(syn_row(e.clock)) + "\n")  # the roll: the start record is in the previous hour's file
+        self.assertEqual(e.ex.intent_tick(), 1)
+        self.assertEqual(len(e.rpc.sent), 1)
+        with f1.open("a") as fh:  # the shadow restarts with the wrong wrapper
+            fh.write(json.dumps(start_rec(bot_id="other")) + "\n" + json.dumps(syn_row(e.clock, mint="M2", pool="P2")) + "\n")
+        e.ex.intent_tick()
+        self.assertEqual(e.ex.syn_refusals, {"syn_start_bad:bot_id": 1})
+        self.assertEqual(len(e.rpc.sent), 1)
+
+
+class PathGuardTests(SynCase):
+    def cfg(self, **syn_over) -> dict:
+        d = self.tmp / "lane"
+        return {"lane": self.lane_cfg(d), "state_dir": str(self.tmp / "state"), "intents_file": str(self.tmp / "shadow"), "lane_syn": self.syn_cfg(d, **syn_over)}
+
+    def test_collisions_are_refused_at_startup(self):
+        d = self.tmp / "lane"
+        led = str(d / "ledger.jsonl")
+        cases = {"same": dict(pause_path=str(d / "SYN-STOP")), "lane_stop_as_stop": dict(stop_path=str(d / "STOP")), "lane_stop_as_pause": dict(pause_path=str(d / "STOP")),
+                 "ledger": dict(stop_path=led), "ledger_lock": dict(stop_path=led + ".lock"), "backlog": dict(pause_path=led + ".backlog.h5-lane-2"),
+                 "bot_lock": dict(stop_path=led + ".bot.h5-lane-2.lock"), "state_dir": dict(pause_path=str(self.tmp / "state" / "P")),
+                 "intents": dict(pause_path=str(self.tmp / "shadow" / "P")), "lane2_stop": dict(stop_path=X.H5_LANE2_PATHS[1]),
+                 "lane2_state": dict(pause_path=X.H5_LANE2_PATHS[0] + "/PAUSE"), "lane2_ledger": dict(pause_path=X.H5_LANE2_PATHS[2]),
+                 "via_dotdot": dict(stop_path=str(d / "x" / ".." / "STOP"))}
+        for name, over in cases.items():
+            with self.assertRaises(SystemExit, msg=name):
+                X.parse_syn_config(self.cfg(**over)["lane_syn"], self.cfg(**over))
+        X.parse_syn_config(self.cfg()["lane_syn"], self.cfg())  # the clean config passes
+
+    def test_a_stop_directory_that_is_not_writable_is_refused(self):
+        blocker = self.tmp / "afile"
+        blocker.write_text("x")
+        over = dict(stop_path=str(blocker / "SYN-STOP"))
+        with self.assertRaisesRegex(SystemExit, "not writable"):
+            X.parse_syn_config(self.cfg(**over)["lane_syn"], self.cfg(**over))
+        ro = self.tmp / "ro"
+        ro.mkdir()
+        os.chmod(ro, 0o555)
+        self.addCleanup(lambda: os.chmod(ro, 0o755))
+        if os.geteuid() != 0:
+            over = dict(stop_path=str(ro / "SYN-STOP"))
+            with self.assertRaisesRegex(SystemExit, "not writable"):
+                X.parse_syn_config(self.cfg(**over)["lane_syn"], self.cfg(**over))
+
+    def test_the_executor_applies_the_guards(self):
+        d = self.tmp / "lane"
+        with self.assertRaises(SystemExit):
+            self.syn_env(syn_kw={"stop_path": str(d / "STOP")})
+
+
+class TrueClassPersistenceTests(SynCase):
+    def test_counters_plan_state_and_decision_carry_the_true_class(self):
+        e = self.syn_env()
+        self.feed(e, syn_row(e.clock, synthetic_src="ws"))
+        mint = syn_row(e.clock)["mint"]
+        want = (True, "ws", "synthetic_only")
+        plan = e.ex.counters.plans[mint]["trigger"]
+        pend = e.ex.state.pending[mint]["h5"]["trigger"]
+        for t in (plan, pend):
+            self.assertEqual((t["synthetic"], t["synthetic_src"], t["population"]), want)
+            self.assertNotIn("true_src", t)
+        disk = json.loads(Path(e.ex.counters_path).read_text())["plans"][mint]["trigger"]
+        self.assertEqual((disk["synthetic"], disk["synthetic_src"], disk["population"]), want)
+        state_disk = json.loads(Path(e.ex.state_path).read_text())
+        self.assertEqual(state_disk["pending"][mint]["h5"]["trigger"]["synthetic_src"], "ws")
+        self.assertIs(state_disk["pending"][mint]["h5"]["trigger"]["synthetic"], True)
+        dec = e.ledger("decision")[0]
+        self.assertEqual((dec["synthetic"], dec["synthetic_src"], dec["population"]), want)
+        self.assertNotIn("true_src", dec)
+
+    def test_snap_and_start_rows_are_not_tagged_but_trade_rows_are(self):
+        e = self.syn_env()
+        self.feed(e, syn_row(e.clock))
+        for r in self.rows(e):
+            if r["ev"] in ("start", "snap"):
+                self.assertNotIn("population", r)
+            else:
+                self.assertEqual(r["population"], "synthetic_only")
+
+
+class CrossBotOverlapAlertTests(SynCase):
+    def test_another_bots_row_on_a_held_mint_raises_one_alert(self):
+        e = self.syn_env()
+        self.feed(e, syn_row(e.clock))
+        mint = syn_row(e.clock)["mint"]
+        e.ex.syn_check_overlap()
+        self.assertEqual(e.alerts("cross_bot_overlap"), [])
+        self.other(e, "h5-lane-2").record("fee", mint, {}, e.clock(), sol_out=1, fee_network=1)
+        e.clock.t += 6_000
+        e.ex.syn_check_overlap()
+        e.clock.t += 6_000
+        e.ex.syn_check_overlap()
+        (a,) = e.alerts("cross_bot_overlap")
+        self.assertEqual(a["other_bot"], "h5-lane-2")
