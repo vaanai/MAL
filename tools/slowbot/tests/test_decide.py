@@ -33,7 +33,7 @@ def test_buy_logged(tmp_path):
     row = D.decide(CAND, s, log_path=log)
     assert row["action"] == "BUY" and row["conviction"] == 3 and row["decision_error"] is None
     kw = s.calls[0]
-    assert kw["temperature"] == 0
+    assert kw["temperature"] is None  # omitted from the request body: claude-haiku-5-5 rejects it with HTTP 400
     _, sha = D.load_prompt()
     assert row["prompt_sha256"] == sha
     logged = json.loads(log.read_text())
@@ -162,3 +162,9 @@ def test_trailing_skip_rate_ignores_errors():
         {"action": "SKIP", "h_buy": False, "decision_error": "caller_BudgetExceeded"}]
     assert D.trailing_skip_rate(rows) == 0.75
     assert D.trailing_skip_rate([], default=0.4) == 0.4
+
+
+def test_request_body_has_no_temperature():
+    from tools.haiku_caller import build_body, DEFAULT_THINKING
+    body = build_body(D.MODEL, "sys", [{"role": "user", "content": "x"}], D.MAX_TOKENS, D.TEMPERATURE, DEFAULT_THINKING)
+    assert "temperature" not in body
