@@ -1,11 +1,13 @@
 """Counts-only probe of one premise of h5-lane-oc (PR #1220): the PumpSwap pool's BOOST vault SPL `amount` is the remaining BOOST budget and falls by
 exactly the BOOST spend.
 
-`poll`: every period, find pools in the newest shadow hour files (rows of type "pool" or "boost_slice"; ONLY the fields type, pool, slot are read), and do one
-getAccountInfo of each pool's BOOST vault over public RPC (no key). One row per read goes to --out: pool, vault, ctx_slot, amount, reason, t_ms.
+`poll`: every period, find pools the shadow still follows (boost_slice rows; ONLY type, pool, slot, s0, sps are read; s0 + POOL_LIFE_S/sps still ahead of the
+newest slot seen), and do one getAccountInfo of each pool's BOOST vault over public RPC (no key). One row per read goes to --out: pool, vault, ctx_slot,
+amount, reason, t_ms.
 `join`: for consecutive reads (a, b) of a pool with ctx_slot_a < ctx_slot_b, compare delta = amount_a - amount_b with S = sum of `lamports` of that pool's
-boost_slice rows with slot in (ctx_slot_a, ctx_slot_b]. ONLY boost_slice fields pool, slot, lamports are read. Prints counts only; never a price, reserve,
-outcome, PnL or trigger field. 0 Helius credits. Memory: streams files line by line; pool/slice dicts only.
+deduped boost_slice rows with slot in (ctx_slot_a, ctx_slot_b]. ONLY boost_slice pool, slot, lamports, s0, sps, signature, event_index, tx_index and gap kind,
+from_slot, to_slot, at_ms are read. Pairs outside the shadow's follow window, overlapping a gap, or of a pool with no slices are counted apart. Prints counts
+only; never a price, reserve, outcome, PnL or trigger field. 0 Helius credits. Memory: streams files line by line; pool/slice dicts only.
 """
 from __future__ import annotations
 
@@ -21,41 +23,59 @@ from collections import Counter, defaultdict
 from typing import Any, Callable
 
 from tools.h5_lane_oc_executor import boost_vault_address, parse_boost_vault
+from tools.h5_shadow import POOL_LIFE_S  # the shadow follows a pool from its first print to s0 + POOL_LIFE_S, then drops it
 
 DEFAULT_RPC = "https://api.mainnet-beta.solana.com"
-SLOTS_PER_MIN = 150  # ~400 ms slots
-WINDOW_SLOTS = 60 * SLOTS_PER_MIN  # "last 60 min", measured in slots from the newest slot seen (rows carry slot)
+FALLBACK_SPS = 0.5  # seconds per slot when a pool's slices carry no `sps`: conservative (a slower slot means FEWER slots inside POOL_LIFE_S)
+GAP_TIME_MARGIN_MS = 5_000  # a time-only gap (silence, feed restart) voids a pair whose read times, widened by this, contain its at_ms
 MAX_CALLS_PER_S = 4.0
 HOUR_FILES_SCANNED = 2
-POOL_TYPES = ("pool", "boost_slice")
 
 
 def _hour_files(shadow_dir: str) -> list[str]:
     return sorted(glob.glob(os.path.join(shadow_dir, "h5-shadow-*.jsonl")))
 
 
-def recent_pools(shadow_dir: str, max_pools: int, window_slots: int = WINDOW_SLOTS) -> list[str]:
-    """Pools seen within `window_slots` of the newest slot, newest first, capped. Reads only type, pool, slot."""
-    last: dict[str, int] = {}
+def _ok_int(x: Any) -> bool:
+    return type(x) is int
+
+
+def _sps_ok(x: Any) -> bool:
+    return type(x) in (int, float) and 0.05 <= x <= 5.0
+
+
+def horizon_slots(sps: float | None) -> int:
+    """Slots the shadow follows a pool for: POOL_LIFE_S / sps. `sps` is the shadow's own per-slice `sps` (the largest seen for the pool, i.e. the fewest
+    slots); FALLBACK_SPS if none."""
+    return int(POOL_LIFE_S / (sps if sps is not None else FALLBACK_SPS))
+
+
+def recent_pools(shadow_dir: str, max_pools: int) -> list[str]:
+    """Pools the shadow is still following: s0 + horizon is ahead of the newest slot seen. Newest s0 first, capped.
+    Reads only type, pool, slot, s0, sps of boost_slice rows (a `pool` record carries no slot, so it cannot place a pool)."""
+    info: dict[str, list] = {}  # pool -> [s0, max sps]
+    newest = -1
     for path in _hour_files(shadow_dir)[-HOUR_FILES_SCANNED:]:
         with open(path, encoding="utf-8", errors="replace") as fh:
             for line in fh:
-                if '"pool"' not in line:
+                if '"boost_slice"' not in line:
                     continue
                 try:
                     row = json.loads(line)
                 except ValueError:
                     continue
-                if not isinstance(row, dict) or row.get("type") not in POOL_TYPES:
+                if not isinstance(row, dict) or row.get("type") != "boost_slice":
                     continue
-                pool, slot = row.get("pool"), row.get("slot")
-                if isinstance(pool, str) and type(slot) is int and slot > last.get(pool, -1):
-                    last[pool] = slot
-    if not last:
-        return []
-    newest = max(last.values())
-    keep = [(s, p) for p, s in last.items() if s >= newest - window_slots]
-    keep.sort(key=lambda sp: (-sp[0], sp[1]))
+                pool, slot, s0, sps = row.get("pool"), row.get("slot"), row.get("s0"), row.get("sps")
+                if not (isinstance(pool, str) and _ok_int(slot) and _ok_int(s0)):
+                    continue
+                newest = max(newest, slot)
+                cur = info.setdefault(pool, [s0, None])
+                cur[0] = min(cur[0], s0)
+                if _sps_ok(sps) and (cur[1] is None or sps > cur[1]):
+                    cur[1] = float(sps)
+    keep = [(s0, p) for p, (s0, sps) in info.items() if s0 + horizon_slots(sps) > newest]
+    keep.sort(key=lambda t: (-t[0], t[1]))
     return [p for _s, p in keep[:max_pools]]
 
 
@@ -140,8 +160,10 @@ def poll(shadow_dir: str, out: str, period_s: float, max_pools: int, end_epoch: 
     return n
 
 
-def load_reads(path: str) -> list[dict]:
-    rows = []
+def load_reads(path: str) -> tuple[dict[str, list[tuple]], Counter]:
+    """(pool -> [(ctx_slot, amount, t_ms)] in file order, reads-by-reason Counter)."""
+    by_pool: dict[str, list[tuple]] = defaultdict(list)
+    reasons: Counter = Counter()
     with open(path, encoding="utf-8") as fh:
         for line in fh:
             try:
@@ -149,54 +171,108 @@ def load_reads(path: str) -> list[dict]:
             except ValueError:
                 continue
             if isinstance(r, dict) and isinstance(r.get("pool"), str):
-                rows.append({k: r.get(k) for k in ("pool", "ctx_slot", "amount", "reason")})
-    return rows
+                by_pool[r["pool"]].append((r.get("ctx_slot"), r.get("amount"), r.get("t_ms")))
+                reasons[str(r.get("reason"))] += 1
+    return by_pool, reasons
 
 
-def load_slices(shadow_dir: str, pools: set[str]) -> dict[str, list[tuple[int, int]]]:
-    """boost_slice rows of the wanted pools. Reads ONLY pool, slot, lamports."""
-    out: dict[str, list[tuple[int, int]]] = defaultdict(list)
+def slice_key(pool: str, row: dict) -> tuple:
+    sig = row.get("signature")
+    if isinstance(sig, str) and sig:
+        return (pool, sig, row.get("event_index"))
+    return (pool, row.get("slot"), row.get("tx_index"), row.get("lamports"))
+
+
+def load_shadow(shadow_dir: str, pools: set[str]) -> tuple[dict, dict, list, int]:
+    """(slices, pool_meta, gaps, dupes_removed). Reads ONLY: boost_slice pool, slot, lamports, s0, sps, signature, event_index, tx_index; gap kind, from_slot,
+    to_slot, at_ms. A line is parsed only if it carries the type string of one of those two row types."""
+    slices: dict[str, list[tuple[int, int]]] = defaultdict(list)
+    meta: dict[str, list] = {}  # pool -> [s0, max sps]
+    gaps: list[tuple] = []
+    seen: set = set()
+    dupes = 0
     for path in _hour_files(shadow_dir):
         with open(path, encoding="utf-8", errors="replace") as fh:
             for line in fh:
-                if '"boost_slice"' not in line:
+                if '"boost_slice"' not in line and '"gap"' not in line:
                     continue
                 try:
                     row = json.loads(line)
                 except ValueError:
                     continue
-                if not isinstance(row, dict) or row.get("type") != "boost_slice":
+                if not isinstance(row, dict):
                     continue
-                pool, slot, lam = row.get("pool"), row.get("slot"), row.get("lamports")
-                if pool in pools and type(slot) is int and type(lam) is int:
-                    out[pool].append((slot, lam))
-    return out
+                if row.get("type") == "gap":
+                    fs, ts, at = row.get("from_slot"), row.get("to_slot"), row.get("at_ms")
+                    gaps.append((fs if _ok_int(fs) else None, ts if _ok_int(ts) else None, at if _ok_int(at) else None))
+                    continue
+                if row.get("type") != "boost_slice":
+                    continue
+                pool, slot, lam, s0, sps = row.get("pool"), row.get("slot"), row.get("lamports"), row.get("s0"), row.get("sps")
+                if pool not in pools or not (_ok_int(slot) and _ok_int(lam)):
+                    continue
+                k = slice_key(pool, row)
+                if k in seen:
+                    dupes += 1
+                    continue
+                seen.add(k)
+                slices[pool].append((slot, lam))
+                if _ok_int(s0):
+                    m = meta.setdefault(pool, [s0, None])
+                    m[0] = min(m[0], s0)
+                    if _sps_ok(sps) and (m[1] is None or sps > m[1]):
+                        m[1] = float(sps)
+    return slices, meta, gaps, dupes
 
 
-def _isint(x: Any) -> bool:
-    return type(x) is int
+def _gap_overlaps(gaps: list[tuple], sa: int, sb: int, ta: Any, tb: Any) -> bool:
+    for fs, ts, at in gaps:
+        if fs is not None and ts is not None:
+            if fs < sb and ts > sa:  # the jumped-over range [from_slot, to_slot] meets (sa, sb]
+                return True
+        elif at is not None:
+            if not (_ok_int(ta) and _ok_int(tb)):
+                return True  # cannot place it in time: treated as overlapping
+            if ta - GAP_TIME_MARGIN_MS <= at <= tb + GAP_TIME_MARGIN_MS:
+                return True
+    return False
 
 
 def join(reads_path: str, shadow_dir: str) -> dict[str, Any]:
-    reads = load_reads(reads_path)
-    by_pool: dict[str, list[dict]] = defaultdict(list)
-    for r in reads:
-        by_pool[r["pool"]].append(r)
-    slices = load_slices(shadow_dir, set(by_pool))
-    res: dict[str, Any] = {"pairs_total": 0, "boundary": 0, "active": 0, "active_exact": 0, "active_mismatch": 0, "active_mismatch_delta_minus_S": [],
-                           "quiet_delta0": 0, "quiet_delta_nonzero": 0, "quiet_nonzero_deltas": [], "pools_read": len(by_pool),
-                           "reads_total": len(reads), "reads_by_reason": dict(Counter(str(r["reason"]) for r in reads))}
+    """Pair buckets, in this order of precedence: skipped (null amount / slot, or ctx slots not increasing; not in pairs_total), no_slices (the pool has no
+    boost_slice row at all: sealed, or never BOOST-spent), uncovered (ctx_slot_b > s0 + POOL_LIFE_S / sps, `sps` = the shadow's own slice sps, the largest
+    seen for the pool, FALLBACK_SPS if none), gap (overlaps a gap record), boundary, then active exact / mismatch and quiet."""
+    by_pool, reasons = load_reads(reads_path)
+    slices, meta, gaps, dupes = load_shadow(shadow_dir, set(by_pool))
+    res: dict[str, Any] = {"pairs_total": 0, "pairs_skipped_null": 0, "pairs_skipped_order": 0, "no_slices": 0, "uncovered": 0, "gap": 0, "boundary": 0,
+                           "active": 0, "active_exact": 0, "active_mismatch": 0, "active_mismatch_delta_minus_S": [], "quiet_delta0": 0,
+                           "quiet_delta_nonzero": 0, "quiet_nonzero_deltas": [], "slice_dupes_removed": dupes, "pools_read": len(by_pool),
+                           "reads_total": sum(reasons.values()), "reads_by_reason": dict(reasons)}
     for pool, rs in by_pool.items():
         sl = slices.get(pool, [])
+        m = meta.get(pool)
         for a, b in zip(rs, rs[1:]):
-            if not (_isint(a["ctx_slot"]) and _isint(b["ctx_slot"]) and a["ctx_slot"] < b["ctx_slot"] and _isint(a["amount"]) and _isint(b["amount"])):
+            (sa, amt_a, ta), (sb, amt_b, tb) = a, b
+            if not (_ok_int(sa) and _ok_int(sb) and _ok_int(amt_a) and _ok_int(amt_b)):
+                res["pairs_skipped_null"] += 1
+                continue
+            if not sa < sb:
+                res["pairs_skipped_order"] += 1
                 continue
             res["pairs_total"] += 1
-            sa, sb = a["ctx_slot"], b["ctx_slot"]
+            if not sl or m is None:
+                res["no_slices"] += 1
+                continue
+            if sb > m[0] + horizon_slots(m[1]):
+                res["uncovered"] += 1
+                continue
+            if _gap_overlaps(gaps, sa, sb, ta, tb):
+                res["gap"] += 1
+                continue
             if any(s == sa or s == sb for s, _ in sl):
                 res["boundary"] += 1  # ordering of a slice at a read slot is ambiguous: not scored as exact, mismatch or quiet
                 continue
-            delta = a["amount"] - b["amount"]
+            delta = amt_a - amt_b
             S = sum(lam for s, lam in sl if sa < s <= sb)
             if S > 0:
                 res["active"] += 1
