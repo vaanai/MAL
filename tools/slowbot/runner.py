@@ -131,11 +131,12 @@ class XFeed:
     appended and a JSON list is expected back. Directory: newest x-feed-*.jsonl (else latest.jsonl) plus x-lookup-*.jsonl; rows older
     than 30 min (120 min for lookups) by ts_utc are ignored. Match = exact mint, else ticker ($ stripped, case-insensitive) only
     when the row's mint is null; mint matches win. Helm rows (with `snippets`) give one summary string then up to 4 snippets.
-    Any failure yields None (no context). At most 5 snippets in all. A directory source also takes lookup requests
-    (request_lookup): one mint per line in lookup-requests.txt, no duplicates, at most 6 appends per hour, never raises."""
+    Any failure yields None (no context). At most 5 snippets in all. With lookups=True (opt-in, default off) a directory source
+    also takes lookup requests (request_lookup; append times persisted in state_path): one mint per line in lookup-requests.txt, no duplicates, at most 6 appends per hour, never raises."""
 
-    def __init__(self, src, fetch=None, clock=time.time):
+    def __init__(self, src, fetch=None, clock=time.time, lookups=False, state_path=None):
         self.src = src
+        self.lookups, self.state_path = lookups, state_path
         self.is_url = src.startswith(("http://", "https://"))
         self.is_dir = (not self.is_url) and os.path.isdir(src)
         self.fetch = fetch or self._http
@@ -143,7 +144,22 @@ class XFeed:
         self._cache = (None, None)
         self._dcache = {}
         self._req_seen = set()
-        self._req_times = []
+        self._req_times = self._load_times()
+
+    def _load_times(self):
+        try:
+            with open(self.state_path) as f:
+                return [float(x) for x in json.load(f)]
+        except Exception:
+            return []
+
+    def _save_times(self):
+        if not self.state_path:
+            return
+        try:
+            atomic_write_json(self.state_path, self._req_times)
+        except Exception:
+            pass
 
     @staticmethod
     def _http(url):
@@ -270,7 +286,7 @@ class XFeed:
     def request_lookup(self, mint):
         """Ask Helm for a lookup of this mint. True only if a new line was appended. Never raises."""
         try:
-            if not self.is_dir or not mint or not isinstance(mint, str):
+            if not self.lookups or not self.is_dir or not mint or not isinstance(mint, str):
                 return False
             mint = mint.strip()
             if not mint or mint in self._req_seen:
@@ -299,6 +315,7 @@ class XFeed:
                 os.close(fd)
             self._req_seen.add(mint)
             self._req_times.append(now)
+            self._save_times()
             return True
         except Exception:
             return False
@@ -696,6 +713,7 @@ def main(argv=None):
     ap.add_argument("--duration", type=float, default=None, help="stop after this many seconds (smoke runs)")
     ap.add_argument("--no-haiku", action="store_true", help="T and R only; H logs h_unavailable")
     ap.add_argument("--x-feed", default=None, help="file, directory (Helm x-feed) or URL of X snippets; absent = no x_context")
+    ap.add_argument("--x-lookups", action="store_true", help="opt in: append candidate mints to <x-feed dir>/lookup-requests.txt (default off)")
     ap.add_argument("--top-holders", action="store_true")
     ap.add_argument("--seed", type=int, default=None)
     a = ap.parse_args(argv)
@@ -706,7 +724,7 @@ def main(argv=None):
     if not a.no_haiku and os.environ.get("ANTHROPIC_API_KEY"):
         caller = dc.DailyCaller(os.path.join(a.out, "haiku"))
     runner = Runner(a.out, ds=ds, gt=gt, jup=jup, caller=caller, haiku_on=not a.no_haiku,
-                    x_feed=XFeed(a.x_feed) if a.x_feed else None, period=a.period, poll=a.poll, seed=a.seed,
+                    x_feed=(XFeed(a.x_feed, lookups=a.x_lookups, state_path=os.path.join(a.out, "x-lookup-times.json")) if a.x_feed else None), period=a.period, poll=a.poll, seed=a.seed,
                     top_holders=a.top_holders, progress_path=os.environ.get("MISCUSI_PROGRESS") or None)
 
     def _stop(*_):

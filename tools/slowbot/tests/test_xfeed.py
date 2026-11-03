@@ -88,7 +88,7 @@ def test_old_formats_still_work(tmp_path):
 
 def test_lookup_dedupe_hourly_cap_and_file_check(tmp_path):
     t = [T0]
-    f = rn.XFeed(str(tmp_path), clock=lambda: t[0])
+    f = rn.XFeed(str(tmp_path), clock=lambda: t[0], lookups=True)
     req = tmp_path / "lookup-requests.txt"
     req.write_text("# c\nPRE")  # no trailing newline
     assert f.request_lookup("PRE") is False  # already in the file
@@ -103,22 +103,60 @@ def test_lookup_dedupe_hourly_cap_and_file_check(tmp_path):
     assert f.request_lookup(None) is False and f.request_lookup("") is False
     lines = req.read_text().splitlines()
     assert len(lines) == len(set(lines))
-    f2 = rn.XFeed(str(tmp_path), clock=lambda: t[0])  # a restart: the file still dedupes
+    f2 = rn.XFeed(str(tmp_path), clock=lambda: t[0], lookups=True)  # a restart: the file still dedupes
     assert f2.request_lookup("M6") is False
 
 
 def test_lookup_write_failure_is_tolerated(tmp_path):
-    f = rn.XFeed(str(tmp_path), clock=lambda: T0)
+    f = rn.XFeed(str(tmp_path), clock=lambda: T0, lookups=True)
     os.mkdir(tmp_path / "lookup-requests.txt")  # opening it for read/append fails
     assert f.request_lookup("M1") is False
-    gone = rn.XFeed(str(tmp_path / "gone"), clock=lambda: T0)
+    gone = rn.XFeed(str(tmp_path / "gone"), clock=lambda: T0, lookups=True)
     assert gone.request_lookup("M1") is False
 
 
 def test_runner_counts_lookup_requested(tmp_path):
     d = tmp_path / "xf"
     d.mkdir()
-    r, _ = mk(tmp_path / "o", caller=FakeCaller(), x_feed=rn.XFeed(str(d)))
+    r, _ = mk(tmp_path / "o", caller=FakeCaller(), x_feed=rn.XFeed(str(d), lookups=True))
     r.run(duration=40)
     assert (d / "lookup-requests.txt").read_text().split() == [fx.M["GOOD"]]
     assert r.rs["counters"]["x_lookup_requested"] == 1
+
+
+def test_lookups_off_by_default_writes_nothing(tmp_path):
+    f = rn.XFeed(str(tmp_path), clock=lambda: T0)
+    assert f.request_lookup("M1") is False
+    assert not (tmp_path / "lookup-requests.txt").exists()
+    d = tmp_path / "xf"
+    d.mkdir()
+    r, _ = mk(tmp_path / "o", caller=FakeCaller(), x_feed=rn.XFeed(str(d)))
+    r.run(duration=40)
+    assert not (d / "lookup-requests.txt").exists()
+    assert r.rs["counters"].get("x_lookup_requested", 0) == 0
+
+
+def test_hourly_cap_survives_restart(tmp_path):
+    t = [T0]
+    sp = str(tmp_path / "times.json")
+    mk_f = lambda: rn.XFeed(str(tmp_path), clock=lambda: t[0], lookups=True, state_path=sp)
+    f = mk_f()
+    for i in range(4):
+        assert f.request_lookup(f"A{i}") is True
+    f2 = mk_f()  # restart
+    assert f2.request_lookup("B0") is True and f2.request_lookup("B1") is True
+    assert f2.request_lookup("B2") is False
+    f3 = mk_f()  # restart again, still inside the hour
+    assert f3.request_lookup("B3") is False
+    assert len((tmp_path / "lookup-requests.txt").read_text().split()) == 6
+    t[0] += 3601
+    assert mk_f().request_lookup("B3") is True
+
+
+def test_cli_flag_and_script_wiring():
+    import subprocess
+    sh = "scripts/ops/slowbot-paper.sh"
+    env = {"PATH": os.environ["PATH"], "DRY": "1", "NO_HAIKU": "1", "X_FEED": "/tmp"}
+    on = subprocess.run(["bash", sh], env=dict(env, X_LOOKUPS="1"), capture_output=True, text=True).stdout
+    off = subprocess.run(["bash", sh], env=env, capture_output=True, text=True).stdout
+    assert "--x-lookups" in on and "--x-lookups" not in off

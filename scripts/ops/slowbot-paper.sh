@@ -11,6 +11,7 @@
 #   NO_HAIKU=1  T and R only; H logs h_unavailable
 #   X_FEED      path, directory or URL of X snippets (adds x_context to H)   default /data/mal/x-feed if it exists
 #   NO_X=1      disable the X feed
+#   X_LOOKUPS=1 opt in: write candidate mints to the feed dir's lookup-requests.txt (default off)
 #   DURATION    stop after this many seconds                      default run until cancelled
 #   PY          python                                            default /data/mal/venv/bin/python
 #   DRY=1       print the command and run nothing
@@ -41,6 +42,7 @@ fi
 set -- -m tools.slowbot.runner --out "$OUT"
 [ "$NO_HAIKU" = "1" ] && set -- "$@" --no-haiku
 [ "${NO_X:-0}" != "1" ] && [ -n "$X_FEED" ] && set -- "$@" --x-feed "$X_FEED"
+[ "${NO_X:-0}" != "1" ] && [ -n "$X_FEED" ] && [ "${X_LOOKUPS:-0}" = "1" ] && set -- "$@" --x-lookups
 [ -n "$DURATION" ] && set -- "$@" --duration "$DURATION"
 
 if [ "$DRY" = "1" ]; then
