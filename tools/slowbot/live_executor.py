@@ -455,6 +455,7 @@ class SlowbotLive:
     def _adopt(self, mint, intent_id, tokens, cost, liq, opened_t) -> None:
         if not any(p["mint"] == mint for p in self.pm.open_positions()):
             self.pm.adopt(mint, intent_id, tokens, cost, liq, opened_t)
+            self.marks[mint] = (cost, _now_ms(self.now_fn()))  # carried at cost until the first sell quote (the 30 s poll refreshes it)
 
     def _recover_positions(self) -> None:
         """A filled own position in the ledger with no live position record (crash between the fill row and the state write) is rebuilt from its fill row."""
@@ -473,6 +474,7 @@ class SlowbotLive:
                 f = fills[-1]
                 self.pm.adopt(mint, f.get("intent_id"), int(f["tokens"]), int(f.get("cost_lamports") or p["stake"]), f.get("liq_usd"),
                               float(f.get("opened_t") or self.now_fn()))
+                self.marks[mint] = (int(f.get("cost_lamports") or p["stake"]), _now_ms(self.now_fn()))
 
     # -- exits
     def _sell_quote(self, mint: str, amount: int) -> dict:
