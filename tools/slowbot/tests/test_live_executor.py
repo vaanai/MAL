@@ -62,24 +62,48 @@ class FakeSigner:
 
 
 class FakeChain:
+    """confirm=True: every sent transaction lands at once. confirm=False: it lands only after land(sig). fail_sigs land with an error (fee only)."""
+
     def __init__(self, signer, ledger_probe=None):
         self.signer, self.sent, self.confirm, self.balance_lamports, self.probe = signer, [], True, 5_000_000_000, ledger_probe
+        self.landed, self.fail_sigs, self.balance_override, self.send_log = set(), set(), {}, []
 
     def send(self, b64):
         sig = next(s for s, t in reversed(self.signer.signed) if base64.b64encode(t.encode()).decode() == b64)
         if self.probe:
             self.probe(sig)  # asserts the write-ahead row is already on disk at send time
         self.sent.append(sig)
+        self.send_log.append(dict(self.signer.signed)[sig])
         return sig
 
+    def land(self, sig):
+        self.landed.add(sig)
+
+    def _has_landed(self, sig):
+        return sig in self.sent and (self.confirm or sig in self.landed)
+
     def status(self, sig):
-        return {"confirmationStatus": "confirmed", "err": None} if (self.confirm and sig in self.sent) else None
+        if not self._has_landed(sig):
+            return None
+        return {"confirmationStatus": "confirmed", "err": {"InstructionError": 1} if sig in self.fail_sigs else None}
+
+    def token_balance(self, mint):
+        if mint in self.balance_override:
+            return self.balance_override[mint]
+        bal = 0
+        for sig, tx in self.signer.signed:
+            if self._has_landed(sig) and sig not in self.fail_sigs:
+                kind, a, b = tx.split(":")
+                bal += int(b) if kind == "buy" else -int(a)
+        return bal
 
     def balance(self):
         return self.balance_lamports
 
     def result(self, sig, mint):
         kind, a, b = dict(self.signer.signed)[sig].split(":")
+        if sig in self.fail_sigs:
+            return {"sol_delta": -5_000, "fee": 5_000, "err": {"InstructionError": 1}, "token_delta": 0, "ata_created": False}
         if kind == "buy":
             return {"sol_delta": -(int(a) + 5_000 + lx.ATA_RENT), "fee": 5_000, "err": None, "token_delta": int(b), "ata_created": True}
         return {"sol_delta": int(b) - 5_000, "fee": 5_000, "err": None, "token_delta": -int(a), "ata_created": False}
@@ -101,7 +125,7 @@ def mkexec(tmp_path, dry=False, clock=None, jup=None, probe=False, **kw):
 
     def check(sig):
         rows = ex_ref["ex"].ledger.read()
-        assert any(r["ev"] == "send_intent" and r["signature"] == sig for r in rows), "send_intent must be on disk before the send"
+        assert any(r["ev"] in ("send_intent", "sell_intent") and r.get("signature") == sig for r in rows), "send_intent must be on disk before the send"
     chain = FakeChain(signer, check if probe else None)
     ex = lx.SlowbotLive(cfg, jup=lx.JupiterSwap(jup.get, jup.post), chain=chain, signer=None if dry else signer, liq_fn=lambda m: 50_000.0,
                         user=WALLET, now_fn=clock, sleep=clock.sleep)

@@ -16,8 +16,22 @@ Exits mirror tools/slowbot/positions.py EXACTLY by construction: LivePositions s
 and the constants unchanged (positions.py: STOP 0.15 :42, TAKE 0.40 :43, TAKE_FRACTION 0.5 :44, TRAIL 0.20 :45, TIME_STOP_S 4 h :46, LIQ_COLLAPSE
 0.40 :47, LIQ_UNKNOWN_MAX 3 :48, NO_QUOTE_WRITEOFF_S 600 :49, POLL_S 30 :41; the order liq_collapse, liq_unknown_exit, stop, trail, time_stop,
 then take-half, then no_quote_writeoff is `_step` / `_miss`). Only the three places that book a SELL are overridden to do the sell for real and book
-the actual proceeds: `_fresh_fill` (positions.py :`_fresh_fill`), `_take_half` (same mutations as positions.py `_take_half`) and `_exit`. A failed
+the actual proceeds (see "Sells" and "Mark at cost" below): `_fresh_fill` (positions.py :`_fresh_fill`), `_take_half` (same mutations as positions.py `_take_half`) and `_exit`. A failed
 live sell leaves the position open and is retried at the next poll.
+
+Sells (real-money reconciliation). Before every sell send a `sell_intent` row (signature, tokens, kind, reason) is written to the lane ledger backlog
+(fsynced) and the signature is kept in state["sells"]. The sell waits confirm_timeout_s (45 s); if it has not confirmed, the signature stays followed
+(bounded backoff 10 s .. 60 s, up to 600 s, then it is declared dead and never adopted again). While a sell of a mint is unresolved no second sell of
+it is sent. Before ANY sell the wallet's on-chain token balance of the mint is read: only min(wanted, balance) is sold, a zero balance closes the
+position (ledger `exit`, reason zero_balance_closed, estimated=true, 0 SOL booked), and a failed balance read sends nothing. A sell that lands late
+closes (or takes half of) the position from the real fill: proceeds = the wallet's SOL delta + fee from the confirmed transaction meta. A failed
+sell transaction books its fee and leaves the position open for a re-sell. On restart reconcile() re-follows state["sells"] and also any
+`sell_intent` in the ledger that has no outcome row for its signature.
+
+Mark at cost. LaneLedger counts a position's value only from a fresh mark (a stale or missing mark is worth 0) while the pre-send budget check also
+subtracts every open stake, so a filled position with no mark is counted against the 0.06 SOL sub-budget twice and would block a second entry
+until the first 30 s poll. The executor therefore carries a fresh fill (and a position rebuilt from the ledger) AT COST, marks[mint] = (stake, now),
+until the first sell quote of the 30 s poll replaces it with the real sell value. After mark_stale_s without a quote the mark is worth 0 again.
 """
 from __future__ import annotations
 
@@ -153,6 +167,11 @@ class Chain:
     def block_height(self) -> int:
         return int(self.rpc("getBlockHeight", [{"commitment": "confirmed"}]))
 
+    def token_balance(self, mint: str) -> int:
+        """The wallet's on-chain balance (raw units) of `mint`, summed over its token accounts. Raises on failure."""
+        v = self.rpc("getTokenAccountsByOwner", [self.wallet, {"mint": mint}, {"encoding": "jsonParsed", "commitment": "confirmed"}])["value"]
+        return sum(int(a["account"]["data"]["parsed"]["info"]["tokenAmount"]["amount"]) for a in v)
+
     def balance(self) -> int:
         return int(self.rpc("getBalance", [self.wallet, {"commitment": "confirmed"}])["value"])
 
@@ -192,6 +211,10 @@ class LivePositions(PositionManager):
         self._save()
         return p
 
+    def close_late(self, p, now, r, reason):
+        """Close from a sell that landed after its confirm window: the real fill from the transaction meta."""
+        return self._finish_exit(p, now, r, reason, 0, "live_late", p.get("last_ratio"))
+
     def _fresh_fill(self, p, amount, trigger_out):  # positions.py _fresh_fill re-quotes for the paper fill; live books the real proceeds in _exit
         return trigger_out, "live_pending"
 
@@ -200,8 +223,14 @@ class LivePositions(PositionManager):
         r = self.sell_fn(p, sell, "take_half")
         if r is None:
             self._save()
-            return  # not taken: the trigger is re-evaluated at the next poll
-        fill = r["proceeds"]
+            return  # not taken (failed, or a sell is still unresolved): the trigger is re-evaluated at the next poll
+        if r.get("closed"):  # the wallet holds none of this token: closed, nothing to take
+            self._finish_exit(p, now, r, "zero_balance_closed", 0, "zero_balance", ratio)
+            return
+        self.apply_take(p, now, ratio, r)
+
+    def apply_take(self, p, now, ratio, r):
+        sell, fill = int(r.get("tokens_sold") or int(p["tokens_left"] * pos.TAKE_FRACTION)), r["proceeds"]
         p["proceeds_lamports"] += fill
         p["fees_lamports"] += r["fee"]
         p["tokens_left"] -= sell
@@ -209,7 +238,7 @@ class LivePositions(PositionManager):
         p["high_ratio"] = max(ratio, (fill / sell) / p["entry_unit"])
         p["legs"] += 1
         self._log("leg", now, p, leg="take_half", tokens_sold=sell, trigger_ratio=ratio, fill_out_lamports=fill,
-                  fill_ratio=(fill / sell) / p["entry_unit"], fill_basis="live", leg_no=p["legs"], signature=r.get("signature"))
+                  fill_ratio=(fill / sell) / p["entry_unit"], fill_basis=r.get("basis", "live"), leg_no=p["legs"], signature=r.get("signature"))
         if self.on_partial:
             self.on_partial(p, r)
         self._save()
@@ -222,8 +251,13 @@ class LivePositions(PositionManager):
             if r is None:
                 self._save()
                 return None  # the position stays open; the trigger fires again at the next poll
-        row = super()._exit(p, now, r["proceeds"], reason, trigger_out=trigger_out, fill_basis="live" if reason != "no_quote_writeoff" else fill_basis,
-                            trigger_ratio=trigger_ratio)
+            if r.get("closed"):
+                reason = "zero_balance_closed"
+        return self._finish_exit(p, now, r, reason, trigger_out, fill_basis, trigger_ratio)
+
+    def _finish_exit(self, p, now, r, reason, trigger_out, fill_basis, trigger_ratio):
+        row = PositionManager._exit(self, p, now, r.get("proceeds", 0), reason, trigger_out=trigger_out,
+                                    fill_basis=r.get("basis", "live") if reason != "no_quote_writeoff" else fill_basis, trigger_ratio=trigger_ratio)
         if self.on_exit:
             self.on_exit(p, r, row)
         return row
@@ -252,9 +286,11 @@ class SlowbotLive:
         try:
             st = json.loads(self.state_path.read_text())
         except FileNotFoundError:
-            return {"done": {}, "pending": {}}
+            return {"done": {}, "pending": {}, "sells": {}, "dead": []}
         if not isinstance(st, dict) or not {"done", "pending"} <= set(st):
             raise ValueError("executor state is malformed; refusing to start")
+        st.setdefault("sells", {})
+        st.setdefault("dead", [])
         return st
 
     def _save(self) -> None:
@@ -426,6 +462,8 @@ class SlowbotLive:
             elif now - e["t"] > self.cfg["unresolved_s"]:
                 self._expire(sig, e)
         self._recover_positions()
+        self._adopt_sells_from_ledger()
+        self.reconcile_sells(force=force)
         self._save()
 
     def _settle(self, sig: str, e: dict, st: dict) -> None:
@@ -483,33 +521,129 @@ class SlowbotLive:
         self.marks[mint] = (out, _now_ms(self.now_fn()))
         return {"out_lamports": out, "liq_usd": self.liq_fn(mint)}
 
+    SELL_RECONCILE_MAX_S = 600  # a sell signature is followed (bounded backoff) for up to 10 min, then declared dead
+
+    def _token_balance(self, mint: str) -> int | None:
+        try:
+            return int(self.chain.token_balance(mint))
+        except Exception as e:
+            self.log("balance_read_failed", mint=mint, error_class=type(e).__name__)
+            return None  # fail closed: no sell without a balance read
+
     def _live_sell(self, p: dict, tokens: int, reason: str) -> dict | None:
+        """One sell attempt. NEVER double-sells: (1) an unresolved earlier sell of this mint blocks a new one; (2) the wallet's on-chain token balance is read
+        first and only min(wanted, balance) is sold; a zero balance means the position is closed. The `sell_intent` row (signature, fsynced via the
+        ledger backlog) is on disk before the send. A sell that does not confirm in confirm_timeout_s stays followed by signature (reconcile_sells)."""
         mint = p["mint"]
         if self.dry or self.chain is None:
             return {"proceeds": 0, "fee": 0, "signature": None}
+        if any(i["mint"] == mint for i in self.st["sells"].values()):
+            self.reconcile_sells(force=True)
+            if any(i["mint"] == mint for i in self.st["sells"].values()):
+                self.log("sell_pending", mint=mint, reason=reason)
+            return None  # either still unresolved, or just resolved (and the position closed or taken) by reconcile_sells
+        bal = self._token_balance(mint)
+        if bal is None:
+            return None
+        if bal <= 0:
+            self.log("zero_balance_closed", mint=mint, reason=reason)
+            return {"closed": True, "proceeds": 0, "fee": 0, "signature": None, "estimated": True}
+        amount = min(tokens, bal)
         try:
-            q = self.jup.quote(mint, WSOL, tokens, self.cfg["sell_slippage_bps"])
+            q = self.jup.quote(mint, WSOL, amount, self.cfg["sell_slippage_bps"])
             swap = self.jup.swap_tx(q, self.user, self.cfg["sell_priority_lamports"])
             signed_b64, sig = self.signer.sign(swap["swapTransaction"])
-            self.chain.send(signed_b64)
         except Exception as e:
             self.log("sell_failed", mint=mint, reason=reason, error_class=type(e).__name__)
             return None
-        deadline = self.now_fn() + self.cfg["confirm_timeout_s"]
+        now = self.now_fn()
+        kind = "take_half" if reason == "take_half" else "exit"
+        info = {"mint": mint, "tokens": amount, "reason": reason, "kind": kind, "t": now, "n": 0, "next": now + 5, "ratio": p.get("last_ratio")}
+        self.ledger.record("sell_intent", mint, self.marks, _now_ms(now), signature=sig, tokens=amount, kind=kind, reason=reason)  # write-ahead
+        self.st["sells"][sig] = info
+        self._save()
+        try:
+            self.chain.send(signed_b64)
+        except Exception as e:  # it may still have gone out: keep following the signature
+            self.log("sell_send_error", mint=mint, signature=sig, error_class=type(e).__name__)
+        deadline = now + self.cfg["confirm_timeout_s"]
         while self.now_fn() < deadline:
             try:
                 st = self.chain.status(sig)
             except Exception:
                 st = None
             if st is not None and st.get("confirmationStatus") in ("confirmed", "finalized"):
-                res = self.chain.result(sig, mint)
-                if st.get("err") or res["err"]:
-                    self.ledger.record("fee", mint, self.marks, _now_ms(self.now_fn()), signature=sig, sol_out=res["fee"], fee_network=res["fee"], reason="sell_failed_tx")
-                    return None
-                return {"proceeds": res["sol_delta"] + res["fee"], "fee": res["fee"], "signature": sig}
+                return self._sell_outcome(sig, st)
             self.sleep(1.0)
         self.log("sell_unconfirmed", mint=mint, signature=sig, reason=reason)
-        return None  # the position stays open; a landed sell is seen as a zero balance at the next sell quote and logged
+        return None  # position stays open; reconcile_sells keeps checking this signature
+
+    def _sell_outcome(self, sig: str, st: dict) -> dict | None:
+        """A confirmed sell signature: the real fill from the transaction meta (wallet SOL delta + fee, token delta). None if the transaction failed."""
+        info = self.st["sells"].pop(sig)
+        self._save()
+        res = self.chain.result(sig, info["mint"])
+        if st.get("err") or res["err"]:
+            self.ledger.record("fee", info["mint"], self.marks, _now_ms(self.now_fn()), signature=sig, sol_out=res["fee"], fee_network=res["fee"],
+                               reason="sell_failed_tx")
+            self.log("sell_tx_failed", mint=info["mint"], signature=sig)
+            return None
+        return {"proceeds": res["sol_delta"] + res["fee"], "fee": res["fee"], "signature": sig, "tokens_sold": -res["token_delta"] or info["tokens"],
+                "basis": "live"}
+
+    def _adopt_sells_from_ledger(self) -> None:
+        """A `sell_intent` in the ledger with no outcome row and no follow-up in the state (restart, or a crash after the ledger row) is followed again."""
+        try:
+            with self.ledger.locked():
+                rows = self.ledger.read()
+        except Exception:
+            return
+        done = {r.get("signature") for r in rows if isinstance(r, dict) and r.get("ev") in ("exit", "partial_exit", "fee", "writeoff") and r.get("signature")}
+        dead = set(self.st["dead"])
+        open_mints = {x["mint"] for x in self.pm.open_positions()}
+        for r in rows:
+            if (isinstance(r, dict) and r.get("ev") == "sell_intent" and r.get("bot_id") == BOT_ID and r.get("signature") not in done
+                    and r["signature"] not in self.st["sells"] and r["signature"] not in dead and r.get("mint") in open_mints):
+                self.st["sells"][r["signature"]] = {"mint": r["mint"], "tokens": r.get("tokens"), "reason": r.get("reason"), "kind": r.get("kind") or "exit",
+                                                    "t": r["ts_ms"] / 1000.0, "n": 0, "next": 0, "ratio": None}
+
+    def reconcile_sells(self, force: bool = False) -> None:
+        now = self.now_fn()
+        for sig, info in list(self.st["sells"].items()):
+            if not force and now < info["next"]:
+                continue
+            try:
+                st = self.chain.status(sig)
+            except Exception:
+                st = None
+            if st is not None and st.get("confirmationStatus") in ("confirmed", "finalized"):
+                r = self._sell_outcome(sig, st)
+                if r is not None:
+                    self._close_from_late(info, r)
+            elif now - info["t"] > self.SELL_RECONCILE_MAX_S:
+                self.st["sells"].pop(sig, None)
+                self.st["dead"].append(sig)
+                self.log("sell_expired", mint=info["mint"], signature=sig)  # a re-sell is still guarded by the on-chain balance read
+            else:
+                info["n"] += 1
+                info["next"] = now + min(5 * 2 ** info["n"], 60)  # bounded backoff
+        self._save()
+
+    def _close_from_late(self, info: dict, r: dict) -> None:
+        mint, now = info["mint"], self.now_fn()
+        held = [x for x in self.pm.open_positions() if x["mint"] == mint]
+        if not held:  # the position was closed another way; keep the ledger cash right
+            self.ledger.record("fee", mint, self.marks, _now_ms(now), signature=r["signature"], sol_in=r["proceeds"], sol_out=r["fee"], fee_network=r["fee"],
+                               reason="late_sell_no_position")
+            return
+        p = held[0]
+        self.log("late_sell_landed", mint=mint, signature=r["signature"], sell_kind=info["kind"])
+        if info["kind"] == "take_half" and not p["taken"]:
+            self.pm.apply_take(p, now, p.get("last_ratio") or 1.0, r)
+        elif info["kind"] == "take_half":
+            self.log("late_take_already_taken", mint=mint)
+        else:
+            self.pm.close_late(p, now, r, info["reason"] or "late_exit")
 
     def _on_exit(self, p: dict, r: dict, row: dict) -> None:
         ms = _now_ms(self.now_fn())
@@ -517,7 +651,7 @@ class SlowbotLive:
             self.ledger.record("writeoff", p["mint"], self.marks, ms, reason="no_quote_writeoff")
         else:
             self.ledger.record("exit", p["mint"], self.marks, ms, sol_in=r["proceeds"], sol_out=r["fee"], fee_network=r["fee"], signature=r.get("signature"),
-                               reason=row["reason"])
+                               reason=row["reason"], estimated=bool(r.get("estimated")))
         self.marks.pop(p["mint"], None)
 
     def _on_partial(self, p: dict, r: dict) -> None:
