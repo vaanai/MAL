@@ -1,5 +1,6 @@
 """Live-intent gating: flag off leaves the paper runner's files byte-identical; flag on writes one row per H paper BUY. No network, no key."""
 import json
+import re
 
 from tools.slowbot import intents as itn
 from tools.slowbot.tests.test_runner import FakeCaller, mk, rows
@@ -12,6 +13,11 @@ def run_dir(path, **kw):
     r, fc = mk(path, price=True, **kw)
     r.run(duration=60)
     return r
+
+
+def norm(raw):
+    """The caller's wall-clock latency_ms is the only non-deterministic field in the paper files (tools/haiku_caller.py:854); mask it."""
+    return re.sub(rb'"latency_ms": \d+', b'"latency_ms": 0', raw)
 
 
 def files(path):
@@ -33,7 +39,7 @@ def test_flag_on_paper_files_byte_identical_except_counter(tmp_path):
     for name in a:
         if name == "runner-state.json":
             continue
-        assert a[name] == b[name], name
+        assert norm(a[name]) == norm(b[name]), name
     so, sn = json.loads(a["runner-state.json"]), json.loads(b["runner-state.json"])
     sn["counters"].pop("live_intents_written")
     assert so == sn
