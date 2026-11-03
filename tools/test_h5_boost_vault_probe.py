@@ -148,17 +148,39 @@ def test_poll_exits_at_end_epoch_and_repeats_each_period(tmp_path):
     assert set(json.loads(next(iter(out.read_text().splitlines()))).keys()) == {"pool", "vault", "ctx_slot", "amount", "reason", "t_ms"}
 
 
+HOUR_MS = 1_793_667_600_000   # 2026-11-03T01:00:00Z, the hour of the fixture file h5-shadow-2026110301.jsonl
+T0 = HOUR_MS + 1_800_000      # default read time: half past
+
+
+def hbs(lo=T0 - 1_000_000, hi=T0 + 1_000_000, step=60_000, lag=2_000, stale_from=None, skip=()):
+    """hb rows in the shape of housekeeping(): {"type": "hb", **status_snapshot} with t_ms and last_event_ms (synthetic values)."""
+    rows = []
+    t = lo
+    while t <= hi:
+        if not any(a <= t <= b for a, b in skip):
+            last = t - lag if stale_from is None or t < stale_from else stale_from - lag
+            rows.append({"type": "hb", "v": 1, "schema": "x", "t_ms": t, "last_event_ms": last, "open_pools": 2, "hw_slot": 5})
+        t += step
+    return rows
+
+
 def _reads(path, rows):
     """rows: (pool, ctx_slot, amount[, t_ms])"""
     path.write_text("".join(json.dumps({"pool": r[0], "vault": "v", "ctx_slot": r[1], "amount": r[2], "reason": "ok" if r[2] is not None else "boost_vault_missing",
-                                        "t_ms": r[3] if len(r) > 3 else 0}) + "\n" for r in rows))
+                                        "t_ms": r[3] if len(r) > 3 else T0}) + "\n" for r in rows))
 
 
-def _shadow(tmp_path, rows):
+def _shadow(tmp_path, rows, hb=True, name="h5-shadow-2026110301.jsonl"):
     sd = tmp_path / "shadow"
     sd.mkdir(exist_ok=True)
-    write_hour(sd, "h5-shadow-2026110301.jsonl", rows)
+    write_hour(sd, name, list(rows) + (hbs() if hb is True else (hb or [])))
     return sd
+
+
+def test_constants_are_derived_from_the_shadow():
+    from tools import h5_shadow
+    assert P.COVER_BACK_MS == int((h5_shadow.POOL_LIFE_S + 30) * 1000) == 430_000
+    assert P.HB_PERIOD_MS == 60_000 and P.HB_MAX_SPACING_MS == 120_000 and P.SILENCE_MS == int(h5_shadow.SILENCE_S * 1000)
 
 
 def test_join_exact_quiet_boundary_null_order_and_allowlist(tmp_path):
@@ -180,7 +202,7 @@ def test_join_exact_quiet_boundary_null_order_and_allowlist(tmp_path):
         (D, 1, 5), (D, 2, 5), (D, 3, None), (D, 4, 5),  # no slices; null pairs skipped
     ])
     res = P.join(str(rd), str(sd))
-    assert res["boundary"] == 1 and res["no_slices"] == 2
+    assert res["boundary"] == 1 and res["no_slices"] == 2 and res["gap"] == 0
     assert res["pairs_skipped_order"] == 1 and res["pairs_skipped_null"] == 2
     assert res["pairs_total"] == 6 and res["active"] == 1 and res["active_exact"] == 1 and res["active_mismatch"] == 0
     assert res["quiet_delta0"] == 0 and sorted(res["quiet_nonzero_deltas"]) == [10, 50]
@@ -202,91 +224,98 @@ def test_join_uncovered_after_follow_window(tmp_path):
     rd = tmp_path / "r.jsonl"
     _reads(rd, [(A, 1010, 1000), (A, 1990, 970), (A, 2000, 970), (A, 2001, 900), (A, 2500, 800)])
     res = P.join(str(rd), str(sd))
-    # (1010,1990] active exact; (1990,2000] quiet zero (sb == s0 + horizon is inside); the last two end after the horizon
     assert (res["active_exact"], res["quiet_delta0"], res["uncovered"]) == (1, 1, 2)
     assert res["quiet_delta_nonzero"] == 0 and res["active_mismatch"] == 0
 
 
-def test_join_gap_rows_void_pairs(tmp_path):
+def _one_pair(tmp_path, extra=(), hb=True, ta=T0, tb=T0 + 10_000, name="h5-shadow-2026110301.jsonl"):
+    """One exact pair (slice 30, delta 30) with the given extra shadow rows; returns the join result."""
     A = pk(1)
-    # gap shapes as h5_shadow.Engine._gap writes them: emit() adds v, schema, t_ms (wall); slot_jump carries from_slot/to_slot/missed_slots, silence silent_ms
-    sd = _shadow(tmp_path, [
-        bs(A, 1015, 30),
-        {"type": "gap", "kind": "slot_jump", "open_pools": 3, "flags_pools": True, "from_slot": 1100, "to_slot": 1150, "missed_slots": 49, "v": 1, "schema": "x", "t_ms": 5},
-        {"type": "gap", "kind": "silence", "open_pools": 3, "flags_pools": True, "silent_ms": 9000, "v": 1, "schema": "x", "t_ms": 50_000, "price": 3},
-    ])
+    sd = _shadow(tmp_path, [bs(A, 1015, 30)] + list(extra), hb=hb, name=name)
     rd = tmp_path / "r.jsonl"
-    _reads(rd, [(A, 1010, 1000, 100_000), (A, 1020, 970, 101_000),   # exact (silence covers only [41 s, 50 s]; slot gap far)
-                (A, 1090, 970, 102_000), (A, 1120, 900, 103_000),    # slot_jump 1100..1150 meets (1090, 1120] -> gap
-                (A, 1160, 900, 104_000),                             # (1120,1160] meets 1100..1150 -> gap
-                (A, 1170, 880, 105_000)])                            # (1160,1170]: no slot gap, silence far in time -> scored: S=0, delta=20
-    res = P.join(str(rd), str(sd))
-    assert res["active_exact"] == 1 and res["quiet_delta0"] == 1 and res["gap"] == 2 and res["quiet_nonzero_deltas"] == [20]
-    assert res["active_mismatch"] == 0
+    _reads(rd, [(A, 1010, 1000, ta), (A, 1020, 970, tb)])
+    return P.join(str(rd), str(sd))
 
 
-def test_join_silence_covers_t_ms_minus_silent_ms(tmp_path):
-    A = pk(1)
-    sd = _shadow(tmp_path, [bs(A, 1015, 30), {"type": "gap", "kind": "silence", "silent_ms": 9000, "t_ms": 50_000, "open_pools": 1, "flags_pools": True}])
-    rd = tmp_path / "r.jsonl"
-    # silence = [t_ms - silent_ms, t_ms] = [41 s, 50 s], margin 5 s: a pair is void if t_b >= 36 s and t_a <= 55 s
-    _reads(rd, [(A, 1010, 1000, 30_000), (A, 1020, 970, 35_000), (A, 1030, 970, 37_000), (A, 1040, 970, 60_000)])
-    res = P.join(str(rd), str(sd))
-    assert res["active_exact"] == 1 and res["gap"] == 2 and res["quiet_delta0"] == 0   # [30,35] clear; [35,37] and [37,60] void
+def test_healthy_shadow_is_scored(tmp_path):
+    res = _one_pair(tmp_path)
+    assert res["active_exact"] == 1 and res["gap"] == 0
 
 
-def test_join_start_row_is_a_gap_at_its_t_ms(tmp_path):
-    A = pk(1)
-    start = {"type": "start", "rule": "r", "argv": ["--x"], "pid": 1, "t_ms": 200_000, "v": 1}
-    sd = _shadow(tmp_path, [bs(A, 1015, 30), start])
-    rd = tmp_path / "r.jsonl"
-    _reads(rd, [(A, 1010, 1000, 100_000), (A, 1020, 970, 110_000), (A, 1030, 970, 190_000), (A, 1040, 970, 210_000)])
-    res = P.join(str(rd), str(sd))
-    assert (res["active_exact"], res["gap"], res["quiet_delta0"]) == (1, 1, 1)   # the pair [190 s, 210 s] contains 200 s; [110 s, 190 s] is clear
+def test_a_gap_row_in_the_window_voids_the_pair_and_one_outside_does_not(tmp_path):
+    g = {"type": "gap", "kind": "silence", "open_pools": 1, "flags_pools": True, "silent_ms": 9000, "v": 1, "schema": "x"}
+    assert _one_pair(tmp_path, [dict(g, t_ms=T0 - 429_000)])["gap"] == 1          # inside [ta - 430 s, tb + 5 s]
+    assert _one_pair(tmp_path, [dict(g, t_ms=T0 + 14_000)])["gap"] == 1           # at most 5 s after tb
+    assert _one_pair(tmp_path, [dict(g, t_ms=T0 - 431_000)])["active_exact"] == 1  # outside
+    assert _one_pair(tmp_path, [dict(g, t_ms=T0 + 16_000)])["active_exact"] == 1
 
 
-def test_join_unusable_gap_voids_every_pair_of_its_hour(tmp_path):
-    A = pk(1)
-    hour_ms = 1_793_667_600_000   # 2026-11-03T01:00:00Z
-    sd = _shadow(tmp_path, [bs(A, 1015, 30), {"type": "gap", "kind": "weird", "open_pools": 1, "flags_pools": True}])
-    rd = tmp_path / "r.jsonl"
-    _reads(rd, [(A, 1010, 1000, hour_ms + 600_000), (A, 1020, 970, hour_ms + 700_000),           # inside the hour -> gap
-                (A, 1030, 970, hour_ms + 7_200_000), (A, 1040, 970, hour_ms + 7_300_000)])       # 2 h later -> scored
-    res = P.join(str(rd), str(sd))
-    assert res["gap"] == 2 and res["quiet_delta0"] == 1 and res["active_exact"] == 0  # the middle pair spans into the hour
-
-
-def test_join_unusable_gap_in_an_unnamed_hour_voids_everything(tmp_path):
-    A = pk(1)
-    sd = tmp_path / "shadow"
-    sd.mkdir()
-    write_hour(sd, "oddname.jsonl", [bs(A, 1015, 30), {"type": "gap", "kind": "weird"}])
-    rd = tmp_path / "r.jsonl"
-    _reads(rd, [(A, 1010, 1000, 5), (A, 1020, 970, 6)])
-    # the glob only reads h5-shadow-*.jsonl: rename to a matching name without a readable hour
-    (sd / "oddname.jsonl").rename(sd / "h5-shadow-xx.jsonl")
-    res = P.join(str(rd), str(sd))
+def test_silence_with_no_end_row_voids_via_hb_last_event(tmp_path):
+    # no gap row at all (the file ends before it is written); the hb shows the feed silent: last_event_ms stuck 40 s behind
+    res = _one_pair(tmp_path, hb=hbs(stale_from=T0 - 200_000, lag=2_000))
     assert res["gap"] == 1 and res["active_exact"] == 0
+
+
+def test_shadow_down_between_reads_voids_the_pair(tmp_path):
+    res = _one_pair(tmp_path, hb=hbs(skip=[(T0 + 1, T0 + 400_000)]), ta=T0, tb=T0 + 300_000)   # no hb after tb within 2 periods
+    assert res["gap"] == 1 and res["active_exact"] == 0
+
+
+def test_hb_spacing_more_than_twice_the_period_voids_and_exactly_twice_is_ok(tmp_path):
+    assert _one_pair(tmp_path, hb=hbs(skip=[(T0 - 100_000, T0 - 1)]))["gap"] == 1            # hbs at T0-180 s then T0: 180 s apart... skip leaves a 180 s hole
+    ok = [h for h in hbs() if (h["t_ms"] - hbs()[0]["t_ms"]) % 120_000 == 0]                 # every second hb: spaced exactly 2 x period
+    assert _one_pair(tmp_path, hb=ok)["active_exact"] == 1
+
+
+def test_no_hb_at_or_before_the_window_start_voids(tmp_path):
+    assert _one_pair(tmp_path, hb=hbs(lo=T0 - 300_000))["gap"] == 1
+
+
+def test_restart_with_pools_open_voids_pairs_around_it(tmp_path):
+    start = {"type": "start", "rule": "r", "argv": ["--x"], "pid": 1, "t_ms": T0 - 60_000, "v": 1}
+    stop = {"type": "stop", "open_pools": 4, "t_ms": T0 - 61_000, "v": 1}
+    assert _one_pair(tmp_path, [start])["gap"] == 1
+    assert _one_pair(tmp_path, [stop])["gap"] == 1
+    far = dict(start, t_ms=T0 - 900_000)
+    assert _one_pair(tmp_path, [far])["active_exact"] == 1
+
+
+def test_slot_jump_overlapping_the_pool_life_slots_voids(tmp_path):
+    jump = {"type": "gap", "kind": "slot_jump", "from_slot": 600, "to_slot": 700, "missed_slots": 99, "open_pools": 1, "flags_pools": True, "t_ms": T0 - 900_000}
+    assert _one_pair(tmp_path, [jump])["gap"] == 1                      # (1010 - 1000, 1020] = (10, 1020] contains 600..700 (0.4 s/slot: 1000 slots)
+    far = dict(jump, from_slot=5, to_slot=9)
+    assert _one_pair(tmp_path, [far])["active_exact"] == 1
+
+
+def test_a_gap_with_no_usable_time_voids_its_whole_hour_and_an_unnamed_hour_voids_all(tmp_path):
+    weird = {"type": "gap", "kind": "weird", "open_pools": 1, "flags_pools": True}
+    assert _one_pair(tmp_path, [weird])["gap"] == 1
+    later = _one_pair(tmp_path, [weird], ta=T0 + 7_200_000, tb=T0 + 7_210_000, hb=hbs(lo=T0 + 7_200_000 - 1_000_000, hi=T0 + 7_200_000 + 1_000_000))
+    assert later["active_exact"] == 1 and later["gap"] == 0              # 2 h later, hour of the file does not meet [ta - 430 s, tb]
+    assert _one_pair(tmp_path, [weird], name="h5-shadow-xx.jsonl")["gap"] == 1
 
 
 def test_prefilter_exact_type_strings_both_spacings_and_gap_key_lines(tmp_path, monkeypatch):
     A = pk(1)
     sd = tmp_path / "shadow"
     sd.mkdir()
-    lines = [json.dumps(bs(A, 1015, 30), separators=(",", ":")),                                    # compact, as the writer serialises
-             json.dumps({"type": "outcome", "pool": A, "gap": True, "pnl": 5}, separators=(",", ":")),   # `"gap":true` key, not a gap row
-             json.dumps({"type": "trigger", "pool": A, "gap": True}),
-             json.dumps({"type": "trigger", "pool": A, "gap": True, "note": "type gap"})]
+    compact = lambda r: json.dumps(r, separators=(",", ":"))   # noqa: E731 - how the writer serialises
+    lines = [compact(bs(A, 1015, 30))] + [compact(h) for h in hbs()] + [
+        compact({"type": "outcome", "pool": A, "gap": True, "pnl": 5}),   # `"gap":true` key, not a gap row
+        json.dumps({"type": "trigger", "pool": A, "gap": True}),
+        json.dumps({"type": "trigger", "pool": A, "gap": True, "note": "type gap"}),
+        json.dumps({"type": "outcome", "pool": A, "hb": True, "start": 1, "stop": 2})]
     (sd / "h5-shadow-2026110301.jsonl").write_text("\n".join(lines) + "\n")
     rd = tmp_path / "r.jsonl"
-    _reads(rd, [(A, 1010, 1000, 0), (A, 1020, 970, 1000)])
+    _reads(rd, [(A, 1010, 1000), (A, 1020, 970)])
     parsed = []
     real = json.loads
     monkeypatch.setattr(P.json, "loads", lambda s, *a, **k: (parsed.append(s), real(s, *a, **k))[1])
     res = P.join(str(rd), str(sd))
     assert not [s for s in parsed if "outcome" in s or "trigger" in s]
     assert res["gap"] == 0 and res["active_exact"] == 1
-    assert P._has('{"type":"gap"}', P.GAP_TAGS) and P._has('{"type": "gap"}', P.GAP_TAGS) and not P._has('{"gap":true}', P.GAP_TAGS)
+    for tags, name in ((P.GAP_TAGS, "gap"), (P.HB_TAGS, "hb"), (P.START_TAGS, "start"), (P.STOP_TAGS, "stop"), (P.SLICE_TAGS, "boost_slice")):
+        assert P._has('{"type":"%s"}' % name, tags) and P._has('{"type": "%s"}' % name, tags) and not P._has('{"%s":true}' % name, tags)
 
 
 # One boost_slice record in the exact key order and value shapes of h5_shadow.Engine._boost_slice (all values synthetic), written compact.
@@ -299,11 +328,13 @@ def test_writer_shaped_slice_row_is_scored(tmp_path):
     A = WRITER_SHAPE_SLICE["pool"]
     sd = tmp_path / "shadow"
     sd.mkdir()
-    (sd / "h5-shadow-2026110301.jsonl").write_text(json.dumps(WRITER_SHAPE_SLICE, separators=(",", ":")) + "\n")
+    rows = [WRITER_SHAPE_SLICE] + hbs()
+    (sd / "h5-shadow-2026110301.jsonl").write_text("".join(json.dumps(r, separators=(",", ":")) + "\n" for r in rows))
     assert P.recent_pools(str(sd), 5) == [A]
     rd = tmp_path / "r.jsonl"
     _reads(rd, [(A, 1010, 1000), (A, 1020, 970)])
     assert P.join(str(rd), str(sd))["active_exact"] == 1
+
 
 def test_join_dedupes_slices_by_signature_and_fallback(tmp_path):
     A, B = pk(1), pk(2)
@@ -317,19 +348,6 @@ def test_join_dedupes_slices_by_signature_and_fallback(tmp_path):
     res = P.join(str(rd), str(sd))
     assert res["slice_dupes_removed"] == 2
     assert res["active_exact"] == 2 and res["active_mismatch"] == 0
-
-
-def test_join_lines_without_an_allowed_type_string_are_never_parsed(tmp_path, monkeypatch):
-    A = pk(1)
-    sd = _shadow(tmp_path, [bs(A, 1015, 30), {"type": "outcome", "pool": A, "slot": 1015, "pnl": 5}, {"type": "trigger", "pool": A}])
-    rd = tmp_path / "r.jsonl"
-    _reads(rd, [(A, 1010, 1000), (A, 1020, 970)])
-    parsed = []
-    real = json.loads
-    monkeypatch.setattr(P.json, "loads", lambda s, *a, **k: (parsed.append(s), real(s, *a, **k))[1])
-    P.join(str(rd), str(sd))
-    shadow_parsed = [s for s in parsed if "outcome" in s or "trigger" in s]
-    assert shadow_parsed == []
 
 
 def test_join_output_has_no_forbidden_names(tmp_path, capsys):

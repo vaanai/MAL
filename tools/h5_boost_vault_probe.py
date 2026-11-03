@@ -5,14 +5,17 @@ exactly the BOOST spend.
 newest slot seen), and do one getAccountInfo of each pool's BOOST vault over public RPC (no key). One row per read goes to --out: pool, vault, ctx_slot,
 amount, reason, t_ms.
 `join`: for consecutive reads (a, b) of a pool with ctx_slot_a < ctx_slot_b, compare delta = amount_a - amount_b with S = sum of `lamports` of that pool's
-deduped boost_slice rows with slot in (ctx_slot_a, ctx_slot_b]. ONLY boost_slice pool, slot, lamports, s0, sps, signature, event_index, tx_index and gap kind,
-from_slot, to_slot, silent_ms, t_ms and start t_ms are read. Pairs outside the shadow's follow window, overlapping a gap, or of a pool with no slices are counted apart. Prints counts
+deduped boost_slice rows with slot in (ctx_slot_a, ctx_slot_b]. ONLY boost_slice pool, slot, lamports, s0, sps, signature, event_index, tx_index; gap / start / stop /
+hb t_ms; gap from_slot, to_slot; hb last_event_ms are read. A pair is scored only on positive evidence the shadow was healthy (Coverage.scored), else it is
+counted as `gap`; pairs outside the follow window and of pools with no slices are counted apart. Prints counts
 only; never a price, reserve, outcome, PnL or trigger field. 0 Helius credits. Memory: streams files line by line; pool/slice dicts only.
 """
 from __future__ import annotations
 
 import argparse
+import bisect
 import glob
+import inspect
 import json
 import calendar
 import os
@@ -25,14 +28,20 @@ from collections import Counter, defaultdict
 from typing import Any, Callable
 
 from tools.h5_lane_oc_executor import boost_vault_address, parse_boost_vault
-from tools.h5_shadow import POOL_LIFE_S  # the shadow follows a pool from its first print to s0 + POOL_LIFE_S, then drops it
+from tools.h5_shadow import POOL_LIFE_S, SILENCE_S, housekeeping  # the shadow follows a pool from its first print to s0 + POOL_LIFE_S, then drops it
 
 DEFAULT_RPC = "https://api.mainnet-beta.solana.com"
 FALLBACK_SPS = 0.5  # seconds per slot when a pool's slices carry no `sps`: conservative (a slower slot means FEWER slots inside POOL_LIFE_S)
-GAP_TIME_MARGIN_MS = 5_000  # a gap's time range [t_lo, t_hi] voids a pair whose read times [t_a, t_b], widened by this, meet it
+COVER_BACK_MS = int((POOL_LIFE_S + 30) * 1000)  # a pair needs a healthy shadow from this far before read a (a pool's follow time plus 30 s)
+END_MARGIN_MS = 5_000  # ... to this far after read b for gap / start / stop rows
+HB_PERIOD_MS = int(inspect.signature(housekeeping).parameters["hb_s"].default * 1000)  # the shadow's heartbeat period (housekeeping hb_s default)
+HB_MAX_SPACING_MS = 2 * HB_PERIOD_MS
+SILENCE_MS = int(SILENCE_S * 1000)  # the shadow's own silence threshold
 # The shadow writes compact JSON (separators (",", ":")); both spacings are accepted. A line is parsed only if it carries one of these exact type strings.
 SLICE_TAGS = ('"type":"boost_slice"', '"type": "boost_slice"')
 GAP_TAGS = ('"type":"gap"', '"type": "gap"')
+STOP_TAGS = ('"type":"stop"', '"type": "stop"')
+HB_TAGS = ('"type":"hb"', '"type": "hb"')
 START_TAGS = ('"type":"start"', '"type": "start"')
 HOUR_RE = re.compile(r"(\d{4})\D?(\d{2})\D?(\d{2})\D?(\d{2})")
 
@@ -206,21 +215,64 @@ def slice_key(pool: str, row: dict) -> tuple:
     return (pool, row.get("slot"), row.get("tx_index"), row.get("lamports"))
 
 
-def load_shadow(shadow_dir: str, pools: set[str]) -> tuple[dict, dict, list, int]:
-    """(slices, pool_meta, gaps, dupes_removed). Reads ONLY: boost_slice pool, slot, lamports, s0, sps, signature, event_index, tx_index; gap kind, from_slot,
-    to_slot, silent_ms, t_ms; start t_ms. A line is parsed only if it carries the exact `"type":"<boost_slice|gap|start>"` string (so an outcome or trigger
-    line with a `"gap":true` key is never parsed). A gap is (from_slot, to_slot, t_lo, t_hi, hour_range): slot_jump has a slot range; a silence covers
-    [t_ms - silent_ms, t_ms]; any other gap, and a start (a shadow process restart), is the point t_ms; a gap with neither a usable slot range nor a usable
-    t_ms is attached to its file's UTC hour, and to everything if the hour cannot be read from the file name."""
+class Coverage:
+    """Positive evidence the shadow was healthy around a read pair. Built from gap / start / stop rows (t_ms, and slot_jump from_slot / to_slot) and hb rows
+    (t_ms, last_event_ms)."""
+
+    def __init__(self) -> None:
+        self.events: list[int] = []  # t_ms of gap, start and stop rows
+        self.jumps: list[tuple[int, int]] = []  # slot_jump (from_slot, to_slot)
+        self.unusable: list[tuple[int, int] | None] = []  # gap / start / stop rows with no usable t_ms: their file's UTC hour (None = unknown)
+        self.hbs: list[tuple[int, Any]] = []  # (t_ms, last_event_ms)
+
+    def finish(self) -> None:
+        self.events.sort()
+        self.hbs.sort(key=lambda h: h[0])
+        self._hb_t = [h[0] for h in self.hbs]
+
+    def scored(self, sa: int, sb: int, ta: Any, tb: Any, life_slots: int) -> bool:
+        """True only if ALL hold: (1) no gap / start / stop row with t_ms in [ta - 430 s, tb + 5 s], no slot_jump overlapping (sa - life_slots, sb], no
+        unusable-time row of the hour; (2) hb rows cover [ta - 430 s, tb]: one at or before ta - 430 s, one at or after tb, no two consecutive more than
+        2 x the hb period apart; (3) at every hb of that chain the feed was not silent (t_ms - last_event_ms <= the shadow's silence threshold)."""
+        if not (_ok_int(ta) and _ok_int(tb)) or tb < ta:
+            return False
+        lo = ta - COVER_BACK_MS
+        i = bisect.bisect_left(self.events, lo)
+        if i < len(self.events) and self.events[i] <= tb + END_MARGIN_MS:
+            return False
+        if any(fs < sb and ts > sa - life_slots for fs, ts in self.jumps):
+            return False
+        for hour in self.unusable:
+            if hour is None or (hour[0] - END_MARGIN_MS <= tb and hour[1] + END_MARGIN_MS >= lo):
+                return False
+        j = bisect.bisect_right(self._hb_t, lo) - 1  # the last hb at or before lo
+        if j < 0:
+            return False
+        prev = None
+        for t, last in self.hbs[j:]:
+            if prev is not None and t - prev > HB_MAX_SPACING_MS:
+                return False
+            if not _ok_int(last) or t - last > SILENCE_MS or last > t:
+                return False
+            prev = t
+            if t >= tb:
+                return True
+        return False  # no hb at or after tb
+
+
+def load_shadow(shadow_dir: str, pools: set[str]) -> tuple[dict, dict, Coverage, int]:
+    """(slices, pool_meta, coverage, dupes_removed). Reads ONLY: boost_slice pool, slot, lamports, s0, sps, signature, event_index, tx_index; gap from_slot,
+    to_slot, t_ms; start / stop / gap / hb t_ms; hb last_event_ms. A line is parsed only if it carries the exact `"type":"<boost_slice|gap|start|stop|hb>"`
+    string (so an outcome or trigger line with a `"gap":true` key is never parsed)."""
     slices: dict[str, list[tuple[int, int]]] = defaultdict(list)
     meta: dict[str, list] = {}  # pool -> [s0, max sps]
-    gaps: list[tuple] = []
+    cov = Coverage()
     seen: set = set()
     dupes = 0
     for path in _hour_files(shadow_dir):
         with open(path, encoding="utf-8", errors="replace") as fh:
             for line in fh:
-                if not (_has(line, SLICE_TAGS) or _has(line, GAP_TAGS) or _has(line, START_TAGS)):
+                if not (_has(line, SLICE_TAGS) or _has(line, GAP_TAGS) or _has(line, START_TAGS) or _has(line, STOP_TAGS) or _has(line, HB_TAGS)):
                     continue
                 try:
                     row = json.loads(line)
@@ -228,17 +280,22 @@ def load_shadow(shadow_dir: str, pools: set[str]) -> tuple[dict, dict, list, int
                     continue
                 if not isinstance(row, dict):
                     continue
-                if row.get("type") in ("gap", "start"):
-                    fs, ts, tm, sm = row.get("from_slot"), row.get("to_slot"), row.get("t_ms"), row.get("silent_ms")
-                    fs, ts = (fs, ts) if (row.get("type") == "gap" and _ok_int(fs) and _ok_int(ts)) else (None, None)
-                    t_lo = t_hi = None
-                    if _ok_int(tm):
-                        t_lo = t_hi = tm
-                        if row.get("type") == "gap" and row.get("kind") == "silence" and _ok_int(sm) and sm >= 0:
-                            t_lo = tm - sm
-                    gaps.append((fs, ts, t_lo, t_hi, _hour_range_ms(path)))
+                typ = row.get("type")
+                if typ == "hb":
+                    if _ok_int(row.get("t_ms")):
+                        cov.hbs.append((row["t_ms"], row.get("last_event_ms")))
                     continue
-                if row.get("type") != "boost_slice":
+                if typ in ("gap", "start", "stop"):
+                    tm = row.get("t_ms")
+                    if _ok_int(tm):
+                        cov.events.append(tm)
+                    else:
+                        cov.unusable.append(_hour_range_ms(path))
+                    fs, ts = row.get("from_slot"), row.get("to_slot")
+                    if typ == "gap" and _ok_int(fs) and _ok_int(ts):
+                        cov.jumps.append((fs, ts))
+                    continue
+                if typ != "boost_slice":
                     continue
                 pool, slot, lam, s0, sps = row.get("pool"), row.get("slot"), row.get("lamports"), row.get("s0"), row.get("sps")
                 if pool not in pools or not (_ok_int(slot) and _ok_int(lam)):
@@ -254,30 +311,16 @@ def load_shadow(shadow_dir: str, pools: set[str]) -> tuple[dict, dict, list, int
                     m[0] = min(m[0], s0)
                     if _sps_ok(sps) and (m[1] is None or sps > m[1]):
                         m[1] = float(sps)
-    return slices, meta, gaps, dupes
-
-
-def _gap_overlaps(gaps: list[tuple], sa: int, sb: int, ta: Any, tb: Any) -> bool:
-    times_ok = _ok_int(ta) and _ok_int(tb)
-    for fs, ts, t_lo, t_hi, hour in gaps:
-        if fs is not None:
-            if fs < sb and ts > sa:  # the jumped-over range [from_slot, to_slot] meets (sa, sb]
-                return True
-        elif t_lo is not None:
-            if not times_ok or (t_lo - GAP_TIME_MARGIN_MS <= tb and t_hi + GAP_TIME_MARGIN_MS >= ta):
-                return True
-        else:  # no usable slot range or time: every pair of that hour (every pair, if the hour is unknown)
-            if hour is None or not times_ok or (hour[0] - GAP_TIME_MARGIN_MS <= tb and hour[1] + GAP_TIME_MARGIN_MS >= ta):
-                return True
-    return False
+    cov.finish()
+    return slices, meta, cov, dupes
 
 
 def join(reads_path: str, shadow_dir: str) -> dict[str, Any]:
     """Pair buckets, in this order of precedence: skipped (null amount / slot, or ctx slots not increasing; not in pairs_total), no_slices (the pool has no
     boost_slice row at all: sealed, or never BOOST-spent), uncovered (ctx_slot_b > s0 + POOL_LIFE_S / sps, `sps` = the shadow's own slice sps, the largest
-    seen for the pool, FALLBACK_SPS if none), gap (overlaps a gap record), boundary, then active exact / mismatch and quiet."""
+    seen for the pool, FALLBACK_SPS if none), gap (no positive evidence the shadow was healthy: see Coverage.scored), boundary, then active exact / mismatch and quiet."""
     by_pool, reasons = load_reads(reads_path)
-    slices, meta, gaps, dupes = load_shadow(shadow_dir, set(by_pool))
+    slices, meta, cov, dupes = load_shadow(shadow_dir, set(by_pool))
     res: dict[str, Any] = {"pairs_total": 0, "pairs_skipped_null": 0, "pairs_skipped_order": 0, "no_slices": 0, "uncovered": 0, "gap": 0, "boundary": 0,
                            "active": 0, "active_exact": 0, "active_mismatch": 0, "active_mismatch_delta_minus_S": [], "quiet_delta0": 0,
                            "quiet_delta_nonzero": 0, "quiet_nonzero_deltas": [], "slice_dupes_removed": dupes, "pools_read": len(by_pool),
@@ -300,7 +343,7 @@ def join(reads_path: str, shadow_dir: str) -> dict[str, Any]:
             if sb > m[0] + horizon_slots(m[1]):
                 res["uncovered"] += 1
                 continue
-            if _gap_overlaps(gaps, sa, sb, ta, tb):
+            if not cov.scored(sa, sb, ta, tb, horizon_slots(m[1])):
                 res["gap"] += 1
                 continue
             if any(s == sa or s == sb for s, _ in sl):
