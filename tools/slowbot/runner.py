@@ -52,7 +52,7 @@ HEARTBEAT_S = 30.0
 X_MAX = dc.MAX_X_CONTEXT
 COUNTERS = ("scans", "scan_failures", "candidates", "missed_restart", "q2_total", "q2_failed", "q2_late", "h_unavailable",
             "h_calls", "h_buys", "h_budget_cap", "h_caller_error", "h_decision_orphan", "pending_retried",
-            "no_fill_row", "post_decision_quote_failed", "arm_full_hits", "r_draws", "r_skips", "polls", "liq_fetch_failed", "x_context_attached")
+            "no_fill_row", "post_decision_quote_failed", "arm_full_hits", "r_draws", "r_skips", "polls", "liq_fetch_failed", "x_context_attached", "x_lookup_requested")
 
 
 def _epoch(ts: str) -> float:
@@ -96,21 +96,72 @@ def rebuild_admitted(out_dir, now_s) -> int:
     return n
 
 
-class XFeed:
-    """Optional x_context source. A file (JSONL rows or a JSON list) or an http(s) URL. Rows: a string, or a dict with `text` and
-    optionally `mint` / `ticker` / `symbol`. For a URL, `?mint=..&ticker=..` is appended and a JSON list is expected back.
-    Any failure yields None (no context). At most 5 snippets."""
+X_FEED_STALE_S = 30 * 60
+X_LOOKUP_STALE_S = 120 * 60
+X_LOOKUP_PER_HOUR = 6
+X_SNIPPETS_WITH_SUMMARY = 4
+X_LOOKUP_FILES_KEEP = 24
 
-    def __init__(self, src, fetch=None):
+
+def _norm_ticker(t):
+    return str(t or "").strip().lstrip("$").strip().lower()
+
+
+def _parse_ts(v):
+    try:
+        return dt.datetime.fromisoformat(str(v).replace("Z", "+00:00")).timestamp()
+    except Exception:
+        return None
+
+
+def helm_summary(r):
+    """One summary line for a Helm feed row (dict with `snippets`)."""
+    kol = r.get("kol_mentions")
+    kol = len(kol) if isinstance(kol, (list, tuple)) else (kol or 0)
+    flags = r.get("flags")
+    flags = ",".join(str(f) for f in flags) if isinstance(flags, (list, tuple)) and flags else "none"
+    return (f"X 60m: mentions={r.get('mentions_60m', 0)} authors={r.get('unique_authors_60m', 0)} "
+            f"top_followers={r.get('top_author_followers', 0)} kol={kol} sentiment={r.get('sentiment') or 'none'} flags={flags} "
+            "(counts are lower bounds; shill/signal-bot = paid promo, treat as noise or negative)")
+
+
+class XFeed:
+    """Optional x_context source: a file (JSONL rows or a JSON list), an http(s) URL, or a DIRECTORY (Helm's /data/mal/x-feed).
+    File rows: a string, or a dict with `text` and optionally `mint` / `ticker` / `symbol`. For a URL, `?mint=..&ticker=..` is
+    appended and a JSON list is expected back. Directory: newest x-feed-*.jsonl (else latest.jsonl) plus x-lookup-*.jsonl; rows older
+    than 30 min (120 min for lookups) by ts_utc are ignored. Match = exact mint, else ticker ($ stripped, case-insensitive) only
+    when the row's mint is null; mint matches win. Helm rows (with `snippets`) give one summary string then up to 4 snippets.
+    Any failure yields None (no context). At most 5 snippets in all. A directory source also takes lookup requests
+    (request_lookup): one mint per line in lookup-requests.txt, no duplicates, at most 6 appends per hour, never raises."""
+
+    def __init__(self, src, fetch=None, clock=time.time):
         self.src = src
         self.is_url = src.startswith(("http://", "https://"))
+        self.is_dir = (not self.is_url) and os.path.isdir(src)
         self.fetch = fetch or self._http
+        self.clock = clock
         self._cache = (None, None)
+        self._dcache = {}
+        self._req_seen = set()
+        self._req_times = []
 
     @staticmethod
     def _http(url):
         with urllib.request.urlopen(url, timeout=5) as r:  # noqa: S310 (operator-supplied feed)
             return json.loads(r.read(1_000_000).decode("utf-8"))
+
+    @staticmethod
+    def _parse(txt):
+        try:
+            rows = json.loads(txt)
+        except ValueError:
+            rows = []
+            for line in txt.splitlines():
+                try:
+                    rows.append(json.loads(line))
+                except ValueError:
+                    continue
+        return rows if isinstance(rows, list) else []
 
     def _file_rows(self):
         st = os.stat(self.src)
@@ -118,20 +169,79 @@ class XFeed:
         if self._cache[0] != key:
             with open(self.src) as f:
                 txt = f.read()
-            try:
-                rows = json.loads(txt)
-            except ValueError:
-                rows = []
-                for line in txt.splitlines():
-                    try:
-                        rows.append(json.loads(line))
-                    except ValueError:
-                        continue
-            self._cache = (key, rows if isinstance(rows, list) else [])
+            self._cache = (key, self._parse(txt))
         return self._cache[1]
+
+    def _read_cached(self, path):
+        st = os.stat(path)
+        key = (st.st_mtime_ns, st.st_size)
+        hit = self._dcache.get(path)
+        if hit is None or hit[0] != key:
+            with open(path) as f:
+                hit = (key, self._parse(f.read()))
+            self._dcache[path] = hit
+        return hit[1]
+
+    def _dir_rows(self):
+        """Fresh rows from the directory: [(ts, row)], newest first."""
+        now = self.clock()
+        listing = os.listdir(self.src)
+        names = sorted(n for n in listing if n.startswith("x-feed-") and n.endswith(".jsonl"))
+        if names:
+            feeds = [(names[-1], X_FEED_STALE_S)]
+        else:
+            feeds = [("latest.jsonl", X_FEED_STALE_S)] if "latest.jsonl" in listing else []
+        looks = sorted(n for n in listing if n.startswith("x-lookup-") and n.endswith(".jsonl"))[-X_LOOKUP_FILES_KEEP:]
+        out = []
+        for name, limit in feeds + [(n, X_LOOKUP_STALE_S) for n in looks]:
+            try:
+                rows = self._read_cached(os.path.join(self.src, name))
+            except Exception:
+                continue
+            for r in rows:
+                if not isinstance(r, dict):
+                    continue
+                ts = _parse_ts(r.get("ts_utc")) if r.get("ts_utc") else None
+                if ts is None:
+                    if "snippets" in r:
+                        continue  # a Helm row with no readable time cannot be judged fresh
+                    ts = now
+                if now - ts > limit:
+                    continue
+                out.append((ts, r))
+        out.sort(key=lambda x: -x[0])
+        return out
+
+    @staticmethod
+    def _row_texts(r):
+        if isinstance(r.get("snippets"), (list, tuple)):
+            return [s.strip() for s in r["snippets"] if isinstance(s, str) and s.strip()]
+        t = r.get("text")
+        return [t.strip()] if isinstance(t, str) and t.strip() else []
+
+    def _dir_snippets(self, mint, ticker):
+        rows = [r for _, r in self._dir_rows()]
+        t = _norm_ticker(ticker)
+        hits = [r for r in rows if mint and r.get("mint") == mint]
+        if not hits and t:
+            hits = [r for r in rows if not r.get("mint") and _norm_ticker(r.get("ticker") or r.get("symbol")) == t]
+        out = []
+        helm = [r for r in hits if "snippets" in r]
+        if helm:
+            out.append(helm_summary(helm[0]))
+        cap = X_SNIPPETS_WITH_SUMMARY if helm else X_MAX
+        seen, texts = set(), []
+        for r in hits:
+            for s in self._row_texts(r):
+                if s not in seen:
+                    seen.add(s)
+                    texts.append(s)
+        return dc.clean_x_context(out + texts[:cap])
 
     def snippets(self, mint, ticker):
         try:
+            if self.is_dir:
+                return self._dir_snippets(mint, ticker)
             if self.is_url:
                 q = urllib.parse.urlencode({"mint": mint or "", "ticker": ticker or ""})
                 rows = self.fetch(self.src + ("&" if "?" in self.src else "?") + q)
@@ -154,6 +264,42 @@ class XFeed:
             return dc.clean_x_context(out[:X_MAX])
         except Exception:
             return None
+
+    def request_lookup(self, mint):
+        """Ask Helm for a lookup of this mint. True only if a new line was appended. Never raises."""
+        try:
+            if not self.is_dir or not mint or not isinstance(mint, str):
+                return False
+            mint = mint.strip()
+            if not mint or mint in self._req_seen:
+                return False
+            path = os.path.join(self.src, "lookup-requests.txt")
+            existing, tail_nl = set(), True
+            try:
+                with open(path, "rb") as f:
+                    raw = f.read().decode("utf-8", "replace")
+                existing = {ln.strip() for ln in raw.splitlines() if ln.strip() and not ln.lstrip().startswith("#")}
+                tail_nl = (not raw) or raw.endswith("\n")
+            except FileNotFoundError:
+                pass
+            if mint in existing:
+                self._req_seen.add(mint)
+                return False
+            now = self.clock()
+            self._req_times = [x for x in self._req_times if now - x < 3600]
+            if len(self._req_times) >= X_LOOKUP_PER_HOUR:
+                return False
+            fd = os.open(path, os.O_WRONLY | os.O_APPEND | os.O_CREAT, 0o664)
+            try:
+                os.write(fd, ((mint if tail_nl else "\n" + mint) + "\n").encode())
+                os.fsync(fd)
+            finally:
+                os.close(fd)
+            self._req_seen.add(mint)
+            self._req_times.append(now)
+            return True
+        except Exception:
+            return False
 
 
 def with_refund(rep, rows):
@@ -405,6 +551,8 @@ class Runner:
                 xc = self.x_feed.snippets(c["mint"], c.get("symbol"))
                 if xc:
                     self._bump("x_context_attached")
+                if self.x_feed.request_lookup(c["mint"]):
+                    self._bump("x_lookup_requested")
             row = dc.decide(dict(c, arm="H"), self.caller, x_context=xc, log_path=self.decisions_path)
             self._bump("h_calls")
             err = row.get("decision_error") or ""
@@ -545,7 +693,7 @@ def main(argv=None):
     ap.add_argument("--poll", type=float, default=POLL_S)
     ap.add_argument("--duration", type=float, default=None, help="stop after this many seconds (smoke runs)")
     ap.add_argument("--no-haiku", action="store_true", help="T and R only; H logs h_unavailable")
-    ap.add_argument("--x-feed", default=None, help="file or URL of X snippets; absent = no x_context")
+    ap.add_argument("--x-feed", default=None, help="file, directory (Helm x-feed) or URL of X snippets; absent = no x_context")
     ap.add_argument("--top-holders", action="store_true")
     ap.add_argument("--seed", type=int, default=None)
     a = ap.parse_args(argv)

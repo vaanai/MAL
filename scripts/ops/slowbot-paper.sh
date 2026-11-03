@@ -9,7 +9,8 @@
 # Environment (all optional):
 #   OUT         state dir                                         default /data2/mal/slowbot/paper-v0
 #   NO_HAIKU=1  T and R only; H logs h_unavailable
-#   X_FEED      path or URL of X snippets (adds x_context to H)   default none
+#   X_FEED      path, directory or URL of X snippets (adds x_context to H)   default /data/mal/x-feed if it exists
+#   NO_X=1      disable the X feed
 #   DURATION    stop after this many seconds                      default run until cancelled
 #   PY          python                                            default /data/mal/venv/bin/python
 #   DRY=1       print the command and run nothing
@@ -22,6 +23,7 @@ PY=${PY:-/data/mal/venv/bin/python}
 DRY=${DRY:-0}
 NO_HAIKU=${NO_HAIKU:-0}
 X_FEED=${X_FEED:-}
+if [ -z "$X_FEED" ] && [ "${NO_X:-0}" != "1" ] && [ -d /data/mal/x-feed ]; then X_FEED=/data/mal/x-feed; fi
 DURATION=${DURATION:-}
 
 if [ "${MISCUSI_RESUME:-}" = "1" ] || [ -f "$OUT/runner-state.json" ]; then
@@ -38,7 +40,7 @@ fi
 
 set -- -m tools.slowbot.runner --out "$OUT"
 [ "$NO_HAIKU" = "1" ] && set -- "$@" --no-haiku
-[ -n "$X_FEED" ] && set -- "$@" --x-feed "$X_FEED"
+[ "${NO_X:-0}" != "1" ] && [ -n "$X_FEED" ] && set -- "$@" --x-feed "$X_FEED"
 [ -n "$DURATION" ] && set -- "$@" --duration "$DURATION"
 
 if [ "$DRY" = "1" ]; then
