@@ -1,0 +1,881 @@
+"""slowbot H-arm LIVE executor, DEC-035 live-learning lane (s2). Runs on mal-fast-0 only; the paper runner stays on research-0.
+
+NOT STARTED, NOT INSTALLED by this module. Only the manager starts a lane book. The wallet key is loaded in `--live` mode only, from the systemd
+credential (tools.probe_live.load_probe_key / credential_path: CREDENTIALS_DIRECTORY, LoadCredential=probe-wallet:... in the unit); this file
+never opens any other key path and never prints key material. Default mode is DRY: quotes and swap transactions are built and every limit is
+checked, nothing is signed or sent, and the lane ledger is only read.
+
+Flow per intent (a row of the pushed live-intents.jsonl, see tools/slowbot/intents.py):
+  refuse if older than max_intent_age_s (default 90) -> refuse if the lane STOP / the bot STOP is present -> own limits (max_open 2, mint held by
+  another lane bot, sub-budget 0.06 SOL never reset) -> Jupiter quote (slippage cap) -> entry vs paper entry -> swap transaction built, fee payer
+  checked, signed -> re-quote just before the send (on-chain route state; refuse if it degraded beyond requote_degrade_bps) -> LaneLedger.reserve
+  (shared DEC-035 limits: 0.30 total, 0.10 daily, max 3 open; writes and fsyncs the `send_intent` row BEFORE the send) -> send -> confirm by
+  signature -> `fill` row. Unresolved signatures are reconciled by signature on every loop and after a restart.
+
+Exits mirror tools/slowbot/positions.py EXACTLY by construction: LivePositions subclasses PositionManager and inherits `_step`, `tick`, `_miss`
+and the constants unchanged (positions.py: STOP 0.15 :42, TAKE 0.40 :43, TAKE_FRACTION 0.5 :44, TRAIL 0.20 :45, TIME_STOP_S 4 h :46, LIQ_COLLAPSE
+0.40 :47, LIQ_UNKNOWN_MAX 3 :48, NO_QUOTE_WRITEOFF_S 600 :49, POLL_S 30 :41; the order liq_collapse, liq_unknown_exit, stop, trail, time_stop,
+then take-half, then no_quote_writeoff is `_step` / `_miss`). Only the three places that book a SELL are overridden to do the sell for real and book
+the actual proceeds (see "Sells" and "Mark at cost" below): `_fresh_fill` (positions.py :`_fresh_fill`), `_take_half` (same mutations as positions.py `_take_half`) and `_exit`. A failed
+live sell leaves the position open and is retried at the next poll.
+
+Sells (real-money reconciliation). Before every sell send a `sell_intent` row (signature, tokens, kind, reason) is written to the lane ledger backlog
+(fsynced) and the signature is kept in state["sells"]. The sell waits confirm_timeout_s (45 s); if it has not confirmed, the signature stays followed
+(bounded backoff 10 s .. 60 s, up to 600 s, then it is declared dead and never adopted again). While a sell of a mint is unresolved no second sell of
+it is sent. Before ANY sell the wallet's on-chain token balance of the mint is read: only min(wanted, balance) is sold, a zero balance closes the
+position (ledger `exit`, reason zero_balance_closed, estimated=true, 0 SOL booked), and a failed balance read sends nothing. A sell that lands late
+closes (or takes half of) the position from the real fill: proceeds = the wallet's SOL delta + fee from the confirmed transaction meta. A failed
+sell transaction books its fee and leaves the position open for a re-sell. On restart reconcile() re-follows state["sells"] and also any
+`sell_intent` in the ledger that has no outcome row for its signature.
+
+Mark at cost. LaneLedger counts a position's value only from a fresh mark (a stale or missing mark is worth 0) while the pre-send budget check also
+subtracts every open stake, so a filled position with no mark is counted against the 0.06 SOL sub-budget twice and would block a second entry
+until the first 30 s poll. The executor therefore carries a fresh fill (and a position rebuilt from the ledger) AT COST, marks[mint] = (stake, now),
+until the first sell quote of the 30 s poll replaces it with the real sell value. After mark_stale_s without a quote the mark is worth 0 again.
+"""
+from __future__ import annotations
+
+import argparse
+import base64
+import json
+import os
+import sys
+import time
+from pathlib import Path
+from typing import Any, Callable
+
+from tools import h5_lane_executor as lane
+from tools import probe_executor as pe_mod
+from tools import pumpswap_tx as tx_mod
+from tools.slowbot import intents as itn
+from tools.slowbot import positions as pos
+from tools.slowbot.positions import PositionManager, atomic_write_json
+from tools.slowbot.quotes import WSOL
+
+BOT_ID = "slowbot-h-1"
+# Wallet-wide Helm files, the same constants the probe / H5 executors use (tools/probe_executor.py LIVE_DIR, Limits.stop_file / halt_file): STOP = no new
+# buys (exits continue); HALT = freeze everything. Config cannot redirect them.
+WALLET_STOP = pe_mod.LIVE_DIR / "STOP"
+WALLET_HALT = pe_mod.LIVE_DIR / "HALT"
+DEFAULTS = {
+    "bot_id": BOT_ID, "stake_lamports": 20_000_000, "max_open": 2, "bot_budget_lamports": 60_000_000,
+    "lane_budget_lamports": 300_000_000, "lane_daily_loss_lamports": 100_000_000, "lane_max_open": 3,
+    "fee_reserve_lamports": lane.LANE_MIN_FEE_RESERVE, "mark_stale_s": 60,
+    "max_intent_age_s": 90, "max_slippage_bps": 300, "sell_slippage_bps": 1500, "max_entry_vs_paper_bps": 1500,
+    "requote_degrade_bps": 200, "max_price_impact_bps": 500, "buy_priority_lamports": 200_000, "sell_priority_lamports": 200_000,
+    "wallet_floor_lamports": 50_000_000, "confirm_timeout_s": 45, "intent_poll_s": 2.0, "max_sell_attempts": None, "pin_runner_sha": "", "pin_prompt_sha256": "", "reconcile_every_s": 5.0,
+    "unresolved_s": 600, "dry_run": True,
+}
+HARD_MAX_SLIPPAGE_BPS = 500
+ATA_RENT = pos.ATA_RENT_LAMPORTS
+
+
+class Refused(Exception):
+    pass
+
+
+def _now_ms(now: float) -> int:
+    return int(now * 1000)
+
+
+# --- config ------------------------------------------------------------------------------------------------------------------------------
+def parse_config(raw: Any) -> dict[str, Any]:
+    """Config can only LOWER the DEC-035 maxima. Unknown keys are refused. Keyless."""
+    if not isinstance(raw, dict):
+        raise ValueError("config must be an object")
+    allowed = set(DEFAULTS) | {"intents_path", "state_dir", "ledger_path", "stop_path", "bot_stop_path", "live_ok_path", "user", "rpc_url_env",
+                               "jupiter_quote_url", "jupiter_swap_url", "dexscreener_url"}
+    extra = set(raw) - allowed
+    if extra:
+        raise ValueError(f"unknown config keys {sorted(extra)}")
+    c = {**DEFAULTS, **raw}
+    for k in ("intents_path", "state_dir", "ledger_path", "stop_path"):
+        if not isinstance(c.get(k), str) or not c[k]:
+            raise ValueError(f"{k} is required")
+    c.setdefault("bot_stop_path", str(Path(c["state_dir"]) / "STOP-slowbot-h-1"))
+    if c["bot_id"] != BOT_ID:
+        raise ValueError(f"bot_id must be {BOT_ID}")
+    if not lane.LANE_STAKE_MIN_LAMPORTS <= c["stake_lamports"] <= lane.LANE_STAKE_MAX_LAMPORTS:
+        raise ValueError("stake_lamports outside the DEC-035 band")
+    if not 1 <= c["max_open"] <= 2:
+        raise ValueError("max_open must be 1..2")
+    if not 1 <= c["bot_budget_lamports"] <= 60_000_000:
+        raise ValueError("bot_budget_lamports must be 1..60000000")
+    if not 1 <= c["lane_max_open"] <= lane.LANE_MAX_OPEN or not 1 <= c["lane_budget_lamports"] <= lane.LANE_BUDGET_MAX_LAMPORTS \
+            or not 1 <= c["lane_daily_loss_lamports"] <= lane.LANE_DAILY_MAX_LAMPORTS:
+        raise ValueError("shared lane limits above DEC-035 maxima")
+    if not 1 <= c["max_slippage_bps"] <= HARD_MAX_SLIPPAGE_BPS or not 1 <= c["sell_slippage_bps"] <= 3000:
+        raise ValueError("slippage cap out of range")
+    if not 0 < c["max_intent_age_s"] <= 600:
+        raise ValueError("max_intent_age_s must be in (0, 600]")
+    for k in ("pin_runner_sha", "pin_prompt_sha256"):
+        if not isinstance(c[k], str) or not c[k].strip() or c[k] == "unknown":
+            raise ValueError(f"{k} is required (the decision build this book is frozen to)")
+    cap = sell_attempt_cap(c)
+    if cap < 1:
+        raise ValueError("fee_reserve_lamports does not cover rent + the buy fee + one sell attempt")
+    if c["max_sell_attempts"] is None:
+        c["max_sell_attempts"] = cap
+    elif isinstance(c["max_sell_attempts"], bool) or not isinstance(c["max_sell_attempts"], int) or not 1 <= c["max_sell_attempts"] <= cap:
+        raise ValueError(f"max_sell_attempts must be 1..{cap}: fee_reserve_lamports must cover rent + buy fee + N x sell fee")
+    return c
+
+
+def sell_attempt_cap(c: dict[str, Any]) -> int:
+    """Most sell sends one position may cost so that fee_reserve >= rent + (base + buy_priority) + N x (base + sell_priority) always holds."""
+    base = tx_mod.BASE_FEE_PER_SIGNATURE
+    left = c["fee_reserve_lamports"] - pe_mod.FEEARM_RENT_RESERVE_LAMPORTS - (base + c["buy_priority_lamports"])
+    return max(0, left // (base + c["sell_priority_lamports"]))
+
+
+def lane_config(c: dict[str, Any]) -> lane.LaneConfig:
+    return lane.LaneConfig.parse({
+        "ledger_path": c["ledger_path"], "stop_path": c["stop_path"], "bot_id": c["bot_id"], "stake_lamports": c["stake_lamports"],
+        "max_open": c["lane_max_open"], "budget_lamports": c["lane_budget_lamports"], "daily_loss_lamports": c["lane_daily_loss_lamports"],
+        "fee_reserve_lamports": c["fee_reserve_lamports"], "mark_stale_s": c["mark_stale_s"]})
+
+
+# --- external clients (all injectable; tests use fakes) ----------------------------------------------------------------------------------
+class JupiterSwap:
+    """Jupiter lite-api quote + swap. `get(url)` and `post(url, body)` return parsed JSON and raise on failure."""
+
+    def __init__(self, get: Callable[[str], dict], post: Callable[[str, dict], dict],
+                 quote_url="https://lite-api.jup.ag/swap/v1/quote", swap_url="https://lite-api.jup.ag/swap/v1/swap"):
+        self.get, self.post, self.quote_url, self.swap_url = get, post, quote_url, swap_url
+
+    def quote(self, in_mint: str, out_mint: str, amount: int, slippage_bps: int) -> dict:
+        return self.get(f"{self.quote_url}?inputMint={in_mint}&outputMint={out_mint}&amount={int(amount)}&slippageBps={int(slippage_bps)}")
+
+    def swap_tx(self, quote: dict, user: str, priority_lamports: int) -> dict:
+        return self.post(self.swap_url, {"quoteResponse": quote, "userPublicKey": user, "wrapAndUnwrapSol": True,
+                                         "dynamicComputeUnitLimit": True, "prioritizationFeeLamports": int(priority_lamports)})
+
+
+class KeySigner:
+    """Signs a Jupiter-built transaction with the lane key. Refuses a transaction whose fee payer is not the lane wallet."""
+
+    def __init__(self, keypair):
+        self._kp = keypair
+
+    def __repr__(self) -> str:  # never reveal the key
+        return "KeySigner(<redacted>)"
+
+    @property
+    def pubkey(self) -> str:
+        return str(self._kp.pubkey())
+
+    def sign(self, tx_b64: str) -> tuple[str, str]:
+        from solders.transaction import VersionedTransaction
+        vt = VersionedTransaction.from_bytes(base64.b64decode(tx_b64))
+        if str(vt.message.account_keys[0]) != self.pubkey:
+            raise Refused("tx_fee_payer_not_lane_wallet")
+        signed = VersionedTransaction(vt.message, [self._kp])
+        return base64.b64encode(bytes(signed)).decode(), str(signed.signatures[0])
+
+
+class Chain:
+    """Solana JSON-RPC reads and the send. `rpc(method, params)` returns the `result` or raises."""
+
+    def __init__(self, rpc: Callable[[str, list], Any], wallet: str):
+        self.rpc, self.wallet = rpc, wallet
+
+    def send(self, signed_b64: str) -> str:
+        return self.rpc("sendTransaction", [signed_b64, {"encoding": "base64", "skipPreflight": False, "maxRetries": 3,
+                                                          "preflightCommitment": "confirmed"}])
+
+    def status(self, sig: str) -> dict | None:
+        v = self.rpc("getSignatureStatuses", [[sig], {"searchTransactionHistory": True}])["value"][0]
+        return v
+
+    def block_height(self) -> int:
+        return int(self.rpc("getBlockHeight", [{"commitment": "confirmed"}]))
+
+    def token_balance(self, mint: str) -> int:
+        """The wallet's on-chain balance (raw units) of `mint`, summed over its token accounts. Raises on failure."""
+        v = self.rpc("getTokenAccountsByOwner", [self.wallet, {"mint": mint}, {"encoding": "jsonParsed", "commitment": "confirmed"}])["value"]
+        return sum(int(a["account"]["data"]["parsed"]["info"]["tokenAmount"]["amount"]) for a in v)
+
+    def balance(self) -> int:
+        return int(self.rpc("getBalance", [self.wallet, {"commitment": "confirmed"}])["value"])
+
+    def result(self, sig: str, mint: str) -> dict:
+        """Wallet SOL delta, network fee, token delta and whether the token account was created, from the confirmed transaction."""
+        tx = self.rpc("getTransaction", [sig, {"encoding": "jsonParsed", "maxSupportedTransactionVersion": 0, "commitment": "confirmed"}])
+        meta = tx["meta"]
+        keys = [k["pubkey"] if isinstance(k, dict) else k for k in tx["transaction"]["message"]["accountKeys"]]
+        i = keys.index(self.wallet)
+
+        def tok(rows):
+            return sum(int(b["uiTokenAmount"]["amount"]) for b in (rows or []) if b.get("owner") == self.wallet and b.get("mint") == mint)
+        pre_has = any(b.get("owner") == self.wallet and b.get("mint") == mint for b in (meta.get("preTokenBalances") or []))
+        return {"sol_delta": int(meta["postBalances"][i]) - int(meta["preBalances"][i]), "fee": int(meta["fee"]), "err": meta.get("err"),
+                "token_delta": tok(meta.get("postTokenBalances")) - tok(meta.get("preTokenBalances")), "ata_created": not pre_has}
+
+
+# --- exits: positions.py mirrored by subclassing ---------------------------------------------------------------------------------------
+class LivePositions(PositionManager):
+    """Inherits positions.py `_step` / `tick` / `_miss` UNCHANGED: every exit threshold and its order is the paper H arm's. Overrides only the
+    sell bookings. `sell_fn(pos, tokens, reason) -> dict|None` performs the live sell and returns {"proceeds", "fee"} or None on failure."""
+
+    def __init__(self, state_path, log_path, quote_fn, *, sell_fn, on_exit=None, on_partial=None, now_fn=time.time):
+        super().__init__(state_path, log_path, quote_fn, now_fn=now_fn)
+        self.sell_fn, self.on_exit, self.on_partial = sell_fn, on_exit, on_partial
+
+    def adopt(self, mint: str, intent_id: str, tokens: int, cost_lamports: int, liq_usd: float | None, opened_t: float, extra: dict | None = None) -> dict:
+        """The same position record positions.py `open` builds (its field set), for a live fill."""
+        self.state["seq"] += 1
+        pid = f"H-{self.state['seq']:06d}"
+        p = {"id": pid, "arm": "H", "mint": mint, "pool": None, "symbol": None, "opened_t": opened_t, "cost_lamports": cost_lamports,
+             "tokens": tokens, "tokens_left": tokens, "entry_unit": cost_lamports / tokens, "entry_liq_usd": liq_usd, "taken": False,
+             "high_ratio": None, "proceeds_lamports": 0, "fees_lamports": 0, "legs": 0, "misses": 0, "miss_since_t": None,
+             "liq_unknown_n": 0, "last_ratio": None, "last_value_lamports": None, "intent_id": intent_id, **(extra or {})}
+        self.state["open"][pid] = p
+        self._log("open", opened_t, p, cost_lamports=cost_lamports, tokens=tokens, entry_liq_usd=liq_usd, live=True)
+        self._save()
+        return p
+
+    def close_late(self, p, now, r, reason):
+        """Close from a sell that landed after its confirm window: the real fill from the transaction meta."""
+        return self._finish_exit(p, now, r, reason, 0, "live_late", p.get("last_ratio"))
+
+    def _fresh_fill(self, p, amount, trigger_out):  # positions.py _fresh_fill re-quotes for the paper fill; live books the real proceeds in _exit
+        return trigger_out, "live_pending"
+
+    def _take_half(self, p, now, ratio, trigger_out):  # same mutations as positions.py _take_half, with the real fill
+        sell = int(p["tokens_left"] * pos.TAKE_FRACTION)
+        r = self.sell_fn(p, sell, "take_half")
+        if r is None:
+            self._save()
+            return  # not taken (failed, or a sell is still unresolved): the trigger is re-evaluated at the next poll
+        if r.get("closed"):  # the wallet holds none of this token: closed, nothing to take
+            self._finish_exit(p, now, r, "zero_balance_closed", 0, "zero_balance", ratio)
+            return
+        self.apply_take(p, now, ratio, r)
+
+    def apply_take(self, p, now, ratio, r):
+        sell, fill = int(r.get("tokens_sold") or int(p["tokens_left"] * pos.TAKE_FRACTION)), r["proceeds"]
+        p["proceeds_lamports"] += fill
+        p["fees_lamports"] += r["fee"]
+        p["tokens_left"] -= sell
+        p["taken"] = True
+        p["high_ratio"] = max(ratio, (fill / sell) / p["entry_unit"])
+        p["legs"] += 1
+        self._log("leg", now, p, leg="take_half", tokens_sold=sell, trigger_ratio=ratio, fill_out_lamports=fill,
+                  fill_ratio=(fill / sell) / p["entry_unit"], fill_basis=r.get("basis", "live"), leg_no=p["legs"], signature=r.get("signature"))
+        if self.on_partial:
+            self.on_partial(p, r)
+        self._save()
+
+    def _exit(self, p, now, fill, reason, *, trigger_out, fill_basis, trigger_ratio=None):
+        if reason == "no_quote_writeoff":  # positions.py: booked at 0 proceeds, no sell is possible
+            r = {"proceeds": 0, "fee": 0, "signature": None}
+        else:
+            r = self.sell_fn(p, p["tokens_left"], reason)
+            if r is None:
+                self._save()
+                return None  # the position stays open; the trigger fires again at the next poll
+            if r.get("closed"):
+                reason = "zero_balance_closed"
+        return self._finish_exit(p, now, r, reason, trigger_out, fill_basis, trigger_ratio)
+
+    def _finish_exit(self, p, now, r, reason, trigger_out, fill_basis, trigger_ratio):
+        row = PositionManager._exit(self, p, now, r.get("proceeds", 0), reason, trigger_out=trigger_out,
+                                    fill_basis=r.get("basis", "live") if reason != "no_quote_writeoff" else fill_basis, trigger_ratio=trigger_ratio)
+        if self.on_exit:
+            self.on_exit(p, r, row)
+        return row
+
+
+# --- the executor ----------------------------------------------------------------------------------------------------------------------
+class SlowbotLive:
+    def __init__(self, cfg: dict[str, Any], *, jup: JupiterSwap, chain: Chain | None, signer: KeySigner | Any | None, liq_fn: Callable[[str], float | None],
+                 user: str, now_fn: Callable[[], float] = time.time, sleep: Callable[[float], None] = time.sleep):
+        self.cfg, self.jup, self.chain, self.signer, self.liq_fn, self.user = cfg, jup, chain, signer, liq_fn, user
+        self.now_fn, self.sleep = now_fn, sleep
+        self.dry = bool(cfg["dry_run"]) or signer is None
+        self.lc = lane_config(cfg)
+        self.ledger = lane.LaneLedger(self.lc)
+        sd = Path(cfg["state_dir"])
+        sd.mkdir(parents=True, exist_ok=True)
+        self._sha = {"runner_sha": cfg["pin_runner_sha"], "prompt_sha256": cfg["pin_prompt_sha256"]}
+        self._bot_id_record(sd)
+        self.state_path, self.log_path = sd / "executor-state.json", sd / "executor-log.jsonl"
+        self.st = self._load()
+        self.marks: dict[str, tuple[int, int]] = {}
+        self._last_reconcile = 0.0
+        self._errors = 0
+        self.pm = LivePositions(sd / "positions-state.json", sd / "positions-log.jsonl", self._sell_quote, sell_fn=self._live_sell,
+                                on_exit=self._on_exit, on_partial=self._on_partial, now_fn=now_fn)
+
+    # -- state and log
+    def _load(self) -> dict:
+        try:
+            st = json.loads(self.state_path.read_text())
+        except FileNotFoundError:
+            return {"done": {}, "pending": {}, "sells": {}, "dead": []}
+        if not isinstance(st, dict) or not {"done", "pending"} <= set(st):
+            raise ValueError("executor state is malformed; refusing to start")
+        st.setdefault("sells", {})
+        st.setdefault("dead", [])
+        return st
+
+    def _save(self) -> None:
+        atomic_write_json(self.state_path, self.st)
+
+    def log(self, kind: str, **kw: Any) -> None:
+        pos._append_jsonl(self.log_path, {"kind": kind, "t": self.now_fn(), "bot_id": BOT_ID, "dry": self.dry, **self._sha, **kw})
+
+    def _rec(self, ev, mint, marks, ms, **kw):
+        """LaneLedger.record with the pinned runner sha and prompt sha on every row this executor writes (send_intent comes from reserve(), which cannot
+        take extras: the `sent` log row carries the shas for it)."""
+        return self.ledger.record(ev, mint, marks, ms, **self._sha, **kw)
+
+    def _bot_id_record(self, sd: Path) -> None:
+        """DEC-035 s3: a code or prompt change is a new bot_id. The record names bot_id + both shas; a changed pin under the same bot_id is refused."""
+        rec = {"bot_id": BOT_ID, **self._sha}
+        path = sd / "bot-id-record.json"
+        try:
+            have = json.loads(path.read_text())
+        except FileNotFoundError:
+            atomic_write_json(path, rec)
+            return
+        if have != rec:
+            raise ValueError("pinned runner/prompt sha changed under the same bot_id: a new bot_id is required (DEC-035 s3)")
+
+    def alert(self, what: str, **kw: Any) -> None:
+        self.log("ALERT", what=what, **kw)
+        try:
+            (Path(self.cfg["state_dir"]) / f"ALERT-{what}").write_text(json.dumps({"t": self.now_fn(), **kw}, default=str) + "\n")
+        except OSError:
+            pass
+
+    @staticmethod
+    def _flag_present(path) -> bool:
+        try:
+            os.stat(path)
+            return True
+        except FileNotFoundError:
+            return False
+        except OSError:
+            return True  # unreadable counts as present (fail closed)
+
+    # -- ledger views
+    def _view(self) -> lane.LaneView:
+        with self.ledger.locked():
+            return lane.lane_fold(self.ledger.read(), {}, _now_ms(self.now_fn()), self.lc.mark_stale_s, BOT_ID)
+
+    def bot_stop_present(self) -> bool:
+        try:
+            os.stat(self.cfg["bot_stop_path"])
+            return True
+        except FileNotFoundError:
+            return False
+        except OSError:
+            return True
+
+    def _write_bot_stop(self, reason: str) -> None:
+        p = Path(self.cfg["bot_stop_path"])
+        p.parent.mkdir(parents=True, exist_ok=True)
+        try:
+            fd = os.open(p, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o644)
+        except FileExistsError:
+            return
+        with os.fdopen(fd, "w") as f:
+            f.write(f"{reason} ts_ms={_now_ms(self.now_fn())} bot_id={BOT_ID}\n")  # never reset by this process: only the manager removes it
+
+    def own_limits(self, mint: str, stake: int) -> str | None:
+        """The slowbot-h-1 limits, on top of the shared lane limits LaneLedger.reserve enforces. Fail closed."""
+        if self.bot_stop_present():
+            return "bot_stop_file"
+        try:
+            with self.ledger.locked():
+                rows = self.ledger.read()
+            allv = lane.lane_fold(rows, self.marks, _now_ms(self.now_fn()), self.lc.mark_stale_s, BOT_ID)
+            own = lane.lane_fold([r for r in rows if isinstance(r, dict) and r.get("bot_id") == BOT_ID], self.marks, _now_ms(self.now_fn()),
+                                 self.lc.mark_stale_s, BOT_ID)
+        except Exception:
+            return "lane_ledger_error"
+        for key in allv.open:
+            owner, m = key.split(":", 1)
+            if m == mint:
+                return "mint_open_own" if owner == BOT_ID else "mint_held_by_other_bot"
+        budget = self.cfg["bot_budget_lamports"]
+        if own.pnl <= -budget:
+            self._write_bot_stop(f"bot_budget_stop pnl_lamports={own.pnl} budget_lamports={budget}")
+            return "bot_budget_stop"
+        if len(own.open) >= self.cfg["max_open"]:
+            return "bot_max_open"
+        reserve = self.cfg["fee_reserve_lamports"] * (len(own.open) + 1)
+        if own.pnl - (own.open_stakes + stake + reserve) <= -budget:
+            return "bot_budget_presend"
+        return None
+
+    # -- intents
+    def process_intents(self) -> int:
+        n = 0
+        for row in itn.read_intents(self.cfg["intents_path"]):
+            iid = row.get("intent_id")
+            if not isinstance(iid, str) or iid in self.st["done"]:
+                continue
+            n += 1
+            try:
+                out = self.handle(row)
+            except Refused as e:
+                out = f"refused:{e}"
+            except Exception as e:  # never kill the loop; the intent is closed and logged
+                out = f"error:{type(e).__name__}"
+            self.st["done"][iid] = out
+            self._save()
+            self.log("intent", intent_id=iid, mint=row.get("mint"), outcome=out, intent_runner_sha=row.get("runner_sha"),
+                     intent_prompt_sha256=row.get("prompt_sha256"))
+        return n
+
+    def handle(self, row: dict) -> str:
+        now = self.now_fn()
+        mint, stake = row["mint"], self.cfg["stake_lamports"]
+        dts = row.get("decision_ts")
+        if not isinstance(dts, (int, float)) or isinstance(dts, bool):
+            raise Refused("no_decision_ts")
+        age = now - dts
+        if age > self.cfg["max_intent_age_s"] or age < -5:
+            raise Refused("stale_intent")
+        if self._flag_present(WALLET_HALT) or self._flag_present(WALLET_STOP):
+            raise Refused("wallet_stop")  # the wallet-wide Helm STOP / HALT: no new buys
+        if row.get("runner_sha") != self.cfg["pin_runner_sha"] or row.get("prompt_sha256") != self.cfg["pin_prompt_sha256"]:
+            raise Refused("sha_mismatch")  # a different decision build than the one this book is frozen to (fail closed)
+        pe = row.get("paper_entry") or {}
+        if not isinstance(pe.get("in_lamports"), int) or not isinstance(pe.get("out_tokens"), int) or pe["out_tokens"] <= 0:
+            raise Refused("bad_paper_entry")
+        why = self.ledger.check(self.marks, _now_ms(now), stake)
+        if why:
+            raise Refused(why)
+        why = self.own_limits(mint, stake)
+        if why:
+            raise Refused(why)
+        if not self.dry and self.chain is not None:
+            need = self.cfg["wallet_floor_lamports"] + stake + self.cfg["fee_reserve_lamports"]
+            if self.chain.balance() < need:
+                raise Refused("wallet_floor")
+        q1 = self.jup.quote(WSOL, mint, stake, self.cfg["max_slippage_bps"])
+        out1 = self._check_quote(q1, stake, pe)
+        swap = self.jup.swap_tx(q1, self.user, self.cfg["buy_priority_lamports"])
+        tx_b64 = swap["swapTransaction"]
+        if self.dry:
+            self.log("dry_would_send", intent_id=row["intent_id"], mint=mint, stake_lamports=stake, quote_out=out1, tx_built=bool(tx_b64))
+            return "dry_would_send"
+        signed_b64, sig = self.signer.sign(tx_b64)
+        q2 = self.jup.quote(WSOL, mint, stake, self.cfg["max_slippage_bps"])  # re-check immediately before the send
+        out2 = self._check_quote(q2, stake, pe)
+        if out2 < out1 * (1 - self.cfg["requote_degrade_bps"] / 1e4):
+            raise Refused("requote_degraded")
+        if self._flag_present(WALLET_HALT) or self._flag_present(WALLET_STOP):  # last look before the write-ahead row and the send
+            raise Refused("wallet_stop")
+        why = self.ledger.reserve(mint, sig, self.marks, _now_ms(self.now_fn()), stake)  # write-ahead send_intent row, fsynced, under the lock
+        if why:
+            raise Refused(why)
+        self.st["pending"][sig] = {"kind": "buy", "mint": mint, "intent_id": row["intent_id"], "t": self.now_fn(), "stake": stake,
+                                   "liq_usd": pe.get("liq_usd"), "last_valid": swap.get("lastValidBlockHeight")}
+        self._save()
+        self.chain.send(signed_b64)
+        self.log("sent", intent_id=row["intent_id"], mint=mint, signature=sig)
+        self.reconcile(force=True)
+        return "sent"
+
+    def _check_quote(self, q: dict, stake: int, pe: dict) -> int:
+        try:
+            out, inn = int(q["outAmount"]), int(q["inAmount"])
+        except (KeyError, TypeError, ValueError):
+            raise Refused("bad_quote") from None
+        if inn != stake or out <= 0:
+            raise Refused("quote_not_stake_size")
+        try:
+            impact = abs(float(q.get("priceImpactPct") or 0)) * 1e4
+        except ValueError:
+            raise Refused("bad_quote") from None
+        if impact > self.cfg["max_price_impact_bps"]:
+            raise Refused("price_impact")
+        paper_unit = pe["in_lamports"] / pe["out_tokens"]
+        if (inn / out) > paper_unit * (1 + self.cfg["max_entry_vs_paper_bps"] / 1e4):
+            raise Refused("entry_worse_than_paper")
+        return out
+
+    # -- reconcile by signature
+    def reconcile(self, force: bool = False) -> None:
+        now = self.now_fn()
+        if not force and now - self._last_reconcile < self.cfg["reconcile_every_s"]:
+            return
+        self._last_reconcile = now
+        if self.dry or self.chain is None:
+            return
+        try:
+            self.ledger.drain()
+        except Exception:
+            pass
+        # a send_intent in the ledger with no pending entry (crash between the ledger row and the state write) is adopted from the ledger
+        try:
+            for key, p in self._view().open.items():
+                if key.startswith(BOT_ID + ":") and not p["filled"] and p.get("signature") and p["signature"] not in self.st["pending"]:
+                    self.st["pending"][p["signature"]] = {"kind": "buy", "mint": key.split(":", 1)[1], "intent_id": None, "t": p["ts_ms"] / 1000.0,
+                                                          "stake": p["stake"], "liq_usd": None, "last_valid": None}
+        except Exception:
+            pass
+        for sig, e in list(self.st["pending"].items()):
+            try:
+                st = self.chain.status(sig)
+            except Exception:
+                continue
+            if st is not None and st.get("confirmationStatus") in ("confirmed", "finalized"):
+                self._settle(sig, e, st)
+            elif e.get("last_valid") and self._past_last_valid(e["last_valid"]):
+                self._release(sig, e)  # the chain is past the blockhash height and the signature is not found: it can never land
+            elif now - e["t"] > self.cfg["unresolved_s"]:
+                self._expire(sig, e)
+        self._recover_positions()
+        self._adopt_sells_from_ledger()
+        self.reconcile_sells(force=force)
+        self._save()
+
+    def _settle(self, sig: str, e: dict, st: dict) -> None:
+        mint, ms = e["mint"], _now_ms(self.now_fn())
+        res = self.chain.result(sig, mint)
+        if st.get("err") or res["err"] or res["token_delta"] <= 0:
+            self._rec("fill", mint, self.marks, ms, ok=False, signature=sig, sol_out=max(res["fee"], -res["sol_delta"]), fee_network=res["fee"],
+                               reason="tx_error")
+            self.log("buy_failed", mint=mint, signature=sig)
+        else:
+            spent = -res["sol_delta"]
+            rent = ATA_RENT if res["ata_created"] else 0
+            self._rec("fill", mint, self.marks, ms, ok=True, signature=sig, sol_out=spent, fee_network=res["fee"], rent_unreclaimed=rent,
+                               tokens=res["token_delta"], cost_lamports=e["stake"], liq_usd=e.get("liq_usd"), opened_t=self.now_fn(),
+                               intent_id=e.get("intent_id"))
+            self._adopt(mint, e.get("intent_id"), res["token_delta"], e["stake"], e.get("liq_usd"), self.now_fn())
+            self.log("buy_filled", mint=mint, signature=sig, tokens=res["token_delta"], spent_lamports=spent)
+        self.st["pending"].pop(sig, None)
+
+    def _past_last_valid(self, last_valid) -> bool:
+        try:
+            return self.chain.block_height() > int(last_valid)
+        except Exception:
+            return False
+
+    def _release(self, sig: str, e: dict) -> None:
+        """The buy never landed (blockhash expired, signature not found): close it with no SOL moved, so the stake is released, not written off."""
+        self._rec("writeoff", e["mint"], self.marks, _now_ms(self.now_fn()), signature=sig, reason="buy_expired_blockhash")
+        self.log("buy_released", mint=e["mint"], signature=sig, last_valid=e.get("last_valid"))
+        self.st["pending"].pop(sig, None)
+
+    def _expire(self, sig: str, e: dict) -> None:
+        """No outcome after unresolved_s: closed at its FULL cost (lane_executor LANE_UNRESOLVED_MS convention). If it lands later the manager
+        finds untracked tokens; that is logged as a loud event."""
+        self._rec("writeoff", e["mint"], self.marks, _now_ms(self.now_fn()), signature=sig, sol_out=e["stake"], reason="unresolved_full_cost")
+        self.log("unresolved_writeoff", mint=e["mint"], signature=sig)
+        self.st["pending"].pop(sig, None)
+
+    def _adopt(self, mint, intent_id, tokens, cost, liq, opened_t) -> None:
+        if not any(p["mint"] == mint for p in self.pm.open_positions()):
+            self.pm.adopt(mint, intent_id, tokens, cost, liq, opened_t)
+            self.marks[mint] = (cost, _now_ms(self.now_fn()))  # carried at cost until the first sell quote (the 30 s poll refreshes it)
+
+    def _recover_positions(self) -> None:
+        """A filled own position in the ledger with no live position record (crash between the fill row and the state write) is rebuilt from its fill row."""
+        try:
+            with self.ledger.locked():
+                rows = self.ledger.read()
+            view = lane.lane_fold([r for r in rows if isinstance(r, dict) and r.get("bot_id") == BOT_ID], {}, _now_ms(self.now_fn()), 9, BOT_ID)
+        except Exception:
+            return
+        for key, p in view.open.items():
+            mint = key.split(":", 1)[1]
+            if not key.startswith(BOT_ID + ":") or not p["filled"] or any(x["mint"] == mint for x in self.pm.open_positions()):
+                continue
+            fills = [r for r in rows if r.get("bot_id") == BOT_ID and r.get("ev") == "fill" and r.get("mint") == mint and r.get("ok") is True]
+            if fills and fills[-1].get("tokens"):
+                f = fills[-1]
+                self.pm.adopt(mint, f.get("intent_id"), int(f["tokens"]), int(f.get("cost_lamports") or p["stake"]), f.get("liq_usd"),
+                              float(f.get("opened_t") or self.now_fn()))
+                self.marks[mint] = (int(f.get("cost_lamports") or p["stake"]), _now_ms(self.now_fn()))
+
+    # -- exits
+    def _sell_quote(self, mint: str, amount: int) -> dict:
+        q = self.jup.quote(mint, WSOL, amount, self.cfg["sell_slippage_bps"])
+        out = int(q["outAmount"])
+        self.marks[mint] = (out, _now_ms(self.now_fn()))
+        return {"out_lamports": out, "liq_usd": self.liq_fn(mint)}
+
+    SELL_RECONCILE_MAX_S = 600  # a sell signature is followed (bounded backoff) for up to 10 min, then declared dead
+
+    def _token_balance(self, mint: str) -> int | None:
+        try:
+            return int(self.chain.token_balance(mint))
+        except Exception as e:
+            self.log("balance_read_failed", mint=mint, error_class=type(e).__name__)
+            return None  # fail closed: no sell without a balance read
+
+    def _live_sell(self, p: dict, tokens: int, reason: str) -> dict | None:
+        if self._flag_present(WALLET_HALT):  # HALT freezes everything, sells included (STOP only stops new buys)
+            self.log("sell_blocked_wallet_halt", mint=p["mint"], reason=reason)
+            return None
+        try:
+            return self._live_sell_inner(p, tokens, reason)
+        except Exception as e:  # an RPC / ledger error must not escape into the poll loop: the position stays open and the trigger fires again
+            self.log("sell_error", mint=p["mint"], reason=reason, error_class=type(e).__name__)
+            return None
+
+    def _live_sell_inner(self, p: dict, tokens: int, reason: str) -> dict | None:
+        """One sell attempt. NEVER double-sells: (1) an unresolved earlier sell of this mint blocks a new one; (2) the wallet's on-chain token balance is read
+        first and only min(wanted, balance) is sold; a zero balance means the position is closed. The `sell_intent` row (signature, fsynced via the
+        ledger backlog) is on disk before the send. A sell that does not confirm in confirm_timeout_s stays followed by signature (reconcile_sells)."""
+        mint = p["mint"]
+        if self.dry or self.chain is None:
+            return {"proceeds": 0, "fee": 0, "signature": None}
+        if any(i["mint"] == mint for i in self.st["sells"].values()):
+            self.reconcile_sells(force=True)
+            if any(i["mint"] == mint for i in self.st["sells"].values()):
+                self.log("sell_pending", mint=mint, reason=reason)
+            return None  # either still unresolved, or just resolved (and the position closed or taken) by reconcile_sells
+        bal = self._token_balance(mint)
+        if bal is None:
+            return None
+        if bal <= 0:
+            self.log("zero_balance_closed", mint=mint, reason=reason)
+            return {"closed": True, "proceeds": 0, "fee": 0, "signature": None, "estimated": True}
+        if p.get("sell_stuck") or p.get("sell_attempts", 0) >= self.cfg["max_sell_attempts"]:
+            self._mark_stuck(p)
+            return None
+        amount = min(tokens, bal)
+        try:
+            q = self.jup.quote(mint, WSOL, amount, self.cfg["sell_slippage_bps"])
+            swap = self.jup.swap_tx(q, self.user, self.cfg["sell_priority_lamports"])
+            signed_b64, sig = self.signer.sign(swap["swapTransaction"])
+        except Exception as e:
+            self.log("sell_failed", mint=mint, reason=reason, error_class=type(e).__name__)
+            return None
+        now = self.now_fn()
+        kind = "take_half" if reason == "take_half" else "exit"
+        info = {"mint": mint, "tokens": amount, "reason": reason, "kind": kind, "t": now, "n": 0, "next": now + 5, "ratio": p.get("last_ratio")}
+        self._rec("sell_intent", mint, self.marks, _now_ms(now), signature=sig, tokens=amount, kind=kind, reason=reason)  # write-ahead
+        self.st["sells"][sig] = info
+        p["sell_attempts"] = p.get("sell_attempts", 0) + 1  # every sell SEND costs a fee; the cap keeps fee_reserve >= rent + buy fee + N x sell fee
+        self.pm._save()
+        self._save()
+        try:
+            self.chain.send(signed_b64)
+        except Exception as e:  # it may still have gone out: keep following the signature
+            self.log("sell_send_error", mint=mint, signature=sig, error_class=type(e).__name__)
+        deadline = now + self.cfg["confirm_timeout_s"]
+        while self.now_fn() < deadline:
+            try:
+                st = self.chain.status(sig)
+            except Exception:
+                st = None
+            if st is not None and st.get("confirmationStatus") in ("confirmed", "finalized"):
+                return self._sell_outcome(sig, st)
+            self.sleep(1.0)
+        self.log("sell_unconfirmed", mint=mint, signature=sig, reason=reason)
+        return None  # position stays open; reconcile_sells keeps checking this signature
+
+    def _mark_stuck(self, p: dict) -> None:
+        if not p.get("sell_stuck"):
+            p["sell_stuck"] = True
+            self.pm._save()
+            self.alert("sell_stuck", mint=p["mint"], attempts=p.get("sell_attempts", 0), cap=self.cfg["max_sell_attempts"])
+        self._write_bot_stop("sell_stuck")  # no new entries for this bot until the manager clears it
+        self.log("sell_stuck", mint=p["mint"])
+
+    def _sell_outcome(self, sig: str, st: dict) -> dict | None:
+        """A confirmed sell signature: the real fill from the transaction meta (wallet SOL delta + fee, token delta). None if the transaction failed."""
+        info = self.st["sells"][sig]
+        try:
+            res = self.chain.result(sig, info["mint"])
+        except Exception as e:
+            # The signature is confirmed but its transaction cannot be read: the fill is UNKNOWN, not zero. Keep it followed (never dead, never
+            # a zero-balance close), retry the read with bounded backoff, and block any re-sell of this mint meanwhile.
+            info["landed_unbooked"], info["st_err"] = True, st.get("err")
+            info["n"] = info.get("n", 0) + 1
+            info["next"] = self.now_fn() + min(5 * 2 ** info["n"], 60)
+            for x in self.pm.open_positions():
+                if x["mint"] == info["mint"]:
+                    x["sell_landed_unbooked"] = True
+            self.pm._save()
+            self._save()
+            if info["n"] == 1:
+                self.alert("sell_landed_unbooked", mint=info["mint"], signature=sig, error_class=type(e).__name__)
+            return None
+        self.st["sells"].pop(sig)
+        for x in self.pm.open_positions():
+            x.pop("sell_landed_unbooked", None)
+        self._save()
+        if st.get("err") or res["err"]:
+            self._rec("fee", info["mint"], self.marks, _now_ms(self.now_fn()), signature=sig, sol_out=res["fee"], fee_network=res["fee"],
+                               reason="sell_failed_tx")
+            self.log("sell_tx_failed", mint=info["mint"], signature=sig)
+            return None
+        return {"proceeds": res["sol_delta"] + res["fee"], "fee": res["fee"], "signature": sig, "tokens_sold": -res["token_delta"] or info["tokens"],
+                "basis": "live"}
+
+    def _adopt_sells_from_ledger(self) -> None:
+        """A `sell_intent` in the ledger with no outcome row and no follow-up in the state (restart, or a crash after the ledger row) is followed again."""
+        try:
+            with self.ledger.locked():
+                rows = self.ledger.read()
+        except Exception:
+            return
+        done = {r.get("signature") for r in rows if isinstance(r, dict) and r.get("ev") in ("exit", "partial_exit", "fee", "writeoff") and r.get("signature")}
+        dead = set(self.st["dead"])
+        open_mints = {x["mint"] for x in self.pm.open_positions()}
+        for r in rows:
+            if (isinstance(r, dict) and r.get("ev") == "sell_intent" and r.get("bot_id") == BOT_ID and r.get("signature") not in done
+                    and r["signature"] not in self.st["sells"] and r["signature"] not in dead and r.get("mint") in open_mints):
+                self.st["sells"][r["signature"]] = {"mint": r["mint"], "tokens": r.get("tokens"), "reason": r.get("reason"), "kind": r.get("kind") or "exit",
+                                                    "t": r["ts_ms"] / 1000.0, "n": 0, "next": 0, "ratio": None}
+
+    def reconcile_sells(self, force: bool = False) -> None:
+        now = self.now_fn()
+        for sig, info in list(self.st["sells"].items()):
+            if not force and now < info["next"]:
+                continue
+            if info.get("landed_unbooked"):
+                r = self._sell_outcome(sig, {"err": info.get("st_err")})
+                if r is not None:
+                    self._close_from_late(info, r)
+                continue
+            try:
+                st = self.chain.status(sig)
+            except Exception:
+                st = None
+            if st is not None and st.get("confirmationStatus") in ("confirmed", "finalized"):
+                r = self._sell_outcome(sig, st)
+                if r is not None:
+                    self._close_from_late(info, r)
+            elif now - info["t"] > self.SELL_RECONCILE_MAX_S:
+                self.st["sells"].pop(sig, None)
+                self.st["dead"].append(sig)
+                self.log("sell_expired", mint=info["mint"], signature=sig)  # a re-sell is still guarded by the on-chain balance read
+            else:
+                info["n"] += 1
+                info["next"] = now + min(5 * 2 ** info["n"], 60)  # bounded backoff
+        self._save()
+
+    def _close_from_late(self, info: dict, r: dict) -> None:
+        mint, now = info["mint"], self.now_fn()
+        held = [x for x in self.pm.open_positions() if x["mint"] == mint]
+        if not held:  # the position was closed another way; keep the ledger cash right
+            self._rec("fee", mint, self.marks, _now_ms(now), signature=r["signature"], sol_in=r["proceeds"], sol_out=r["fee"], fee_network=r["fee"],
+                               reason="late_sell_no_position")
+            return
+        p = held[0]
+        self.log("late_sell_landed", mint=mint, signature=r["signature"], sell_kind=info["kind"])
+        if info["kind"] == "take_half" and not p["taken"]:
+            self.pm.apply_take(p, now, p.get("last_ratio") or 1.0, r)
+        elif info["kind"] == "take_half":
+            self.log("late_take_already_taken", mint=mint)
+        else:
+            self.pm.close_late(p, now, r, info["reason"] or "late_exit")
+
+    def _on_exit(self, p: dict, r: dict, row: dict) -> None:
+        ms = _now_ms(self.now_fn())
+        if row["reason"] == "no_quote_writeoff":
+            self._rec("writeoff", p["mint"], self.marks, ms, reason="no_quote_writeoff")
+        else:
+            self._rec("exit", p["mint"], self.marks, ms, sol_in=r["proceeds"], sol_out=r["fee"], fee_network=r["fee"], signature=r.get("signature"),
+                               reason=row["reason"], estimated=bool(r.get("estimated")))
+        self.marks.pop(p["mint"], None)
+
+    def _on_partial(self, p: dict, r: dict) -> None:
+        self._rec("partial_exit", p["mint"], self.marks, _now_ms(self.now_fn()), sol_in=r["proceeds"], sol_out=r["fee"],
+                           fee_network=r["fee"], signature=r.get("signature"), reason="take_half")
+
+    # -- loop
+    def step(self) -> None:
+        self.process_intents()
+        self.reconcile()
+
+    def _stage(self, name: str, fn) -> bool:
+        """Run one loop stage. An exception (RPC, HTTP, ledger) is logged by class and counted; the loop and the open positions carry on."""
+        try:
+            fn()
+            return True
+        except Exception as e:
+            self._errors += 1
+            try:
+                self.log("stage_error", stage=name, error_class=type(e).__name__, consecutive=self._errors)
+            except Exception:
+                pass
+            return False
+
+    def run(self, duration: float | None = None, poll_s: float = pos.POLL_S) -> None:
+        t0, last_tick, self._errors = self.now_fn(), 0.0, 0
+        while duration is None or self.now_fn() - t0 < duration:
+            ok = self._stage("intents", self.process_intents) & self._stage("reconcile", self.reconcile)
+            if self.now_fn() - last_tick >= poll_s:
+                last_tick = self.now_fn()
+                ok &= self._stage("tick", self.pm.tick)  # a failing tick is retried at the next poll; exits are never skipped for good
+            if ok:
+                self._errors = 0
+            self.sleep(min(self.cfg["intent_poll_s"] * (2 ** min(self._errors, 5)), 30.0) if self._errors else self.cfg["intent_poll_s"])  # back off
+
+
+def main(argv: list[str] | None = None) -> int:
+    ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap.add_argument("--config", required=True)
+    ap.add_argument("--live", action="store_true", help="sign and send; needs dry_run=false, the live_ok_path file and the systemd credential")
+    ap.add_argument("--duration", type=float, default=None)
+    a = ap.parse_args(argv)
+    cfg = parse_config(json.loads(Path(a.config).read_text()))
+    live = a.live
+    if live:
+        if cfg["dry_run"]:
+            raise SystemExit("--live with dry_run=true in the config: refusing")
+        if not cfg.get("live_ok_path") or not Path(cfg["live_ok_path"]).exists():
+            raise SystemExit("live_ok_path missing: refusing to go live")
+    else:
+        cfg["dry_run"] = True
+    import urllib.request
+
+    def get(url):
+        with urllib.request.urlopen(url, timeout=10) as r:
+            return json.loads(r.read())
+
+    def post(url, body):
+        req = urllib.request.Request(url, json.dumps(body).encode(), {"Content-Type": "application/json"})
+        with urllib.request.urlopen(req, timeout=15) as r:
+            return json.loads(r.read())
+
+    rpc_url = os.environ.get(cfg.get("rpc_url_env") or "SLOWBOT_RPC_URL") or (
+        f"https://mainnet.helius-rpc.com/?api-key={os.environ['HELIUS_API_KEY']}" if os.environ.get("HELIUS_API_KEY") else None)
+    chain = signer = None
+    user = cfg.get("user")
+    if live:
+        from tools import probe_live as pl
+        kp = pl.load_probe_key()
+        signer, user = KeySigner(kp), str(kp.pubkey())
+
+    def rpc(method, params):
+        r = post(rpc_url, {"jsonrpc": "2.0", "id": 1, "method": method, "params": params})
+        if "error" in r:
+            raise RuntimeError(method)
+        return r["result"]
+    if live:
+        if not rpc_url:
+            raise SystemExit("live mode needs an RPC url (rpc_url_env or HELIUS_API_KEY)")
+        chain = Chain(rpc, user)
+    if not user:
+        raise SystemExit("config `user` (the lane wallet's public address) is required in dry mode")
+
+    def liq(mint):
+        try:
+            d = get(f"{cfg.get('dexscreener_url', 'https://api.dexscreener.com/tokens/v1/solana')}/{mint}")
+            vals = [p.get("liquidity", {}).get("usd") for p in d if isinstance(p, dict)]
+            vals = [v for v in vals if isinstance(v, (int, float))]
+            return max(vals) if vals else None
+        except Exception:
+            return None
+    ex = SlowbotLive(cfg, jup=JupiterSwap(get, post, cfg.get("jupiter_quote_url", "https://lite-api.jup.ag/swap/v1/quote"),
+                                          cfg.get("jupiter_swap_url", "https://lite-api.jup.ag/swap/v1/swap")),
+                     chain=chain, signer=signer, liq_fn=liq, user=user)
+    ex.run(duration=a.duration)
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

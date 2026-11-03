@@ -38,7 +38,7 @@ import time
 import urllib.parse
 import urllib.request
 
-from tools.slowbot import decide as dc, prescreen as ps, report as rp, scan, universe as uv
+from tools.slowbot import decide as dc, intents as itn, prescreen as ps, report as rp, scan, universe as uv
 from tools.slowbot.positions import ATA_RENT_LAMPORTS, POLL_S, PositionManager, atomic_write_json
 from tools.slowbot.quotes import WSOL, Jupiter
 from tools.slowbot.sources import DexScreener, Gecko
@@ -353,7 +353,7 @@ def format_refund(rep):
 class Runner:
     def __init__(self, out_dir, *, ds, gt, jup, caller=None, haiku_on=True, x_feed=None, clock=time.time, sleep=time.sleep,
                  period=SCAN_PERIOD_S, poll=POLL_S, seed=None, top_holders=False, log=print, requote_delays=(2, 30),
-                 progress_path=None, helius_post=None):
+                 progress_path=None, helius_post=None, live_intents=False):
         self.out = str(out_dir)
         os.makedirs(self.out, exist_ok=True)
         self.ds, self.gt, self.jup = ds, gt, jup
@@ -362,6 +362,8 @@ class Runner:
         self.seed = ps.PRESCREEN["arm_seed"] if seed is None else seed
         self.top_holders, self.log, self.requote_delays, self.helius_post = top_holders, log, requote_delays, helius_post
         self.progress_path = progress_path
+        self.live_intents = bool(live_intents)  # default off: paper files are byte-identical
+        self.runner_sha = itn.runner_git_sha() if self.live_intents else None  # only computed when the flag is on
         self.stop = False
         self.decisions_path = os.path.join(self.out, "decisions.jsonl")
         self.state_path = os.path.join(self.out, "runner-state.json")
@@ -584,6 +586,8 @@ class Runner:
             elif row["h_buy"]:
                 self._bump("h_buys")
                 arms.append("H")
+                if self.live_intents:
+                    c["h_decision"] = {"ts": self.clock(), "conviction": row.get("conviction"), "prompt_sha256": row.get("prompt_sha256")}
         if not skipped:
             arms.append("R")
         c["arms"] = [a for a in ("T", "H", "R") if a in arms]
@@ -603,6 +607,11 @@ class Runner:
             for arm, (pos, why) in res.items():
                 if pos is None and why == "arm_full":
                     self._bump("arm_full_hits")
+            if self.live_intents and res.get("H", (None,))[0] is not None and c.get("h_decision"):
+                hd = c["h_decision"]
+                itn.append_intent(self.out, itn.build_intent(c, res["H"][0], decision_ts=hd["ts"], conviction=hd["conviction"], now=self.clock(),
+                                                       runner_sha=self.runner_sha, prompt_sha256=hd.get("prompt_sha256")))
+                self._bump("live_intents_written")
         finally:
             self.rs["pending"].pop(cid, None)  # a failed open is not retried again; the guard counts the error
             self._save()
@@ -715,6 +724,7 @@ def main(argv=None):
     ap.add_argument("--x-feed", default=None, help="file, directory (Helm x-feed) or URL of X snippets; absent = no x_context")
     ap.add_argument("--x-lookups", action="store_true", help="opt in: append candidate mints to <x-feed dir>/lookup-requests.txt (default off)")
     ap.add_argument("--top-holders", action="store_true")
+    ap.add_argument("--live-intents", action="store_true", help="opt in: append OUT/live-intents.jsonl on each H paper BUY (default off)")
     ap.add_argument("--seed", type=int, default=None)
     a = ap.parse_args(argv)
 
@@ -725,7 +735,7 @@ def main(argv=None):
         caller = dc.DailyCaller(os.path.join(a.out, "haiku"))
     runner = Runner(a.out, ds=ds, gt=gt, jup=jup, caller=caller, haiku_on=not a.no_haiku,
                     x_feed=(XFeed(a.x_feed, lookups=a.x_lookups, state_path=os.path.join(a.out, "x-lookup-times.json")) if a.x_feed else None), period=a.period, poll=a.poll, seed=a.seed,
-                    top_holders=a.top_holders, progress_path=os.environ.get("MISCUSI_PROGRESS") or None)
+                    top_holders=a.top_holders, live_intents=a.live_intents, progress_path=os.environ.get("MISCUSI_PROGRESS") or None)
 
     def _stop(*_):
         runner.stop = True
