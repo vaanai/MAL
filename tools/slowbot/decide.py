@@ -18,7 +18,7 @@ MODEL = "claude-haiku-5-5"
 assert MODEL == DEFAULT_MODEL
 DAILY_USD_CAP = 2.0
 MAX_TOKENS = 300
-TEMPERATURE = 0
+TEMPERATURE = None  # claude-haiku-5-5 rejects `temperature` (HTTP 400 invalid_request_error, measured 2026-11-03); None omits it from the body
 PROMPT_PATH = Path(__file__).parent / "prompts" / "decide_v0.txt"
 ACTIONS = ("BUY", "SKIP")
 RISKS = ("rug", "dump", "none")
