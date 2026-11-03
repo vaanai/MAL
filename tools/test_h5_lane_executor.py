@@ -914,3 +914,348 @@ class PoolGapWaiverTests(LaneCase):
         for i, bad in enumerate(("true", 1, 0, None)):
             with self.assertRaises(SystemExit):
                 self.env(bad, f"b{i}")
+
+
+# -- the tipauth path inside the lane (QP-RULING-1103-lane-tipauth, step e). Test-only: no executor or shadow code changes. -----------------------
+from tools.test_h5_executor_tipauth_gate import SHADOW_SHA, WS, tip_fields, watch_doc  # noqa: E402
+
+FROZEN_BLOBS = {  # git blob ids (git hash-object) of the four files this PR must not change
+    "tools/h5_executor.py": "03995837317f65f62db2fb6b238ecaca956d01cb",
+    "tools/h5_lane_executor.py": "c04b8e31362142cfe669b28b0506162d4bea990a",
+    "tools/h5_shadow.py": "f23cf492211fd79287fa6ac82fd382f1f3e39a3d",
+    "tools/h5_lane_shadow.py": "ea262dfd7718fa6a24665b8d2574624f63686fc2",
+}
+
+
+class TipauthBlobTests(LaneCase):
+    def test_the_four_h5_files_are_byte_identical_to_main(self):
+        root = Path(h.__file__).parent.parent
+        for rel, want in FROZEN_BLOBS.items():
+            data = (root / rel).read_bytes()
+            self.assertEqual(hashlib.sha1(b"blob %d\0" % len(data) + data).hexdigest(), want, rel)
+
+
+class TipauthLaneCase(LaneCase):
+    """H5LaneExecutor with the tipauth switch on (watch state ok) or off, fed shadow rows through intent_tick."""
+
+    def tip_env(self, on: bool = True, sub: str = "t", watch: dict | None = None, lane: dict | None = None, **kw) -> LaneEnv:
+        base = self.tmp / sub
+        base.mkdir(exist_ok=True)
+        lane = lane or self.lane_cfg(ledger_path=str(base / "l.jsonl"), stop_path=str(base / "STOP"))
+        conf = {"tipauth_gate": "DEC-024-Am8", "tipauth_watch_file": str(base / "watch.json"), "tipauth_shadow_sha": SHADOW_SHA} if on else {}
+        e = LaneEnv(base, lane=lane, **conf, **kw)
+        e.rpc.balance = 10 * 10**9
+        if on:
+            self.put_watch(e, watch if watch is not None else watch_doc(e.clock()))
+        Path(e.conf["intents_file"]).write_text("")
+        e.ex.intent_tick()
+        return e
+
+    @staticmethod
+    def rebuild(e: LaneEnv) -> L.H5LaneExecutor:
+        """A restart on the same state dir and lane ledger (the old process's bot lock is released first)."""
+        e.ex.release_lane_lock()
+        e.ex = e.build()
+        return e.ex
+
+    @staticmethod
+    def put_watch(e: Env, doc: dict | None) -> None:
+        wf = Path(e.conf["tipauth_watch_file"])
+        if doc is None:
+            wf.unlink(missing_ok=True)
+        else:
+            wf.write_text(json.dumps(doc))
+        e.ex._tipauth_watch_cache = None  # forget the cached read
+
+    @staticmethod
+    def feed(e: Env, tipless: bool = False, **over) -> dict:
+        r = shadow_trigger(e.clock)
+        if not tipless:
+            r.update(tip_fields())
+        r.update(over)
+        with Path(e.conf["intents_file"]).open("a") as fh:
+            fh.write(json.dumps(r) + "\n")
+        e.ex.intent_tick()
+        return r
+
+    @staticmethod
+    def skips(e: Env) -> list[tuple[str, str | None]]:
+        return [(r["reason"], r.get("tipauth_reason")) for r in e.ledger("skip")]
+
+
+class TipauthLimitTests(TipauthLaneCase):
+    def test_control_a_passing_tagged_trigger_is_sent_at_0_02_the_min_of_class_cap_and_lane_stake(self):
+        e = self.tip_env()
+        self.assertEqual(e.ex._tipauth_availability(), "")
+        self.feed(e)
+        self.assertEqual(e.refusals(), [])
+        dec = e.ledger("decision")[0]
+        self.assertEqual((dec["gate_path"], dec["stake_lamports"]), ("tipauth", 20_000_000))
+        self.assertEqual(len(e.rpc.sent), 1)
+        self.assertEqual(self.rows(e, "send_intent")[0]["stake_lamports"], 20_000_000)
+        self.assertEqual(e.ex.h5.stake_lamports, LANE_STAKE)  # outside a tagged trigger the lane stake stands; 0.02 applies only while one is handled
+
+    def test_the_class_cap_wins_over_a_larger_lane_stake_and_ties_with_an_equal_one(self):
+        for sub, stake in (("a", 30_000_000), ("b", 20_000_000)):
+            e = self.tip_env(sub=sub, lane=self.lane_cfg(ledger_path=str(self.tmp / f"{sub}_l.jsonl"), stop_path=str(self.tmp / f"{sub}_STOP"), stake_lamports=stake))
+            self.feed(e)
+            self.assertEqual(e.ledger("decision")[0]["stake_lamports"], 20_000_000, stake)  # min(0.02, lane)
+            self.assertEqual(self.rows(e, "send_intent")[0]["stake_lamports"], 20_000_000, stake)
+
+    def test_an_untagged_ws0_trigger_keeps_the_lane_stake_with_the_switch_on(self):
+        e = self.tip_env()
+        self.feed(e, base_breaks_unresolved_settled=0)
+        dec = e.ledger("decision")[0]
+        self.assertNotIn("gate_path", dec)
+        self.assertEqual(dec["stake_lamports"], LANE_STAKE)
+        self.assertEqual(self.rows(e, "send_intent")[0]["stake_lamports"], LANE_STAKE)
+
+    def test_the_lane_stop_file_refuses_a_tagged_trigger_and_sends_nothing(self):
+        e = self.tip_env()
+        self.stop(e).write_text("manager\n")
+        self.feed(e)
+        self.assertEqual(e.refusals(), ["lane_stop_file"])
+        self.assertEqual((e.rpc.sent, self.rows(e, "send_intent"), e.ex.state.attempts), ([], [], 0))
+        self.stop(e).unlink()
+        self.feed(e, mint=MINT)
+        self.assertEqual(len(e.rpc.sent), 1)
+
+    def test_a_stop_file_created_during_the_build_is_caught_before_the_send_on_the_tagged_path(self):
+        e = self.tip_env()
+
+        def make_stop(method, params, _o=type(e.rpc).__call__):
+            if method == "getLatestBlockhash":
+                self.stop(e).write_text("late\n")
+            return _o(e.rpc, method, params)
+
+        with mock.patch.object(type(e.rpc), "__call__", lambda self, m, p: make_stop(m, p)):
+            self.feed(e)
+        self.assertEqual(e.refusals(), ["lane_stop_file"])
+        self.assertEqual((e.rpc.sent, self.rows(e, "send_intent")), ([], []))
+
+    def test_max_open_three_refuses_a_tagged_trigger(self):
+        e = self.tip_env()
+        for i in range(3):
+            self.assertIsNone(e.ex.lane.reserve(f"other{i}", f"s{i}", {}, e.clock(), LANE_STAKE))
+        self.feed(e)
+        self.assertEqual(e.refusals(), ["lane_max_open"])
+        self.assertEqual(e.rpc.sent, [])
+
+    def test_the_budget_pre_send_inequality_refuses_a_tagged_trigger_at_the_tagged_stake(self):
+        e = self.tip_env()
+        self.lose(e, 240_000_000, ago_ms=DAYMS)
+        self.assertIsNone(e.ex.lane.reserve("m1", "s1", {}, e.clock(), LANE_STAKE))
+        self.assertIsNone(e.ex.lane.reserve("m2", "s2", {}, e.clock(), LANE_STAKE))
+        # -240 - (50 open + 20 new + 3 x 4.11 reserve) = -322.3 < -300: refused even at the smaller tagged stake
+        self.feed(e)
+        self.assertEqual(e.refusals(), ["lane_budget_presend"])
+        self.assertEqual(e.rpc.sent, [])
+        self.assertEqual(len(self.rows(e, "send_intent")), 2)  # only the two seeded rows
+        self.assertFalse(self.stop(e).exists())
+
+    def test_the_budget_pre_send_inequality_lets_a_tagged_trigger_through_when_it_fits(self):
+        e = self.tip_env()
+        self.lose(e, 200_000_000, ago_ms=DAYMS)
+        self.assertIsNone(e.ex.lane.reserve("m1", "s1", {}, e.clock(), LANE_STAKE))
+        self.feed(e)  # -200 - (25 + 20 + 2 x 4.11) = -253.2, inside 300
+        self.assertEqual(e.refusals(), [])
+        self.assertEqual(len(e.rpc.sent), 1)
+
+    def test_the_daily_stop_refuses_a_tagged_trigger(self):
+        e = self.tip_env()
+        self.lose(e, 100_000_000)
+        self.feed(e)
+        self.assertEqual(e.refusals(), ["lane_daily_stop"])
+        self.assertEqual(e.rpc.sent, [])
+        self.assertFalse(self.stop(e).exists())
+
+
+class TipauthWriteAheadTests(TipauthLaneCase):
+    def test_the_send_intent_row_is_on_disk_and_fsynced_before_the_send_and_the_tag_rides_the_executor_rows(self):
+        e = self.tip_env()
+        seen: dict = {}
+        synced: list = []
+        orig_call, orig_fsync = type(e.rpc).__call__, os.fsync
+
+        def spy(self_, method, params):
+            if method == "sendTransaction":
+                seen["rows_at_send"] = [r["ev"] for r in self.rows(e)]
+                seen["fsyncs_before_send"] = len(synced)
+            return orig_call(self_, method, params)
+
+        def fsync(fd):
+            synced.append(fd)
+            return orig_fsync(fd)
+
+        with mock.patch.object(type(e.rpc), "__call__", spy), mock.patch("os.fsync", fsync):
+            self.feed(e)
+        self.assertIn("send_intent", seen["rows_at_send"])  # on disk before the transaction left
+        self.assertGreaterEqual(seen["fsyncs_before_send"], 1)  # and fsynced
+        intent = self.rows(e, "send_intent")[0]
+        self.assertEqual((intent["mint"], intent["stake_lamports"]), (MINT, 20_000_000))
+        # Observed at this head: the LANE ledger's send_intent row has no gate_path key (LaneLedger.reserve takes no tag); the "tipauth" tag rides the
+        # executor's own ledger rows for the mint (decision and every later row). Pinned so a change shows. See the PR body.
+        self.assertNotIn("gate_path", intent)
+        tagged = [r for r in e.ledger() if r.get("mint") == MINT and r.get("gate_path") == "tipauth"]
+        self.assertTrue(any(r["kind"] == "decision" for r in tagged))
+
+    def test_a_refused_reserve_writes_no_intent_and_no_send_for_a_tagged_trigger(self):
+        e = self.tip_env()
+        self.stop(e).write_text("x\n")
+        self.feed(e)
+        self.assertEqual((self.rows(e, "send_intent"), e.rpc.sent), ([], []))
+
+
+class TipauthClassStateTests(TipauthLaneCase):
+    def test_the_class_latch_fires_at_minus_0_04_through_the_subclass_and_refuses_the_next_tagged_trigger(self):
+        e = self.tip_env()
+        self.assertIsInstance(e.ex, L.H5LaneExecutor)
+        e.ex._tipauth_admit("M1")
+        e.ex._book_realized(-39_999_999, "M1")
+        self.assertEqual(e.ex._tipauth_availability(), "")
+        e.ex._book_realized(-1, "M1")
+        self.assertEqual([r["reason"] for r in e.ledger("tipauth_off")], ["class_loss_budget"])
+        self.assertEqual(e.ex._tipauth_availability(), "tipauth:latched_off")
+        self.feed(e)
+        self.assertEqual(self.skips(e)[-1], (WS, "tipauth:latched_off"))
+        self.assertEqual((e.rpc.sent, self.rows(e, "send_intent")), ([], []))
+        self.assertEqual(self.rebuild(e)._tipauth_availability(), "tipauth:latched_off")  # persists across a restart of the subclass
+
+    def test_a_landed_tagged_buy_enters_the_class_state_through_the_subclass(self):
+        e = self.tip_env()
+        self.feed(e)
+        e.land_buy()
+        self.assertEqual((e.ex.counters.tipauth["mints"], e.ex.counters.tipauth["n_landed"]), ([MINT], 1))
+
+    def test_the_r8_looks_at_25_50_100_fire_and_pause_through_the_subclass_until_the_exact_ack(self):
+        e = self.tip_env()
+        for i in range(1, 25):
+            e.ex._note_tipauth_landed(f"M{i}")
+        self.assertEqual((e.ledger("tipauth_look"), e.ex._tipauth_availability()), ([], ""))
+        e.ex._note_tipauth_landed("M25")
+        self.assertEqual([r["look"] for r in e.ledger("tipauth_look")], [25])
+        self.assertEqual(e.ex._tipauth_availability(), "tipauth:look_pending")
+        self.feed(e)
+        self.assertEqual(self.skips(e)[-1], (WS, "tipauth:look_pending"))
+        self.assertEqual(e.rpc.sent, [])
+        e.conf["tipauth_look_ack"] = 25
+        ex = self.rebuild(e)
+        self.assertEqual(ex._tipauth_availability(), "")
+        for i in range(26, 51):
+            ex._note_tipauth_landed(f"M{i}")
+        self.assertEqual(ex._tipauth_availability(), "tipauth:look_pending")  # the stale ack 25 does not satisfy look 50
+        e.conf["tipauth_look_ack"] = 50
+        ex = self.rebuild(e)
+        for i in range(51, 101):
+            ex._note_tipauth_landed(f"M{i}")
+        self.assertEqual([r["look"] for r in e.ledger("tipauth_look")], [25, 50, 100])
+        self.assertEqual(ex._tipauth_availability(), "tipauth:look_pending")
+        self.assertIsInstance(ex, L.H5LaneExecutor)
+
+
+class TipauthWatchRefusalTests(TipauthLaneCase):
+    def test_ws_path_settled_ge_1_with_the_switch_on_and_a_watch_not_ok_or_stale_is_refused_with_the_tipauth_reason_and_not_traded(self):
+        cases = [
+            ("tipauth:watch_hold", lambda now: watch_doc(now, verdict="hold")),
+            ("tipauth:watch_stale", lambda now: watch_doc(now - 180_001)),
+            ("tipauth:watch_missing", lambda now: None),
+            ("tipauth:watch_sha", lambda now: watch_doc(now, shadow_sha="f" * 40)),
+            ("tipauth:watch_bad", lambda now: watch_doc(now + 1)),
+        ]
+        for i, (want, mk) in enumerate(cases):
+            with self.subTest(want=want):
+                e = self.tip_env(sub=f"w{i}")
+                self.put_watch(e, mk(e.clock()))
+                self.assertGreaterEqual(shadow_trigger(e.clock)["slot"], 1)
+                self.feed(e, base_breaks_unresolved_settled=2, base_breaks_unresolved_settled_union=2)
+                self.assertEqual(self.skips(e), [(WS, want)])  # main's reason string, the tipauth cause beside it
+                self.assertEqual((e.rpc.sent, e.ledger("decision"), self.rows(e, "send_intent")), ([], [], []))
+
+    def test_the_watch_off_verdict_latches_the_path_in_the_lane(self):
+        e = self.tip_env()
+        self.put_watch(e, watch_doc(e.clock(), verdict="off", reason="dropped_on_tip"))
+        self.feed(e)
+        self.assertEqual(self.skips(e)[-1][0], WS)
+        self.assertEqual(e.rpc.sent, [])
+        self.assertEqual(self.rebuild(e)._tipauth_availability(), "tipauth:latched_off")
+
+    def test_a_ws0_trigger_is_unaffected_by_a_bad_watch(self):
+        e = self.tip_env(watch=watch_doc(T0, verdict="hold"))
+        self.feed(e, base_breaks_unresolved_settled=0)
+        self.assertEqual(e.refusals(), [])
+        self.assertEqual(len(e.rpc.sent), 1)
+
+
+# the fixed synthetic trigger set of the md5 decision-equivalence proof: (label, overrides on shadow_trigger + tip_fields)
+EQUIV_SET = [
+    ("ws0", dict(base_breaks_unresolved_settled=0)),
+    ("ws1_tip_ok", dict()),
+    ("ws2", dict(base_breaks_unresolved_settled=2, base_breaks_unresolved_settled_union=2)),
+    ("ws_none", dict(base_breaks_unresolved_settled=None)),
+    ("ws0_gap", dict(base_breaks_unresolved_settled=0, gap=True)),
+    ("ws3_union0_missed_print", dict(base_breaks_unresolved_settled=3, base_breaks_unresolved_settled_union=0)),
+    ("ws1_tipauth_nosettle", dict(base_tipauth={**tip_fields()["base_tipauth"], "tipauth_nosettle": 1})),
+]
+
+
+def decision_digest(rows: list[dict], with_tipauth_reason: bool) -> str:
+    """md5 over the decision and skip rows of the executor ledger, projected to the fields that carry the decision."""
+    keep = ("kind", "mint", "reason", "stake_lamports", "variant", "gate_path") + (("tipauth_reason",) if with_tipauth_reason else ())
+    out = [{k: r[k] for k in keep if k in r} for r in rows if r.get("kind") in ("decision", "skip")]
+    return hashlib.md5(json.dumps(out, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
+
+
+class TipauthEquivalenceTests(TipauthLaneCase):
+    n = 0
+
+    def run_set(self, conf: dict, on: bool = False, tipless: bool = False) -> list[dict]:
+        TipauthEquivalenceTests.n += 1
+        rows: list[dict] = []
+        for i, (_label, over) in enumerate(EQUIV_SET):
+            base = self.tmp / f"eq{TipauthEquivalenceTests.n}_{i}"
+            base.mkdir()
+            lane = self.lane_cfg(ledger_path=str(base / "l.jsonl"), stop_path=str(base / "STOP"))
+            kw = {"tipauth_gate": "DEC-024-Am8", "tipauth_watch_file": str(base / "w.json"), "tipauth_shadow_sha": SHADOW_SHA} if on else dict(conf)
+            e = LaneEnv(base, lane=lane, seed=bytes([7]) * 32, **kw)
+            e.rpc.balance = 10 * 10**9
+            if on:
+                self.put_watch(e, watch_doc(e.clock()))
+            Path(e.conf["intents_file"]).write_text("")
+            e.ex.intent_tick()
+            self.feed(e, tipless=tipless, **over)
+            rows += [r for r in e.ledger() if r.get("kind") in ("decision", "skip")]
+        return rows
+
+    def test_switch_off_decisions_are_byte_identical_to_the_h5_lane_2_path_md5(self):
+        # h5-lane-2's config has no tipauth keys. Switch-off variants: keys present but not the enable token, or the token spelled wrong.
+        ref = self.run_set({})
+        md5_ref = decision_digest(ref, True)
+        for conf in ({"tipauth_gate": False}, {"tipauth_gate": "off"}, {"tipauth_gate": "DEC-024-am8"},
+                     {"tipauth_gate": "", "tipauth_watch_file": "/nonexistent/w.json", "tipauth_shadow_sha": SHADOW_SHA}):
+            rows = self.run_set(conf)
+            self.assertEqual(decision_digest(rows, True), md5_ref, conf)
+            self.assertEqual(rows, ref, conf)  # not only the projection: the rows themselves
+        self.assertEqual(len(ref), len(EQUIV_SET))  # one decision or skip row per synthetic trigger
+        self.assertFalse(any("tipauth_reason" in r or "gate_path" in r for r in ref))
+        print(f"\nTIPAUTH_EQUIV switch_off_vs_lane2_path md5={md5_ref} rows={len(ref)}")
+
+    def test_switch_on_over_triggers_with_no_union_fields_decides_as_off_md5(self):
+        # QP-RULING-1103 step e: the lane1 shadow files carry no union fields, so every tipauth candidate refuses tipauth:union_missing and the
+        # decision (kind, mint, reason, stake) is the OFF one; the skip rows only gain the tipauth_reason key.
+        off = self.run_set({}, tipless=True)
+        on = self.run_set({}, on=True, tipless=True)
+        self.assertEqual(decision_digest(on, False), decision_digest(off, False))
+        causes = {r.get("tipauth_reason") for r in on if r["kind"] == "skip"}
+        self.assertTrue(causes <= {"tipauth:union_missing", None}, causes)
+        self.assertFalse(any(r.get("gate_path") for r in on))
+        print(f"TIPAUTH_EQUIV switch_on_vs_off_no_union md5={decision_digest(off, False)} rows={len(off)}")
+
+    def test_switch_on_changes_exactly_the_union_consistent_ws_refusal_and_nothing_else(self):
+        off, on = self.run_set({}), self.run_set({}, on=True)
+        self.assertEqual(len(off), len(on))
+        same_decision = [decision_digest([a], False) == decision_digest([b], False) for a, b in zip(off, on)]
+        self.assertEqual([i for i, ok in enumerate(same_decision) if not ok], [1, 2])  # only the two ws>=1 records with union == ws and tipauth 0 change
+        self.assertEqual((off[1]["kind"], off[1]["reason"]), ("skip", WS))
+        self.assertEqual((on[1]["kind"], on[1]["gate_path"], on[1]["stake_lamports"]), ("decision", "tipauth", 20_000_000))
+        self.assertEqual((on[2]["kind"], on[2]["gate_path"]), ("decision", "tipauth"))
+        self.assertEqual((on[5]["kind"], on[5]["reason"]), ("skip", WS))  # union 0 != ws 3: a missed real print is still refused (QP F2)
