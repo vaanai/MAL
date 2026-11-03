@@ -1,0 +1,161 @@
+{
+ "source": "https://api.llama.fi/overview/dexs/solana (fetched 2026-10-26 ~16:59Z)",
+ "protocols": {
+  "Raydium AMM": {
+   "category": "Dexs",
+   "total24h": 133032308,
+   "total7d": 1088675928,
+   "total30d": 5546624248
+  },
+  "Meteora DLMM": {
+   "category": "Dexs",
+   "total24h": 67376098,
+   "total7d": 732445504,
+   "total30d": 4011197967
+  },
+  "pump.fun": {
+   "category": "Launchpad",
+   "total24h": 101107991,
+   "total7d": 992791589,
+   "total30d": 4798677683
+  },
+  "Ape Jupiter": {
+   "category": "Launchpad",
+   "total24h": 0,
+   "total7d": 0,
+   "total30d": 0
+  },
+  "moonshot.money": {
+   "category": "Trading App",
+   "total24h": 157828,
+   "total7d": 997466,
+   "total30d": 7482712
+  },
+  "PumpSwap": {
+   "category": "Dexs",
+   "total24h": 310941996,
+   "total7d": 1781607501,
+   "total30d": 9749047826
+  },
+  "LaunchLab": {
+   "category": "Launchpad",
+   "total24h": 8610345,
+   "total7d": 30811445,
+   "total30d": 204967490
+  },
+  "boop.fun": {
+   "category": "Launchpad",
+   "total24h": 0,
+   "total7d": 655.98,
+   "total30d": 3658.07
+  },
+  "Meteora DAMM V2": {
+   "category": "Dexs",
+   "total24h": 7120058,
+   "total7d": 45888914,
+   "total30d": 264148995
+  },
+  "Meteora Dynamic Bonding Curve": {
+   "category": "Launchpad",
+   "total24h": 7493591,
+   "total7d": 65518983,
+   "total30d": 444821948
+  },
+  "Orca Wavebreak": {
+   "category": "Launchpad",
+   "total24h": 0,
+   "total7d": 0,
+   "total30d": 57
+  },
+  "Heaven": {
+   "category": "Dexs",
+   "total24h": 0,
+   "total7d": 219,
+   "total30d": 1048.74
+  },
+  "Fwog.fun": {
+   "category": "Launchpad",
+   "total24h": null,
+   "total7d": null,
+   "total30d": null
+  },
+  "PigeonHouse": {
+   "category": "Launchpad",
+   "total24h": 0,
+   "total7d": 0,
+   "total30d": 0
+  },
+  "Rise.rich": {
+   "category": "Launchpad",
+   "total24h": 9087,
+   "total7d": 106239,
+   "total30d": 2310659
+  },
+  "basedbid": {
+   "category": "Launchpad",
+   "total24h": 0,
+   "total7d": 1700.53,
+   "total30d": 1834.1899999999998
+  },
+  "sTONks": {
+   "category": "Launchpad",
+   "total24h": 0,
+   "total7d": 14.01,
+   "total30d": 31.150000000000002
+  },
+  "sendfun Launchpad": {
+   "category": "Launchpad",
+   "total24h": 0,
+   "total7d": 1744.2,
+   "total30d": 16688.93
+  },
+  "GunFun": {
+   "category": "Launchpad",
+   "total24h": null,
+   "total7d": 20.409999999999997,
+   "total30d": 1396.6299999999999
+  },
+  "Fanex": {
+   "category": "Launchpad",
+   "total24h": 0,
+   "total7d": 33,
+   "total30d": 360.46999999999997
+  },
+  "pump.fun Mobile App": {
+   "category": "Interface",
+   "total24h": 9758472,
+   "total7d": 93857142,
+   "total30d": 534957150
+  },
+  "StonkFun": {
+   "category": "Launchpad",
+   "total24h": 9105178,
+   "total7d": 35336439,
+   "total30d": 321884936
+  },
+  "Archade": {
+   "category": "Launchpad",
+   "total24h": 0,
+   "total7d": 3119,
+   "total30d": 3173
+  },
+  "Ryntra Launch": {
+   "category": "Launchpad",
+   "total24h": 0,
+   "total7d": 0,
+   "total30d": 24.9
+  },
+  "DEEP Launchpad": {
+   "category": "Launchpad",
+   "total24h": 0,
+   "total7d": 0,
+   "total30d": 20407.19
+  },
+  "Bordrless Launchpad": {
+   "category": "Launchpad",
+   "total24h": 41.02,
+   "total7d": 59043.09,
+   "total30d": 2207822.09
+  }
+ }
+}
