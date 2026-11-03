@@ -107,7 +107,7 @@ Each of these was positive on data the lab had already seen and has no clean for
 | `lib-c-Q2.9` | EXP-013 (pre-pass refused) | V maps (LAB_STATE, Q2) | not in source |
 | `lib-c-Q2.10` | EXP-015 pooled retrain | retrain (LAB_STATE, Q2) | is ready to screen once the pin lands |
 | `lib-c-R2.SB-H1` | SB-H1: BOOST on custom-pair pools, cheap-fee subset | Search B October structure (R2) | The post-FINAL K0 (median full day under 20 boosted custom-pair graduations at fee at or below 30 bps is DROP) is not run. |
-| `lib-c-R2.SB-H3` | SB-H3: H5 on synthetic-migration pools (H5-S) | Search B October structure (R2) | not in source |
+| `lib-c-R2.SB-H3` | SB-H3: H5 on synthetic-migration pools (H5-S) | Search B October structure (R2) | Note: 2026-11-03 (manager19): built as DEC-035 live-learning lane book `h5-lane-syn` (PR #1215, merge 6d9beb26; QP ruling QP-RULING-1103-synthetic-lane ALLOWED only for pools with s0 >= 2026-11-06T00Z). Stake 0.02 SOL, 1 open, 0.06 SOL sub-budget inside the 0.30 lane budget. Live start not before 2026-11-06T00Z; status becomes live-canary at the first send. A small live measurement, not an edge claim. not in source |
 | `lib-c-R2.SB-H4` | SB-H4: fee liquidation in quote coins | Search B October structure (R2) | Needs a ruling on side-split sells. K0 DROP if the median full day has fewer than 20 sweep or payout events. |
 | `lib-c-R2.SB-H6` | SB-H6: V-floor on custom-pair pools (extra) | Search B October structure (R2) | not in source |
 | `lib-c-R2.SB-H8` | SB-H8: 200 ms slots as a fill-cost parameter (extra) | Search B October structure (R2) | Kill count (prints per active slot within +-10%) via r8/r9 octstruct cell 5, after the FINAL. |
