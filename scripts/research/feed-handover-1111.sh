@@ -8,7 +8,7 @@
 # Why. The feed job H' #1652 (the re-armed 11-07 successor, f5bd26e7) reaches its 14-day limit at about 2026-11-12T00:30Z, and a limit cannot be
 # extended. The planned successor is the P35 v2 overlap takeover (window about [11-11T14:00Z, 11-11T23:30Z], DESIGN.md 4.1), which is not ready
 # or not OK'd yet; its instant must be pinned at or before 21:30Z, before this window. If v2 slips, this job makes sure the tape never goes dark: at 22:00Z it stops the ONE plain v1 feed (`-m tools.arena_feed`)
-# and execs the same pinned f5bd26e7 feed in its own process. It writes one process_restart gap (a plain restart), AFTER HV6's last in-clock instant.
+# and execs the same pinned f5bd26e7 feed in its own process. It writes one process_restart gap (a plain restart), outside every registered tape read (HV6 is parked and has no clock).
 #
 # Interplay with v2. If the v2 takeover already ran, the lock holder is an `-m tools.arena_feed_v2` process, which this script never matches (exact
 # argv element `tools.arena_feed`). It then finds 0 v1 feeds with the lock held and refuses (rc 13), touching nothing. With FH_START_IF_NONE=1 it
@@ -22,7 +22,7 @@ MODE="${1:-}"
 ME="fh1111"
 
 # ---- production pins ------------------------------------------------------------------------------------------------------------------------
-P_T_START=1794434400      # 2026-11-11T22:00:00Z  window start (after HV6's last in-clock instant 11-11T13:00Z and the v2 takeover window; before H' #1652 ends ~11-12T00:30Z)
+P_T_START=1794434400      # 2026-11-11T22:00:00Z  window start (after the v2 takeover window; HV6 is parked; before H' #1652 ends ~11-12T00:30Z)
 P_T_END=1794434880        # 2026-11-11T22:08:00Z  window end: no SIGTERM after this instant
 P_CHECK_A=1794434940      # 2026-11-11T22:09:00Z  post-check A
 P_CHECK_B=1794445200      # 2026-11-12T01:00:00Z  post-check B (after H' #1652's limit end, about 2026-11-12T00:30Z: confirm from its job status before submit)
