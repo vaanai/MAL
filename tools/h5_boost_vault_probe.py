@@ -6,7 +6,7 @@ newest slot seen), and do one getAccountInfo of each pool's BOOST vault over pub
 amount, reason, t_ms.
 `join`: for consecutive reads (a, b) of a pool with ctx_slot_a < ctx_slot_b, compare delta = amount_a - amount_b with S = sum of `lamports` of that pool's
 deduped boost_slice rows with slot in (ctx_slot_a, ctx_slot_b]. ONLY boost_slice pool, slot, lamports, s0, sps, signature, event_index, tx_index and gap kind,
-from_slot, to_slot, at_ms are read. Pairs outside the shadow's follow window, overlapping a gap, or of a pool with no slices are counted apart. Prints counts
+from_slot, to_slot, silent_ms, t_ms and start t_ms are read. Pairs outside the shadow's follow window, overlapping a gap, or of a pool with no slices are counted apart. Prints counts
 only; never a price, reserve, outcome, PnL or trigger field. 0 Helius credits. Memory: streams files line by line; pool/slice dicts only.
 """
 from __future__ import annotations
@@ -14,7 +14,9 @@ from __future__ import annotations
 import argparse
 import glob
 import json
+import calendar
 import os
+import re
 import sys
 import time
 import urllib.error
@@ -27,7 +29,28 @@ from tools.h5_shadow import POOL_LIFE_S  # the shadow follows a pool from its fi
 
 DEFAULT_RPC = "https://api.mainnet-beta.solana.com"
 FALLBACK_SPS = 0.5  # seconds per slot when a pool's slices carry no `sps`: conservative (a slower slot means FEWER slots inside POOL_LIFE_S)
-GAP_TIME_MARGIN_MS = 5_000  # a time-only gap (silence, feed restart) voids a pair whose read times, widened by this, contain its at_ms
+GAP_TIME_MARGIN_MS = 5_000  # a gap's time range [t_lo, t_hi] voids a pair whose read times [t_a, t_b], widened by this, meet it
+# The shadow writes compact JSON (separators (",", ":")); both spacings are accepted. A line is parsed only if it carries one of these exact type strings.
+SLICE_TAGS = ('"type":"boost_slice"', '"type": "boost_slice"')
+GAP_TAGS = ('"type":"gap"', '"type": "gap"')
+START_TAGS = ('"type":"start"', '"type": "start"')
+HOUR_RE = re.compile(r"(\d{4})\D?(\d{2})\D?(\d{2})\D?(\d{2})")
+
+
+def _has(line: str, tags: tuple) -> bool:
+    return any(t in line for t in tags)
+
+
+def _hour_range_ms(path: str) -> tuple[int, int] | None:
+    m = HOUR_RE.search(os.path.basename(path))
+    if not m:
+        return None
+    try:
+        y, mo, d, h = (int(g) for g in m.groups())
+        lo = calendar.timegm((y, mo, d, h, 0, 0)) * 1000
+    except (ValueError, OverflowError):
+        return None
+    return lo, lo + 3_600_000
 MAX_CALLS_PER_S = 4.0
 HOUR_FILES_SCANNED = 2
 
@@ -58,7 +81,7 @@ def recent_pools(shadow_dir: str, max_pools: int) -> list[str]:
     for path in _hour_files(shadow_dir)[-HOUR_FILES_SCANNED:]:
         with open(path, encoding="utf-8", errors="replace") as fh:
             for line in fh:
-                if '"boost_slice"' not in line:
+                if not _has(line, SLICE_TAGS):
                     continue
                 try:
                     row = json.loads(line)
@@ -185,7 +208,10 @@ def slice_key(pool: str, row: dict) -> tuple:
 
 def load_shadow(shadow_dir: str, pools: set[str]) -> tuple[dict, dict, list, int]:
     """(slices, pool_meta, gaps, dupes_removed). Reads ONLY: boost_slice pool, slot, lamports, s0, sps, signature, event_index, tx_index; gap kind, from_slot,
-    to_slot, at_ms. A line is parsed only if it carries the type string of one of those two row types."""
+    to_slot, silent_ms, t_ms; start t_ms. A line is parsed only if it carries the exact `"type":"<boost_slice|gap|start>"` string (so an outcome or trigger
+    line with a `"gap":true` key is never parsed). A gap is (from_slot, to_slot, t_lo, t_hi, hour_range): slot_jump has a slot range; a silence covers
+    [t_ms - silent_ms, t_ms]; any other gap, and a start (a shadow process restart), is the point t_ms; a gap with neither a usable slot range nor a usable
+    t_ms is attached to its file's UTC hour, and to everything if the hour cannot be read from the file name."""
     slices: dict[str, list[tuple[int, int]]] = defaultdict(list)
     meta: dict[str, list] = {}  # pool -> [s0, max sps]
     gaps: list[tuple] = []
@@ -194,7 +220,7 @@ def load_shadow(shadow_dir: str, pools: set[str]) -> tuple[dict, dict, list, int
     for path in _hour_files(shadow_dir):
         with open(path, encoding="utf-8", errors="replace") as fh:
             for line in fh:
-                if '"boost_slice"' not in line and '"gap"' not in line:
+                if not (_has(line, SLICE_TAGS) or _has(line, GAP_TAGS) or _has(line, START_TAGS)):
                     continue
                 try:
                     row = json.loads(line)
@@ -202,9 +228,15 @@ def load_shadow(shadow_dir: str, pools: set[str]) -> tuple[dict, dict, list, int
                     continue
                 if not isinstance(row, dict):
                     continue
-                if row.get("type") == "gap":
-                    fs, ts, at = row.get("from_slot"), row.get("to_slot"), row.get("at_ms")
-                    gaps.append((fs if _ok_int(fs) else None, ts if _ok_int(ts) else None, at if _ok_int(at) else None))
+                if row.get("type") in ("gap", "start"):
+                    fs, ts, tm, sm = row.get("from_slot"), row.get("to_slot"), row.get("t_ms"), row.get("silent_ms")
+                    fs, ts = (fs, ts) if (row.get("type") == "gap" and _ok_int(fs) and _ok_int(ts)) else (None, None)
+                    t_lo = t_hi = None
+                    if _ok_int(tm):
+                        t_lo = t_hi = tm
+                        if row.get("type") == "gap" and row.get("kind") == "silence" and _ok_int(sm) and sm >= 0:
+                            t_lo = tm - sm
+                    gaps.append((fs, ts, t_lo, t_hi, _hour_range_ms(path)))
                     continue
                 if row.get("type") != "boost_slice":
                     continue
@@ -226,14 +258,16 @@ def load_shadow(shadow_dir: str, pools: set[str]) -> tuple[dict, dict, list, int
 
 
 def _gap_overlaps(gaps: list[tuple], sa: int, sb: int, ta: Any, tb: Any) -> bool:
-    for fs, ts, at in gaps:
-        if fs is not None and ts is not None:
+    times_ok = _ok_int(ta) and _ok_int(tb)
+    for fs, ts, t_lo, t_hi, hour in gaps:
+        if fs is not None:
             if fs < sb and ts > sa:  # the jumped-over range [from_slot, to_slot] meets (sa, sb]
                 return True
-        elif at is not None:
-            if not (_ok_int(ta) and _ok_int(tb)):
-                return True  # cannot place it in time: treated as overlapping
-            if ta - GAP_TIME_MARGIN_MS <= at <= tb + GAP_TIME_MARGIN_MS:
+        elif t_lo is not None:
+            if not times_ok or (t_lo - GAP_TIME_MARGIN_MS <= tb and t_hi + GAP_TIME_MARGIN_MS >= ta):
+                return True
+        else:  # no usable slot range or time: every pair of that hour (every pair, if the hour is unknown)
+            if hour is None or not times_ok or (hour[0] - GAP_TIME_MARGIN_MS <= tb and hour[1] + GAP_TIME_MARGIN_MS >= ta):
                 return True
     return False
 
