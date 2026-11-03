@@ -91,9 +91,12 @@ def _is_int(v: Any) -> bool:
 def _l6_inputs(row: dict[str, Any]) -> dict[str, Any]:
     """What L6 needs from the raw trigger row. Anything not a finite non-negative number is None (never guessed)."""
     def lam(v: Any) -> int | None:
-        if isinstance(v, bool) or not isinstance(v, (int, float)) or not math.isfinite(v) or v < 0:
+        try:
+            if isinstance(v, bool) or not isinstance(v, (int, float)) or not math.isfinite(v) or v < 0:
+                return None
+            return int(round(v * 1e9))
+        except (OverflowError, ValueError, TypeError):  # 1e300, a huge int: one bad row must not break the batch
             return None
-        return int(round(v * 1e9))
     src = row.get("boost_src")
     return {"vault_lamports": lam(row.get("boost_vault_remaining_sol")), "spent_lamports": lam(row.get("boost_spent_sol")),
             "boost_src": src if isinstance(src, str) else None}
@@ -303,6 +306,7 @@ class H5LaneOCExecutor(_Base):
         self._oc_mints: dict[str, dict[str, Any]] = {}  # mint -> oc holder of its latest OC trigger (tags every executor row of the mint)
         self.oc_refusals: dict[str, int] = {}
         self._slices: dict[str, list[int]] = {}  # pool -> slots of the boost_slice rows seen on the intents stream (L6 cleanliness)
+        self._l6_latched: str | None = None  # set on a live L6 trip BEFORE the STOP write; never cleared in this process
         self._l6_gap_ms: int | None = None  # now_ms when the last coverage-losing gap row was read
         lane = cfg.get("lane")
         if not isinstance(lane, dict) or lane.get("bot_id") != BOT_ID:
@@ -348,7 +352,11 @@ class H5LaneOCExecutor(_Base):
 
     def _kill_reason(self) -> str | None:
         why = super()._kill_reason()
-        if why or self.lane is None:
+        if why:
+            return why
+        if getattr(self, "_l6_latched", None):
+            return self._l6_latched  # in memory: holds even if the STOP file could not be written
+        if self.lane is None:
             return why
         return "oc_stop_file" if self.lane.oc_stop_present() else None  # type: ignore[attr-defined]
 
@@ -489,8 +497,10 @@ class H5LaneOCExecutor(_Base):
         vault_trg, spent, src = info.get("vault_lamports"), info.get("spent_lamports"), info.get("boost_src")
         clean = (_is_int(read_slot) and read_slot >= trg.trigger_slot
                  and not (self._l6_gap_ms is not None and self._l6_gap_ms >= trg.decision_ms)
-                 and not any(trg.trigger_slot < sl <= read_slot for sl in self._slices.get(trg.pool, ())))
+                 and not any(trg.trigger_slot <= sl <= read_slot for sl in self._slices.get(trg.pool, ())))  # the trigger's own slot counts (conservative)
         meta["oc_l6_clean"] = clean
+        # report-only, SIGNED, on every row that reaches the vault read: A - (17.585e9 - spent); null only when spent is missing. Not clamped.
+        meta["oc_l6_b_diff_lamports"] = None if spent is None else boost - (BOOST_BUDGET_LAMPORTS - spent)
         if vault_trg is None:
             meta["oc_l6_a"] = "no_trigger_vault_value"
         elif not clean:
@@ -505,7 +515,6 @@ class H5LaneOCExecutor(_Base):
             return "oc_l6_boost_src"
         bound = BOOST_BUDGET_LAMPORTS - spent
         meta["oc_l6_b"] = "ok" if boost <= bound else "stale_high"
-        meta["oc_l6_b_excess_lamports"] = max(0, boost - bound)
         if boost > bound:
             return self._l6_trip(trg, "b", meta, vault_lamports=boost, bound_lamports=bound)
         return None
@@ -515,9 +524,14 @@ class H5LaneOCExecutor(_Base):
         live = not self.dry_run and self.lane is not None
         reason = f"oc_l6_stop_{which}" if live else f"oc_l6_would_stop_{which}"
         stop_written = False
+        if self.dry_run is False:
+            self._l6_latched = f"oc_l6_latched_{which}"  # first: no further send even if the file cannot be written
         if live:
             detail = " ".join(f"{k}={v}" for k, v in kw.items())
-            self.lane.write_oc_stop(f"oc_l6_stop_{which} pool={trg.pool} {detail}", self.now_ms())  # type: ignore[union-attr]
+            try:
+                self.lane.write_oc_stop(f"oc_l6_stop_{which} pool={trg.pool} {detail}", self.now_ms())  # type: ignore[union-attr]
+            except Exception as exc:  # EACCES, a broken link, any OSError: the latch holds; open positions keep being exit-polled
+                self._alert("oc_l6_stop_write_failed", trg.mint, label=type(exc).__name__)
             stop_written = self.lane.oc_stop_present()  # type: ignore[union-attr]
         self._log("oc_l6", trg.mint, which=which, would_stop=not live, stop_written=stop_written, pool=trg.pool, trigger_slot=trg.trigger_slot, **kw)
         return reason

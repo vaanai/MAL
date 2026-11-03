@@ -580,7 +580,7 @@ class L6Tests(OCCase):
         with with_vault_slot(READ_SLOT):
             self.feed(e, shadow_trigger(e.clock, base_breaks_unresolved_settled=0, t_detect_ms=e.clock()))
             self.l6(e, t_detect_ms=e.clock())
-        self.assertEqual((e.refusals()[-2:], e.rpc.sent), (["oc_stop_file", "oc_stop_file"], []))
+        self.assertEqual((e.refusals()[-2:], e.rpc.sent), (["oc_l6_latched_a", "oc_l6_latched_a"], []))
         self.assertEqual(self.stop_text(e), text)
 
     def test_a_clean_agreement_buys_and_exact_zero_is_not_a_trip(self):
@@ -604,10 +604,10 @@ class L6Tests(OCCase):
             self.assertEqual((d["oc_l6_clean"], d["oc_l6_a"]), (False, "not_clean"), name)
 
     def test_slices_on_the_boundary_or_of_another_pool_do_not_spoil_a_clean_interval(self):
-        # (trigger slot, read slot]: the trigger slot itself is outside, a slice after the read slot is outside, another pool's slice is outside
+        # (trigger slot, read slot]: a slice before the trigger slot is outside, a slice after the read slot is outside, another pool's slice is outside
         e = self.oc_env(boost=10 * 10**9)
         with with_vault_slot(READ_SLOT):
-            self.l6(e, slice_row(100_500), slice_row(READ_SLOT + 1), slice_row(100_510, pool="OtherPool111"), boost_vault_remaining_sol=11.0)
+            self.l6(e, slice_row(100_499), slice_row(READ_SLOT + 1), slice_row(100_510, pool="OtherPool111"), boost_vault_remaining_sol=11.0)
         self.assertEqual((e.refusals(), e.rpc.sent), (["oc_l6_stop_a"], []))
         self.assertTrue(self.stop_text(e))
 
@@ -658,7 +658,34 @@ class L6Tests(OCCase):
         self.assertIn("oc_l6_stop_b", self.stop_text(e))
         row = e.ledger("oc_l6")[0]
         self.assertEqual((row["which"], row["stop_written"], row["vault_lamports"], row["bound_lamports"]), ("b", True, bound + 1, bound))
-        self.assertEqual(e.ledger("oc_recheck")[0]["oc_l6_b_excess_lamports"], 1)
+        self.assertEqual(e.ledger("oc_recheck")[0]["oc_l6_b_diff_lamports"], 1)
+
+    def test_the_signed_b_difference_is_logged_unclamped_on_every_row_that_reaches_the_read(self):
+        bound = X.BOOST_BUDGET_LAMPORTS - 4_000_000_000
+        key = "oc_l6_b_diff_lamports"
+        e = self.oc_env(sub="neg", boost=bound - 494_712)  # a true vault sits below the bound: negative, logged, no stop
+        with with_vault_slot(READ_SLOT):
+            self.l6(e)
+        self.assertEqual(len(e.rpc.sent), 1)
+        self.assertIsNone(self.stop_text(e))
+        self.assertEqual(e.ledger("oc_recheck")[0][key], -494_712)
+        self.assertEqual(e.ledger("decision")[0][key], -494_712)
+        e = self.oc_env(sub="atbound", boost=bound)
+        with with_vault_slot(READ_SLOT):
+            self.l6(e)
+        self.assertEqual(e.ledger("decision")[0][key], 0)
+        e = self.oc_env(sub="atrip", boost=bound - 494_712)  # (a) trips first: the field is still there, and still negative
+        with with_vault_slot(READ_SLOT):
+            self.l6(e, boost_vault_remaining_sol=11.0)
+        self.assertEqual(e.refusals(), ["oc_l6_stop_a"])
+        self.assertEqual(e.ledger("oc_recheck")[0][key], -494_712)
+        for name, src in (("behavioural", "behavioural"), ("none", None)):  # refused for the signer: reported, not scored
+            e = self.oc_env(sub=name, boost=bound - 494_712)
+            with with_vault_slot(READ_SLOT):
+                self.l6(e, boost_src=src)
+            self.assertEqual(e.refusals(), ["oc_l6_boost_src"], name)
+            self.assertEqual(e.ledger("oc_recheck")[0][key], -494_712, name)
+            self.assertIsNone(self.stop_text(e), name)
 
     def test_b_needs_the_boost_signer_identified_on_chain_else_the_trigger_is_refused_not_guessed(self):
         bound = X.BOOST_BUDGET_LAMPORTS - 4_000_000_000
@@ -731,3 +758,51 @@ class L6Settled0Tests(OCCase):
             e.ex._observe([json.dumps(slice_row(200_000 + i))])
         self.assertEqual(len(e.ex._slices[POOL]), X.SLICE_SLOTS_KEEP)
         e.ex._observe(["not json but boost_slice", json.dumps([1]), json.dumps({"type": "boost_slice", "pool": 5, "slot": 1})])  # junk is ignored
+
+
+class L6LatchAndInputTests(OCCase):
+    def test_the_trigger_own_slot_makes_it_not_clean(self):
+        e = self.oc_env(boost=10 * 10**9)
+        with with_vault_slot(READ_SLOT):
+            self.feed(e, slice_row(100_500), self.rescue(e, boost_vault_remaining_sol=11.0))
+        self.assertEqual(len(e.rpc.sent), 1)
+        self.assertEqual(e.ledger("decision")[0]["oc_l6_a"], "not_clean")
+
+    def test_a_failed_stop_write_still_latches_and_does_not_crash(self):
+        e = self.oc_env(boost=10 * 10**9)
+        with mock.patch.object(type(e.ex.lane), "write_oc_stop", side_effect=PermissionError("EACCES")):
+            with with_vault_slot(READ_SLOT):
+                self.feed(e, self.rescue(e, boost_vault_remaining_sol=11.0))
+            self.assertEqual(e.refusals(), ["oc_l6_stop_a"])
+            self.assertFalse(Path(e.ex.lane.oc["stop_path"]).exists())
+            self.assertEqual(e.ledger("oc_l6")[0]["stop_written"], False)
+            self.assertEqual(e.ex._kill_reason(), "oc_l6_latched_a")
+            with with_vault_slot(READ_SLOT):  # the next triggers, both classes, are refused; nothing is sent
+                self.feed(e, shadow_trigger(e.clock, base_breaks_unresolved_settled=0, t_detect_ms=e.clock()))
+                self.feed(e, self.rescue(e, t_detect_ms=e.clock(), boost_vault_remaining_sol=10.0))
+            self.assertEqual(e.refusals()[1:], ["oc_l6_latched_a", "oc_l6_latched_a"])
+            self.assertEqual(e.rpc.sent, [])
+            e.ex.tick()  # the loop (exit polling, housekeeping) keeps running
+            e.jump(1_000)
+            e.ex.tick()
+            self.assertEqual(e.ex._kill_reason(), "oc_l6_latched_a")  # within the process it stays
+
+    def test_dry_mode_does_not_latch(self):
+        d = self.tmp / "dryl"
+        d.mkdir()
+        e = OCEnv(d, live=False, lane=self.lane_cfg(d / "lane"), lane_oc=self.oc_cfg(d / "lane"))
+        e.rpc.balance = 10 * 10**9
+        e.rpc.accounts[VAULT] = boost_acct(10 * 10**9)
+        with with_vault_slot(READ_SLOT):
+            self.feed(e, self.rescue(e, boost_vault_remaining_sol=11.0))
+        self.assertIsNone(e.ex._l6_latched)
+
+    def test_l6_inputs_never_raise_on_junk(self):
+        for bad in (1e300, float("inf"), float("nan"), "x", True, None, -1.0, 10**400, [1]):
+            got = X._l6_inputs({"boost_vault_remaining_sol": bad, "boost_spent_sol": bad})
+            self.assertEqual(got, {"vault_lamports": None, "spent_lamports": None, "boost_src": None}, repr(bad))
+        e = self.oc_env(boost=10 * 10**9)  # a junk-valued row in the batch does not stop the next trigger being served
+        with with_vault_slot(READ_SLOT):
+            self.feed(e, self.rescue(e, boost_vault_remaining_sol=1e300))
+        self.assertEqual(len(e.rpc.sent), 1)
+        self.assertEqual(e.ledger("decision")[0]["oc_l6_a"], "no_trigger_vault_value")
