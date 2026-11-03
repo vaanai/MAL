@@ -54,19 +54,37 @@ class FakeRpc:
         return r if r is not None else {"result": {"context": {"slot": 5}, "value": None}}
 
 
-def test_pool_selection_window_cap_and_fields(tmp_path):
+def bs(pool, slot, lam=1, s0=1000, **kw):
+    return {"type": "boost_slice", "pool": pool, "slot": slot, "s0": s0, "lamports": lam, "signature": f"sig{pool[:4]}{slot}", "event_index": 0, "sps": 0.4, **kw}
+
+
+def test_horizon_comes_from_the_shadow_constant():
+    from tools.h5_shadow import POOL_LIFE_S
+    assert P.POOL_LIFE_S == POOL_LIFE_S == 400.0
+    assert P.horizon_slots(0.4) == 1000 and P.horizon_slots(None) == 800
+
+
+def test_pool_selection_follow_window_cap_and_fields(tmp_path):
     a, b, c, old = pk(1), pk(2), pk(3), pk(4)
-    write_hour(tmp_path, "h5-shadow-2026110300.jsonl", [{"type": "pool", "pool": old, "slot": 100}])
+    write_hour(tmp_path, "h5-shadow-2026110300.jsonl", [bs(old, 100, s0=100)])
     write_hour(tmp_path, "h5-shadow-2026110301.jsonl", [
-        {"type": "pool", "pool": a, "slot": 100_000, "price": 9.9},
-        {"type": "boost_slice", "pool": b, "slot": 100_500, "lamports": 5, "pnl": 1},
-        {"type": "trigger", "pool": c, "slot": 100_900},
-        {"type": "pool", "pool": c, "slot": 50_000},  # older than 60 min of slots from the newest
-        {"type": "pool", "pool": pk(5), "slot": "x"},
+        bs(a, 5000, s0=4500, price=9.9),          # followed until 5500: ahead of newest 5900? no -> 5500 < 5900 dropped
+        bs(b, 5900, s0=5800, pnl=1),              # followed until 6800: kept
+        bs(c, 5300, s0=5200),                     # until 6200: kept
+        {"type": "trigger", "pool": pk(6), "slot": 9_999_999, "s0": 1},   # not parsed
+        {"type": "pool", "pool": pk(7), "slot": 9_999_999, "s0": 1},
+        bs(pk(5), "x"),
     ])
-    assert P.recent_pools(str(tmp_path), 40) == [b, a]
+    assert P.recent_pools(str(tmp_path), 40) == [b, c]   # newest s0 first; old and a are past s0 + 400 s
     assert P.recent_pools(str(tmp_path), 1) == [b]
     assert P.recent_pools(str(tmp_path / "nope"), 5) == []
+
+
+def test_pool_selection_uses_the_shadows_own_sps(tmp_path):
+    a = pk(1)
+    write_hour(tmp_path, "h5-shadow-2026110301.jsonl", [bs(a, 1100, s0=1000, sps=0.5), bs(pk(2), 1900, s0=1800)])
+    # a: 400 / 0.5 = 800 slots -> until 1800, newest 1900: dropped
+    assert P.recent_pools(str(tmp_path), 40) == [pk(2)]
 
 
 def test_read_vault_parses_and_nulls():
@@ -108,7 +126,7 @@ def test_429_backs_off_then_succeeds_and_gives_up():
 
 
 def test_rate_limit_at_most_4_calls_per_second(tmp_path):
-    write_hour(tmp_path, "h5-shadow-2026110301.jsonl", [{"type": "pool", "pool": pk(i), "slot": 1000 + i} for i in range(1, 9)])
+    write_hour(tmp_path, "h5-shadow-2026110301.jsonl", [bs(pk(i), 1000 + i, s0=1000) for i in range(1, 9)])
     clk = Clock()
     rpc = FakeRpc(clk)
     out = tmp_path / "reads.jsonl"
@@ -121,7 +139,7 @@ def test_rate_limit_at_most_4_calls_per_second(tmp_path):
 
 
 def test_poll_exits_at_end_epoch_and_repeats_each_period(tmp_path):
-    write_hour(tmp_path, "h5-shadow-2026110301.jsonl", [{"type": "pool", "pool": pk(1), "slot": 1000}])
+    write_hour(tmp_path, "h5-shadow-2026110301.jsonl", [bs(pk(1), 1000, s0=1000)])
     clk = Clock()
     rpc = FakeRpc(clk)
     out = tmp_path / "r.jsonl"
@@ -131,57 +149,111 @@ def test_poll_exits_at_end_epoch_and_repeats_each_period(tmp_path):
 
 
 def _reads(path, rows):
-    path.write_text("".join(json.dumps({"pool": p, "vault": "v", "ctx_slot": s, "amount": a, "reason": "ok" if a is not None else "boost_vault_missing", "t_ms": 0}) + "\n"
-                            for p, s, a in rows))
+    """rows: (pool, ctx_slot, amount[, t_ms])"""
+    path.write_text("".join(json.dumps({"pool": r[0], "vault": "v", "ctx_slot": r[1], "amount": r[2], "reason": "ok" if r[2] is not None else "boost_vault_missing",
+                                        "t_ms": r[3] if len(r) > 3 else 0}) + "\n" for r in rows))
 
 
-def test_join_exact_mismatch_quiet_boundary_null_and_allowlist(tmp_path):
-    A, B, C, D = pk(1), pk(2), pk(3), pk(4)
+def _shadow(tmp_path, rows):
     sd = tmp_path / "shadow"
-    sd.mkdir()
-    write_hour(sd, "h5-shadow-2026110301.jsonl", [
-        {"type": "boost_slice", "pool": A, "slot": 11, "lamports": 30, "price": 1.5, "pnl": 3},
-        {"type": "boost_slice", "pool": A, "slot": 12, "lamports": 20, "reserve": 7},
-        {"type": "boost_slice", "pool": A, "slot": 10, "lamports": 999},  # at ctx_slot_a of the first pair: boundary; before the second pair
-        {"type": "boost_slice", "pool": B, "slot": 105, "lamports": 40},
-        {"type": "boost_slice", "pool": D, "slot": 205, "lamports": "x"},  # bad type ignored
-        {"type": "trigger", "pool": A, "slot": 11, "lamports": 1000},  # other type ignored
+    sd.mkdir(exist_ok=True)
+    write_hour(sd, "h5-shadow-2026110301.jsonl", rows)
+    return sd
+
+
+def test_join_exact_quiet_boundary_null_order_and_allowlist(tmp_path):
+    A, B, C, D = pk(1), pk(2), pk(3), pk(4)
+    sd = _shadow(tmp_path, [
+        bs(A, 11, 30, price=1.5, pnl=3), bs(A, 12, 20, reserve=7), bs(A, 10, 999),   # slice at 10 = ctx_slot_a of the first pair: boundary
+        bs(B, 1005, 40),
+        bs(D, 1005, "x"),                                                           # bad lamports ignored -> D has no slices
+        {"type": "trigger", "pool": C, "slot": 11, "lamports": 1000, "s0": 0},     # other type ignored -> C has no slices
     ])
     rd = tmp_path / "reads.jsonl"
     _reads(rd, [
-        (A, 10, 1000), (A, 13, 950),    # boundary (slice at slot 10)
-        (A, 20, 900),                    # (13,20]: S=0, delta=50 -> quiet nonzero
-        (B, 100, 500), (B, 110, 460),   # active exact S=40
-        (B, 120, 450),                   # (110,120] S=0, delta=10 quiet nonzero
-        (B, 120, 440),                   # same slot: not a pair
-        (C, 1, 5), (C, 2, 5), (C, 3, None), (C, 4, 5),  # quiet zero; null breaks pairs
-        (D, 200, 300), (D, 210, 290),    # slice lamports not int -> S=0, delta=10 quiet nonzero
+        (A, 10, 1000), (A, 13, 950),    # boundary
+        (A, 20, 900),                    # S=0, delta=50 -> quiet nonzero
+        (B, 1000, 500), (B, 1010, 460),  # active exact S=40
+        (B, 1020, 450),                  # S=0 delta=10 quiet nonzero
+        (B, 1020, 440),                  # same slot: skipped (order)
+        (C, 1, 5), (C, 2, 5),            # no slices
+        (D, 1, 5), (D, 2, 5), (D, 3, None), (D, 4, 5),  # no slices; null pairs skipped
     ])
     res = P.join(str(rd), str(sd))
-    assert res["boundary"] == 1
-    assert res["pairs_total"] == 6
-    assert res["active"] == 1 and res["active_exact"] == 1 and res["active_mismatch"] == 0
-    assert res["quiet_delta0"] == 1
-    assert sorted(res["quiet_nonzero_deltas"]) == [10, 10, 50] and res["quiet_delta_nonzero"] == 3
+    assert res["boundary"] == 1 and res["no_slices"] == 2
+    assert res["pairs_skipped_order"] == 1 and res["pairs_skipped_null"] == 2
+    assert res["pairs_total"] == 6 and res["active"] == 1 and res["active_exact"] == 1 and res["active_mismatch"] == 0
+    assert res["quiet_delta0"] == 0 and sorted(res["quiet_nonzero_deltas"]) == [10, 50]
     assert res["pools_read"] == 4 and res["reads_by_reason"] == {"ok": 12, "boost_vault_missing": 1}
 
 
-def test_join_active_mismatch_lists_delta_minus_s(tmp_path):
+def test_join_quiet_zero_and_active_mismatch(tmp_path):
     A = pk(1)
-    sd = tmp_path / "s"
-    sd.mkdir()
-    write_hour(sd, "h5-shadow-2026110301.jsonl", [{"type": "boost_slice", "pool": A, "slot": 15, "lamports": 30}, {"type": "boost_slice", "pool": A, "slot": 18, "lamports": 20}])
+    sd = _shadow(tmp_path, [bs(A, 1015, 30, s0=1000), bs(A, 1018, 20, s0=1000)])
     rd = tmp_path / "r.jsonl"
-    _reads(rd, [(A, 10, 1000), (A, 20, 940), (A, 30, 930)])  # (10,20]: S=50 delta=60 -> +10 (slice at 18); (20,30]: S=0 delta=10
+    _reads(rd, [(A, 1010, 1000), (A, 1020, 940), (A, 1030, 940)])  # S=50 delta=60 -> +10; then quiet zero
     res = P.join(str(rd), str(sd))
-    assert res["active"] == 1 and res["active_mismatch"] == 1 and res["active_mismatch_delta_minus_S"] == [10]
-    assert res["quiet_nonzero_deltas"] == [10]
+    assert res["active_mismatch"] == 1 and res["active_mismatch_delta_minus_S"] == [10] and res["quiet_delta0"] == 1
+
+
+def test_join_uncovered_after_follow_window(tmp_path):
+    A = pk(1)
+    sd = _shadow(tmp_path, [bs(A, 1015, 30, s0=1000)])  # sps 0.4 -> followed to slot 2000
+    rd = tmp_path / "r.jsonl"
+    _reads(rd, [(A, 1010, 1000), (A, 1990, 970), (A, 2000, 970), (A, 2001, 900), (A, 2500, 800)])
+    res = P.join(str(rd), str(sd))
+    # (1010,1990] active exact; (1990,2000] quiet zero (sb == s0 + horizon is inside); the last two end after the horizon
+    assert (res["active_exact"], res["quiet_delta0"], res["uncovered"]) == (1, 1, 2)
+    assert res["quiet_delta_nonzero"] == 0 and res["active_mismatch"] == 0
+
+
+def test_join_gap_rows_void_pairs(tmp_path):
+    A = pk(1)
+    sd = _shadow(tmp_path, [
+        bs(A, 1015, 30),
+        {"type": "gap", "kind": "slot_jump", "from_slot": 1100, "to_slot": 1150, "missed_slots": 49, "open_pools": 3, "flags_pools": True, "at_ms": 5},
+        {"type": "gap", "kind": "silence", "at_ms": 50_000, "silent_ms": 9000, "price": 3},
+    ])
+    rd = tmp_path / "r.jsonl"
+    _reads(rd, [(A, 1010, 1000, 0), (A, 1020, 970, 1000),     # exact (no gap near: slot gap far, silence at 50 s)
+                (A, 1090, 970, 2000), (A, 1120, 900, 3000),   # slot_jump 1100..1150 meets (1090, 1120] -> gap
+                (A, 1160, 900, 4000),                         # (1120,1160] meets 1100..1150 -> gap
+                (A, 1170, 880, 49_000), (A, 1180, 880, 52_000)])   # (1160,1170]: no slot gap; silence at 50 s within [49 s, 52 s] -> gap; (1170,1180] -> gap
+    res = P.join(str(rd), str(sd))
+    assert res["active_exact"] == 1 and res["gap"] == 4 and res["active_mismatch"] == 0 and res["quiet_delta_nonzero"] == 0
+    # (1020,1090] has t 1000..2000 ms: no gap, S=0, delta=0 quiet zero
+    assert res["quiet_delta0"] == 1
+
+
+def test_join_dedupes_slices_by_signature_and_fallback(tmp_path):
+    A, B = pk(1), pk(2)
+    s1 = bs(A, 1015, 30, signature="X", event_index=3)
+    s1b = dict(s1, t_recv_ms=99)                      # re-emitted after a restart
+    s2 = bs(A, 1016, 20, signature="X", event_index=4)   # same tx, other event: kept
+    n1 = {k: v for k, v in bs(B, 1015, 40, tx_index=7).items() if k != "signature"}   # no signature: fallback key
+    sd = _shadow(tmp_path, [s1, s1b, s2, n1, dict(n1), dict(n1, lamports=41)])
+    rd = tmp_path / "r.jsonl"
+    _reads(rd, [(A, 1010, 1000), (A, 1020, 950), (B, 1010, 1000), (B, 1020, 919)])
+    res = P.join(str(rd), str(sd))
+    assert res["slice_dupes_removed"] == 2
+    assert res["active_exact"] == 2 and res["active_mismatch"] == 0
+
+
+def test_join_lines_without_an_allowed_type_string_are_never_parsed(tmp_path, monkeypatch):
+    A = pk(1)
+    sd = _shadow(tmp_path, [bs(A, 1015, 30), {"type": "outcome", "pool": A, "slot": 1015, "pnl": 5}, {"type": "trigger", "pool": A}])
+    rd = tmp_path / "r.jsonl"
+    _reads(rd, [(A, 1010, 1000), (A, 1020, 970)])
+    parsed = []
+    real = json.loads
+    monkeypatch.setattr(P.json, "loads", lambda s, *a, **k: (parsed.append(s), real(s, *a, **k))[1])
+    P.join(str(rd), str(sd))
+    shadow_parsed = [s for s in parsed if "outcome" in s or "trigger" in s]
+    assert shadow_parsed == []
 
 
 def test_join_output_has_no_forbidden_names(tmp_path, capsys):
-    sd = tmp_path / "s"
-    sd.mkdir()
-    write_hour(sd, "h5-shadow-2026110301.jsonl", [{"type": "boost_slice", "pool": pk(1), "slot": 1, "lamports": 1, "price": 1}])
+    sd = _shadow(tmp_path, [bs(pk(1), 1, 1, price=1)])
     rd = tmp_path / "r.jsonl"
     _reads(rd, [(pk(1), 1, 5), (pk(1), 2, 5)])
     assert P.main(["join", "--reads", str(rd), "--shadow-dir", str(sd)]) == 0
