@@ -1,0 +1,11 @@
+# EXAMPLE ONLY. Daily trigger for mal-rent-sweep.service (installed by Helm; the service is DRY unless the live drop-in exists).
+[Unit]
+Description=Daily MAL lane rent sweep
+
+[Timer]
+OnCalendar=*-*-* 03:30:00 UTC
+RandomizedDelaySec=300
+Persistent=true
+
+[Install]
+WantedBy=timers.target
