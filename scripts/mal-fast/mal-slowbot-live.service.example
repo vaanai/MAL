@@ -14,6 +14,9 @@ Wants=network-online.target
 After=mal-h5-lane-executor.service
 
 [Service]
+# Python flags: -E -s -B (not -I). On Python 3.12, -I implies -P, so WorkingDirectory is not put on sys.path and
+# `-m tools.slowbot.live_executor` fails with "No module named tools" (HELM-REPLY-1104-1). -E ignores PYTHON* env vars,
+# -s skips the user site; the pinned WorkingDirectory supplies the code. Helm used these flags for the slowbot dry unit (HELM-REPLY-1104-1).
 Type=simple
 User=mal-live
 Nice=10
@@ -22,7 +25,7 @@ Environment=PYTHONUNBUFFERED=1
 Environment=LC_ALL=C.UTF-8
 # Helius RPC key for the key holder: the same root-only copy the H5 lane unit uses; only the HELIUS_API_KEY= line.
 EnvironmentFile=/etc/mal-probe-rpc/helius.env
-ExecStart=/usr/local/lib/mal-h5-exec/venv/bin/python -I -B -u -m tools.slowbot.live_executor --config /usr/local/lib/mal-slowbot/current/slowbot-live.json
+ExecStart=/usr/local/lib/mal-h5-exec/venv/bin/python -E -s -B -u -m tools.slowbot.live_executor --config /usr/local/lib/mal-slowbot/current/slowbot-live.json
 Restart=on-failure
 RestartSec=10
 RestartPreventExitStatus=2
@@ -56,4 +59,4 @@ WantedBy=multi-user.target
 # [Service]
 # LoadCredential=probe-wallet:/etc/mal-probe/probe-wallet.json
 # ExecStart=
-# ExecStart=/usr/local/lib/mal-h5-exec/venv/bin/python -I -B -u -m tools.slowbot.live_executor --config /usr/local/lib/mal-slowbot/current/slowbot-live.json --live
+# ExecStart=/usr/local/lib/mal-h5-exec/venv/bin/python -E -s -B -u -m tools.slowbot.live_executor --config /usr/local/lib/mal-slowbot/current/slowbot-live.json --live
