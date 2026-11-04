@@ -35,6 +35,7 @@ from tools import h5_shadow as hs
 ALLOWED_BLOCK_MARKS = ("explore-0814", "oracle-insample-2026-09-22_25", "fast-pool-2026-09-18T23_2026-09-22T00")
 FORBIDDEN_MARKS = ("forward-", "truth-", "fresh-08", "exp011-", "arena", "tip", "shadow", "probe", "canary", "meta-capture", "/var/lib/mal", "fwdv1")
 D23 = ("2026-10-02T10", "2026-10-16T01")
+MIN_TRIGGERS = 10  # QP condition (e)
 HOUR_RE = re.compile(r"^\d{4}-\d{2}-\d{2}T\d{2}$")
 
 
@@ -149,6 +150,10 @@ def timed_class(base: type, times: list, calls: list, forced: list | None = None
             t0 = time.perf_counter()
             try:
                 out = super()._lh_heal(rec)
+            except Exception:
+                if forced is not None:
+                    forced.append(("raised/None", "heal_raised"))  # a miss: the engine swallows the exception and the trigger would otherwise go uncounted
+                raise
             finally:
                 times.append((time.perf_counter() - t0) * 1000.0)
             if forced is not None:
@@ -202,7 +207,23 @@ def lat(xs: list[float]) -> dict:
     return {"n": len(xs), "p50_ms": pct(xs, 0.5), "p90_ms": pct(xs, 0.9), "max_ms": round(max(xs), 3) if xs else None}
 
 
-def req_hours(block_dirs: Sequence[str], hours: Sequence[str], announce: str, vmap: Any, status_path: str) -> dict:
+def verdict_of(stock_n: int, heal_n: int, replays: int, matches: int, streams_equal: bool, min_triggers: int = MIN_TRIGGERS) -> str:
+    """`R-EQ PASS`, or `R-EQ FAIL <reason>` (first failing check): too few stock triggers (incl. 0), heal trigger count != stock, forced replays short of the
+    stock triggers (e.g. the heal raised), any miss, or the record streams differ."""
+    if stock_n < min_triggers:
+        return f"R-EQ FAIL stock_triggers_below_{min_triggers}"
+    if heal_n != stock_n:
+        return "R-EQ FAIL heal_trigger_count_differs"
+    if replays < stock_n:
+        return "R-EQ FAIL forced_replays_short"
+    if matches != replays:
+        return "R-EQ FAIL replay_miss"
+    if not streams_equal:
+        return "R-EQ FAIL streams_differ"
+    return "R-EQ PASS"
+
+
+def req_hours(block_dirs: Sequence[str], hours: Sequence[str], announce: str, vmap: Any, status_path: str, min_triggers: int = MIN_TRIGGERS) -> dict:
     stock_n = heal_n = 0
     status: collections.Counter = collections.Counter()
     reasons: collections.Counter = collections.Counter()
@@ -252,7 +273,8 @@ def req_hours(block_dirs: Sequence[str], hours: Sequence[str], announce: str, vm
                                  "misses_by_reason": dict(collections.Counter(c for _, c in forced if c != "match")),
                                  "by_heal_status_reason": {k: {"n": v, "matches": sum(1 for h_, c in forced if h_ == k and c == "match")}
                                                           for k, v in sorted(collections.Counter(h_ for h_, _ in forced).items())}},
-            "heal_latency": lat(times), "per_hour": per_hour}
+            "heal_latency": lat(times), "per_hour": per_hour, "verdict": verdict_of(stock_n, heal_n, len(forced), sum(1 for _, c in forced if c == "match"),
+                                                                                     equal_all, min_triggers)}
 
 
 def synthetic_worst_case(n_filler: int = 19_900, path: str | None = None) -> dict:
@@ -323,6 +345,11 @@ def main(argv: Sequence[str] | None = None) -> int:
         print(f"REFUSED: {e}", file=sys.stderr)
         return 2
     print(json.dumps(res, indent=1, sort_keys=True))
+    v = res.get("real", {}).get("verdict")
+    if v is not None:
+        print(v)
+        if v != "R-EQ PASS":
+            return 1
     return 0
 
 

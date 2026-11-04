@@ -5,7 +5,7 @@ Reads the trigger records of ONE lane shadow dir (`h5-shadow-*.jsonl`) and keeps
   - triggers seen, with a lane_heal record / without one;
   - counts by status and by (status, reason);
   - CONTROL (status not_needed) replay.match true / false / null;
-  - HARNESS_ERROR flags: every heal_no_store, every heal_replay_error, every control with match false or null, every trigger with a malformed lane_heal.
+  - HARNESS_ERROR flags: every heal_no_store, every heal_replay_error, every control with match false or null, every trigger with a malformed lane_heal, every marker-bearing line that does not parse (torn write), every trigger WITHOUT a lane_heal field (missing_lane_heal; the H3 verdict line is FAIL if any).
 Exit 0 on a completed count (flags are in the output, not the exit code); exit 2 on a usage error or an unreadable dir.
 A healed trade is never H5 v1 evidence and is never pooled with another bot_id.
 """
@@ -23,6 +23,9 @@ MARKS = ('"type":"trigger"', '"type": "trigger"')
 ERROR_REASONS = ("heal_no_store", "heal_replay_error")
 
 
+_UNPARSEABLE: tuple = (None, None, None)
+
+
 def _kept(line: str) -> tuple[Any, Any, bool] | None:
     """-> (variant, lane_heal, has_key) of a trigger line, or None if the line is not a trigger. Nothing else of the record leaves this function."""
     if not any(m in line for m in MARKS):
@@ -30,24 +33,31 @@ def _kept(line: str) -> tuple[Any, Any, bool] | None:
     try:
         row = json.loads(line)
     except ValueError:
-        return None
-    if not isinstance(row, dict) or row.get("type") != "trigger":
+        return _UNPARSEABLE  # fail closed: a torn / truncated trigger line is counted, never dropped
+    if not isinstance(row, dict):
+        return _UNPARSEABLE
+    if row.get("type") != "trigger":
         return None
     return row.get("variant"), row.get("lane_heal"), "lane_heal" in row
 
 
 def count_lines(lines: Iterable[str]) -> dict[str, Any]:
-    c: dict[str, Any] = {"triggers": 0, "with_lane_heal": 0, "without_lane_heal": 0, "malformed": 0,
+    c: dict[str, Any] = {"triggers": 0, "with_lane_heal": 0, "without_lane_heal": 0, "malformed": 0, "unparseable": 0,
                          "by_status": collections.Counter(), "by_status_reason": collections.Counter(), "by_variant_status": collections.Counter(),
                          "control": collections.Counter(), "harness_error": collections.Counter()}
     for line in lines:
         k = _kept(line)
         if k is None:
             continue
+        if k is _UNPARSEABLE:
+            c["unparseable"] += 1
+            c["harness_error"]["unparseable_trigger_line"] += 1
+            continue
         variant, lh, has = k
         c["triggers"] += 1
         if not has:
-            c["without_lane_heal"] += 1
+            c["without_lane_heal"] += 1  # an H3 failure: every trigger of a heal shadow carries lane_heal
+            c["harness_error"]["missing_lane_heal"] += 1
             continue
         c["with_lane_heal"] += 1
         if not isinstance(lh, dict) or not isinstance(lh.get("status"), str) or not (lh.get("reason") is None or isinstance(lh.get("reason"), str)):
@@ -87,13 +97,14 @@ def count_dir(d: str) -> dict[str, Any]:
 
 
 def render(c: dict[str, Any]) -> str:
-    o = [f"files: {c.get('files', '-')}", f"triggers: {c['triggers']} (with lane_heal {c['with_lane_heal']}, without {c['without_lane_heal']}, malformed {c['malformed']})"]
+    o = [f"files: {c.get('files', '-')}", f"triggers: {c['triggers']} (with lane_heal {c['with_lane_heal']}, without {c['without_lane_heal']}, malformed {c['malformed']}); unparseable trigger-marker lines: {c['unparseable']}"]
     for name in ("by_status", "by_status_reason", "by_variant_status"):
         o.append(f"{name}:")
         o += [f"  {k}: {v}" for k, v in sorted(c[name].items())] or ["  (none)"]
     ctl = c["control"]
     o.append(f"control replay.match: true {ctl['match_true']}, false {ctl['match_false']}, null {ctl['match_null']}")
     he = c["harness_error"]
+    o.append("H3 VERDICT: " + ("FAIL missing_lane_heal" if c["without_lane_heal"] else "no missing lane_heal") + f" (triggers without lane_heal: {c['without_lane_heal']})")
     if he:
         o.append("HARNESS_ERROR: yes")
         o += [f"  HARNESS_ERROR {k}: {v}" for k, v in sorted(he.items())]

@@ -68,6 +68,44 @@ class T(unittest.TestCase):
         finally:
             c.d.cleanup()
 
+    def test_verdict_fail_cases(self):
+        v = rq.verdict_of
+        self.assertEqual(v(12, 12, 12, 12, True), "R-EQ PASS")
+        self.assertEqual(v(0, 0, 0, 0, True), "R-EQ FAIL stock_triggers_below_10")
+        self.assertEqual(v(9, 9, 9, 9, True), "R-EQ FAIL stock_triggers_below_10")
+        self.assertEqual(v(12, 11, 12, 12, True), "R-EQ FAIL heal_trigger_count_differs")
+        self.assertEqual(v(12, 12, 11, 11, True), "R-EQ FAIL forced_replays_short")
+        self.assertEqual(v(12, 12, 12, 11, True), "R-EQ FAIL replay_miss")
+        self.assertEqual(v(12, 12, 12, 12, False), "R-EQ FAIL streams_differ")
+
+    def test_main_prints_verdict_and_exits_nonzero_on_fail(self):
+        import contextlib
+        import io
+        from unittest import mock
+        for verdict, rc in (("R-EQ PASS", 0), ("R-EQ FAIL replay_miss", 1)):
+            buf = io.StringIO()
+            with mock.patch.object(rq, "req_hours", return_value={"verdict": verdict}), mock.patch.object(rq, "check_inputs"), contextlib.redirect_stdout(buf):
+                self.assertEqual(rq.main(["--block", BLOCK, "--hours", "2026-08-27T12"]), rc)
+            self.assertEqual(buf.getvalue().strip().splitlines()[-1], verdict)
+
+    def test_a_raising_heal_is_recorded_as_a_miss(self):
+        from tools import h5_lane_heal as hl
+        from tools.test_h5_lane_heal import Base, FakeTip, base, feed, mk
+        class C(Base):
+            def runTest(self):
+                pass
+        c = C()
+        c.setUp()
+        try:
+            forced = []
+            eng, out = mk(hl.build_engine_class(c.sp), c.sp, FakeTip())
+            eng.__class__ = rq.timed_class(eng.__class__, [], [], forced)
+            eng._lh_merge = lambda *a, **k: (_ for _ in ()).throw(RuntimeError("x"))
+            feed(eng, base("a"), c.sp)
+            self.assertTrue(forced and all(code != "match" for _, code in forced))
+        finally:
+            c.d.cleanup()
+
     def test_lat_and_pct(self):
         self.assertEqual(rq.lat([]), {"n": 0, "p50_ms": None, "p90_ms": None, "max_ms": None})
         self.assertEqual(rq.lat([1.0, 2.0, 3.0, 4.0, 10.0])["max_ms"], 10.0)

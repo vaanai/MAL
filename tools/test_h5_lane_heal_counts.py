@@ -35,10 +35,25 @@ class T(unittest.TestCase):
     def test_counts(self):
         c = hc.count_lines(self.lines())
         self.assertEqual((c["triggers"], c["with_lane_heal"], c["without_lane_heal"], c["malformed"]), (10, 9, 1, 1))
+        self.assertEqual(c["unparseable"], 1)
         self.assertEqual(dict(c["by_status"]), {"not_needed": 4, "healed": 1, "refused": 3})
         self.assertEqual(c["by_status_reason"]["refused/heal_integrity"], 1)
         self.assertEqual(dict(c["control"]), {"match_true": 2, "match_false": 1, "match_null": 1})
-        self.assertEqual(dict(c["harness_error"]), {"control_match_false": 1, "control_match_null": 1, "heal_no_store": 1, "heal_replay_error": 1, "malformed_lane_heal": 1})
+        self.assertEqual(dict(c["harness_error"]), {"control_match_false": 1, "control_match_null": 1, "heal_no_store": 1, "heal_replay_error": 1, "malformed_lane_heal": 1, "unparseable_trigger_line": 1, "missing_lane_heal": 1})
+
+    def test_torn_trigger_line_is_a_harness_error_not_dropped(self):
+        c = hc.count_lines([trig("a", "healed"), '{"type":"trigger","variant":"a","lane_he'])
+        self.assertEqual((c["triggers"], c["unparseable"]), (1, 1))
+        self.assertEqual(dict(c["harness_error"]), {"unparseable_trigger_line": 1})
+        self.assertIn("HARNESS_ERROR unparseable_trigger_line: 1", hc.render(c))
+
+    def test_trigger_without_lane_heal_is_an_h3_failure(self):
+        c = hc.count_lines([trig("a", "healed"), trig("b")])
+        self.assertEqual(c["without_lane_heal"], 1)
+        out = hc.render(c)
+        self.assertIn("H3 VERDICT: FAIL missing_lane_heal", out)
+        self.assertIn("HARNESS_ERROR missing_lane_heal: 1", out)
+        self.assertIn("H3 VERDICT: no missing lane_heal", hc.render(hc.count_lines([trig("a", "healed")])))
 
     def test_clean_run_has_no_harness_error(self):
         c = hc.count_lines([trig("a", "not_needed", None, True), trig("a", "healed")])
