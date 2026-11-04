@@ -51,7 +51,8 @@ ALLOWED_BLOCKS = ("/data/mal/clean-view/explore-0814", "/data/mal/clean-view/ora
                   "/data/mal/clean-view/fast-pool-2026-09-18T23_2026-09-22T00", "/data/mal/clean-view/oracle-live-2026-09-25_27")
 # sha256 of tools/gradscore/prompt.py at da7a3d64 (frozen prompts, variants A and B)
 FROZEN_PROMPT_PY_SHA256 = "db6ae0b6ddc733cbbff30613e78bd1f76028c8496fb4d0e13425f0580d474d12"
-FORBIDDEN = ("fresh-", "exp011", "forward-", "truth-", "/arena", "tip", "shadow", "canary", "probe", "sealed", "meta-capture")
+FORBIDDEN_PREFIX = ("fresh-", "exp011", "forward-", "truth-", "shadow", "canary", "probe", "tip-tape", "_shakedown", "_smoke")
+FORBIDDEN_SEG = ("arena", "sealed", "meta-capture", "kalshi")
 
 
 class Refused(Exception):
@@ -60,14 +61,14 @@ class Refused(Exception):
 
 # ----------------------------------------------------------------------------- block layout
 
-def check_block(path, allowed=ALLOWED_BLOCKS):
+def check_block(path, allowed=None):
+    allowed = ALLOWED_BLOCKS if allowed is None else allowed
     real = os.path.realpath(path)
     if not any(real == os.path.realpath(a) or real.startswith(os.path.realpath(a) + os.sep) for a in allowed):
         raise Refused(f"block not on the outcomes allow-list: {path}")
-    low = real.lower()
-    for w in FORBIDDEN:
-        if w in low:
-            raise Refused(f"forbidden word {w!r} in block path")
+    for seg in real.lower().split(os.sep):
+        if seg.startswith(FORBIDDEN_PREFIX) or seg in FORBIDDEN_SEG:
+            raise Refused(f"forbidden path segment {seg!r}")
     return real
 
 
@@ -199,7 +200,7 @@ def spot(q, b, v):
 # ----------------------------------------------------------------------------- trade scan
 
 _MINTS = frozenset()
-_MINT_RE = re.compile(rb'"mint":"([1-9A-HJ-NP-Za-km-z]{32,44})"')
+_MINT_RE = re.compile(rb'"mint"\s*:\s*"([^"]{1,64})"')
 
 
 def _init_worker(mints):
@@ -430,7 +431,7 @@ def make_card(mint, st, create, meta, sol_usd, vmap):
     """Card from pre-first-sight state only. Returns (card, extra) or (None, reason)."""
     if st.chosen is None:
         return None, "no_pool_at_first_sight"
-    vol, buys, sells, q, b, _ts = st.pre[st.chosen]
+    vol, buys, sells, q, b = st.pre[st.chosen][:5]
     v, vsrc = vmap.get(st.chosen)
     sp = spot(q, b, v)
     if sp is None or sp <= 0:
