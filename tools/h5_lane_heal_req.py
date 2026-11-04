@@ -132,17 +132,44 @@ def run_engine(eng: Any, rows: list[dict], migrated: set[str], announce: str, ti
     eng.close_all("replay_end")
 
 
-def timed_class(base: type, times: list, calls: list) -> type:
+def hk(out: dict) -> str:
+    return f"{out.get('status')}/{out.get('reason')}"
+
+
+def timed_class(base: type, times: list, calls: list, forced: list | None = None) -> type:
+    """`times`: the heal's own wall time per trigger (the force-run below is outside the timed span). `calls`: reason codes of the replays the heal ran itself.
+    `forced` (R-EQ mode, default in main): for EVERY trigger, whatever its heal status, the per-pool replay is run (the heal's own run, or a forced one when the
+    heal did not reach it) and (heal status, reason code) is appended. The heal decision itself is unchanged: the forced result is only recorded."""
+
     class Timed(base):  # type: ignore[valid-type,misc]
+        _req_last: Any = None
+
         def _lh_heal(self, rec: dict) -> dict:
+            self._req_last = None
             t0 = time.perf_counter()
             try:
-                return super()._lh_heal(rec)
+                out = super()._lh_heal(rec)
             finally:
                 times.append((time.perf_counter() - t0) * 1000.0)
+            if forced is not None:
+                res = self._req_last
+                if res is None:  # the heal refused before its replay: run it anyway, record only
+                    p, st = self.pools.get(rec.get("pool")), self._lh_pools.get(rec.get("pool"))
+                    if p is None or st is None:
+                        forced.append((hk(out), "no_store"))
+                        return out
+                    try:
+                        m = self._lh_merge(st, int(rec["slot"]), p.mint)
+                        res = super()._lh_replay(p, st, m, rec)
+                    except Exception:  # noqa: BLE001
+                        forced.append((hk(out), "replay_error"))
+                        return out
+                forced.append((hk(out), "match" if res[0] is None and res[1].get("match") is True else (res[0] or "null_match")))
+            return out
 
         def _lh_replay(self, p, st, m, rec):  # noqa: ANN001, ANN202
             res = super()._lh_replay(p, st, m, rec)
+            self._req_last = res
             calls.append(res[0] if res[0] is not None else ("match" if res[1].get("match") is True else "null_match"))
             return res
 
@@ -184,6 +211,7 @@ def req_hours(block_dirs: Sequence[str], hours: Sequence[str], announce: str, vm
     per_hour: dict[str, Any] = {}
     equal_all = True
     n_calls = n_match = 0
+    forced: list = []
     rows_total = 0
     for h in hours:
         rows, migrated = load_hour(block_dirs, h, vmap)
@@ -194,7 +222,7 @@ def req_hours(block_dirs: Sequence[str], hours: Sequence[str], announce: str, vm
         run_engine(stock, rows, migrated, announce, tip=stock.tip)
         calls: list = []
         h_out: list[dict] = []
-        heal = timed_class(hl.build_engine_class(status_path), times, calls)(h_out.append, sps_fn=None, classifier=hs.PreEventClassifier())
+        heal = timed_class(hl.build_engine_class(status_path), times, calls, forced)(h_out.append, sps_fn=None, classifier=hs.PreEventClassifier())
         heal.tip = hs.ReplayTip(0)
         run_engine(heal, rows, migrated, announce, tip=heal.tip)
         st_tr = [r for r in s_out if r["type"] == "trigger"]
@@ -220,6 +248,10 @@ def req_hours(block_dirs: Sequence[str], hours: Sequence[str], announce: str, vm
     return {"hours": list(hours), "announce": announce, "rows_total": rows_total, "stock_triggers": stock_n, "heal_triggers": heal_n,
             "replays_run": n_calls, "replay_matches": n_match,
             "misses_by_reason": dict(misses), "status": dict(status), "status_reason": dict(reasons), "all_streams_equal": equal_all,
+            "req_all_triggers": {"replays": len(forced), "matches": sum(1 for _, c in forced if c == "match"),
+                                 "misses_by_reason": dict(collections.Counter(c for _, c in forced if c != "match")),
+                                 "by_heal_status_reason": {k: {"n": v, "matches": sum(1 for h_, c in forced if h_ == k and c == "match")}
+                                                          for k, v in sorted(collections.Counter(h_ for h_, _ in forced).items())}},
             "heal_latency": lat(times), "per_hour": per_hour}
 
 

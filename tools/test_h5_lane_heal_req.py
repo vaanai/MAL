@@ -27,13 +27,13 @@ class T(unittest.TestCase):
     def test_engine_drive_on_synthetic_rows_matches_all_controls(self):
         rows, pools = synthetic_hour()
         rows = [dict(r, t_recv_ms=r["event_ts"] * 1000) for r in rows]
-        times, calls = [], []
+        times, calls, forced = [], [], []
         with tempfile.TemporaryDirectory() as d:
             from tools import h5_lane_heal as hl
             s_out, h_out = [], []
             stock = hs.Engine(s_out.append, sps_fn=lambda p: 0.4, classifier=hs.StaticClassifier(False), seal_start_ms=None, h5_look2_start_ms=None)
             stock.tip = hs.ReplayTip(0)
-            heal = rq.timed_class(hl.build_engine_class(os.path.join(d, "none.json")), times, calls)(
+            heal = rq.timed_class(hl.build_engine_class(os.path.join(d, "none.json")), times, calls, forced)(
                 h_out.append, sps_fn=lambda p: 0.4, classifier=hs.StaticClassifier(False), seal_start_ms=None, h5_look2_start_ms=None)
             heal.tip = hs.ReplayTip(0)
             migrated = {r["mint"] for r in rows}
@@ -44,6 +44,29 @@ class T(unittest.TestCase):
         self.assertEqual(rq.md5s(s_out, False), rq.md5s(h_out, True))
         self.assertEqual((len(times), calls.count("match")), (n, len(calls)))
         self.assertEqual(rq.lat(times)["n"], n)
+        self.assertEqual([c for _, c in forced], ["match"] * n)
+
+    def test_forced_replay_runs_on_a_refused_trigger_without_changing_the_decision(self):
+        """A non-control trigger (a hidden websocket row -> a gap, heal refused before its replay): the forced replay still runs and is recorded."""
+        from tools import h5_lane_heal as hl
+        from tools.test_h5_lane_heal import Base, FakeTip, base, feed, mk
+        class C(Base):
+            def runTest(self):
+                pass
+        c = C()
+        c.setUp()
+        try:
+            for case in ("a", "d"):
+                times, calls, forced = [], [], []
+                eng, out = mk(hl.build_engine_class(c.sp), c.sp, FakeTip())
+                eng.__class__ = rq.timed_class(eng.__class__, times, calls, forced)
+                feed(eng, base(case), c.sp)
+                tr = [r for r in out if r["type"] == "trigger"]
+                self.assertTrue(tr)
+                self.assertEqual(len(forced), len(tr))
+                self.assertTrue(all(code in ("match", "heal_replay_none", "heal_replay_diff", "heal_replay_earlier", "null_match") for _, code in forced), forced)
+        finally:
+            c.d.cleanup()
 
     def test_lat_and_pct(self):
         self.assertEqual(rq.lat([]), {"n": 0, "p50_ms": None, "p90_ms": None, "max_ms": None})
