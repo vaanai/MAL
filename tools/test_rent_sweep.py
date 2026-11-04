@@ -1,12 +1,14 @@
 """Offline tests for tools/rent_sweep.py: no network, no key."""
 from __future__ import annotations
 
+import base64
 import json
 from pathlib import Path
 
 import pytest
 from solders.hash import Hash
 from solders.keypair import Keypair
+from solders.transaction import VersionedTransaction
 
 from tools import pumpswap_tx as tx
 from tools import rent_sweep as rs
@@ -129,8 +131,11 @@ def env(tmp_path, monkeypatch):
     monkeypatch.setattr(rs, "WALLET_HALT", tmp_path / "whalt")
     led = tmp_path / "ledger.jsonl"
     led.write_text("")
+    live_ok = tmp_path / "LIVE_OK"
+    live_ok.write_text("")
+    monkeypatch.setattr(rs, "DEFAULT_LIVE_OK", str(tmp_path / "default-LIVE_OK"))  # absent unless a test creates it
     cfg = {"owner": OWNER, "ledger_paths": [str(led)], "stop_paths": [str(tmp_path / "lane-stop")], "log_path": str(tmp_path / "log.jsonl"),
-           "max_per_tx": 8}
+           "max_per_tx": 8, "live_ok_path": str(live_ok)}
     return cfg, tmp_path, led
 
 
@@ -163,8 +168,9 @@ def test_live_sends_and_records_recovered(env):
     cfg["owner"] = str(kp.pubkey())
     rpc = FakeRpc([acct(owner=cfg["owner"])])
     log = rs.run_sweep(rpc, cfg, live=True, keypair=kp, sleep=lambda s: None)
-    assert rpc.sent == 1 and log[0]["ev"] == "sent" and log[0]["status"] == "confirmed" and log[0]["recovered_lamports"] == RENT
-    assert log[0]["sig"] == "sig1" and len(log[0]["accounts"]) == 1
+    assert [r["ev"] for r in log] == ["send_attempt", "sent"] and len(log[0]["sig"]) > 40  # attempt row (own sig) is written before the send
+    assert rpc.sent == 1 and log[1]["status"] == "confirmed" and log[1]["recovered_lamports"] == RENT
+    assert log[1]["sig"] == "sig1" and len(log[1]["accounts"]) == 1
 
 
 def test_live_wrong_keypair_refused(env):
@@ -180,8 +186,23 @@ def test_live_ok_file_required(env):
     kp = Keypair()
     cfg["owner"] = str(kp.pubkey())
     cfg["live_ok_path"] = str(tmp / "LIVE_OK")
+    (tmp / "LIVE_OK").unlink()
     with pytest.raises(rs.Refused, match="live_ok_missing"):
         rs.run_sweep(FakeRpc([]), cfg, live=True, keypair=kp)
+
+
+def test_live_ok_required_even_when_config_omits_it(env):
+    cfg, tmp, _ = env
+    kp = Keypair()
+    cfg["owner"] = str(kp.pubkey())
+    del cfg["live_ok_path"]
+    rpc = FakeRpc([acct(owner=cfg["owner"])])
+    with pytest.raises(rs.Refused, match="live_ok_missing"):
+        rs.run_sweep(rpc, cfg, live=True, keypair=kp, sleep=lambda s: None)
+    assert rpc.calls == []
+    (tmp / "default-LIVE_OK").write_text("")  # the default path, once present, lets the run go
+    rs.run_sweep(rpc, cfg, live=True, keypair=kp, sleep=lambda s: None)
+    assert rpc.sent == 1
 
 
 def test_unconfirmed_stops_after_first_batch(env, monkeypatch):
@@ -192,7 +213,7 @@ def test_unconfirmed_stops_after_first_batch(env, monkeypatch):
     rpc = FakeRpc([acct(owner=cfg["owner"]) for _ in range(3)], status="processed")
     monkeypatch.setattr(rs, "CONFIRM_TIMEOUT_S", 0.0)
     log = rs.run_sweep(rpc, cfg, live=True, keypair=kp, sleep=lambda s: None)
-    assert rpc.sent == 1 and log[0]["status"] == "unconfirmed"
+    assert rpc.sent == 1 and log[-1]["status"] == "unconfirmed"
 
 
 def test_simulation_failure_not_sent(env):
@@ -202,6 +223,67 @@ def test_simulation_failure_not_sent(env):
     rpc = FakeRpc([acct(owner=cfg["owner"])], sim_err={"InstructionError": [1, "Custom"]})
     log = rs.run_sweep(rpc, cfg, live=True, keypair=kp)
     assert log[0]["ev"] == "simulate_failed" and rpc.sent == 0
+
+
+def test_failed_batch_retried_per_account(env):
+    cfg, _, _ = env
+    kp = Keypair()
+    cfg["owner"] = str(kp.pubkey())
+    accts = [acct(owner=cfg["owner"]) for _ in range(3)]
+    bad = accts[1]["pubkey"]
+
+    class OneBad(FakeRpc):
+        def __call__(self, method, params):
+            if method == "simulateTransaction":
+                tx_ = VersionedTransaction.from_bytes(base64.b64decode(params[0]))
+                keys = [str(k) for k in tx_.message.account_keys]
+                return {"value": {"err": {"InstructionError": [1, "Custom"]} if bad in keys else None, "logs": [], "unitsConsumed": 1}}
+            return super().__call__(method, params)
+    rpc = OneBad(accts)
+    log = rs.run_sweep(rpc, cfg, live=True, keypair=kp, sleep=lambda s: None)
+    evs = [r["ev"] for r in log]
+    assert evs.count("simulate_failed") == 2 and evs.count("sent") == 2 and rpc.sent == 2  # the batch fails, then the bad single fails
+    sent = [a for r in log if r["ev"] == "sent" for a in r["accounts"]]
+    assert sorted(sent) == sorted(a["pubkey"] for a in accts if a["pubkey"] != bad)
+
+
+def test_open_position_appearing_between_batches_is_skipped(env):
+    cfg, _, led = env
+    cfg["max_per_tx"] = 1
+    a, b = acct(), acct()
+    mint_b = b["account"]["data"]["parsed"]["info"]["mint"]
+
+    class Opens(FakeRpc):
+        def __call__(self, method, params):
+            if method == "simulateTransaction":  # a buy for the second account's mint is intended after the run started
+                led.write_text(row("send_intent", mint_b))
+            return super().__call__(method, params)
+    rpc = Opens([a, b])
+    log = rs.run_sweep(rpc, cfg, live=False)
+    assert [r["ev"] for r in log] == ["dry_simulated", "skip_open_position", "batch_empty_after_recheck"]
+    assert log[1]["account"] == b["pubkey"] and rpc.calls.count("simulateTransaction") == 1
+
+
+def test_sweep_cli_dry_never_loads_key(env, monkeypatch, tmp_path):
+    cfg, _, _ = env
+    cfg_path = tmp_path / "cfg.json"
+    cfg_path.write_text(json.dumps(cfg))
+    import tools.pumpswap_simulate as sim
+    from tools import probe_live
+
+    def boom(*a, **k):
+        raise AssertionError("key loaded in dry mode")
+    monkeypatch.setattr(sim, "Rpc", lambda url: FakeRpc([acct()]))
+    monkeypatch.setattr(sim, "load_rpc_url", lambda *a, **k: "http://x")
+    monkeypatch.setattr(probe_live, "load_probe_key", boom)
+    assert rs.main(["sweep", "--config", str(cfg_path)]) == 0
+
+
+def test_max_batch_tx_fits_size_limit():
+    kp = Keypair()
+    rows = [{"address": str(Keypair().pubkey()), "program": "tokenkeg" if i % 2 else "token2022"} for i in range(rs.MAX_BATCH)]
+    msg = rs.build_message(rows, kp.pubkey(), Hash.default())
+    assert len(bytes(VersionedTransaction(msg, [kp]))) <= 1232
 
 
 @pytest.mark.parametrize("which", ["lane-stop", "wstop", "whalt"])
@@ -269,7 +351,6 @@ def test_recheck_drops_account_that_got_balance(env):
     cfg, _, _ = env
     a = acct()
     rpc = FakeRpc([a])
-    orig = rpc.__call__
 
     class Flip(FakeRpc):
         def __call__(self, method, params):
@@ -279,7 +360,6 @@ def test_recheck_drops_account_that_got_balance(env):
     rpc = Flip([a])
     log = rs.run_sweep(rpc, cfg, live=False)
     assert [r["ev"] for r in log] == ["batch_empty_after_recheck"] and "simulateTransaction" not in rpc.calls
-    assert orig  # keep flake8 quiet
 
 
 def test_message_has_close_ixs_both_programs():

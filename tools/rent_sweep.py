@@ -8,9 +8,22 @@ strands about 2,039,280 lamports. CloseAccount on a zero-balance account returns
   sweep --config FILE [--live]                              key holder only (Helm, root-owned pinned tree, systemd LoadCredential).
                                                             Without --live it builds and simulates and signs nothing.
 
-Sweep refuses (exit 3, nothing built) when: any STOP / HALT file exists or cannot be stat'ed, the lane ledger (or its
-backlog) is unreadable, or a candidate's mint is open in the lane ledger. Each candidate is re-read right before its
-batch is built. The key is loaded only by tools.probe_live.load_probe_key from $CREDENTIALS_DIRECTORY; this file has
+Sweep refuses (exit 3, nothing built, before any RPC call) when: any STOP / HALT file exists or cannot be stat'ed, the lane ledger
+is missing, unreadable or torn, a ledger backlog file is non-empty, or no ledger is configured. A non-empty ledger is normal. An open
+lane position does NOT refuse the run: the sweep lists the accounts, skips (logs skip_open_position) every account whose mint is open
+in the lane ledger, and closes the rest. The ledger is re-read before EACH batch, so a mint that became open since the last read is
+skipped for that batch. Each candidate is re-read on-chain right before its batch is built. --live always requires the LIVE_OK file
+(config live_ok_path, default /etc/mal-rent-sweep/LIVE_OK); a config that omits the key does not skip the check. A batch that fails
+simulation is retried one account at a time; the account that cannot be closed is logged and skipped, the others are closed.
+
+The sweep does NOT take the lane lock, so a buy can land between the ledger read and the send. That is safe: CloseAccount fails
+on-chain on a non-zero balance (no token can be lost; the cost is one failed tx fee), and if the sweep wins the race the buy
+re-creates the ATA idempotently and pays the rent again, about 0.00204 SOL once, booked to that trade by the executor.
+
+Accounting: the sweep writes only its own JSONL (log_path), never the lane ledger. Recovered rent is reported on its own line in the
+DEC-035 section 5 daily report. It never goes into any book's realized SOL or into a gate read.
+
+The key is loaded only by tools.probe_live.load_probe_key from $CREDENTIALS_DIRECTORY; this file has
 no crypto of its own and never prints or logs key material or the RPC URL.
 """
 from __future__ import annotations
@@ -39,9 +52,10 @@ CU_PER_CLOSE = 15_000
 CLOSE_ACCOUNT_TAG = 9  # spl-token / token-2022 Instruction::CloseAccount (same layout in both programs)
 WALLET_STOP = Path("/var/lib/mal-live/STOP")  # same fixed paths as tools.probe_executor.LIVE_DIR
 WALLET_HALT = Path("/var/lib/mal-live/HALT")
+DEFAULT_LIVE_OK = "/etc/mal-rent-sweep/LIVE_OK"
 PROGRAMS = {"tokenkeg": tx.TOKEN_PROGRAM, "token2022": tx.TOKEN_2022_PROGRAM}
 CONFIRM_TIMEOUT_S = 60.0
-CONFIG_KEYS = {"owner", "rpc_url_env", "ledger_paths", "stop_paths", "exclude_mints_file", "log_path", "live_ok_path", "max_per_tx", "max_txs"}
+CONFIG_KEYS = {"owner", "ledger_paths", "stop_paths", "exclude_mints_file", "log_path", "live_ok_path", "max_per_tx", "max_txs"}
 
 Rpc = Callable[[str, list], Any]
 
@@ -261,13 +275,13 @@ def confirm(rpc: Rpc, sig: str, sleep: Callable[[float], None] = time.sleep, tim
 def run_sweep(rpc: Rpc, cfg: dict[str, Any], *, live: bool, keypair: Any = None, sleep: Callable[[float], None] = time.sleep) -> list[dict[str, Any]]:
     """Returns the log rows written. Raises Refused before anything is built."""
     check_flags(cfg)
-    if live and cfg.get("live_ok_path") and not Path(cfg["live_ok_path"]).exists():
+    if live and not Path(cfg.get("live_ok_path") or DEFAULT_LIVE_OK).exists():  # --live always needs LIVE_OK; omitting the key does not skip it
         raise Refused("live_ok_missing")
     owner_s = cfg["owner"]
     owner = Pubkey.from_string(owner_s)
     if live and (keypair is None or keypair.pubkey() != owner):
         raise Refused("keypair_not_owner")
-    opened = open_mints(cfg["ledger_paths"])
+    opened = open_mints(cfg["ledger_paths"])  # first read, before any RPC call; re-read before EACH batch below
     exclude = read_exclude(cfg.get("exclude_mints_file"))
     rows = [r for r in list_accounts(rpc, owner_s, exclude) if r["closable"]]
     skipped = [r for r in rows if r["mint"] in opened]
@@ -279,37 +293,54 @@ def run_sweep(rpc: Rpc, cfg: dict[str, Any], *, live: bool, keypair: Any = None,
         log.append(row)
         _log(cfg["log_path"], row)
 
-    for r in skipped:
-        emit({"ev": "skip_open_position", "account": r["address"], "mint": r["mint"]})
-    max_txs = int(cfg.get("max_txs", 1000))
-    for batch in batches(rows, cfg["max_per_tx"])[:max_txs]:
-        check_flags(cfg)  # again, per batch: a STOP written mid-sweep ends it
-        fresh = [f for f in recheck(rpc, batch, owner_s, exclude) if f["closable"] and f["mint"] not in opened]
-        if not fresh:
-            emit({"ev": "batch_empty_after_recheck"})
-            continue
+    def attempt(group: list[dict[str, Any]]) -> str:
+        """Build, simulate and (live) send one tx for `group`. Returns 'ok', 'sim_failed' or 'stop' (unresolved send: end the run)."""
         bh = rpc("getLatestBlockhash", [{"commitment": "confirmed"}])["value"]
-        msg = build_message(fresh, owner, Hash.from_string(bh["blockhash"]))
-        accounts = [f["address"] for f in fresh]
-        lamports = sum(int(f["lamports"]) for f in fresh)
+        msg = build_message(group, owner, Hash.from_string(bh["blockhash"]))
+        accounts = [f["address"] for f in group]
+        lamports = sum(int(f["lamports"]) for f in group)
         wire = base64.b64encode(bytes(tx.unsigned_transaction(msg))).decode()
         sim = rpc("simulateTransaction", [wire, {"encoding": "base64", "sigVerify": False, "replaceRecentBlockhash": True, "commitment": "processed"}])["value"]
         if sim.get("err"):
             emit({"ev": "simulate_failed", "accounts": accounts, "err": sim["err"], "logs": (sim.get("logs") or [])[-4:]})
-            continue
+            return "sim_failed"
         if not live:
             emit({"ev": "dry_simulated", "accounts": accounts, "expected_lamports": lamports, "units": sim.get("unitsConsumed")})
-            continue
-        raw = bytes(VersionedTransaction(msg, [keypair]))
-        sig = rpc("sendTransaction", [base64.b64encode(raw).decode(), {"encoding": "base64", "skipPreflight": True, "maxRetries": 3}])
+            return "ok"
+        vtx = VersionedTransaction(msg, [keypair])
+        emit({"ev": "send_attempt", "sig": str(vtx.signatures[0]), "accounts": accounts})  # on record before the send, so a send error leaves the sig
+        sig = rpc("sendTransaction", [base64.b64encode(bytes(vtx)).decode(), {"encoding": "base64", "skipPreflight": True, "maxRetries": 3}])
         status = confirm(rpc, sig, sleep)
         row: dict[str, Any] = {"ev": "sent", "sig": sig, "accounts": accounts, "status": status or "unconfirmed", "expected_lamports": lamports}
         if status == "confirmed":
             t = rpc("getTransaction", [sig, {"encoding": "json", "commitment": "confirmed", "maxSupportedTransactionVersion": 0}])
             row["recovered_lamports"] = recovered_lamports(t)
         emit(row)
-        if status != "confirmed":
-            break  # do not stack a second batch on an unresolved one
+        return "ok" if status == "confirmed" else "stop"  # do not stack a second batch on an unresolved one
+
+    for r in skipped:
+        emit({"ev": "skip_open_position", "account": r["address"], "mint": r["mint"]})
+    max_txs = int(cfg.get("max_txs", 1000))
+    for batch in batches(rows, cfg["max_per_tx"])[:max_txs]:
+        check_flags(cfg)  # again, per batch: a STOP written mid-sweep ends it
+        opened = open_mints(cfg["ledger_paths"])  # again, per batch: a position opened since the last read is skipped
+        for r in batch:
+            if r["mint"] in opened:
+                emit({"ev": "skip_open_position", "account": r["address"], "mint": r["mint"]})
+        todo = [r for r in batch if r["mint"] not in opened]
+        fresh = [f for f in recheck(rpc, todo, owner_s, exclude) if f["closable"]] if todo else []
+        if not fresh:
+            emit({"ev": "batch_empty_after_recheck"})
+            continue
+        res = attempt(fresh)
+        if res == "sim_failed" and len(fresh) > 1:
+            # One account that cannot be closed must not block the others every day: retry one by one, log and skip the bad one.
+            for f in fresh:
+                res = attempt([f])
+                if res == "stop":
+                    break
+        if res == "stop":
+            break
     return log
 
 

@@ -1,7 +1,12 @@
 # EXAMPLE ONLY. Not installed by merging this file. Helm installs it from a root-owned pinned copy of the repo and places the credential
 # (DEC-035). This file holds no key. The DRY default builds and simulates and signs nothing. The live switch is the drop-in at the bottom.
-# The sweep refuses while any STOP or HALT file exists, while the lane ledger is unreadable, and for any mint with an open lane position.
-# One wallet, one signer at a time: it must not run while a lane executor holds the key.
+# The sweep refuses while any STOP or HALT file exists or the lane ledger is unreadable; it SKIPS (does not refuse on) any mint with an
+# open lane position. It takes no lane lock: a concurrent executor is safe (open-mint skip, and CloseAccount fails on-chain on a non-zero
+# balance), so After= below is only a courtesy ordering, not an exclusion. --live also needs /etc/mal-rent-sweep/LIVE_OK (the default).
+# Install on a fresh host (Helm, as root), before the first start:
+#   install -d -o mal-live -g mal-live -m 0700 /var/lib/mal-live/rent-sweep
+#   install -d -o root -g root -m 0755 /etc/mal-rent-sweep        # LIVE_OK goes here only when the live drop-in is armed
+# The ReadOnlyPaths below are prefixed with - so a missing optional dir does not stop the unit (226/NAMESPACE).
 [Unit]
 Description=MAL lane rent sweep, closes zero-balance token accounts (example; DRY by default)
 After=network-online.target
@@ -21,7 +26,7 @@ ExecStart=/usr/local/lib/mal-h5-exec/venv/bin/python -E -s -B -u -m tools.rent_s
 NoNewPrivileges=true
 ProtectSystem=strict
 ReadWritePaths=/var/lib/mal-live/rent-sweep
-ReadOnlyPaths=/usr/local/lib/mal-rent-sweep /etc/mal-rent-sweep /var/lib/mal-live/h5-lane /var/lib/mal-live/slowbot-h
+ReadOnlyPaths=/usr/local/lib/mal-rent-sweep -/etc/mal-rent-sweep -/var/lib/mal-live/h5-lane -/var/lib/mal-live/slowbot-h
 ProtectHome=tmpfs
 PrivateTmp=true
 ProtectKernelTunables=true

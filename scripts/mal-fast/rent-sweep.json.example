@@ -1,7 +1,7 @@
 {
   "owner": "REPLACE_WITH_LANE_WALLET_PUBLIC_ADDRESS",
   "ledger_paths": ["/var/lib/mal-live/h5-lane/lane-ledger.jsonl"],
-  "stop_paths": ["/var/lib/mal-live/h5-lane/STOP", "/var/lib/mal-live/slowbot-h/state/STOP-slowbot-h-1"],
+  "stop_paths": ["/var/lib/mal-live/h5-lane/STOP", "/var/lib/mal-live/h5-lane-oc/OC-STOP", "/var/lib/mal-live/h5-lane-syn/SYN-STOP", "/var/lib/mal-live/slowbot-h/state/STOP-slowbot-h-1"],
   "exclude_mints_file": "/usr/local/lib/mal-rent-sweep/exclude-mints.txt",
   "log_path": "/var/lib/mal-live/rent-sweep/sweep.jsonl",
   "live_ok_path": "/etc/mal-rent-sweep/LIVE_OK",
