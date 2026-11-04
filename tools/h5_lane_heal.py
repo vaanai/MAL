@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import collections
 import json
+import time
 from pathlib import Path
 from typing import Any, Callable
 
@@ -40,6 +41,23 @@ LANE_HEAL_KEYS = ("v", "status", "reason", "kinds", "n_gaps_full", "max_interval
                   "ws_only_total_n", "boost_buys_tip_only_n", "replay", "healed_through_seq", "follower")
 
 _PINNED_ENGINE = hs.Engine  # captured at import: the replay always uses the pinned class, never a subclass
+
+
+SEQ_PROCESS_SPAN = 10**6  # flagged gaps per process before a seq would reach the next millisecond's range (about 1 per 36 s on the live feed)
+_last_base = [0]
+
+
+def _now_ms() -> int:
+    return int(time.time() * 1000)
+
+
+def _process_seq_base() -> int:
+    """lane_gap_seq base of one engine (one shadow process): its start ms times SEQ_PROCESS_SPAN, forced strictly above any base issued earlier in this
+    interpreter. Seqs are unique and monotone across shadow restarts; the executor also requires a gap row to be from the same process (seq // SEQ_PROCESS_SPAN)
+    as the trigger's healed_through_seq, so a gap row of an earlier process is never covered."""
+    b = max(_now_ms(), _last_base[0] + 1)
+    _last_base[0] = b
+    return b * SEQ_PROCESS_SPAN
 
 
 def compact(row: dict) -> dict:
@@ -91,7 +109,7 @@ def build_engine_class(status_path: str | Path = FOLLOWER_STATUS_PATH, base: typ
 
         def __init__(self, *a: Any, **kw: Any) -> None:
             super().__init__(*a, **kw)
-            self._lh_seq = 0
+            self._lh_seq = _process_seq_base()  # = process start ms * SEQ_PROCESS_SPAN: every seq of a later process is greater than any seq of an earlier one
             self._lh_cur_seq: int | None = None
             self._lh_pools: dict[str, PoolHeal] = {}
             self._lh_tip_pending: dict[str, dict[tuple, dict]] = {}
