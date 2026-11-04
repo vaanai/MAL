@@ -1,0 +1,14 @@
+{
+  "daily_usd_cap": 8.00,
+  "max_pool_age_min": 15,
+  "poll_s": 60,
+  "max_tokens": 200,
+  "new_pools_pages": 2,
+  "variants": ["A", "B"],
+  "gecko_per_min": 18,
+  "outcomes_gecko_per_min": 10,
+  "ds_pairs_per_min": 120,
+  "x_feed": "/data/mal/x-feed",
+  "ipfs_gateway": "https://ipfs.io/ipfs/",
+  "ipfs_timeout_s": 4
+}
