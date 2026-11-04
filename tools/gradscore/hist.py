@@ -358,14 +358,20 @@ def gather(window_dir):
 
 # ----------------------------------------------------------------------------- IPFS metadata
 
-class MetaFetcher:
-    """uri -> metadata dict | None. Disk cache (positive and negative), rate limit on remote hosts, short timeouts."""
+META_KEEP = ("description", "twitter", "telegram", "website", "name", "symbol")
 
-    def __init__(self, cache_dir, kubo="http://127.0.0.1:8080/ipfs/", gateways=("https://ipfs.io/ipfs/",), timeout_s=4.0, min_interval_s=0.25,
+
+class MetaFetcher:
+    """uri -> metadata dict | None. Thread-safe. Disk cache (positive and negative, only the META_KEEP fields), global rate limit on every
+    non-local request, short timeouts. get_ex also returns the failure reason: no_uri | fetch_fail | not_json."""
+
+    def __init__(self, cache_dir, kubo="http://127.0.0.1:8080/ipfs/", gateways=("https://ipfs.io/ipfs/",), timeout_s=4.0, min_interval_s=0.2,
                  opener=None, sleep=time.sleep, clock=time.monotonic):
+        import threading
         self.dir, self.kubo, self.gateways, self.timeout = cache_dir, kubo, gateways, timeout_s
         self.min_interval, self.opener, self.sleep, self.clock = min_interval_s, opener or self._open, sleep, clock
         self._last = 0.0
+        self.lock = threading.Lock()
         self.stats = {"cached": 0, "fetched": 0, "failed": 0, "kubo_ok": 0}
         os.makedirs(cache_dir, exist_ok=True)
 
@@ -383,46 +389,68 @@ class MetaFetcher:
         out = []
         if m:
             cid = m.group(1)
-            rest = ""
-            out.append(self.kubo.rstrip("/") + "/" + cid + rest)
-            out += [g.rstrip("/") + "/" + cid + rest for g in self.gateways]
+            out.append(self.kubo.rstrip("/") + "/" + cid)
+            out += [g.rstrip("/") + "/" + cid for g in self.gateways]
         if uri.startswith(("http://", "https://")) and uri not in out:
             out.append(uri)
         return out
 
+    def _bump(self, k):
+        with self.lock:
+            self.stats[k] += 1
+
+    def forget(self, uri):
+        try:
+            os.remove(self._path(uri))
+        except OSError:
+            pass
+
     def get(self, uri):
+        return self.get_ex(uri)[0]
+
+    def get_ex(self, uri):
         if not isinstance(uri, str) or not uri.strip():
-            return None
+            return None, "no_uri"
         p = self._path(uri)
         if os.path.exists(p):
             try:
                 with open(p) as f:
-                    self.stats["cached"] += 1
-                    return json.load(f).get("meta")
+                    d = json.load(f)
+                self._bump("cached")
+                return d.get("meta"), d.get("reason", "ok" if d.get("meta") else "fetch_fail")
             except (OSError, ValueError):
                 pass
-        meta = None
-        for i, url in enumerate(self.urls(uri)):
+        meta, reason = None, "fetch_fail"
+        for url in self.urls(uri):
             remote = not url.startswith("http://127.0.0.1")
             if remote:
-                wait = self.min_interval - (self.clock() - self._last)
+                with self.lock:
+                    wait = self.min_interval - (self.clock() - self._last)
+                    self._last = self.clock() + max(wait, 0)
                 if wait > 0:
                     self.sleep(wait)
-                self._last = self.clock()
             try:
-                doc = json.loads(self.opener(url, self.timeout))
+                raw = self.opener(url, self.timeout)
             except Exception:
                 continue
+            try:
+                doc = json.loads(raw)
+            except ValueError:
+                reason = "not_json"
+                continue
             if isinstance(doc, dict):
-                meta = doc
-                self.stats["kubo_ok"] += 0 if remote else 1
+                meta = {k: (doc[k][:2000] if isinstance(doc.get(k), str) else doc.get(k)) for k in META_KEEP if isinstance(doc.get(k), (str, int, float))}
+                reason = "ok"
+                if not remote:
+                    self._bump("kubo_ok")
                 break
-        self.stats["fetched" if meta else "failed"] += 1
-        tmp = p + ".tmp"
+            reason = "not_json"
+        self._bump("fetched" if meta is not None else "failed")
+        tmp = p + f".{os.getpid()}.{id(meta)}.tmp"
         with open(tmp, "w") as f:
-            json.dump({"uri": uri, "meta": meta}, f)
+            json.dump({"uri": uri, "meta": meta, "reason": reason}, f)
         os.replace(tmp, p)
-        return meta
+        return meta, reason
 
 
 # ----------------------------------------------------------------------------- cards
@@ -443,11 +471,18 @@ def make_card(mint, st, create, meta, sol_usd, vmap):
     return card, {"pool": st.chosen, "v_source": vsrc}
 
 
-def cmd_cards(block, out, sol_usd=SOL_USD_DEFAULT, fetch=True, workers=2, fetcher=None, vmap=None):
+def cmd_cards(block, out, sol_usd=SOL_USD_DEFAULT, fetch=True, workers=2, fetcher=None, vmap=None, enrich=None):
     block = check_block(block)
     name = block_name(block)
     os.makedirs(out, exist_ok=True)
     vmap = vmap or VMap()
+    enr = {}
+    if enrich:  # enrich-<block>.jsonl from `enrich`: uri + metadata fields per mint; no live fetch then
+        with open(enrich) as ef:
+            for l in ef:
+                r = json.loads(l)
+                enr[r["mint"]] = r
+        fetch = False
     fetcher = fetcher or (MetaFetcher(os.path.join(out, "meta-cache")) if fetch else None)
     path = os.path.join(out, f"cards-{name}.jsonl")
     counts = {"graduations": 0, "cards": 0, "with_uri": 0, "with_metadata": 0, "with_create": 0}
@@ -476,13 +511,18 @@ def cmd_cards(block, out, sol_usd=SOL_USD_DEFAULT, fetch=True, workers=2, fetche
             st = run_engine(iter_prints(hs, use, workers), use, "cards", vmap, w1) if use else {}
             for mint in sorted(use, key=lambda m: (use[m], m)):
                 cr = creates.get(mint)
-                meta = fetcher.get(cr.get("uri")) if (fetcher and cr and cr.get("uri")) else None
+                er = enr.get(mint)
+                meta = er["meta"] if er else (fetcher.get(cr.get("uri")) if (fetcher and cr and cr.get("uri")) else None)
+                if er and er.get("uri") and cr is not None and not cr.get("uri"):
+                    cr = dict(cr, uri=er["uri"])
+                elif er and cr is None and er.get("uri"):
+                    cr = {"name": er.get("name"), "symbol": er.get("symbol"), "uri": er["uri"], "creator": None, "create_ts": None, "from_chain": True}
                 card, extra = make_card(mint, st[mint], cr, meta, sol_usd, vmap)
                 if card is None:
                     skips[extra] = skips.get(extra, 0) + 1
                     continue
                 row = {"mint": mint, "window": wname, "migration_ts": use[mint], "first_sight_ts": use[mint] + FIRST_SIGHT_S,
-                       "card_text": cd.card_text(card), "card_sha256": cd.card_sha256(card), "has_create": cr is not None,
+                       "card_text": cd.card_text(card), "card_sha256": cd.card_sha256(card), "has_create": bool(cr) and not cr.get("from_chain"),
                        "has_uri": bool(cr and cr.get("uri")), "has_metadata": meta is not None, "has_x_context": False,
                        "creator": (cr or {}).get("creator"), "create_ts": (cr or {}).get("create_ts"), "uri": (cr or {}).get("uri"),
                        "sol_usd_assumed": sol_usd, **extra}
@@ -498,6 +538,53 @@ def cmd_cards(block, out, sol_usd=SOL_USD_DEFAULT, fetch=True, workers=2, fetche
 
 
 # ----------------------------------------------------------------------------- labels
+
+def cmd_enrich(cards, out, rpc=None, fetcher=None, workers=16):
+    """cards-<block>.jsonl -> enrich-<block>.jsonl. Per mint: uri (create row when it has one, else on-chain via tools.gradscore.enrich),
+    then the uri JSON (kubo, gateways, uri host; cached; rate limited; failures retried once at the end). Reads ONLY the cards file
+    (mint, uri) and public RPC / IPFS; no trades, no labels."""
+    from concurrent.futures import ThreadPoolExecutor
+    from tools.gradscore import enrich as en
+    name = os.path.basename(cards)
+    name = name[len("cards-"):-len(".jsonl")] if name.startswith("cards-") and name.endswith(".jsonl") else name
+    os.makedirs(out, exist_ok=True)
+    fetcher = fetcher or MetaFetcher(os.path.join(out, "meta-cache"))
+    rpc = rpc or en.Rpc()
+    rows = {}
+    with open(cards) as f:
+        for line in f:
+            c = json.loads(line)
+            rows[c["mint"]] = {"mint": c["mint"], "uri": c.get("uri"), "source": "create" if c.get("uri") else None, "rpc_status": None,
+                               "name": None, "symbol": None}
+    need = [m for m, r in rows.items() if not r["uri"]]
+    for m, r in en.resolve(need, rpc).items():
+        rows[m].update(uri=r["uri"], name=r["name"], symbol=r["symbol"], source=r["source"], rpc_status=r["rpc_status"])
+
+    def fetch(m):
+        r = rows[m]
+        r["meta"], r["fetch_status"] = fetcher.get_ex(r["uri"]) if r["uri"] else (None, "no_uri")
+
+    with ThreadPoolExecutor(max_workers=workers) as ex:
+        list(ex.map(fetch, rows))
+    retry = [m for m, r in rows.items() if r["uri"] and r["meta"] is None]
+    for m in retry:  # one retry of every failure, at the end
+        fetcher.forget(rows[m]["uri"])
+    with ThreadPoolExecutor(max_workers=workers) as ex:
+        list(ex.map(fetch, retry))
+    path = os.path.join(out, f"enrich-{name}.jsonl")
+    reasons = {}
+    for r in rows.values():
+        k = r["fetch_status"] if r["uri"] else "no_uri:" + str(r["rpc_status"])
+        reasons[k] = reasons.get(k, 0) + 1
+    with open(path, "w") as fo:
+        for m in sorted(rows):
+            fo.write(json.dumps(rows[m], sort_keys=True) + "\n")
+    res = {"block": name, "mints": len(rows), "with_uri": sum(1 for r in rows.values() if r["uri"]),
+           "with_metadata": sum(1 for r in rows.values() if r["meta"] is not None), "status": reasons, "retried": len(retry),
+           "rpc_calls": getattr(rpc, "calls", None), "rpc_note": "uri read from chain at enrichment time (2026-11), not at creation"}
+    _write_json(path[:-6] + ".meta.json", res)
+    return res
+
 
 def cmd_labels(block, out, workers=2, vmap=None):
     block = check_block(block)
@@ -655,6 +742,11 @@ def main(argv=None):
     a.add_argument("--sol-usd", type=float, default=SOL_USD_DEFAULT)
     a.add_argument("--no-fetch", action="store_true")
     a.add_argument("--workers", type=int, default=2)
+    a.add_argument("--enrich", default=None)
+    e = sub.add_parser("enrich")
+    e.add_argument("--cards", required=True)
+    e.add_argument("--out", required=True)
+    e.add_argument("--workers", type=int, default=16)
     b = sub.add_parser("score")
     b.add_argument("--cards", required=True)
     b.add_argument("--out", required=True)
@@ -667,7 +759,9 @@ def main(argv=None):
     a_ = ap.parse_args(argv)
     try:
         if a_.cmd == "cards":
-            res = cmd_cards(a_.block, a_.out, a_.sol_usd, not a_.no_fetch, a_.workers)
+            res = cmd_cards(a_.block, a_.out, a_.sol_usd, not a_.no_fetch, a_.workers, enrich=a_.enrich)
+        elif a_.cmd == "enrich":
+            res = cmd_enrich(a_.cards, a_.out, workers=a_.workers)
         elif a_.cmd == "score":
             res = cmd_score(a_.cards, a_.out, a_.cap_usd, a_.workers)
         else:
