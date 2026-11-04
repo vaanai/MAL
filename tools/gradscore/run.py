@@ -79,11 +79,15 @@ class Collector:
         now = self.clock()
         self.counters["polls"] += 1
         try:
-            pools = self.disc.new_pools(now, self.cfg["max_pool_age_min"])
+            pools = self.disc.new_pools(now, self.cfg["max_pool_age_min"], self.cfg.get("new_pools_pages", 1))
         except (HttpError, OSError, ValueError):
             self.counters["poll_errors"] += 1
             return 0
-        new = [p for p in pools if p["mint"] not in self.state["seen"]]
+        new, in_poll = [], set()
+        for p in pools:  # dedupe by mint within the poll too (two new pools of one mint in a page = one handling)
+            if p["mint"] not in self.state["seen"] and p["mint"] not in in_poll:
+                in_poll.add(p["mint"])
+                new.append(p)
         for p in sorted(new, key=lambda r: r["pool_created_at"] or ""):
             if self.stop:
                 break

@@ -1,0 +1,54 @@
+# EXAMPLE ONLY. Not installed by merging this file. Helm installs it from a root-owned pinned copy of the repo and places the credential
+# (DEC-035). This file holds no key. The DRY default builds and simulates and signs nothing. The live switch is the drop-in at the bottom.
+# The sweep refuses while any STOP or HALT file exists or the lane ledger is unreadable; it SKIPS (does not refuse on) any mint with an
+# open lane position. It takes no lane lock: a concurrent executor is safe (open-mint skip, and CloseAccount fails on-chain on a non-zero
+# balance), so After= below is only a courtesy ordering, not an exclusion. --live also needs /etc/mal-rent-sweep/LIVE_OK (the default).
+# Install on a fresh host (Helm, as root), before the first start:
+#   install -d -o mal-live -g mal-live -m 0700 /var/lib/mal-live/rent-sweep
+#   install -d -o root -g root -m 0755 /etc/mal-rent-sweep        # LIVE_OK goes here only when the live drop-in is armed
+# The ReadOnlyPaths below are prefixed with - so a missing optional dir does not stop the unit (226/NAMESPACE).
+[Unit]
+Description=MAL lane rent sweep, closes zero-balance token accounts (example; DRY by default)
+After=network-online.target
+Wants=network-online.target
+After=mal-h5-lane-executor.service mal-slowbot-live.service
+
+[Service]
+# Python flags -E -s -B -u (not -I: on Python 3.12 -I implies -P and `-m tools...` fails; see mal-slowbot-live.service.example).
+Type=oneshot
+User=mal-live
+Nice=10
+WorkingDirectory=/usr/local/lib/mal-rent-sweep/current
+Environment=PYTHONUNBUFFERED=1
+Environment=LC_ALL=C.UTF-8
+EnvironmentFile=/etc/mal-probe-rpc/helius.env
+ExecStart=/usr/local/lib/mal-h5-exec/venv/bin/python -E -s -B -u -m tools.rent_sweep sweep --config /usr/local/lib/mal-rent-sweep/current/rent-sweep.json
+NoNewPrivileges=true
+ProtectSystem=strict
+ReadWritePaths=/var/lib/mal-live/rent-sweep
+ReadOnlyPaths=/usr/local/lib/mal-rent-sweep -/etc/mal-rent-sweep -/var/lib/mal-live/h5-lane -/var/lib/mal-live/slowbot-h
+ProtectHome=tmpfs
+PrivateTmp=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+LockPersonality=true
+RestrictAddressFamilies=AF_INET AF_INET6
+CapabilityBoundingSet=
+PrivateDevices=true
+ProtectProc=invisible
+SystemCallFilter=@system-service
+SystemCallArchitectures=native
+RestrictNamespaces=true
+UMask=0077
+LimitCORE=0
+MemoryMax=512M
+MemorySwapMax=0
+TimeoutStartSec=15min
+
+# ---- live drop-in: /etc/systemd/system/mal-rent-sweep.service.d/live.conf (separate file; hands the process the key) ----
+# [Service]
+# LoadCredential=probe-wallet:/etc/mal-probe/probe-wallet.json
+# ExecStart=
+# ExecStart=/usr/local/lib/mal-h5-exec/venv/bin/python -E -s -B -u -m tools.rent_sweep sweep --config /usr/local/lib/mal-rent-sweep/current/rent-sweep.json --live
