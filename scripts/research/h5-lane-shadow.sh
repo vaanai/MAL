@@ -39,6 +39,8 @@
 #                   trades-*.jsonl in the dir must pass `test -r` for the user running the job, else the shadow logs why and starts with the
 #                   union OFF (fail-soft; restart with the permission fixed to turn it on). A dir that goes stale later is not an error: the
 #                   fields go null.
+#   H5_LANE_HEAL    set to exactly DEC-035 to run tools.h5_lane_heal_shadow with --lane-heal DEC-035 (A-R tip-replay heal, QP-RULING-1104-oc-feedfix): refused unless the tip union ends up ON
+#                   (H5_TIP_DIR set and readable). Off by default: records stay byte-identical. Reads the follower's status.json (and no other follower file).
 #   H5_CODE_SHA     set by this script to `git rev-parse HEAD` of the checkout (empty if unknown); the start record's code_sha.
 set -eu
 HERE="$(cd "$(dirname "$0")" && pwd)"
@@ -110,8 +112,16 @@ case "$TIP" in
     ;;
   *) echo "h5-lane-shadow: refusing H5_TIP_DIR=$TIP (not absolute)" >&2; exit 2 ;;
 esac
+ENTRY=tools.h5_lane_shadow
+if [ -n "${H5_LANE_HEAL:-}" ]; then
+  [ "$H5_LANE_HEAL" = "DEC-035" ] || { echo "h5-lane-shadow: refusing H5_LANE_HEAL=$H5_LANE_HEAL (the only accepted value is DEC-035)" >&2; exit 2; }
+  case "$TIP_STATE" in
+    on:*) set -- "$@" --lane-heal DEC-035; ENTRY=tools.h5_lane_heal_shadow ;;
+    *) echo "h5-lane-shadow: refusing H5_LANE_HEAL=DEC-035 without the tip union (H5_TIP_DIR must be set and readable)" >&2; exit 2 ;;
+  esac
+fi
 H5_CODE_SHA="$(git -C "$ROOT" rev-parse HEAD 2>/dev/null || true)"
 BX10=off
 if [ "${H5_BX10_ENABLE:-}" = "EXP-026" ]; then BX10=on; fi
 echo "h5-lane-shadow: rule H5-BOOSTFLOOR v1, out=$OUT, look2_observed=${H5_LOOK2_OBSERVED:-no}, bx10=$BX10, tip_union=$TIP_STATE, python=$PY, head=${H5_CODE_SHA:-unknown}"
-exec env PYTHONPATH="$ROOT" H5_CODE_SHA="$H5_CODE_SHA" "$PY" -m tools.h5_lane_shadow --lane DEC-035 "$@"
+exec env PYTHONPATH="$ROOT" H5_CODE_SHA="$H5_CODE_SHA" "$PY" -m "$ENTRY" --lane DEC-035 "$@"
