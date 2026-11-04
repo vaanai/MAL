@@ -442,6 +442,26 @@ class Test3GapInjection(Base):
         _, _, out = self.case("a", tip_rows=tips)
         self.assertEqual(self.heal(out)["reason"], "heal_v_missing")
 
+    def test_silence_and_restart_intervals_close_at_next_event(self):
+        scn = base("a")
+        eng, out = mk(hl.build_engine_class(self.sp), self.sp, FakeTip())
+        eng.on_create_pool(scn.pool, MINT, hs.WSOL_MINT, 999, 0)
+        rows = scn.ws_rows()
+        for r in rows[:5]:
+            eng.on_trade(dict(r))
+        st = eng._lh_pools[scn.pool]
+        eng.tick(eng.last_event_ms + 25_000)  # silence: L = hw_slot of the last event, R pending
+        i_sil = len(eng.pools[scn.pool].gaps) - 1
+        self.assertEqual(st.iv[i_sil][:2], [1095, None])
+        eng.on_trade(dict(rows[5]))  # first event after it (slot 1160)
+        self.assertEqual(st.iv[i_sil][:2], [1095, 1160])
+        eng.feed_restart(eng.last_event_ms + 1_000, "t")
+        i_rs = len(eng.pools[scn.pool].gaps) - 1
+        self.assertEqual(st.iv[i_rs][:2], [1160, None])
+        eng.on_trade(dict(rows[6]))
+        self.assertEqual(st.iv[i_rs][:2], [1160, 1180])
+        self.assertEqual([st.iv[i][2] for i in sorted(st.iv)], sorted(st.iv[i][2] for i in st.iv))
+
     def test_store_freed_at_pool_close(self):
         scn, eng, out = self.case("a")
         self.assertIn(scn.pool, eng._lh_pools)
