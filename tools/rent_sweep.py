@@ -16,6 +16,7 @@ no crypto of its own and never prints or logs key material or the RPC URL.
 from __future__ import annotations
 
 import argparse
+import base64
 import json
 import os
 import sys
@@ -24,6 +25,7 @@ from pathlib import Path
 from typing import Any, Callable
 
 from solders.compute_budget import set_compute_unit_limit
+from solders.hash import Hash
 from solders.instruction import AccountMeta, Instruction
 from solders.message import Message
 from solders.pubkey import Pubkey
@@ -242,7 +244,8 @@ def recovered_lamports(meta_tx: dict[str, Any]) -> int:
     return int(m["postBalances"][0]) - int(m["preBalances"][0]) + int(m["fee"])
 
 
-def confirm(rpc: Rpc, sig: str, sleep: Callable[[float], None] = time.sleep, timeout_s: float = CONFIRM_TIMEOUT_S) -> str | None:
+def confirm(rpc: Rpc, sig: str, sleep: Callable[[float], None] = time.sleep, timeout_s: float | None = None) -> str | None:
+    timeout_s = CONFIRM_TIMEOUT_S if timeout_s is None else timeout_s
     t0 = time.monotonic()
     while time.monotonic() - t0 <= timeout_s:
         st = rpc("getSignatureStatuses", [[sig], {"searchTransactionHistory": True}])["value"][0]
@@ -286,11 +289,10 @@ def run_sweep(rpc: Rpc, cfg: dict[str, Any], *, live: bool, keypair: Any = None,
             emit({"ev": "batch_empty_after_recheck"})
             continue
         bh = rpc("getLatestBlockhash", [{"commitment": "confirmed"}])["value"]
-        from solders.hash import Hash
         msg = build_message(fresh, owner, Hash.from_string(bh["blockhash"]))
         accounts = [f["address"] for f in fresh]
         lamports = sum(int(f["lamports"]) for f in fresh)
-        wire = __import__("base64").b64encode(bytes(tx.unsigned_transaction(msg))).decode()
+        wire = base64.b64encode(bytes(tx.unsigned_transaction(msg))).decode()
         sim = rpc("simulateTransaction", [wire, {"encoding": "base64", "sigVerify": False, "replaceRecentBlockhash": True, "commitment": "processed"}])["value"]
         if sim.get("err"):
             emit({"ev": "simulate_failed", "accounts": accounts, "err": sim["err"], "logs": (sim.get("logs") or [])[-4:]})
@@ -299,7 +301,7 @@ def run_sweep(rpc: Rpc, cfg: dict[str, Any], *, live: bool, keypair: Any = None,
             emit({"ev": "dry_simulated", "accounts": accounts, "expected_lamports": lamports, "units": sim.get("unitsConsumed")})
             continue
         raw = bytes(VersionedTransaction(msg, [keypair]))
-        sig = rpc("sendTransaction", [__import__("base64").b64encode(raw).decode(), {"encoding": "base64", "skipPreflight": True, "maxRetries": 3}])
+        sig = rpc("sendTransaction", [base64.b64encode(raw).decode(), {"encoding": "base64", "skipPreflight": True, "maxRetries": 3}])
         status = confirm(rpc, sig, sleep)
         row: dict[str, Any] = {"ev": "sent", "sig": sig, "accounts": accounts, "status": status or "unconfirmed", "expected_lamports": lamports}
         if status == "confirmed":
