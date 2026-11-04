@@ -61,6 +61,9 @@ HEAL_FIELDS = ("heal_applied", "heal_kind", "heal_reason", "heal_n_gaps", "heal_
 _REASON_RE = re.compile(r"[a-z0-9_:+\-]{1,64}")
 
 
+SEQ_PROCESS_SPAN = 10**6  # = tools.h5_lane_heal.SEQ_PROCESS_SPAN (kept literal: this module does not import the shadow side)
+
+
 def _is_int(v: Any) -> bool:
     return isinstance(v, int) and not isinstance(v, bool)
 
@@ -333,7 +336,8 @@ class H5LaneHealExecutor(_Base):
         """Every flagged gap row tailed in the last hold span has an int lane_gap_seq <= through."""
         span = self.h5.gap_hold_ms + HOLD_SLACK_MS
         rows = [r for r in self._flag_rows if r[0] > now - span]
-        return bool(rows) and all(sq is not None and sq <= through for _t, sq in rows)
+        # same shadow process (seq // SEQ_PROCESS_SPAN = its start ms) AND seq <= through: a gap row written by an earlier process has a smaller seq but is not covered
+        return bool(rows) and all(sq is not None and sq <= through and sq // SEQ_PROCESS_SPAN == through // SEQ_PROCESS_SPAN for _t, sq in rows)
 
     def _hold_blocks(self, heal: dict[str, Any], now: int, parsing: bool = False) -> bool:
         """The hold is active and NOT covered by the heal: it refuses as feed_gap exactly as today."""

@@ -213,6 +213,31 @@ class Test1Equivalence(Base):
         e._gap("socket_reconnect", flag_pools=False, at_ms=1)
         self.assertNotIn("lane_gap_seq", o[0])
 
+    def test_gap_seq_unique_and_monotone_across_two_shadow_processes(self):
+        """Two consecutive engines (two shadow processes): every seq of the second is greater than every seq of the first, even if the clock did not move."""
+        seqs = []
+        for _ in range(2):
+            with mock.patch.object(hl, "_now_ms", return_value=1_800_000_000_000):
+                e, o = mk(hl.build_engine_class(self.sp), self.sp, FakeTip())
+            for k in range(3):
+                e._gap("socket_reconnect", flag_pools=True, at_ms=k)
+            seqs.append([r["lane_gap_seq"] for r in o if r["type"] == "gap"])
+        a, b = seqs
+        self.assertEqual((len(a), len(b)), (3, 3))
+        self.assertLess(max(a), min(b))
+        self.assertEqual(len(set(a + b)), 6)
+        self.assertEqual(a, sorted(a))
+        self.assertEqual(a[0] // hl.SEQ_PROCESS_SPAN, 1_800_000_000_000)
+        # a later real clock start is greater too
+        with mock.patch.object(hl, "_now_ms", return_value=1_800_000_900_000):
+            e, o = mk(hl.build_engine_class(self.sp), self.sp, FakeTip())
+        e._gap("socket_reconnect", flag_pools=True, at_ms=0)
+        self.assertGreater(o[0]["lane_gap_seq"], max(b))
+
+    def test_span_constants_agree(self):
+        from tools import h5_lane_heal_executor as X
+        self.assertEqual(X.SEQ_PROCESS_SPAN, hl.SEQ_PROCESS_SPAN)
+
     def test_heal_off_wrapper_does_not_touch_engine(self):
         seen = []
         with tempfile.TemporaryDirectory() as home, mock.patch.dict(os.environ, {"HOME": home}), mock.patch.object(hs, "main", side_effect=lambda r: seen.append(hs.Engine) or 0), \
@@ -322,7 +347,7 @@ class Test3GapInjection(Base):
         self.assertEqual(h["boost_buys_tip_only_n"], 1)
         self.assertEqual(h["max_interval_slots"], 65)
         self.assertEqual(h["min_slots_gap_end_to_trigger"], 40)
-        self.assertEqual(h["healed_through_seq"], 1)
+        self.assertEqual(h["healed_through_seq"] % hl.SEQ_PROCESS_SPAN, 1)
         t = trigs(out)[0]
         self.assertGreaterEqual(t["base_breaks_unresolved_settled"], 1)  # the websocket view alone is broken ...
         self.assertEqual(t[hs.UNION_FIELD], 0)  # ... the union is whole

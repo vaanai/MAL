@@ -169,6 +169,20 @@ class HoldTests(HCase):
         self.feed(e, gap_row(6), self.trig(e, lane_heal(5), gap=True))
         self.assertEqual((self.sk(e), e.rpc.sent), (["feed_gap"], []))
 
+    def test_two_shadow_processes_gap_seq_ranges(self):
+        """Process A (start ms 1_800_000_000_000) wrote a flagged gap row; process B (started later) heals a trigger within A's hold span. A's seq is smaller than B's
+        healed_through_seq but is from another process: it is NOT covered. B's own rows are."""
+        span = X.SEQ_PROCESS_SPAN
+        a_seq = 1_800_000_000_000 * span + 3
+        b_base = 1_800_000_030_000 * span
+        self.assertLess(a_seq, b_base)
+        e = self.heal_env(sub="two_a")
+        self.feed(e, gap_row(a_seq), self.trig(e, lane_heal(b_base + 2), gap=True))
+        self.assertEqual((self.sk(e), e.rpc.sent), (["feed_gap"], []))
+        e = self.heal_env(sub="two_b")
+        self.feed(e, gap_row(b_base + 1), self.trig(e, lane_heal(b_base + 2)))
+        self.assertEqual(len(e.rpc.sent), 1)
+
     def test_one_uncovered_row_among_covered_ones_keeps_the_hold(self):
         e = self.heal_env()
         self.feed(e, gap_row(3), gap_row(9), gap_row(4), self.trig(e, lane_heal(5)))
