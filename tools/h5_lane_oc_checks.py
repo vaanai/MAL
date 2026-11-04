@@ -16,8 +16,12 @@ L2 (l2l3). Dry `oc_recheck` rows that reached the vault read (have int oc_boost_
 else oc_slot (the pool snapshot's slot; a proxy); the count of each is printed. Joined by mint to the shadow's pv trigger (slot, boost_vault_remaining_sol).
 "Last event slot" = the greatest boost_slice slot of that pool that is <= the trigger slot (the trigger carries no event slot), else the trigger slot.
 CLEAN = no boost_slice of that pool with slot in (last event slot, read slot]. Also printed, for the executor's stricter L6 rule: clean under no
-slice in [trigger slot, read slot]. diff = |oc_boost_remaining_lamports - round(boost_vault_remaining_sol * 1e9)|.
-Verdict: FAIL if any clean diff != 0; else PASS if >= 5 clean (all 0); else NOT_YET.
+slice in [trigger slot, read slot] AND read slot >= trigger slot (tools/h5_lane_oc_executor.py:498-500 minus its feed-gap term, which this tool does not check).
+A read slot below the trigger slot is NOT clean under either rule. Join: each oc_recheck row is joined to the trigger it answers, the latest pv trigger of its
+mint with slot <= the read slot (identical (pool, slot) triggers, e.g. the same shadow under two roots, are one); none such: the mint's earliest trigger, not
+clean (counted as read_before_trigger). A mint whose triggers span several pools is unjoined. diff = |oc_boost_remaining_lamports - round(boost_vault_remaining_sol * 1e9)|.
+The unit of PASS is the distinct (mint, trigger) comparison: both row and distinct counts are printed; PASS needs >= 5 distinct clean comparisons, all
+rows 0. FAIL if any clean row has diff != 0; else NOT_YET. Unparsable or non-object lines and rows with a non-string mint/pool are counted, never fatal.
 L3 (l2l3). pv triggers with an integer base_breaks_unresolved_settled == 0 and numeric boost_spent_sol, boost_vault_remaining_sol: n, median, max of
 |17,585,000,000 - round(boost_spent_sol * 1e9) - round(boost_vault_remaining_sol * 1e9)|. FAIL if max >= 17,585,000 (one floor), else OK (n == 0: NOT_YET).
 L5 (l5). The settled = 0 decision md5 of h5-lane-oc against the pinned h5-lane-2 executor, over the real settled = 0 pv trigger rows, through the harness of
@@ -74,8 +78,8 @@ def _files(path: str, pattern: str) -> list[str]:
     raise UsageError(f"not a file or directory: {path}")
 
 
-def _rows(paths: list[str], tags: tuple[str, ...]) -> Iterator[dict]:
-    """Rows of the files whose line contains one of `tags` (a cheap prefilter) and parses to a dict."""
+def _rows(paths: list[str], tags: tuple[str, ...], skipped: Counter | None = None) -> Iterator[dict]:
+    """Rows of the files whose line contains one of `tags` (a cheap prefilter) and parses to a dict. Tagged lines that do not are counted in `skipped`."""
     for p in paths:
         try:
             fh = open(p, encoding="utf-8", errors="replace")
@@ -88,9 +92,11 @@ def _rows(paths: list[str], tags: tuple[str, ...]) -> Iterator[dict]:
                 try:
                     row = json.loads(line)
                 except ValueError:
-                    continue
+                    row = None
                 if isinstance(row, dict):
                     yield row
+                elif skipped is not None:
+                    skipped["unparsable_or_non_object"] += 1
 
 
 def shadow_files(dirs: list[str]) -> list[str]:
@@ -102,8 +108,8 @@ def shadow_files(dirs: list[str]) -> list[str]:
     return out
 
 
-def pv_triggers(files: list[str]) -> Iterator[dict]:
-    for r in _rows(files, ("trigger",)):
+def pv_triggers(files: list[str], skipped: Counter | None = None) -> Iterator[dict]:
+    for r in _rows(files, ("trigger",), skipped):
         if r.get("type") == "trigger" and r.get("variant") == "pv" and not r.get("suppressed"):
             yield r
 
@@ -125,13 +131,14 @@ def _fmt_counter(c: Counter) -> str:
 
 # ---------------------------------------------------------------------------------------------------------------------------------- l2 / l3
 def read_ledger(path: str) -> dict[str, Any]:
+    skipped: Counter = Counter()
     rec_reasons: Counter = Counter()
     l6_which: Counter = Counter()
     l6a: Counter = Counter()
     l6b: Counter = Counter()
     diffs: list[int] = []
     reads: list[dict] = []  # oc_recheck rows that reached the vault read
-    for r in _rows(_files(path, "*.jsonl"), ("oc_recheck", "oc_l6")):
+    for r in _rows(_files(path, "*.jsonl"), ("oc_recheck", "oc_l6"), skipped):
         kind = r.get("kind")
         if kind == "oc_recheck":
             rec_reasons[str(r.get("reason"))] += 1
@@ -143,42 +150,46 @@ def read_ledger(path: str) -> dict[str, Any]:
                 reads.append({k: r.get(k) for k in LEDGER_FIELDS if k in r})
         elif kind == "oc_l6":
             l6_which[str(r.get("which"))] += 1
-    return {"reasons": rec_reasons, "which": l6_which, "l6a": l6a, "l6b": l6b, "b_diffs": diffs, "reads": reads}
+    return {"reasons": rec_reasons, "which": l6_which, "l6a": l6a, "l6b": l6b, "b_diffs": diffs, "reads": reads, "skipped": skipped}
 
 
 def l2l3(ledger: str, dirs: list[str]) -> dict[str, Any]:
     led = read_ledger(ledger)
     files = shadow_files(dirs)
+    sk_shadow: Counter = Counter()
     need = {r["mint"] for r in led["reads"] if isinstance(r.get("mint"), str)}
-    by_mint: dict[str, list[dict]] = defaultdict(list)  # pass 1: triggers (L2 join + L3 identity)
+    bad_keys = sum(1 for r in led["reads"] if not isinstance(r.get("mint"), str))
+    by_mint: dict[str, dict[tuple, dict]] = defaultdict(dict)  # pass 1: triggers (L2 join + L3 identity); (pool, slot) dedupes the same trigger
     l3: list[int] = []
     l3_unusable = 0
-    for t in pv_triggers(files):
+    for t in pv_triggers(files, sk_shadow):
         if _int(t.get("base_breaks_unresolved_settled")) and t["base_breaks_unresolved_settled"] == 0:
             sp, rem = _lam(t.get("boost_spent_sol")), _lam(t.get("boost_vault_remaining_sol"))
             if sp is None or rem is None:
                 l3_unusable += 1
             else:
                 l3.append(abs(BUDGET_LAMPORTS - sp - rem))
-        m = t.get("mint")
-        if m in need and isinstance(t.get("pool"), str) and _int(t.get("slot")):
-            by_mint[m].append({"pool": t["pool"], "slot": t["slot"], "rem": _lam(t.get("boost_vault_remaining_sol"))})
-    pools = {x["pool"] for v in by_mint.values() for x in v}
+        m, pool = t.get("mint"), t.get("pool")
+        if not isinstance(m, str) or not isinstance(pool, str):
+            bad_keys += 1
+        elif m in need and _int(t.get("slot")):
+            by_mint[m].setdefault((pool, t["slot"]), {"pool": pool, "slot": t["slot"], "rem": _lam(t.get("boost_vault_remaining_sol"))})
+    pools = {x["pool"] for v in by_mint.values() for x in v.values()}
     slices: dict[str, list[int]] = defaultdict(list)  # pass 2: boost_slice slots of the needed pools
     if pools:
-        for s in _rows(files, ("boost_slice",)):
-            if s.get("type") == "boost_slice" and s.get("pool") in pools and _int(s.get("slot")):
-                slices[s["pool"]].append(s["slot"])
-    unjoined = 0
+        for s in _rows(files, ("boost_slice",), sk_shadow):
+            pool = s.get("pool")
+            if s.get("type") == "boost_slice" and isinstance(pool, str) and pool in pools and _int(s.get("slot")):
+                slices[pool].append(s["slot"])
+    unjoined = n_before = 0
     used = Counter()
     clean_diffs: list[int] = []
     n_cmp = n_clean = n_clean_strict = 0
+    keys: set[tuple] = set()
+    clean_keys: set[tuple] = set()
     for r in led["reads"]:
-        trs = by_mint.get(r.get("mint")) or []
-        if len({x["pool"] for x in trs}) != 1 or trs[0]["rem"] is None:
-            unjoined += 1
-            continue
-        t = trs[0]
+        m = r.get("mint")
+        trs = sorted(by_mint.get(m, {}).values(), key=lambda x: x["slot"]) if isinstance(m, str) else []
         if _int(r.get("oc_boost_slot")):
             rslot, src = r["oc_boost_slot"], "oc_boost_slot"
         elif _int(r.get("oc_slot")):
@@ -186,28 +197,44 @@ def l2l3(ledger: str, dirs: list[str]) -> dict[str, Any]:
         else:
             unjoined += 1
             continue
+        if not trs or len({x["pool"] for x in trs}) != 1:
+            unjoined += 1
+            continue
+        before = [x for x in trs if x["slot"] <= rslot]
+        t = before[-1] if before else trs[0]  # the trigger this read answers: the latest at or before the read slot
+        if t["rem"] is None:
+            unjoined += 1
+            continue
         n_cmp += 1
         used[src] += 1
+        key = (m, t["pool"], t["slot"])
+        keys.add(key)
         sl = slices.get(t["pool"], [])
+        if not before:
+            n_before += 1  # a read below the trigger slot answers no trigger: not clean under either rule
+            continue
         last_ev = max([x for x in sl if x <= t["slot"]], default=t["slot"])
         clean = not any(last_ev < x <= rslot for x in sl)
-        if not any(t["slot"] <= x <= rslot for x in sl):
+        if clean and not any(t["slot"] <= x <= rslot for x in sl):
             n_clean_strict += 1
         if clean:
             n_clean += 1
+            clean_keys.add(key)
             clean_diffs.append(abs(r["oc_boost_remaining_lamports"] - t["rem"]))
     nz = [d for d in clean_diffs if d != 0]
     if nz:
         verdict = "FAIL"
-    elif n_clean >= L2_MIN_CLEAN:
+    elif len(clean_keys) >= L2_MIN_CLEAN:
         verdict = "PASS"
     else:
         verdict = "NOT_YET"
+
     if not l3:
         v3 = "NOT_YET"
     else:
         v3 = "FAIL" if max(l3) >= FLOOR_LAMPORTS else "OK"
-    return {"led": led, "unjoined": unjoined, "slot_src": used, "n_cmp": n_cmp, "n_clean": n_clean, "n_clean_strict": n_clean_strict,
+    return {"led": led, "unjoined": unjoined, "slot_src": used, "n_cmp": n_cmp, "n_clean": n_clean, "n_clean_strict": n_clean_strict, "n_distinct": len(keys), "n_distinct_clean": len(clean_keys), "n_before": n_before,
+            "bad_keys": bad_keys, "sk_shadow": sk_shadow,
             "n_zero": len(clean_diffs) - len(nz), "nz": nz, "l2": verdict, "l3": l3, "l3_unusable": l3_unusable, "l3_verdict": v3}
 
 
@@ -216,13 +243,15 @@ def print_l2l3(res: dict[str, Any], out=None) -> None:
     led = res["led"]
     w = lambda s: print(s, file=out)  # noqa: E731
     w("== L2: dry oc_recheck BOOST vault read vs shadow boost_vault_remaining (lamports) ==")
-    w(f"oc_recheck rows that reached the vault read: {len(led['reads'])}; unjoined (no unique pv trigger, no numeric value, or no slot): {res['unjoined']}")
+    w(f"oc_recheck rows that reached the vault read: {len(led['reads'])}; unjoined (no usable pv trigger, several pools for the join key, no numeric shadow value, or no int slot; note oc_slot is written on ok rows only): {res['unjoined']}")
     w(f"read slot used: {_fmt_counter(res['slot_src'])} (oc_slot is the pool snapshot's slot, a proxy for the vault read's slot)")
-    w(f"comparisons: {res['n_cmp']}  clean: {res['n_clean']}  not clean: {res['n_cmp'] - res['n_clean']}  "
-      f"(clean under the stricter [trigger slot, read slot] rule: {res['n_clean_strict']})")
+    w(f"comparisons (rows): {res['n_cmp']}  clean: {res['n_clean']}  not clean: {res['n_cmp'] - res['n_clean']} (of which read slot below trigger slot: {res['n_before']})  "
+      f"(clean under the stricter rule, executor :498-500 without its gap term: {res['n_clean_strict']})")
+    w(f"distinct (key, trigger) comparisons: {res['n_distinct']}  distinct clean: {res['n_distinct_clean']}  (PASS counts distinct clean)")
+    w(f"skipped: ledger {dict(led['skipped'])}, shadow {dict(res['sk_shadow'])}, rows/triggers with a non-string join key: {res['bad_keys']}")
     w(f"clean abs-diff: exactly 0: {res['n_zero']}  != 0: {len(res['nz'])}"
       + (f" (min {min(res['nz'])}, median {_med(res['nz'])}, max {max(res['nz'])})" if res["nz"] else ""))
-    w(f"L2 VERDICT: {res['l2']}  (PASS: >= {L2_MIN_CLEAN} clean, all 0; FAIL: any clean != 0; else NOT_YET)")
+    w(f"L2 VERDICT: {res['l2']}  (PASS: >= {L2_MIN_CLEAN} distinct clean, all 0; FAIL: any clean != 0; else NOT_YET)")
     w(f"oc_recheck reasons (all rows): {_fmt_counter(led['reasons'])}")
     w(f"oc_l6_a (rows that reached the vault read): {_fmt_counter(led['l6a'])}")
     w(f"oc_l6_b (rows that reached the vault read): {_fmt_counter(led['l6b'])}")

@@ -133,6 +133,53 @@ class L2Tests(Base):
         self.assertEqual((r["n_cmp"], r["n_clean"]), (2, 2))
 
 
+class JoinTests(Base):
+    def test_duplicate_identical_trigger_is_one_trigger(self):
+        r = self.run_l2l3([rc(0, 9_000_000_000)], [trig(0, rem=9.0), trig(0, rem=9.0)])
+        self.assertEqual((r["n_cmp"], r["nz"], r["l2"]), (1, [], "NOT_YET"))
+
+    def test_read_joins_the_latest_trigger_at_or_before_its_slot(self):
+        # same mint and pool, two triggers: slot 1000 (rem 8.0) and slot 1100 (rem 9.0); each read matches the trigger it answers
+        trs = [trig(0, slot=1000, rem=8.0), trig(0, slot=1100, rem=9.0)]
+        led = [rc(0, 8_000_000_000, slot=1010), rc(0, 9_000_000_000, slot=1110)]
+        r = self.run_l2l3(led, trs)
+        self.assertEqual((r["n_cmp"], r["n_clean"], r["nz"], r["n_distinct"], r["l2"]), (2, 2, [], 2, "NOT_YET"))
+
+    def test_five_rows_for_one_mint_do_not_pass(self):
+        r = self.run_l2l3([rc(0, 9_000_000_000) for _ in range(5)], [trig(0, rem=9.0)])
+        self.assertEqual((r["n_cmp"], r["n_clean"], r["n_distinct"], r["n_distinct_clean"], r["l2"]), (5, 5, 1, 1, "NOT_YET"))
+
+    def test_a_repeat_row_that_disagrees_still_fails(self):
+        r = self.run_l2l3([rc(0, 9_000_000_000), rc(0, 9_000_000_001)], [trig(0, rem=9.0)])
+        self.assertEqual(r["l2"], "FAIL")
+
+    def test_read_below_the_trigger_slot_is_not_clean_under_either_rule(self):
+        r = self.run_l2l3([rc(0, 9_000_000_000, slot=990)], [trig(0, rem=9.0), sl(0, 995)])
+        self.assertEqual((r["n_cmp"], r["n_clean"], r["n_clean_strict"], r["n_before"]), (1, 0, 0, 1))
+        r = self.run_l2l3([rc(0, 9_000_000_000, slot=1000)], [trig(0, rem=9.0)])  # read at the trigger slot is fine
+        self.assertEqual((r["n_clean"], r["n_clean_strict"], r["n_before"]), (1, 1, 0))
+
+
+class MalformedTests(Base):
+    def test_unhashable_or_non_string_keys_are_counted_not_fatal(self):
+        led = [rc(0, 9_000_000_000, mint=["x"]), rc(1, 9_000_000_000, mint={"a": 1}), rc(2, 9_000_000_000)]
+        trs = [trig(2, rem=9.0), trig(3, mint=["y"]), trig(4, pool={"p": 1}), {"type": "boost_slice", "pool": ["z"], "slot": 1}]
+        r = self.run_l2l3(led, trs)
+        self.assertEqual((r["n_cmp"], r["unjoined"], r["bad_keys"]), (1, 2, 4))
+
+    def test_unparsable_lines_are_counted_and_printed(self):
+        wr(self.ledger, [rc(0, 1)])
+        with self.ledger.open("a") as fh:
+            fh.write('{"kind": "oc_recheck" broken\n["oc_recheck"]\n')
+        wr(self.shadow / "h5-shadow-a.jsonl", [trig(0)])
+        with (self.shadow / "h5-shadow-a.jsonl").open("a") as fh:
+            fh.write("trigger not json\n")
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            self.assertEqual(C.main(["l2l3", "--dry-ledger", str(self.ledger), "--shadow-dir", str(self.shadow)]), 0)
+        self.assertIn("ledger {'unparsable_or_non_object': 2}, shadow {'unparsable_or_non_object': 1}", buf.getvalue())
+
+
 class L3Tests(Base):
     def l3(self, *rems_vs_spent):
         trs = [trig(i, spent=sp, rem=rem) for i, (sp, rem) in enumerate(rems_vs_spent)]
