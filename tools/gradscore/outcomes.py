@@ -1,17 +1,24 @@
-"""Outcome tracker for gradscore (separate process, may run later). PAPER ONLY, public GeckoTerminal OHLCV.
+"""Outcome tracker for gradscore, version v1 (separate process, may run later). PAPER ONLY, public GeckoTerminal OHLCV.
 
   python -m tools.gradscore.outcomes --out DIR [--config FILE] [--once]
 
-Reads DIR/discoveries-*.jsonl (mint, pool, first_seen_s, price_native) and writes DIR/outcomes-DATE.jsonl (never the score files).
-Per scored mint, one row per horizon (+15m, +1h, +4h, +24h after first sight): the price (quote-token, i.e. SOL, close of the 5 m
-candle containing first_seen + horizon), the running max high since first sight, and the multiple vs the first-sight price.
-The +24h row's max_mult is the 24 h max price multiple. A row is written once per (mint, horizon); `status` is ok or no_data
-(written after 3 failed attempts, or when the candles hold no usable price).
+Reads DIR/discoveries-*.jsonl and writes DIR/outcomes-v1-DATE.jsonl (never the score files). Rows written by the earlier (v0)
+tracker, outcomes-2*.jsonl and outcomes-state.json, are discarded unopened: this module never reads or deletes them (QP-RULING-1104-gradscore).
+Tracked set = discoveries with is_pump_suffix true. Scoring also admits Gecko launchpad_completed mints; those are not tracked and
+are outside the pre-registered read (which is restricted to suffix mints).
+Per tracked mint, one row per horizon (+15m, +1h, +4h, +24h after first sight, first_seen_s):
+- max_high_native / max_mult: max high over 5 m candles whose start is >= first sight and <= first_seen + horizon (so it can include up
+  to 5 min after the horizon); the candle covering first sight starts before it and is NOT in the max (its high is first_candle_high, disclosure only).
+- price_native: close of the last candle with start <= first_seen + horizon, with price_candle_ts (OHLCV is sparse: a slot with no trade has no candle).
+- status ok, or no_data when no candle at or after first sight exists (or after 3 failed fetches).
+Entry = first-sight price_native from the discovery row (SOL per token). Every row carries tracker_sha (sha256 of this file).
+A row is written once per (mint, horizon), keyed by its own done-set (outcomes-v1-state.json and the outcomes-v1-* rows).
 """
 from __future__ import annotations
 
 import argparse
 import glob
+import hashlib
 import json
 import os
 import signal
@@ -68,22 +75,28 @@ def parse_candles(doc):
         return []
 
 
+def tracker_sha():
+    with open(__file__, "rb") as f:
+        return hashlib.sha256(f.read()).hexdigest()
+
+
 def summarise(candles, t0, horizon_min, entry):
-    """price at horizon (close of the candle covering t0+h), running max high since first sight, multiples. None if no candle covers."""
+    """candles: ascending (ts,o,h,l,c). None (no_data) only if no candle with t0 <= start <= t0+h exists or entry is unusable."""
     th = t0 + horizon_min * 60
-    cover = [c for c in candles if c[0] <= th < c[0] + CANDLE_S]
-    since = [c for c in candles if c[0] + CANDLE_S > t0 and c[0] <= th]
-    if not cover or not since or not entry or entry <= 0:
+    post = [c for c in candles if t0 <= c[0] <= th]
+    if not post or not entry or entry <= 0:
         return None
-    price = cover[-1][4]
-    mx = max(c[2] for c in since)
-    return {"price_native": price, "ret": price / entry - 1.0, "max_high_native": mx, "max_mult": mx / entry, "candles_n": len(since)}
+    last = [c for c in candles if c[0] <= th][-1]  # exists: post is non-empty
+    first = [c for c in candles if c[0] < t0 <= c[0] + CANDLE_S - 1]
+    mx = max(c[2] for c in post)
+    return {"price_native": last[4], "price_candle_ts": last[0], "ret": last[4] / entry - 1.0, "max_high_native": mx,
+            "max_mult": mx / entry, "candles_n": len(post), "first_candle_high": first[-1][2] if first else None}
 
 
 class Tracker:
     def __init__(self, out_dir, gecko, clock=time.time, sleep=time.sleep, transport=urllib_transport):
         self.out, self.gecko, self.clock, self.sleep, self.transport = out_dir, gecko, clock, sleep, transport
-        self.state_path = os.path.join(out_dir, "outcomes-state.json")
+        self.state_path = os.path.join(out_dir, "outcomes-v1-state.json")
         try:
             with open(self.state_path) as f:
                 self.state = json.load(f)
@@ -91,7 +104,7 @@ class Tracker:
             self.state = {}
         self.state.setdefault("done", {})
         self.state.setdefault("attempts", {})
-        for p in glob.glob(os.path.join(out_dir, "outcomes-2*.jsonl")):  # rebuild done-set from the log if state is lost
+        for p in glob.glob(os.path.join(out_dir, "outcomes-v1-*.jsonl")):  # rebuild done-set from the log if state is lost
             for line in open(p):
                 try:
                     r = json.loads(line)
@@ -99,10 +112,11 @@ class Tracker:
                 except (ValueError, KeyError, TypeError):
                     continue
         self.stop = False
+        self.sha = tracker_sha()
 
     def _candles(self, pool, t0, horizon_min):
         before = int(t0 + horizon_min * 60 + CANDLE_S)
-        n = min(1000, horizon_min * 60 // CANDLE_S + 3)
+        n = min(1000, horizon_min * 60 // CANDLE_S + 6)
         url = (GT_BASE + f"/networks/solana/pools/{pool}/ohlcv/minute?aggregate=5&limit={n}&currency=token&before_timestamp={before}")
         return parse_candles(get_json(url, self.gecko.bucket, self.transport, self.sleep))
 
@@ -130,10 +144,10 @@ class Tracker:
                     continue
                 status = "no_data"
             row = {"mint": mint, "pool": r["pool"], "horizon_min": h, "first_seen_s": t0, "entry_price_native": entry,
-                   "ts_utc": iso(now), "status": status}
+                   "ts_utc": iso(now), "status": status, "tracker_sha": self.sha}
             if res:
                 row.update(res)
-            append_jsonl(day_file(self.out, "outcomes", now), row)
+            append_jsonl(day_file(self.out, "outcomes-v1", now), row)
             self.state["done"][key] = 1
             wrote += 1
         atomic_write_json(self.state_path, self.state)

@@ -8,6 +8,7 @@ DEFAULTS = {
     "max_pool_age_min": 15.0,     # score only pools first seen at pool age <= this
     "poll_s": 60.0,               # new_pools poll period
     "max_tokens": 200,
+    "new_pools_pages": 2,         # new_pools pages per poll (20 newest pools of all dexes per page)
     "variants": ["A", "B"],
     "gecko_per_min": 18,          # run loop; outcomes tracker uses outcomes_gecko_per_min (shared ~30/min public limit)
     "outcomes_gecko_per_min": 10,

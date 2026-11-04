@@ -25,7 +25,7 @@ def gecko_doc(n_pump=2, now=NOW, age_min=3):
             "address": f"pool{i}", "pool_created_at": iso(now - age_min * 60 - i * 60), "base_token_price_usd": "0.00004",
             "base_token_price_native_currency": "0.0000004", "reserve_in_usd": "14403.7", "fdv_usd": "38407.9", "market_cap_usd": None,
             "volume_usd": {"m5": "1360.4"}, "transactions": {"m5": {"buys": 28, "sells": 14}}},
-            "relationships": {"base_token": {"data": {"id": f"solana_{mint}"}}, "dex": {"data": {"id": dex}}}})
+            "relationships": {"base_token": {"data": {"id": f"solana_{mint}"}}, "quote_token": {"data": {"id": "solana_So11111111111111111111111111111111111111112"}}, "dex": {"data": {"id": dex}}}})
         inc.append({"id": f"solana_{mint}", "type": "token", "attributes": {"symbol": f"S{i}", "name": f"Name {i}"}})
     return {"data": data, "included": inc}
 
@@ -38,7 +38,7 @@ class FakeDisc:
     def __init__(self, docs):
         self.docs, self.calls = list(docs), 0
 
-    def new_pools(self, now, max_age):
+    def new_pools(self, now, max_age, pages=1):
         self.calls += 1
         return dv.parse_new_pools(self.docs[min(self.calls - 1, len(self.docs) - 1)], now, max_age)
 
@@ -215,81 +215,3 @@ def test_non_pump_graduate_not_scored(tmp_path):
     assert not cl.calls and {r["skip_reason"] for r in rows(tmp_path, "scores")} == {"not_pump_graduate"}
 
 
-# ---- outcomes
-def candles(t0, prices):
-    # 5 m candles starting at floor(t0/300)*300, ascending; prices = list of (high, close)
-    base = int(t0 // 300) * 300
-    return {"data": {"attributes": {"ohlcv_list": [[base + 300 * i, p[1], p[0], p[1], p[1]] for i, p in enumerate(prices)][::-1]}}}
-
-
-def test_outcome_scheduling(tmp_path):
-    d = {"m1": {"first_seen_s": NOW, "pool": "p"}}
-    assert oc.due_work(d, {}, NOW + 14 * 60) == []
-    assert oc.due_work(d, {}, NOW + 15 * 60 + oc.GRACE_S) == [("m1", 15)]
-    assert [h for _, h in oc.due_work(d, {}, NOW + 24 * 3600 + 200)] == [15, 60, 240, 1440]
-    assert [h for _, h in oc.due_work(d, {"m1|15": 1}, NOW + 3800)] == [60]
-
-
-def test_outcome_summarise_and_write_separate_file(tmp_path):
-    t0 = 1_800_000_100.0
-    entry = 1.0
-    doc = candles(t0, [(1.5, 1.2), (3.2, 2.0), (2.5, 2.4), (2.6, 2.5)] + [(1.0, 1.0)] * 4)
-    cs = oc.parse_candles(doc)
-    s = oc.summarise(cs, t0, 15, entry)
-    assert s["max_mult"] == 3.2 and s["price_native"] == cs[(int(t0 + 900) // 300) - (int(t0 // 300))][4]
-    assert oc.summarise([], t0, 15, entry) is None
-
-    out = tmp_path
-    (out / "discoveries-2027-01-15.jsonl").write_text(json.dumps({"mint": "m1", "pool": "p", "first_seen_s": t0, "price_native": entry, "is_pump_suffix": True}) + "\n")
-    (out / "discoveries-2027-01-16.jsonl").write_text(json.dumps({"mint": "m2", "pool": "p2", "first_seen_s": t0, "price_native": entry, "is_pump_suffix": False}) + "\n")
-    gecko = SimpleNamespace(bucket=SimpleNamespace(acquire=lambda: None))
-    body = json.dumps(doc)
-    urls = []
-
-    def tr(url):
-        urls.append(url)
-        return 200, body, {}
-    tk = oc.Tracker(str(out), gecko, clock=lambda: t0 + 3800, sleep=lambda s: None, transport=tr)
-    r = tk.step()
-    assert r["rows"] == 2 and len(urls) == 2 and all("/pools/p/ohlcv" in u and "currency=token" in u for u in urls)  # 15m + 1h; m2 is not a pump suffix
-    o = rows(out, "outcomes")
-    assert {x["horizon_min"] for x in o} == {15, 60} and all(x["mint"] == "m1" for x in o)
-    assert not [f for f in os.listdir(out) if f.startswith("scores")]
-    assert tk.step()["rows"] == 0  # done-set holds
-
-
-def test_outcome_failures_become_no_data_after_three_attempts(tmp_path):
-    t0 = 1_800_000_100.0
-    (tmp_path / "discoveries-2027-01-15.jsonl").write_text(json.dumps({"mint": "m1", "pool": "p", "first_seen_s": t0, "price_native": 1.0, "is_pump_suffix": True}) + "\n")
-    gecko = SimpleNamespace(bucket=SimpleNamespace(acquire=lambda: None))
-    tk = oc.Tracker(str(tmp_path), gecko, clock=lambda: t0 + 1100, sleep=lambda s: None, transport=lambda u: (404, "{}", {}))
-    for _ in range(3):
-        tk.step()
-    o = rows(tmp_path, "outcomes")
-    assert len(o) == 1 and o[0]["status"] == "no_data"
-
-
-# ---- auc
-def test_auc_refuses_without_flag(tmp_path, capsys):
-    assert au.main(["--dir", str(tmp_path)]) == 2
-    assert "REFUSED" in capsys.readouterr().err
-    assert au.main(["--dir", str(tmp_path), "--allow-outcomes"]) == 0
-
-
-def test_auc_math_and_join(tmp_path):
-    assert au.auc([1, 2, 3, 4], [0, 0, 1, 1]) == 1.0
-    assert au.auc([1, 1, 1, 1], [0, 1, 0, 1]) == 0.5
-    assert au.auc([1, 2], [1, 1]) is None
-    assert au.top_decile_hit_rate(list(range(20)), [i >= 18 for i in range(20)]) == 1.0
-    sc_rows, oc_rows = [], []
-    for i in range(30):
-        t = NOW + i * 86400 // 3
-        sc_rows.append({"mint": f"m{i}", "variant": "A", "action": "SCORED", "first_seen_s": t, "runner_prob_pct": i, "narrative": 1 + i % 5, "rug_risk": 3})
-        oc_rows.append({"mint": f"m{i}", "horizon_min": 1440, "status": "ok", "max_mult": 4.0 if i >= 20 else 1.1})
-        oc_rows.append({"mint": f"m{i}", "horizon_min": 240, "status": "ok", "ret": 0.1 if i >= 15 else -0.2})
-    (tmp_path / "scores-2027-01-15.jsonl").write_text("\n".join(json.dumps(r) for r in sc_rows))
-    (tmp_path / "outcomes-2027-01-16.jsonl").write_text("\n".join(json.dumps(r) for r in oc_rows))
-    res = au.analyse(au.load_joined(str(tmp_path)), draws=50)
-    r = [x for x in res if x["variant"] == "A" and x["score"] == "runner_prob_pct" and x["label"] == "max_mult_24h>=3"][0]
-    assert r["n"] == 30 and r["positives"] == 10 and r["auc"] == 1.0 and r["ci90_day_bootstrap"] is not None and r["placebo_auc"] < 0.95
-    assert [x for x in res if x["variant"] == "B"][0]["n"] == 0

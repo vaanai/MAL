@@ -43,6 +43,8 @@ def parse_new_pools(doc, now_s, max_age_min):
         if not tid.startswith("solana_"):
             continue
         mint = tid[len("solana_"):]
+        qid = ((rel.get("quote_token") or {}).get("data") or {}).get("id", "")
+        quote = qid[len("solana_"):] if qid.startswith("solana_") else None  # None = not recorded
         created = _ts(at.get("pool_created_at"))
         if created is None:
             continue
@@ -53,7 +55,7 @@ def parse_new_pools(doc, now_s, max_age_min):
         tx5 = (at.get("transactions") or {}).get("m5") or {}
         out.append({
             "mint": mint, "pool": at.get("address"), "pool_created_at": at.get("pool_created_at"), "age_min": round(age, 2),
-            "symbol": tok.get("symbol"), "name": tok.get("name"), "is_pump_suffix": mint.endswith("pump"),
+            "symbol": tok.get("symbol"), "name": tok.get("name"), "is_pump_suffix": mint.endswith("pump"), "quote_mint": quote,
             "price_usd": _f(at.get("base_token_price_usd")), "price_native": _f(at.get("base_token_price_native_currency")),
             "liq_usd": _f(at.get("reserve_in_usd")), "fdv_usd": _f(at.get("fdv_usd")), "mcap_usd": _f(at.get("market_cap_usd")),
             "vol_5m": _f((at.get("volume_usd") or {}).get("m5")), "buys_5m": tx5.get("buys"), "sells_5m": tx5.get("sells"),
@@ -99,9 +101,17 @@ class Discovery:
     def __init__(self, gecko_bucket, ds, transport, sleep):
         self.bucket, self.ds, self.transport, self.sleep = gecko_bucket, ds, transport, sleep
 
-    def new_pools(self, now_s, max_age_min):
-        doc = get_json(GT_BASE + "/networks/solana/new_pools?include=base_token,dex", self.bucket, self.transport, self.sleep)
-        return parse_new_pools(doc, now_s, max_age_min)
+    def new_pools(self, now_s, max_age_min, pages=1):
+        """new_pools pages 1..pages (20 newest pools of ALL dexes per page). The dexes/pumpswap/pools endpoint was tried
+        for QP item 9: GeckoTerminal answers 400 to sort=pool_created_at_desc (only h24_volume_usd_desc, h24_tx_count_desc), so it cannot list newest."""
+        out, seen = [], set()
+        for page in range(1, max(1, pages) + 1):
+            doc = get_json(GT_BASE + f"/networks/solana/new_pools?include=base_token,dex&page={page}", self.bucket, self.transport, self.sleep)
+            for p in parse_new_pools(doc, now_s, max_age_min):
+                if p["mint"] not in seen:
+                    seen.add(p["mint"])
+                    out.append(p)
+        return out
 
     def token_info(self, mint):
         try:
