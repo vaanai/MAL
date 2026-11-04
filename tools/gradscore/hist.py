@@ -525,7 +525,7 @@ def cmd_cards(block, out, sol_usd=SOL_USD_DEFAULT, fetch=True, workers=2, fetche
                        "card_text": cd.card_text(card), "card_sha256": cd.card_sha256(card), "has_create": bool(cr) and not cr.get("from_chain"),
                        "has_uri": bool(cr and cr.get("uri")), "has_metadata": meta is not None, "has_x_context": False,
                        "creator": (cr or {}).get("creator"), "create_ts": (cr or {}).get("create_ts"), "uri": (cr or {}).get("uri"),
-                       "sol_usd_assumed": sol_usd, **extra}
+                       "sol_usd_assumed": sol_usd, "uri_class": uri_class((cr or {}).get("uri")), **extra}
                 fo.write(json.dumps(row, sort_keys=True) + "\n")
                 counts["cards"] += 1
                 counts["with_uri"] += row["has_uri"]
@@ -618,7 +618,8 @@ def cmd_labels(block, out, workers=2, vmap=None):
             for mint in sorted(use, key=lambda m: (use[m], m)):
                 row = label_row(mint, wname, st[mint], w1)
                 if row is None:
-                    skips["no_pool_at_first_sight"] = skips.get("no_pool_at_first_sight", 0) + 1
+                    why = "p0_missing" if st[mint].chosen is not None else "no_pool_at_first_sight"
+                    skips[why] = skips.get(why, 0) + 1
                     continue
                 fo.write(json.dumps(row, sort_keys=True) + "\n")
                 counts["labels"] += 1
@@ -629,6 +630,19 @@ def cmd_labels(block, out, workers=2, vmap=None):
                 "price": "pre-trade spot (quote_reserve + V) / base_reserve * 1e-3; V from the kit's pool map else 17_584_505_288"}
     _write_json(path[:-6] + ".meta.json", meta_out)
     return meta_out
+
+
+def uri_class(uri):
+    """content_addressed (ipfs / arweave / irys), http (any other host), none. Derived from the uri string only."""
+    if not isinstance(uri, str) or not uri.strip():
+        return "none"
+    u = uri.strip().lower()
+    if u.startswith(("ipfs://", "ar://")) or "/ipfs/" in u or ".ipfs." in u:
+        return "content_addressed"
+    host = re.sub(r"^[a-z]+://", "", u).split("/")[0].split(":")[0]
+    if host in ("arweave.net", "irys.xyz", "uploader.irys.xyz", "gateway.irys.xyz") or host.endswith((".arweave.net", ".irys.xyz")):
+        return "content_addressed"
+    return "http"
 
 
 def label_row(mint, wname, s, block_end):
