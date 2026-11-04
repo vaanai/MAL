@@ -5,8 +5,7 @@ LaneOracle, which answers "not a pick" for every mint. EXP-022 / CAP-PICK was wi
 lane's own live data unsealed. The substitution is recorded in the start record (seal.oracle = "lane_dec035_not_a_pick", seal.lane = "DEC-035").
 Everything else is the stock detector: the H5 Look-2 seal still applies (declare --h5-look2-observed EXP-024-Am2 to write outcomes), same flags.
 
-Required: `--lane DEC-035` (any other value is refused). Optional: `--lane-heal DEC-035` (needs --tip-dir; QP-RULING-1104-oc-feedfix s3.1): installs the tip-replay heal
-Engine subclass of tools/h5_lane_heal.py; it adds `lane_gap_seq` to flagged gap rows and `lane_heal` to trigger records and changes nothing else. Off by default. Without this module the stock detector is unchanged (no code path here is imported by it).
+Required: `--lane DEC-035` (any other value is refused). Without this module the stock detector is unchanged (no code path here is imported by it).
 """
 from __future__ import annotations
 
@@ -18,7 +17,6 @@ from typing import Any, Sequence
 from tools import h5_shadow as hs
 
 LANE_REF = "DEC-035"
-LANE_HEAL_REF = "DEC-035"
 
 
 def check_lane_out_dir(path: str | None) -> None:
@@ -47,7 +45,6 @@ def lane_oracle_from_env(environ: dict[str, str] | None = None) -> tuple[LaneOra
 def main(argv: Sequence[str] | None = None) -> int:
     args = list(sys.argv[1:] if argv is None else argv)
     ref = None
-    heal_ref = None
     rest: list[str] = []
     i = 0
     while i < len(args):
@@ -56,12 +53,6 @@ def main(argv: Sequence[str] | None = None) -> int:
             i += 2
         elif args[i].startswith("--lane="):
             ref = args[i].split("=", 1)[1]
-            i += 1
-        elif args[i] == "--lane-heal" and i + 1 < len(args):
-            heal_ref = args[i + 1]
-            i += 2
-        elif args[i].startswith("--lane-heal="):
-            heal_ref = args[i].split("=", 1)[1]
             i += 1
         else:
             rest.append(args[i])
@@ -83,15 +74,6 @@ def main(argv: Sequence[str] | None = None) -> int:
     except ValueError as exc:
         print(f"h5_lane_shadow: {exc}", file=sys.stderr)
         return 2
-    if heal_ref is not None:  # A-R tip-replay heal (QP-RULING-1104-oc-feedfix s3.1): off unless this flag AND --tip-dir are given
-        if heal_ref != LANE_HEAL_REF:
-            print(f"h5_lane_shadow: --lane-heal needs {LANE_HEAL_REF} (got {heal_ref!r})", file=sys.stderr)
-            return 2
-        if not any(a == "--tip-dir" or a.startswith("--tip-dir=") for a in rest):
-            print("h5_lane_shadow: --lane-heal needs --tip-dir", file=sys.stderr)
-            return 2
-        from tools import h5_lane_heal
-        h5_lane_heal.install()  # replaces the module global hs.Engine (run_live looks it up at call time), as the oracle below
     hs.cap_pick_oracle_from_env = lane_oracle_from_env  # type: ignore[assignment]  # run_live looks this global up at call time
     return hs.main(rest)
 

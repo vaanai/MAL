@@ -30,7 +30,7 @@ SLOT_RING = 4_096
 SLOT_RING_BUCKET_MS = 250
 TIP_PENDING_ROWS = 5_000
 ALLOWED_KINDS = ("slot_jump", "silence", "socket_reconnect", "feed_restart")
-HEALTH_KEYS = ("resets", "read_errors", "dir_errors", "open_errors", "stat_errors", "poll_errors")
+HEALTH_KEYS = ("resets", "read_errors", "dir_errors", "open_errors", "stat_errors", "poll_errors", "fragments_dropped", "long_lines_dropped", "parse_errors", "no_dir_polls")
 ROW_FIELDS = ("venue", "pool", "side", "slot", "t_recv_ms", "event_ts", "quote_reserve", "base_reserve", "virtual_quote_reserves", "sol_lamports", "token_raw", "lp_fee",
               "pool_quote_amount", "fee_recipient_zero", "protocol_fee", "creator_fee", "trader", "signature", "event_index", "tx_index")
 REASONS = ("heal_rows_cap", "heal_union_bad", "heal_union_nonzero", "heal_integrity", "heal_pre_unlinked", "heal_interval_unknown", "heal_no_sample", "heal_follower_pins",
@@ -62,7 +62,7 @@ def pre_unlinked(unresolved: Any, settled: Any) -> bool:
 class PoolHeal:
     """Memory-only store of one tracked pool. Freed at pool close."""
 
-    __slots__ = ("ws", "ws_sps", "boost", "tip", "tip_order", "iv", "cap_ws", "cap_tip")
+    __slots__ = ("ws", "ws_sps", "boost", "tip", "tip_order", "iv", "cap_ws", "cap_tip", "err")
 
     def __init__(self) -> None:
         self.ws: list[dict] = []  # compact websocket rows in arrival order
@@ -72,6 +72,7 @@ class PoolHeal:
         self.tip_order: list[tuple] = []
         self.iv: dict[int, list] = {}  # index into Pool.gaps -> [L, R, seq] (L / R None = not computable)
         self.cap_ws = self.cap_tip = False
+        self.err = False  # a store update failed: the heal refuses (heal_no_store)
 
 
 def blank_heal() -> dict:
@@ -94,6 +95,7 @@ def build_engine_class(status_path: str | Path = FOLLOWER_STATUS_PATH, base: typ
             self._lh_cur_seq: int | None = None
             self._lh_pools: dict[str, PoolHeal] = {}
             self._lh_tip_pending: dict[str, dict[tuple, dict]] = {}
+            self._lh_pending_over: set[str] = set()  # announced pools whose pending tip rows overflowed (never silent: heal_rows_cap at track)
             self._lh_ring: collections.deque = collections.deque(maxlen=SLOT_RING)  # (recv_ms, hw_slot)
             self._lh_last_bucket: int | None = None
             self._lh_fol: collections.deque = collections.deque(maxlen=FOLLOWER_RING)
@@ -126,6 +128,9 @@ def build_engine_class(status_path: str | Path = FOLLOWER_STATUS_PATH, base: typ
                 for key, r in self._lh_tip_pending.pop(p.pool, {}).items():
                     st.tip[key] = r
                     st.tip_order.append(key)
+                if p.pool in self._lh_pending_over:
+                    st.cap_tip = True  # the pending buffer dropped rows of this pool before it was tracked
+                    self._lh_pending_over.discard(p.pool)
             return p
 
         def _print_row(self, p, row: dict, slot: int, recv_ms: int, ts):  # noqa: ANN001
@@ -135,15 +140,20 @@ def build_engine_class(status_path: str | Path = FOLLOWER_STATUS_PATH, base: typ
                     if len(st.ws) >= ROWS_CAP:
                         st.cap_ws = True
                     else:
-                        st.ws.append(compact(row))
-                        st.ws_sps.append(self.sps_fn(p) if self.sps_fn else self.clock.sps())  # not _sps(): that sets Pool.sps_last, a record field
+                        c = compact(row)
+                        sp = self.sps_fn(p) if self.sps_fn else self.clock.sps()  # not _sps(): that sets Pool.sps_last, a record field
+                        st.ws.append(c)
+                        st.ws_sps.append(sp)
                 except Exception:  # noqa: BLE001
                     self._lh_errors += 1
+                    st.err = True
             super()._print_row(p, row, slot, recv_ms, ts)
 
         def on_boost_event(self, ev: dict, slot: int, recv_ms: int) -> None:
             st = self._lh_pools.get(ev.get("pool", "")) if isinstance(ev, dict) else None
-            if st is not None and len(st.boost) < ROWS_CAP:
+            if st is not None and len(st.boost) >= ROWS_CAP:
+                st.cap_ws = True
+            elif st is not None:
                 st.boost.append((len(st.ws), {k: ev.get(k) for k in ("pool", "authority", "boost_vault_remaining") if k in ev}))
             super().on_boost_event(ev, slot, recv_ms)
 
@@ -168,6 +178,8 @@ def build_engine_class(status_path: str | Path = FOLLOWER_STATUS_PATH, base: typ
                     buf = self._lh_tip_pending.setdefault(pool, {})
                     if len(buf) < TIP_PENDING_ROWS:
                         buf.setdefault(key, compact(row))
+                    else:
+                        self._lh_pending_over.add(pool)
             except Exception:  # noqa: BLE001
                 self._lh_errors += 1
 
@@ -176,6 +188,7 @@ def build_engine_class(status_path: str | Path = FOLLOWER_STATUS_PATH, base: typ
             self._lh_sample(now)
             for k in [k for k in self._lh_tip_pending if k not in self.announced or k in self.seen]:
                 del self._lh_tip_pending[k]
+            self._lh_pending_over &= set(self.announced)
 
         def _close(self, p, reason: str) -> None:  # noqa: ANN001
             try:
@@ -322,7 +335,7 @@ def build_engine_class(status_path: str | Path = FOLLOWER_STATUS_PATH, base: typ
             for n_before, ev in st.boost:
                 boost_after[n_before - 1].append(ev)  # after the (n_before-1)-th ws row; -1 = before every row
             tip = st.tip
-            last_recv = 0
+            last_recv = int(st.ws[0]["t_recv_ms"]) if st.ws else 0  # a leading tip-only row borrows the first websocket print's receive time
             pos_of: dict[Any, int] = {}
             try:
                 for ev in boost_after.get(-1, ()):
@@ -356,10 +369,12 @@ def build_engine_class(status_path: str | Path = FOLLOWER_STATUS_PATH, base: typ
                 rp = first.get(var)
                 if rp is None:
                     r_ = "heal_replay_none"
-                elif all(rp.get(k) == live.get(k) for k in ("signature", "event_index", "slot", "boost_src")):
+                elif all(rp.get(k) == live.get(k) for k in ("signature", "event_index", "slot", "boost_src", "s0", "v0")):
                     r_ = None
                     if var == cur_var:
                         info["spent_diff_lamports"] = round(rp["boost_spent_sol"] * 1e9) - round(live["boost_spent_sol"] * 1e9)
+                elif rp.get("s0") != live.get("s0") or rp.get("v0") != live.get("v0"):
+                    r_ = "heal_replay_diff"
                 elif _is_int(rp.get("slot")) and rp["slot"] < live["slot"]:
                     r_ = "heal_replay_earlier"
                 else:
@@ -392,7 +407,7 @@ def build_engine_class(status_path: str | Path = FOLLOWER_STATUS_PATH, base: typ
             out = blank_heal()
             p = self.pools.get(rec.get("pool"))
             st = self._lh_pools.get(rec.get("pool"))
-            if p is None or st is None:
+            if p is None or st is None or st.err:
                 out["reason"] = "heal_no_store"
                 return out
             gaps = list(p.gaps)
@@ -462,9 +477,16 @@ def build_engine_class(status_path: str | Path = FOLLOWER_STATUS_PATH, base: typ
                 first_cover = oldest_a
                 hi = max(iv[1] for iv in known)
                 tip_hw = getattr(self.tip, "hw_slot", None)
-                if not _is_int(tip_hw) or tip_hw < hi + hs.TIPAUTH_MARGIN_SLOTS:
+                pend = getattr(self.tip, "pending", None)
+                if not _is_int(tip_hw) or tip_hw < hi + hs.TIPAUTH_MARGIN_SLOTS or (callable(pend) and pend()):  # unread tip bytes may hold rows below hw
                     return finish("heal_tip_behind")
                 if getattr(self.tip, "err", None) is not None or self.tip.status(self.hw_slot) != "ok" or (first_cover is not None and self._lh_health() != first_cover[4]):
+                    return finish("heal_reader_health")
+            else:  # a break with no gap interval: the tip must still be fully read and healthy
+                pend = getattr(self.tip, "pending", None)
+                if callable(pend) and pend():
+                    return finish("heal_tip_behind")
+                if getattr(self.tip, "err", None) is not None or self.tip.status(self.hw_slot) != "ok":
                     return finish("heal_reader_health")
             if m["ambiguous"]:
                 return finish("heal_order_ambiguous")

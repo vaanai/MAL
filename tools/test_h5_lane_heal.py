@@ -12,11 +12,13 @@ from pathlib import Path
 from unittest import mock
 
 from tools import h5_lane_heal as hl
+from tools import h5_lane_heal_shadow as hsh
 from tools import h5_lane_shadow as ls
 from tools import h5_shadow as hs
 from tools.test_h5_shadow import MINT, POOL, SOL, Tape
 
 STOCK = hs.Engine
+LANE_SHADOW_BLOB = "ea262dfd7718fa6a24665b8d2574624f63686fc2"  # pinned by test_h5_lane_oc / test_h5_lane_executor / test_h5_lane_syn
 PINNED_BLOBS = ("tools/h5_shadow.py", "tools/h5_executor.py", "tools/h5_lane_executor.py", "tools/h5_lane_oc_executor.py")
 ROOT = Path(__file__).resolve().parent.parent
 PDA = "PDA_" + POOL
@@ -25,6 +27,10 @@ PDA = "PDA_" + POOL
 class FakeTip:
     def __init__(self, hw_slot=1300, status="ok"):
         self.hw_slot, self.st, self.err, self.c = hw_slot, status, None, collections.Counter()
+        self.is_pending = False
+
+    def pending(self):
+        return self.is_pending
 
     def status(self, feed_hw):
         return self.st
@@ -33,14 +39,15 @@ class FakeTip:
         return {"hw_slot": self.hw_slot}
 
 
-def mk(cls, status_path=None, tip=None):
+def mk(cls, status_path=None, tip=None, live_sps=False):
     out: list[dict] = []
     now = [1_800_000_000_000]
+    sps = None if live_sps else (lambda p: 0.4)
     if cls is STOCK:
-        eng = cls(out.append, wall=lambda: now[0], sps_fn=lambda p: 0.4, pda_fn=lambda pool: "PDA_" + pool, classifier=hs.StaticClassifier(False),
+        eng = cls(out.append, wall=lambda: now[0], sps_fn=sps, pda_fn=lambda pool: "PDA_" + pool, classifier=hs.StaticClassifier(False),
                   seal_start_ms=None, h5_look2_start_ms=None)
     else:
-        eng = hl.build_engine_class(status_path)(out.append, wall=lambda: now[0], sps_fn=lambda p: 0.4, pda_fn=lambda pool: "PDA_" + pool,
+        eng = hl.build_engine_class(status_path)(out.append, wall=lambda: now[0], sps_fn=sps, pda_fn=lambda pool: "PDA_" + pool,
                                                    classifier=hs.StaticClassifier(False), seal_start_ms=None, h5_look2_start_ms=None)
     eng.now = now
     eng.tip = tip
@@ -214,14 +221,27 @@ class Test1Equivalence(Base):
             out = f"{home}/data/h5-shadow-lane9"
             self.assertEqual(ls.main(["--lane", "DEC-035", "--out-dir", out]), 0)
             self.assertIs(seen[-1], STOCK)
-            self.assertEqual(ls.main(["--lane", "DEC-035", "--lane-heal", "DEC-035", "--out-dir", out]), 2)  # needs --tip-dir
-            self.assertEqual(ls.main(["--lane", "DEC-035", "--lane-heal", "DEC-036", "--tip-dir", "/x", "--out-dir", out]), 2)
+            n = len(seen)
+            self.assertEqual(hsh.main(["--lane", "DEC-035", "--out-dir", out]), 2)  # no --lane-heal
+            self.assertEqual(hsh.main(["--lane", "DEC-035", "--lane-heal", "DEC-035", "--out-dir", out]), 2)  # needs --tip-dir
+            self.assertEqual(hsh.main(["--lane", "DEC-035", "--lane-heal", "DEC-036", "--tip-dir", "/x", "--out-dir", out]), 2)
+            self.assertEqual(len(seen), n)
             try:
-                self.assertEqual(ls.main(["--lane", "DEC-035", "--lane-heal", "DEC-035", "--tip-dir", "/x", "--out-dir", out]), 0)
+                self.assertEqual(hsh.main(["--lane", "DEC-035", "--lane-heal", "DEC-035", "--tip-dir", "/x", "--out-dir", out]), 0)
                 self.assertTrue(getattr(seen[-1], "_lane_heal", False))
                 self.assertTrue(issubclass(seen[-1], STOCK))
             finally:
                 hs.Engine = STOCK
+
+    def test_lane_shadow_blob_is_pinned(self):
+        h = subprocess.run(["git", "hash-object", "tools/h5_lane_shadow.py"], cwd=ROOT, capture_output=True, text=True)
+        self.assertEqual(h.stdout.strip(), LANE_SHADOW_BLOB)
+
+    def test_script_selects_heal_module_only_with_the_env(self):
+        txt = (ROOT / "scripts/research/h5-lane-shadow.sh").read_text()
+        self.assertIn("ENTRY=tools.h5_lane_shadow\n", txt)
+        self.assertIn('-m "$ENTRY" --lane DEC-035', txt)
+        self.assertEqual(txt.count("ENTRY=tools.h5_lane_heal_shadow"), 1)
 
     def test_pinned_blobs_unchanged_vs_origin_main(self):
         for f in PINNED_BLOBS:
@@ -461,6 +481,121 @@ class Test3GapInjection(Base):
         eng.on_trade(dict(rows[6]))
         self.assertEqual(st.iv[i_rs][:2], [1160, 1180])
         self.assertEqual([st.iv[i][2] for i in sorted(st.iv)], sorted(st.iv[i][2] for i in st.iv))
+
+    def test_status_sampling_at_most_once_a_second_and_fail_closed(self):
+        eng, _ = mk(hl.build_engine_class(self.sp), self.sp, FakeTip())
+        write_status(self.sp, 1000)
+        for ms in (10_000, 10_400, 10_999):
+            eng._lh_sample(ms)
+        self.assertEqual(len(eng._lh_fol), 1)
+        eng._lh_sample(11_000)
+        self.assertEqual(len(eng._lh_fol), 2)
+        n = 2
+        for bad in ('{"last_done_slot": 5', "garbage", "", '{"gaps": 0}', '{"last_done_slot": "x"}', '{"last_done_slot": true}', "[]"):
+            with open(self.sp, "w") as f:
+                f.write(bad)
+            eng._lh_sample(eng._lh_fol_ms + 1_000)  # a failure still counts as the second's attempt: no hot retry
+            self.assertEqual(len(eng._lh_fol), n, bad)
+            eng._lh_sample(eng._lh_fol_ms + 10)
+            self.assertEqual(len(eng._lh_fol), n, bad)
+        os.remove(self.sp)
+        eng._lh_sample(eng._lh_fol_ms + 1_000)
+        self.assertEqual(len(eng._lh_fol), n)
+        with open(self.sp, "w") as f:  # a run whose status file is garbage never heals
+            f.write("garbage")
+        _, _, out = self.case("a", keep=True)
+        self.assertEqual(self.heal(out)["reason"], "heal_no_sample")
+
+    def test_tip_pending_is_tip_behind(self):
+        tip = FakeTip()
+        tip.is_pending = True
+        _, _, out = self.case("a", tip=tip)
+        self.assertEqual(self.heal(out)["reason"], "heal_tip_behind")
+
+    def test_reader_row_loss_counters_refuse(self):
+        for key in hl.HEALTH_KEYS:
+            with self.subTest(key=key):
+                write_status(self.sp, 1050)
+                scn = base("a")
+                tip = FakeTip()
+                eng, out = mk(hl.build_engine_class(self.sp), self.sp, tip)
+                eng.on_create_pool(scn.pool, MINT, hs.WSOL_MINT, 999, 0)
+                rows = scn.ws_rows()
+                for r in rows[:-1]:
+                    eng.on_trade(dict(r))
+                tip.c[key] += 1
+                write_status(self.sp, 1170)
+                for r in scn.tip_rows():
+                    eng.on_tip_row(r)
+                eng.on_trade(dict(rows[-1]))
+                self.assertEqual(self.heal(out)["reason"], "heal_reader_health")
+        for key in ("fragments_dropped", "long_lines_dropped", "parse_errors", "no_dir_polls"):
+            self.assertIn(key, hl.HEALTH_KEYS)
+
+    def test_pending_buffer_overflow_is_rows_cap(self):
+        write_status(self.sp, 1050)
+        scn = base("a")
+        eng, out = mk(hl.build_engine_class(self.sp), self.sp, FakeTip())
+        eng.on_create_pool(scn.pool, MINT, hs.WSOL_MINT, 999, 0)
+        with mock.patch.object(hl, "TIP_PENDING_ROWS", 2):
+            for r in scn.tip_rows()[:4]:  # tip rows of an announced pool the feed has not judged yet
+                eng.on_tip_row(r)
+        self.assertIn(scn.pool, eng._lh_pending_over)
+        rows = scn.ws_rows()
+        for r in rows[:-1]:
+            eng.on_trade(dict(r))
+        write_status(self.sp, 1170)
+        for r in scn.tip_rows():
+            eng.on_tip_row(r)
+        eng.on_trade(dict(rows[-1]))
+        self.assertEqual(self.heal(out)["reason"], "heal_rows_cap")
+
+    def test_boost_list_overflow_sets_cap(self):
+        scn = base("a")
+        eng, out = mk(hl.build_engine_class(self.sp), self.sp, FakeTip())
+        eng.on_create_pool(scn.pool, MINT, hs.WSOL_MINT, 999, 0)
+        for r in scn.ws_rows()[:3]:
+            eng.on_trade(dict(r))
+        st = eng._lh_pools[scn.pool]
+        with mock.patch.object(hl, "ROWS_CAP", 2):
+            for _ in range(3):
+                eng.on_boost_event({"pool": scn.pool, "authority": "x", "boost_vault_remaining": 1}, 1050, 0)
+        self.assertTrue(st.cap_ws)
+
+    def test_i_tip_only_row_below_live_s0_is_replay_diff(self):
+        scn = base("a")
+        first = dict(scn.rows[0])
+        pre = dict(first, slot=990, side="buy", trader="ZZ", token_raw=1000, base_reserve=first["base_reserve"] + 1000, signature="below-s0", event_index=0, tx_index=0,
+                   sol_lamports=1000, event_ts=first["event_ts"] - 4)
+        _, _, out = self.case("a", tip_rows=scn.tip_rows() + [pre])
+        t = trigs(out)[0]
+        self.assertEqual(t[hs.UNION_FIELD], 0)  # the union is whole: only the replay can tell
+        self.assertEqual((t["lane_heal"]["status"], t["lane_heal"]["reason"]), ("refused", "heal_replay_diff"))
+
+    def test_store_error_refuses_no_store(self):
+        scn = base("a")
+        eng, out = mk(hl.build_engine_class(self.sp), self.sp, FakeTip())
+        eng.on_create_pool(scn.pool, MINT, hs.WSOL_MINT, 999, 0)
+        rows = scn.ws_rows()
+        for r in rows[:-1]:
+            eng.on_trade(dict(r))
+        eng._lh_pools[scn.pool].err = True
+        eng.on_trade(dict(rows[-1]))
+        self.assertEqual(self.heal(out)["reason"], "heal_no_store")
+
+    def test_live_sps_path(self):
+        rows, pools = synthetic_hour(3)
+        eng, out = mk(hl.build_engine_class(self.sp), self.sp, FakeTip(hw_slot=10**9), live_sps=True)
+        stock, out_s = mk(STOCK, tip=FakeTip(hw_slot=10**9), live_sps=True)
+        for p in pools:
+            for e in (eng, stock):
+                e.on_create_pool(p, "Mint" + p[4:], hs.WSOL_MINT, 0, 0)
+        for r in rows:
+            eng.on_trade(dict(r))
+            stock.on_trade(dict(r))
+        self.assertTrue(trigs(out_s))
+        self.assertEqual([json.dumps({k: v for k, v in r.items() if k != "lane_heal"}) for r in trigs(out)], [json.dumps(r) for r in trigs(out_s)])
+        self.assertTrue(all(r["lane_heal"]["replay"]["match"] is True for r in trigs(out)))
 
     def test_store_freed_at_pool_close(self):
         scn, eng, out = self.case("a")
