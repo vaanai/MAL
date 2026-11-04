@@ -18,7 +18,7 @@ FAKE_POOL = "POOLSENTINEL111111111111111111111111111111"
 
 
 def wr(path: Path, rows: list[dict]) -> None:
-    path.write_text("".join(json.dumps(r) + "\n" for r in rows))
+    path.write_text("".join(json.dumps(r, separators=(",", ":")) + "\n" for r in rows))
 
 
 def trig(i: int, slot: int = 1000, settled=0, spent: float = 1.0, rem="auto", **kw) -> dict:
@@ -49,7 +49,7 @@ class Base(unittest.TestCase):
     def run_l2l3(self, ledger_rows, shadow_rows):
         wr(self.ledger, ledger_rows)
         wr(self.shadow / "h5-shadow-2026-11-04T00.jsonl", shadow_rows)
-        return C.l2l3(str(self.ledger), [str(self.shadow)])
+        return C.l2l3(str(self.ledger), str(self.shadow))
 
 
 class L2Tests(Base):
@@ -63,7 +63,7 @@ class L2Tests(Base):
     def test_pass_needs_five_clean_all_zero(self):
         led, trs = self.cleans(5)
         r = self.run_l2l3(led, trs)
-        self.assertEqual((r["n_cmp"], r["n_clean"], r["n_zero"], r["l2"]), (5, 5, 5, "PASS"))
+        self.assertEqual((r["n_cmp"], r["n_strict"], r["n_zero"], r["l2"]), (5, 5, 5, "PASS"))
 
     def test_four_clean_is_not_yet(self):
         led, trs = self.cleans(4)
@@ -76,31 +76,35 @@ class L2Tests(Base):
         led, trs = self.cleans(6, nonzero_at=5)
         self.assertEqual(self.run_l2l3(led, trs)["l2"], "FAIL")
 
-    def test_clean_boundary_is_open_at_the_last_event_and_closed_at_the_read_slot(self):
-        # trigger slot 1000, read slot 1010; the last event is the greatest slice slot <= 1000
+    def test_strict_boundary_is_closed_at_both_ends(self):
+        # trigger slot 1000, read slot 1010: a slice anywhere in [1000, 1010] makes the read not strict-clean
         cases = {"slice_after_trigger_inside": ([sl(0, 1005)], False), "slice_at_read_slot": ([sl(0, 1010)], False),
-                 "slice_one_past_read": ([sl(0, 1011)], True), "slice_at_trigger_is_the_last_event": ([sl(0, 1000)], True),
+                 "slice_one_past_read": ([sl(0, 1011)], True), "slice_at_trigger_slot": ([sl(0, 1000)], False),
                  "slice_before_trigger": ([sl(0, 990)], True), "slice_at_trigger_plus_one": ([sl(0, 1001)], False), "no_slices": ([], True),
                  "other_pool_slice": ([sl(1, 1005)], True)}
         for name, (slices, want) in cases.items():
             r = self.run_l2l3([rc(0, 9_000_000_000)], [trig(0, rem=9.0), *slices])
-            self.assertEqual(r["n_clean"], int(want), name)
+            self.assertEqual(r["n_strict"], int(want), name)
             self.assertEqual(r["n_cmp"], 1, name)
 
     def test_not_clean_comparisons_do_not_count_toward_the_verdict(self):
         led, trs = self.cleans(5)
         led[0]["oc_boost_remaining_lamports"] += 123  # a disagreement ...
-        r = self.run_l2l3(led, trs + [sl(0, 1005)])  # ... but a slice sits inside (trigger, read]: not clean
-        self.assertEqual((r["n_cmp"], r["n_clean"], r["l2"]), (5, 4, "NOT_YET"))
+        r = self.run_l2l3(led, trs + [sl(0, 1005)])  # ... but a slice sits inside [trigger, read]: not clean
+        self.assertEqual((r["n_cmp"], r["n_strict"], r["l2"]), (5, 4, "NOT_YET"))
 
-    def test_strict_count_includes_a_slice_at_the_trigger_slot(self):
-        r = self.run_l2l3([rc(0, 9_000_000_000)], [trig(0, rem=9.0), sl(0, 1000)])
-        self.assertEqual((r["n_clean"], r["n_clean_strict"]), (1, 0))
+    def test_loose_proxy_is_report_only_and_never_fails(self):
+        # a slice at the trigger slot: loose-clean (it is the "last event"), not strict-clean; its nonzero diff is counted but is no FAIL
+        r = self.run_l2l3([rc(0, 9_000_000_123)], [trig(0, rem=9.0), sl(0, 1000)])
+        self.assertEqual((r["loose_n"], r["loose_not_strict_nz"], r["n_strict"], r["l2"]), (1, 1, 0, "NOT_YET"))
 
-    def test_read_slot_fallback_to_oc_slot_is_disclosed(self):
-        led = [rc(0, 9_000_000_000, key="oc_slot"), rc(1, 9_000_000_000), rc(2, 9_000_000_000, oc_boost_slot=None, oc_slot=1010)]
-        r = self.run_l2l3(led, [trig(i, rem=9.0) for i in range(3)])
-        self.assertEqual(dict(r["slot_src"]), {"oc_slot": 2, "oc_boost_slot": 1})
+    def test_oc_slot_only_rows_never_count_toward_pass_or_fail(self):
+        led = [rc(i, 9_000_000_000 + (5 if i == 0 else 0), key="oc_slot") for i in range(6)]
+        r = self.run_l2l3(led, [trig(i, rem=9.0) for i in range(6)])
+        self.assertEqual((r["n_fallback"], r["n_strict"], r["fb_n"], len(r["fb_nz"]), r["l2"]), (6, 0, 6, 1, "NOT_YET"))
+        led += [rc(10 + i, 9_000_000_000) for i in range(5)]
+        r = self.run_l2l3(led, [trig(i, rem=9.0) for i in range(6)] + [trig(10 + i, rem=9.0) for i in range(5)])
+        self.assertEqual((r["n_strict"], r["l2"]), (5, "PASS"))
 
     def test_refused_rows_that_reached_the_vault_read_are_compared_and_others_are_not(self):
         led = [rc(0, 9_000_000_000, ok=False), {"kind": "oc_recheck", "mint": f"{FAKE_MINT}1", "ok": False, "reason": "oc_q_above_40"}]
@@ -120,17 +124,18 @@ class L2Tests(Base):
         self.assertEqual(dict(r["led"]["l6a"]), {"agree": 2, "not_clean": 1})
         self.assertEqual(C._stats(r["led"]["b_diffs"]), "n=3 min=-5 median=3 max=9")
 
-    def test_a_ledger_dir_and_two_shadow_dirs_are_read(self):
+    def test_a_ledger_dir_is_read_and_exactly_one_shadow_dir_is_allowed(self):
         d = self.tmp / "ldir"
         d.mkdir()
         wr(d / "a.jsonl", [rc(0, 9_000_000_000)])
         wr(d / "b.jsonl", [rc(1, 9_000_000_000)])
+        wr(self.shadow / "h5-shadow-1.jsonl", [trig(0, rem=9.0), trig(1, rem=9.0)])
+        r = C.l2l3(str(d), str(self.shadow))
+        self.assertEqual((r["n_cmp"], r["n_strict"]), (2, 2))
         s2 = self.tmp / "shadow2"
         s2.mkdir()
-        wr(self.shadow / "h5-shadow-1.jsonl", [trig(0, rem=9.0)])
-        wr(s2 / "h5-shadow-2.jsonl", [trig(1, rem=9.0)])
-        r = C.l2l3(str(d), [str(self.shadow), str(s2)])
-        self.assertEqual((r["n_cmp"], r["n_clean"]), (2, 2))
+        with contextlib.redirect_stderr(io.StringIO()), contextlib.redirect_stdout(io.StringIO()):
+            self.assertEqual(C.main(["l2l3", "--dry-ledger", str(d), "--shadow-dir", str(self.shadow), "--shadow-dir", str(s2)]), 2)
 
 
 class JoinTests(Base):
@@ -143,11 +148,15 @@ class JoinTests(Base):
         trs = [trig(0, slot=1000, rem=8.0), trig(0, slot=1100, rem=9.0)]
         led = [rc(0, 8_000_000_000, slot=1010), rc(0, 9_000_000_000, slot=1110)]
         r = self.run_l2l3(led, trs)
-        self.assertEqual((r["n_cmp"], r["n_clean"], r["nz"], r["n_distinct"], r["l2"]), (2, 2, [], 2, "NOT_YET"))
+        self.assertEqual((r["n_cmp"], r["n_strict"], r["nz"], r["n_distinct"], r["l2"]), (2, 2, [], 2, "NOT_YET"))
+
+    def test_same_pool_and_slot_with_different_vault_values_is_counted(self):
+        r = self.run_l2l3([rc(0, 9_000_000_000)], [trig(0, rem=9.0), trig(0, rem=8.0)])
+        self.assertEqual((r["n_conflict"], r["n_cmp"], r["nz"]), (1, 1, []))  # the first is kept
 
     def test_five_rows_for_one_mint_do_not_pass(self):
         r = self.run_l2l3([rc(0, 9_000_000_000) for _ in range(5)], [trig(0, rem=9.0)])
-        self.assertEqual((r["n_cmp"], r["n_clean"], r["n_distinct"], r["n_distinct_clean"], r["l2"]), (5, 5, 1, 1, "NOT_YET"))
+        self.assertEqual((r["n_cmp"], r["n_strict"], r["n_distinct"], r["n_distinct_strict"], r["l2"]), (5, 5, 1, 1, "NOT_YET"))
 
     def test_a_repeat_row_that_disagrees_still_fails(self):
         r = self.run_l2l3([rc(0, 9_000_000_000), rc(0, 9_000_000_001)], [trig(0, rem=9.0)])
@@ -155,9 +164,9 @@ class JoinTests(Base):
 
     def test_read_below_the_trigger_slot_is_not_clean_under_either_rule(self):
         r = self.run_l2l3([rc(0, 9_000_000_000, slot=990)], [trig(0, rem=9.0), sl(0, 995)])
-        self.assertEqual((r["n_cmp"], r["n_clean"], r["n_clean_strict"], r["n_before"]), (1, 0, 0, 1))
+        self.assertEqual((r["n_cmp"], r["n_strict"], r["loose_n"], r["n_before"]), (1, 0, 0, 1))
         r = self.run_l2l3([rc(0, 9_000_000_000, slot=1000)], [trig(0, rem=9.0)])  # read at the trigger slot is fine
-        self.assertEqual((r["n_clean"], r["n_clean_strict"], r["n_before"]), (1, 1, 0))
+        self.assertEqual((r["n_strict"], r["n_before"]), (1, 0))
 
 
 class MalformedTests(Base):
@@ -170,14 +179,38 @@ class MalformedTests(Base):
     def test_unparsable_lines_are_counted_and_printed(self):
         wr(self.ledger, [rc(0, 1)])
         with self.ledger.open("a") as fh:
-            fh.write('{"kind": "oc_recheck" broken\n["oc_recheck"]\n')
+            fh.write('{"kind":"oc_recheck" broken\n[{"kind":"oc_recheck"}]\n')
         wr(self.shadow / "h5-shadow-a.jsonl", [trig(0)])
         with (self.shadow / "h5-shadow-a.jsonl").open("a") as fh:
-            fh.write("trigger not json\n")
+            fh.write('{"type":"trigger" not json\n')
         buf = io.StringIO()
         with contextlib.redirect_stdout(buf):
             self.assertEqual(C.main(["l2l3", "--dry-ledger", str(self.ledger), "--shadow-dir", str(self.shadow)]), 0)
         self.assertIn("ledger {'unparsable_or_non_object': 2}, shadow {'unparsable_or_non_object': 1}", buf.getvalue())
+
+
+class PrefilterTests(Base):
+    def test_only_exact_token_lines_are_ever_parsed(self):
+        outcome = '{"type":"outcome","variant":"pv","trigger_slot":1000,"pnl_sol":1.5}'
+        pool = '{"type":"pool","pool":"P","boost_slices":3,"boost_vault_remaining_sol":9.0}'
+        tagged = '{"kind":"decision","mint":"M","oc_l6_a":"agree","oc_boost_remaining_lamports":1,"gate_path":"onchain_recheck"}'
+        wr(self.ledger, [])
+        self.ledger.write_text(tagged + "\n" + json.dumps(rc(0, 9_000_000_000), separators=(",", ":")) + "\n")
+        (self.shadow / "h5-shadow-a.jsonl").write_text("\n".join([outcome, pool, json.dumps(trig(0, rem=9.0), separators=(",", ":"))]) + "\n")
+        seen: list[str] = []
+        real = C.json.loads
+        C.json.loads = lambda line, *a, **k: (seen.append(line), real(line, *a, **k))[1]
+        try:
+            r = C.l2l3(str(self.ledger), str(self.shadow))
+        finally:
+            C.json.loads = real
+        self.assertEqual(r["n_cmp"], 1)
+        self.assertTrue(seen)
+        for line in seen:
+            self.assertTrue('"type":"trigger"' in line or '"type":"boost_slice"' in line or '"kind":"oc_recheck"' in line or '"kind":"oc_l6"' in line, line)
+            self.assertNotIn("pnl_sol", line)
+            self.assertNotIn("gate_path", line)
+            self.assertNotIn("boost_slices", line)
 
 
 class L3Tests(Base):
@@ -199,7 +232,7 @@ class L3Tests(Base):
         trs = [trig(0, spent=2.0, rem=15.585), trig(1, settled=1, rem=1.0), trig(2, settled=True, rem=1.0), trig(3, settled=0.0, rem=1.0), trig(4, variant="fv", rem=1.0),
                trig(5, rem=None), trig(6, suppressed=True, rem=1.0)]
         r = self.run_l2l3([], trs)
-        self.assertEqual((len(r["l3"]), r["l3_unusable"]), (1, 1))
+        self.assertEqual((len(r["l3"]), len(r["l3_pv"]), r["l3_unusable"]), (2, 1, 1))  # pv and fv count; pv-only is report-only
 
     def test_median_and_max(self):
         r = self.l3(*[(1.0, (BUDGET - 1_000_000_000 - d) / 1e9) for d in (0, 10, 30)])
@@ -269,7 +302,7 @@ class L5Tests(Base):
         other = [{**rows[0], "base_breaks_unresolved_settled": 1}, {**rows[0], "variant": "fv"}, {**rows[0], "suppressed": True}, {"type": "pool"}]
         wr(self.shadow / "h5-shadow-a.jsonl", rows + other)
         res = C.l5([str(self.shadow)])
-        self.assertEqual(res["n"], 4)
+        self.assertEqual((res["n"], res["per_dir"]), (4, [4]))
         self.assertEqual(res["oc"], res["lane2"])
         self.assertRegex(res["oc"], r"^[0-9a-f]{32}$")
 
@@ -280,11 +313,28 @@ class L5Tests(Base):
         wr(self.shadow / "h5-shadow-a.jsonl", rows[:1])
         wr(s2 / "h5-shadow-b.jsonl", rows[1:])
         both = C.l5([str(self.shadow), str(s2)])
-        self.assertEqual(both["n"], 2)
+        self.assertEqual((both["n"], both["per_dir"]), (2, [1, 1]))
         wr(s2 / "h5-shadow-b.jsonl", [{**rows[1], "gap": True}])
         gapped = C.l5([str(self.shadow), str(s2)])
         self.assertNotEqual(both["oc"], gapped["oc"])  # not vacuous: a rule field moves the md5
         self.assertEqual(gapped["oc"], gapped["lane2"])
+
+    def test_n_zero_is_not_yet_not_equal(self):
+        wr(self.shadow / "h5-shadow-a.jsonl", [{**self.real_rows(1)[0], "base_breaks_unresolved_settled": 2}])
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            self.assertEqual(C.main(["l5", "--shadow-dir", str(self.shadow)]), 0)
+        self.assertIn("RESULT: NOT_YET", buf.getvalue())
+        self.assertNotIn("RESULT: EQUAL", buf.getvalue())
+
+    def test_disclosures_and_pins_are_printed(self):
+        wr(self.shadow / "h5-shadow-a.jsonl", self.real_rows(1))
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            C.main(["l5", "--shadow-dir", str(self.shadow)])
+        out = buf.getvalue()
+        for want in ("FRESH lane", "max_open", "t_detect_ms", "tools/test_h5_executor_shadow.py=", "tools/test_probe_executor.py=", "tools/h5_lane_oc_checks.py="):
+            self.assertIn(want, out)
 
     def test_diff_is_reported_when_the_bots_differ(self):
         rows = self.real_rows(1)
@@ -297,7 +347,7 @@ class L5Tests(Base):
         self.assertIn("stake field is NOT a trigger field", out)
         for bad in ("SENTINEL", "pool:", "mint:"):
             self.assertNotIn(bad, out)
-        C.print_l5({"n": 1, "oc": "a" * 32, "lane2": "b" * 32}, buf)
+        C.print_l5({"n": 1, "oc": "a" * 32, "lane2": "b" * 32, "per_dir": [1], "pins": {}}, buf)
         self.assertIn("RESULT: DIFF", buf.getvalue())
 
 
