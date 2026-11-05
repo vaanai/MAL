@@ -31,7 +31,7 @@
    "id": "fast0-disk-1104",
    "kind": "record",
    "title": "fast-0 disk incident 2026-11-04 (min 19.76% free): Pool A and two copies moved to research-0",
-   "detail": "Free space on fast-0 / fell below 20% from about 19:1xZ to 21:26Z (minimum 19.76%). Job #2174 moved bootcmp x2, the ~/data/oracle-live copy and Pool A /var/lib/mal/backfill-fast (about 34.5 GB) to research-0 /data2/mal/fast0-offload-1104 (MOVED.txt). fast-0 / free is now about 38%. Guard job #2176 alerts below 24%.",
+   "detail": "Free space on fast-0 / fell below 20% from about 19:1xZ to 21:26Z (minimum 19.76%). Job #2174 moved bootcmp x2, the ~/data/oracle-live copy and Pool A /var/lib/mal/backfill-fast (627 files, about 25 GB) to research-0 /data2/mal/fast0-offload-1104 (MOVED.txt). fast-0 / free is now about 38%. Guard job #2176 alerts below 24%.",
    "atUtc": "2026-11-04T21:44:00Z",
    "approx": true
   },
@@ -39,7 +39,7 @@
    "id": "gradscore-kill-1104",
    "kind": "result",
    "title": "gradscore (Haiku narrative scorer) rule B read 2026-11-04: FAIL, 0 of 6 cells pass",
-   "detail": "AUC about 0.48 to 0.51 against baselines 0.53 to 0.54 (in-sample exploration blocks, read once). Spend about 3.93 USD. Collector #2161 and tracker #2162 cancelled. No more text-only selection spend. No book has cleared the promotion gate.",
+   "detail": "AUC 0.4817 to 0.5089 against baselines 0.5262 to 0.5397 (in-sample exploration blocks, read once). Spend about 3.9 USD. Collector #2161 and tracker #2162 cancelled. No more text-only selection spend. No book has cleared the promotion gate.",
    "atUtc": "2026-11-04T21:00:00Z",
    "approx": true
   },

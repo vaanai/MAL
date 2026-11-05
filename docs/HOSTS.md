@@ -98,7 +98,7 @@ Expect `mal-fast-0`, user `ubuntu`, `uname -m` = `x86_64`.
 | `mal-fast-backfill-c.service` (walker C) | **enabled** | Covers `[2026-09-09T12, 2026-09-12T12)`. Cap 1.1M credits. Out `/var/lib/mal/backfill-fast-c`. |
 | `mal-fast-oos-score.service` | **stopped, 2026-09-28T19:00:50Z** | Scored the now-dead frozen migrate-direct cell into `/var/lib/mal/paper/migrate-direct-oos-fast/report.json`. Stopped after the formal FAIL verdict; it had also read two hours (2026-09-18T23, 2026-09-19T00) inside EXP-009's holdout window before the floor was added — see EXP-009 Amendment 3. |
 
-**Note, 2026-11-04 (disk incident, job #2174):** fast-0 Pool A, `/var/lib/mal/backfill-fast` (627 files, about 34.5 GB), was moved to research-0 `/data2/mal/fast0-offload-1104` (listing md5 matched, source removed; see `MOVED.txt` there). `/var/lib/mal/backfill-fast-b` and `-c` stayed on fast-0 (EXP-011 holdout). The `Out` path of walker 1 above is therefore historical. fast-0 `/` free was 19.76% at the minimum and is about 38% after the move; guard job #2176 alerts below 24%.
+**Note, 2026-11-04 (disk incident, job #2174):** fast-0 Pool A, `/var/lib/mal/backfill-fast` (627 files, 26,380,640,960 bytes, about 25 GB), was moved to research-0 `/data2/mal/fast0-offload-1104` (listing md5 matched, source removed; see `MOVED.txt` there). `/var/lib/mal/backfill-fast-b` and `-c` stayed on fast-0 (EXP-011 holdout). The `Out` path of walker 1 above is therefore historical. fast-0 `/` free was 19.76% at the minimum and is about 38% after the move; guard job #2176 alerts below 24%.
 
 ### Claude schedules (user `claude`, separate from user `ubuntu` above)
 

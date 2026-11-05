@@ -499,7 +499,7 @@ Rows written by research agents on 2026-10-13. A judge read each web agent's who
 
 | Id | Idea | Status | Note |
 | --- | --- | --- | --- |
-| `gradscore-narrative-v0` | gradscore: Haiku 5.5 narrative scorer for graduated PumpSwap tokens (runner probability, narrative … | `explored-no-survivor` | Rule B read 2026-11-04: FAIL, 0 of 6 cells PASS. AUC about 0.48 to 0.51 against baselines 0.53 to 0.54; the content-addressed stratum is at chance. Spend about 3.93 USD. Collector #2161 and tracker #2162 cancelled; the forward read (rule A) was abandoned, not a result. |
+| `gradscore-narrative-v0` | gradscore: Haiku 5.5 narrative scorer for graduated PumpSwap tokens (runner probability, narrative … | `explored-no-survivor` | Rule B read 2026-11-04: FAIL, 0 of 6 cells PASS. AUC 0.4817 to 0.5089 against baselines 0.5262 to 0.5397; the content-addressed stratum is at chance. Spend about 3.9 USD. Collector #2161 and tracker #2162 cancelled; the forward read (rule A) was abandoned, not a result. |
 
 ## Dead as frozen, and explored with no survivor
 
