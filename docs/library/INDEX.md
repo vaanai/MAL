@@ -34,11 +34,11 @@ As of 2026-10-20T08:26:00Z. One row per idea in [`ideas.jsonl`](ideas.jsonl). Th
 | `shelved` | 2 | 2 | 0 |
 | `untested` | 45 | 28 | 0 |
 | `desk-read` | 3 | 52 | 0 |
-| `explored-no-survivor` | 56 | 17 | 2 |
+| `explored-no-survivor` | 56 | 18 | 2 |
 | `dead-as-frozen` | 77 | 9 | 0 |
-| **all** | 209 | 111 | 2 |
+| **all** | 209 | 112 | 2 |
 
-The file holds 572 rows: the 322 above and 55 rows kept only as duplicates of another row (listed at the end).
+The file holds 573 rows: the 323 above and 55 rows kept only as duplicates of another row (listed at the end).
 
 ## Live and in forward test
 
@@ -494,6 +494,12 @@ Rows written by research agents on 2026-10-13. A judge read each web agent's who
 | Id | Idea | Status | Note |
 | --- | --- | --- | --- |
 | `haiku-v6-tail-spotter` | Haiku v6 TAIL SPOTTER: add-size-only Haiku sizer on the frozen H5 BOOST-floor trigger (boost 2x / … | `dead-as-frozen` | O1 (job #2012, harness ad061679, 2.31265497 USD ledger, 17,055 calls, ledger /data2/mal/scratch/haiku-v6/ledger.jsonl) KILL_OFFLINE, confirmed by QP-RULING-1101-haiku-v6-o1: 8 of 16 pre-registered booleans fail (B4, B5, B7 and B8, each under both fail models). In-sample over 33 test days, flat: L minus P (random … |
+
+### gradscore-narrative (1)
+
+| Id | Idea | Status | Note |
+| --- | --- | --- | --- |
+| `gradscore-narrative-v0` | gradscore: Haiku 5.5 narrative scorer for graduated PumpSwap tokens (runner probability, narrative … | `explored-no-survivor` | Rule B read 2026-11-04: FAIL, 0 of 6 cells PASS. AUC about 0.48 to 0.51 against baselines 0.53 to 0.54; the content-addressed stratum is at chance. Spend about 3.93 USD. Collector #2161 and tracker #2162 cancelled; the forward read (rule A) was abandoned, not a result. |
 
 ## Dead as frozen, and explored with no survivor
 
