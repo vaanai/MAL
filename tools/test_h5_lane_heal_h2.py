@@ -114,6 +114,44 @@ class CliTests(unittest.TestCase):
             self.assertIn("H2 VERDICT: NOT_YET", buf.getvalue())
             self.assertEqual(H.main(["--shadow-dir", str(Path(t) / "nope")]), 2)
 
+    def test_torn_trigger_line_fails(self):
+        with tempfile.TemporaryDirectory() as t:
+            self.write_dir(Path(t), [real()])
+            f = Path(t) / "h5-shadow-2026-11-04.jsonl"
+            f.write_text(f.read_text() + '{"type":"trigger","variant":"pv","sl\n')
+            buf = io.StringIO()
+            with redirect_stdout(buf):
+                rc = H.main(["--shadow-dir", t])
+        self.assertEqual(rc, 1)
+        self.assertIn("unparsable trigger lines (any > 0 makes the verdict FAIL): 1", buf.getvalue())
+        self.assertIn("H2 VERDICT: FAIL", buf.getvalue())
+
+    def test_accepted_count_and_all_refused_warning(self):
+        with tempfile.TemporaryDirectory() as t:
+            self.write_dir(Path(t), [real(), real(lane_heal(), gap=True)])
+            buf = io.StringIO()
+            with redirect_stdout(buf):
+                H.main(["--shadow-dir", t])
+            self.assertIn("pairs where either executor sent a buy: 2 of 2", buf.getvalue())
+            self.assertNotIn("WARNING", buf.getvalue())
+        with tempfile.TemporaryDirectory() as t:
+            self.write_dir(Path(t), [real(gap=True), real(gap=True, q_trigger_sol=1.0)])
+            buf = io.StringIO()
+            with redirect_stdout(buf):
+                H.main(["--shadow-dir", t])
+            self.assertIn("pairs where either executor sent a buy: 0 of 2", buf.getvalue())
+            self.assertIn("WARNING: no pair was accepted", buf.getvalue())
+
+    def test_harness_exception_is_fail_without_traceback(self):
+        with tempfile.TemporaryDirectory() as t:
+            self.write_dir(Path(t), [real()])
+            with mock.patch.object(H, "run_pair", side_effect=KeyError("secret-row-value")):
+                buf = io.StringIO()
+                with redirect_stdout(buf):
+                    rc = H.main(["--shadow-dir", t])
+        self.assertEqual(rc, 1)
+        self.assertEqual(buf.getvalue().strip(), "H2 VERDICT: FAIL harness_error KeyError")
+
     def test_cli_fail_exits_1(self):
         with tempfile.TemporaryDirectory() as t:
             self.write_dir(Path(t), [real()])

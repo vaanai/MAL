@@ -40,10 +40,10 @@ PIN_FILES = ("tools/h5_lane_heal_h2.py", "tools/h5_lane_heal_executor.py", "tool
              "tools/test_h5_executor.py", "tools/test_probe_executor.py")
 
 
-def real_pv(dirs: list[str]) -> Iterator[tuple[int, dict]]:
-    """(index of the --shadow-dir, kept fields) for each non-suppressed pv trigger."""
+def real_pv(dirs: list[str], skipped: Counter | None = None) -> Iterator[tuple[int, dict]]:
+    """(index of the --shadow-dir, kept fields) for each non-suppressed pv trigger. Trigger-tagged lines that do not parse are counted in `skipped`."""
     for k, d in enumerate(dirs):
-        for t in C.pv_triggers(C.shadow_files([d])):
+        for t in C.pv_triggers(C.shadow_files([d]), skipped):
             yield k, {f: t[f] for f in KEEP if f in t}
 
 
@@ -87,7 +87,7 @@ def run_pair(case, T, X, HE, i: int, make) -> tuple[dict, dict]:
     return a, b
 
 
-def run_rows(keep: list[tuple[int, dict]], n_dirs: int) -> dict[str, Any]:
+def run_rows(keep: list[tuple[int, dict]], n_dirs: int, unparsable: int = 0) -> dict[str, Any]:
     from tools import h5_lane_heal_executor as X
     from tools import test_h5_lane_heal_executor as HT
     from tools import test_h5_lane_oc as T
@@ -96,11 +96,13 @@ def run_rows(keep: list[tuple[int, dict]], n_dirs: int) -> dict[str, Any]:
     case = T.Settled0EquivalenceTests("test_the_parser_is_restored_after_the_tick")
     case.setUp()
     s2, sh, tot = [], [], Counter()
+    accepted = 0
     try:
         for i, (k, real) in enumerate(keep):
             a, b = run_pair(case, T, X, HT.HealEnv, i, lambda e, r=real: project(e.clock, r))
             cls = classify(a, b)
             tot[cls] += 1
+            accepted += bool(a["sent"] or b["sent"])
             per_dir[k][cls] += 1
             n_dir[k] += 1
             s2.append([a["refusals"], a["sent"], a["dec"], a["rpc"]])
@@ -109,12 +111,14 @@ def run_rows(keep: list[tuple[int, dict]], n_dirs: int) -> dict[str, Any]:
         case.doCleanups()
     md5 = lambda x: hashlib.md5(json.dumps(x, sort_keys=True, default=str).encode()).hexdigest()  # noqa: E731
     n = len(keep)
-    verdict = "NOT_YET" if n == 0 else ("FAIL" if tot["FAIL"] else "PASS")
-    return {"n": n, "total": tot, "per_dir": per_dir, "n_dir": n_dir, "md5_lane2": md5(s2), "md5_heal": md5(sh), "verdict": verdict, "pins": pin_blobs()}
+    verdict = "FAIL" if (tot["FAIL"] or unparsable) else ("NOT_YET" if n == 0 else "PASS")
+    return {"unparsable": unparsable, "accepted": accepted, "n": n, "total": tot, "per_dir": per_dir, "n_dir": n_dir, "md5_lane2": md5(s2), "md5_heal": md5(sh), "verdict": verdict, "pins": pin_blobs()}
 
 
 def h2(dirs: list[str]) -> dict[str, Any]:
-    return run_rows(list(real_pv(dirs)), len(dirs))
+    skipped: Counter = Counter()
+    keep = list(real_pv(dirs, skipped))
+    return run_rows(keep, len(dirs), sum(skipped.values()))
 
 
 def pin_blobs() -> dict[str, str]:
@@ -137,6 +141,10 @@ def print_h2(res: dict[str, Any], out=None) -> None:
     w(f"n non-suppressed pv triggers compared: {res['n']}  ({fmt(res['total'])})")
     for k, (c, n) in enumerate(zip(res["per_dir"], res["n_dir"])):
         w(f"  --shadow-dir #{k + 1} (order given): n={n} ({fmt(c)})")
+    w(f"unparsable trigger lines (any > 0 makes the verdict FAIL): {res['unparsable']}")
+    w(f"pairs where either executor sent a buy: {res['accepted']} of {res['n']}")
+    if res["n"] and res["accepted"] == 0:
+        w("WARNING: no pair was accepted by either executor; an all-refused stream exercises no buy path (check the fixture before reading PASS).")
     w(f"md5 h5-lane-h (projected, heal tags removed): {res['md5_heal']}")
     w(f"md5 h5-lane-2 (projected):                    {res['md5_lane2']}")
     w("rule: differ ONLY on feed_gap / bad_intent:base_breaks_unresolved_settled refusals that h5-lane-h accepts with heal_applied true; any other difference FAILs.")
@@ -161,6 +169,9 @@ def main(argv: list[str] | None = None) -> int:
     except OSError as exc:
         print(f"error: {type(exc).__name__}", file=sys.stderr)
         return 2
+    except Exception as exc:  # noqa: BLE001 - fail closed without a traceback (it could carry row values)
+        print(f"H2 VERDICT: FAIL harness_error {type(exc).__name__}")
+        return 1
     print_h2(res)
     return 1 if res["verdict"] == "FAIL" else 0
 
