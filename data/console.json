@@ -1585,8 +1585,8 @@
    "stage": "ENDED NOT_DECIDABLE (read #1887, 2026-11-06T07:21:48Z; Am.11 item 2)",
    "note": "Read #1887 (waiter #1886) ran exit 0 at 2026-11-06T07:21:48Z: STATUS NOT_DECIDABLE, flag ENDED NOT_DECIDABLE at the end-seal (counts only, final; DEC-031 Am.11 item 2). Not a FAIL and not a PASS; no outcome was read. Notebook n_jmlUQ8nlOPrL4w. No C0 step follows. No book has cleared the promotion gate.",
    "tag": {
-    "text": "ended",
-    "tone": "accent"
+    "text": "not decidable",
+    "tone": "warn"
    }
   },
   {
