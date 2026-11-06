@@ -277,7 +277,8 @@ def run_engine(src: str, tape: Path, days: list[str], h0_ms: int, *, roots: list
 
 
 # ------------------------------------------------------------------------------------------------------------------------------------ the count
-def run_p0(days_arg: str, notebook_ref: str, h0: str, sstar_src: str, *, tape_dir: str | os.PathLike = TIP_FEED_ROOT, now_ms: int | None = None) -> dict[str, Any]:
+def run_p0(days_arg: str, notebook_ref: str, h0: str, sstar_src: str, *, tape_dir: str | os.PathLike | None = None, now_ms: int | None = None) -> dict[str, Any]:
+    tape_dir = TIP_FEED_ROOT if tape_dir is None else tape_dir
     now = int(time.time() * 1000) if now_ms is None else now_ms
     if not (isinstance(notebook_ref, str) and notebook_ref.strip()):
         raise Refused("notebook_ref_required")
