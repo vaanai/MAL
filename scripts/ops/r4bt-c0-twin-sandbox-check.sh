@@ -21,10 +21,12 @@ inner='sh /opt/mal-r4b-c0/current/scripts/mal-fast/r4bt-c0-twin.sh'
 fails=0
 out=$(run "$@" /bin/sh -c "$inner --check") && echo "PASS twin_check_in_sandbox" || { echo "FAIL twin_check_in_sandbox: $(printf '%s' "$out" | tail -n 1 | cut -c1-120)"; fails=$((fails + 1)); }
 out=$(run "$@" /bin/sh -c "$inner --check-tape") && echo "PASS twin_check_tape_in_sandbox (names only)" || { echo "FAIL twin_check_tape_in_sandbox: $(printf '%s' "$out" | tail -n 1 | cut -c1-120)"; fails=$((fails + 1)); }
-for f in "$TAPE/.writer/counts.jsonl" "$TAPE/.push/verified.json" /var/lib/mal-r4b-c0/state; do
-  run "$@" /bin/sh -c "test -r '$f'" >/dev/null && echo "PASS readable_in_sandbox ($f)" || { echo "FAIL not_readable_in_sandbox ($f)"; fails=$((fails + 1)); }
+# head -c 0 really opens the file (a shell's readability builtin can report root as able to read anything without an access check); it reads no bytes.
+for f in "$TAPE/.writer/counts.jsonl" "$TAPE/.push/verified.json"; do
+  run "$@" /bin/sh -c "head -c 0 '$f' </dev/null" >/dev/null && echo "PASS readable_in_sandbox ($f)" || { echo "FAIL not_readable_in_sandbox ($f)"; fails=$((fails + 1)); }
 done
-run "$@" /bin/sh -c "test ! -r '$TAPE/.writer/state.json'" >/dev/null && echo "PASS writer_state_json_not_readable_in_sandbox" || { echo "FAIL writer_state_json_readable_in_sandbox"; fails=$((fails + 1)); }
+run "$@" /bin/sh -c "cd /var/lib/mal-r4b-c0/state" >/dev/null && echo "PASS state_dir_enterable_in_sandbox" || { echo "FAIL state_dir_not_enterable_in_sandbox"; fails=$((fails + 1)); }
+if run "$@" /bin/sh -c "head -c 0 '$TAPE/.writer/state.json' </dev/null" >/dev/null 2>&1; then echo "FAIL writer_state_json_readable_in_sandbox"; fails=$((fails + 1)); else echo "PASS writer_state_json_not_readable_in_sandbox"; fi
 if [ "$fails" -eq 0 ]; then echo "RESULT PASS"; exit 0; fi
 echo "RESULT FAIL ($fails)"
 exit 1

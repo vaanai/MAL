@@ -246,6 +246,30 @@ class StateAndTwinDirs(unittest.TestCase):
         self.assertNotIn("3770", UNIT.read_text())
 
 
+class ReviewerItems(unittest.TestCase):
+    def test_runbook_manifest_acl_and_units(self):
+        t = RUNBOOK.read_text()
+        for want in ("find . -path ./.git -prune -o -type f -print0", "--git-dir=$D/$S/.git cat-file -e", "g::<g>,o::<o>,m::r-x", "overrid", "verified.json.tmp", "status.json.tmp",
+                     "mal-r4bt-c0-parity.service", "mal-r4bt-c0-parity.timer", "r4bt-c0-twin-sandbox-check.sh", "--twin-dir /var/lib/mal-r4b-c0/twin", "for EVERY root, synthetic ones included"):
+            self.assertIn(want, t, want)
+        self.assertNotRegex(t, r"find \. -type f -print0 \| LC_ALL=C sort -z \| xargs")  # the manifest never walks .git
+        self.assertIn("mal-r4bt-c0-parity.service /etc/systemd/system/mal-r4bt-c0-parity.timer;", t.replace("\n", " ").replace("  ", " "))
+
+    def test_unit_text_and_parity_hardening(self):
+        tw = TWIN_UNIT.read_text()
+        self.assertNotIn("writes only the state dir", tw)
+        self.assertIn("writes only the twin dir", tw)
+        svc = PACK / "mal-r4bt-c0-parity.service"
+        for k in ("ProtectClock", "ProtectKernelLogs", "ProtectHostname", "RestrictRealtime"):
+            self.assertEqual(values(k, svc), ["true"], k)
+            self.assertEqual(values(k, TWIN_UNIT), ["true"], k)
+
+    def test_sandbox_script_really_opens_files(self):
+        sc = (REPO / "scripts" / "ops" / "r4bt-c0-twin-sandbox-check.sh").read_text()
+        self.assertIn("head -c 0", sc)
+        self.assertNotIn("test -r", sc)
+
+
 class PushNames(unittest.TestCase):
     def test_runbook_push_set_matches_the_pusher_source(self):
         src = (REPO / "tools" / "arena_tip_push.py").read_text()
@@ -281,7 +305,12 @@ class Checklist(unittest.TestCase):
         (tree / "scripts" / "ops").mkdir(parents=True)
         shutil.copy2(CHECKLIST, tree / "scripts" / "ops" / CHECKLIST.name)
         os.symlink(SHA, F / "opt" / "current")
-        files = sorted(p for p in tree.rglob("*") if p.is_file())
+        # a fixture .git in the installed tree (as the runbook installs one): it is NOT in the manifest, and W's commit must be in its object store
+        g = ["git", "-c", "user.name=t", "-c", "user.email=t@example.invalid", "-C", str(tree)]
+        subprocess.run(g + ["init", "-q"], check=True)
+        subprocess.run(g + ["commit", "-q", "--allow-empty", "-m", "fixture", "--no-gpg-sign"], check=True)
+        cls.WOBJ = subprocess.run(g + ["rev-parse", "HEAD"], check=True, capture_output=True, text=True).stdout.strip()
+        files = sorted(p for p in tree.rglob("*") if p.is_file() and ".git" not in p.relative_to(tree).parts)
         (F / "opt" / f"{SHA}.manifest").write_text("".join(f"{_sha256(p)}  ./{p.relative_to(tree).as_posix()}\n" for p in sorted(files, key=lambda p: ("./" + p.relative_to(tree).as_posix()).encode())))
         for p in [tree, *tree.rglob("*")]:
             os.chmod(p, (os.stat(p).st_mode & ~0o022))
@@ -326,7 +355,7 @@ class Checklist(unittest.TestCase):
         e = {"PATH": os.environ.get("PATH", "/usr/bin:/bin"), "R4BTC0_UNIT_TEXT": str(self.unit_text()), "R4BTC0_CONFIG": str(F / "etc" / "r4bt-c0.dry.json"),
              "R4BTC0_TREE": str(F / "opt" / "current"), "R4BTC0_VENV": str(F / "venv"), "R4BTC0_ETC": str(F / "etc"), "R4BTC0_KEY_DIR": str(F / "key"),
              "R4BTC0_STATE_DIR": str(F / "state"), "R4BTC0_TWIN_DIR": str(F / "twin"), "R4BTC0_DECLOG_DIR": str(F / "declog"), "R4BTC0_LIVE_DIR": str(F / "live"), "R4BTC0_TAPE_DIR": str(F / "notape"),
-             "R4BTC0_NO_SYSTEMCTL": "1", "R4BTC0_STAT_OWNER": str(os.getuid()), "R4BTC0_PY3": sys.executable, "R4BTC0_SYSTEM_KEY_PATHS": ""}
+             "R4BTC0_W_OBJECT": self.WOBJ, "R4BTC0_NO_SYSTEMCTL": "1", "R4BTC0_STAT_OWNER": str(os.getuid()), "R4BTC0_PY3": sys.executable, "R4BTC0_SYSTEM_KEY_PATHS": ""}
         e.update(env)
         r = subprocess.run(["sh", str(CHECKLIST)], env=e, capture_output=True, text=True, timeout=300, cwd=F)
         return r.returncode, r.stdout.splitlines()
@@ -345,7 +374,7 @@ class Checklist(unittest.TestCase):
                      "PASS only_the_state_dir_is_writable", "PASS config_root_owned_0644", f"PASS tree_is_a_sha_dir ({SHA})",
                      "PASS executor_live_not_built (LIVE_BUILT = False, W pinned)", "PASS venv_imports_the_executor_closure", "PASS key_dir_root_0700",
                      "PASS declog_has_the_arm_dir", "PASS twin_dir_root_0755", "PASS state_dir_owned_by_this_user", "PASS read_record_absent_before_the_go",
-                     "PASS smoke_config_check_ok", "PASS smoke_live_refused", "PASS config_valid_dry_r4bt", "PASS tree_equals_manifest"):
+                     "PASS installed_object_store_has_W", "PASS smoke_config_check_ok", "PASS smoke_live_refused", "PASS config_valid_dry_r4bt", "PASS tree_equals_manifest"):
             self.assertTrue(any(ln.startswith(want) for ln in out), (want, out))
         self.assertFalse(any(ln.startswith("FAIL declog_dir_not_empty") or "declog_dir_empty" in ln for ln in out))  # correction (b): no emptiness check
         self.assertFalse(any("SECRET-DECISION-ROW-MARKER" in ln or "2026-11-07" in ln for ln in out))  # no content, no file name inside the declog
@@ -441,6 +470,17 @@ class Checklist(unittest.TestCase):
             os.chmod(tw, 0o755)
         self.assertTrue(any(ln.startswith("FAIL twin_dir_not_root_0755") for ln in out), out)
         self.assertTrue(any(ln.startswith("PASS state_dir_0750_or_tighter") for ln in out), out)
+
+    def test_manifest_ignores_git_and_a_missing_w_object_fails(self):
+        # two clones never agree inside .git: changing .git bytes must not break the manifest line
+        (self.F / "opt" / SHA / ".git" / "extra-clone-state").write_text("differs per clone")
+        try:
+            rc, out = self.run_list(R4BTC0_SKIP_SMOKE="1")
+            self.assertTrue(any(ln.startswith("PASS tree_equals_manifest") for ln in out), out)
+            rc, out = self.run_list(R4BTC0_SKIP_SMOKE="1", R4BTC0_W_OBJECT="1" * 40)
+            self.assertTrue(any(ln.startswith("FAIL installed_object_store_lacks_W") for ln in out), out)
+        finally:
+            (self.F / "opt" / SHA / ".git" / "extra-clone-state").unlink()
 
     def test_bad_mode_and_root(self):
         rc, out = self.run_list(R4BTC0_MODE="install")

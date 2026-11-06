@@ -4,7 +4,7 @@ Documentation=https://github.com/vaanai/MAL/blob/main/docs/runbooks/r4bt-c0-exec
 # The twin writes twins.jsonl and twins.run.json into its OWN root-owned dir /var/lib/mal-r4b-c0/twin (0755: the executor and parity units read it and cannot write it) and
 # reads the ledger / attempts in the state dir through a root read ACL (u:root:rX). The executor's twin gate accepts those files only when they are ROOT-OWNED and not
 # group/other writable (tools/r4bt_c0_executor._read_small, root_checks), so this unit runs as root with an EMPTY capability set: it reads the derived copy only through the
-# ACL Helm grants (runbook section 2) and writes only the state dir. If the manager wants another uid, the executor's owner rule changes first (open question on the PR).
+# ACL Helm grants (runbook section 2) and writes only the twin dir (the state dir is read-only to it). If the manager wants another uid, the executor's owner rule changes first (open question on the PR).
 # Template placeholder: <AT-EVENT:feed_delay_slots> = d, the whole number of slots pinned in the registration record. Substituted by Helm at install (runbook section 3).
 # Not enabled or started before Am.9 (a4). The derived copy's writer must keep verified hours >= 400 h (--keep-verified-h 400; run `r4bt-c0-twin.sh --check-tape`).
 [Service]

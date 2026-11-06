@@ -34,6 +34,7 @@ UNIT_STATE_PATH=/var/lib/mal-r4b-c0/state   # the unit's one ReadWritePaths entr
 BOT=r4bt-a1
 W=17e3b05a7696900cda7fcf93e4af4008d8fa0184
 CHANGE_ID=r4bt-a1-1107a
+WOBJ=${R4BTC0_W_OBJECT:-$W}   # tests point it at a fixture commit
 fails=0
 pass() { echo "PASS $1"; }
 fail() { echo "FAIL $1"; fails=$((fails + 1)); }
@@ -155,8 +156,10 @@ if [ -d "$real_tree" ]; then
   [ "$n_bad" -eq 0 ] && pass "tree_root_owned_not_group_other_writable" || fail "tree_not_root_owned_or_writable ($n_bad entries)"
   MANIFEST=${R4BTC0_MANIFEST:-$real_tree.manifest}
   if [ -r "$MANIFEST" ]; then
-    if (cd "$real_tree" && find . -type f -print0 | LC_ALL=C sort -z | xargs -0 sha256sum) | diff -q - "$MANIFEST" >/dev/null 2>&1; then pass "tree_equals_manifest ($MANIFEST)"; else fail "tree_differs_from_manifest ($MANIFEST)"; fi
+    if (cd "$real_tree" && find . -path ./.git -prune -o -type f -print0 | LC_ALL=C sort -z | xargs -0 sha256sum) | diff -q - "$MANIFEST" >/dev/null 2>&1; then pass "tree_equals_manifest ($MANIFEST)"; else fail "tree_differs_from_manifest ($MANIFEST)"; fi
   else fail "manifest_unreadable ($MANIFEST)"; fi
+  # .git is NOT in the manifest (two clones never agree inside it); W's commit must be in the installed object store (content-addressed; the twin verifies the blobs it loads).
+  if git -c safe.directory='*' --git-dir="$real_tree/.git" cat-file -e "$WOBJ^{commit}" 2>/dev/null; then pass "installed_object_store_has_W"; else fail "installed_object_store_lacks_W ($real_tree/.git)"; fi
   for f in tools/r4bt_c0_executor.py tools/r4b_arena_executor.py tools/arena_live_bridge.py tools/r4b_book.py tools/arena_declog.py tools/r4bt_c0_twin.py tools/arena_paper.py scripts/mal-fast/r4bt-c0-twin.sh scripts/mal-fast/r4bt-c0/r4bt-c0-smoke-fixture.py scripts/mal-fast/r4bt-c0/mal-r4bt-c0-twin.service; do
     [ -f "$real_tree/$f" ] && pass "tree_has $f" || fail "tree_missing $f"
   done

@@ -3,8 +3,8 @@
 This page is what Helm installs so that the r4-b-T C0 executor (`tools/r4bt_c0_executor.py`, bot_id `r4bt-a1`, W `17e3b05a7696900cda7fcf93e4af4008d8fa0184`, change_id `r4bt-a1-1107a`) and its paper twin writer (`scripts/mal-fast/r4bt-c0-twin.sh`) exist on mal-fast-0 **keyless and DRY** before the screen read. Sources: QP-RULING-1106-r4bt-c0 section 3 ("PR #1176: revive on a new branch") and section 8 (by 2026-11-12T12Z), DEC-032 Amendment 9. Revived from PR #1176 (r4b, EXP-027), which stays untouched.
 
 Pack files:
-- `scripts/mal-fast/r4bt-c0/`: executor unit, twin unit, dry config template, hashed requirements, synthetic smoke fixture;
-- `scripts/ops/r4bt-c0-dry-checklist.sh`;
+- `scripts/mal-fast/r4bt-c0/`: executor unit, twin unit, parity service and timer, dry config template, hashed requirements, synthetic smoke fixture;
+- `scripts/ops/r4bt-c0-dry-checklist.sh` and `scripts/ops/r4bt-c0-twin-sandbox-check.sh`;
 - tests: `tools/test_r4bt_c0_install_pack.py`.
 
 **Nothing here has run on a host.** No book has cleared the promotion gate. r4-b-T has no read. Nothing on this page is a profit claim; a C0 is an execution measurement and never gate evidence. This page installs no key and no wallet, and enables nothing.
@@ -61,9 +61,12 @@ Do these in order. Record each result (path, uid, mode, sha) in the install reco
    sudo setfacl -m u:root:rX $T
    # tape/ itself and everything under it EXCEPT .writer: recursive access ACL + default ACL on dirs (new tape files). .push/verified.json is replaced by rename, so .push gets the default too.
    sudo find $T/tape -path $T/tape/.writer -prune -o -exec setfacl -m u:root:rX {} +
-   sudo find $T/tape -path $T/tape/.writer -prune -o -type d -exec setfacl -d -m u:root:rX {} +
-   ls -A $T/tape/.push        # NAMES ONLY: expect exactly this set (tools/arena_tip_push.py, the pusher's out dir): events.jsonl lock status.json verified.json
-   #   any other name (a transient temp file of an atomic write: re-run once): STOP and ask the manager before the grants. None of the four is sealed.
+   # Default ACLs OVERRIDE the writer's umask for new files. So the defaults restate the base entries explicitly and cap them with a mask, and nothing is widened: <g> and <o> are the
+   # symbolic g and o bits of the dir's CURRENT mode (e.g. `stat -c %A $T/tape`), mask r-x. Record `stat -c '%a %n'` of one tape file and of .push/verified.json BEFORE, and of a NEW file after the next hour rolls: same modes, or STOP.
+   # Chosen over a re-applying timer: a timer leaves new files unreadable for up to its period and adds a second root job on the derived copy; explicit defaults are static and checkable.
+   sudo find $T/tape -path $T/tape/.writer -prune -o -type d -exec setfacl -d -m u:root:rX,g::<g>,o::<o>,m::r-x {} +
+   ls -A $T/tape/.push        # NAMES ONLY: expect exactly this set (tools/arena_tip_push.py, the pusher's out dir): events.jsonl lock status.json verified.json, plus the fixed atomic-write temps verified.json.tmp and status.json.tmp (write_json_atomic)
+   #   any other name: STOP and ask the manager before the grants. None of the four is sealed.
    # .writer: NO default ACL and no recursive grant. Access ACL on the dir and on counts.jsonl only (the writer appends to counts.jsonl in place, same inode).
    # state.json is replaced by rename on every save, so a deny on it would be lost and a default ACL would make the new file readable: the twin gets no entry for it.
    sudo setfacl -k $T/tape/.writer && sudo setfacl -m u:root:rX $T/tape/.writer $T/tape/.writer/counts.jsonl
@@ -78,7 +81,7 @@ Do these in order. Record each result (path, uid, mode, sha) in the install reco
 
 ## 3. Tree, venv, units (Helm, root)
 
-The manager builds the manifest in his own clone at the install sha and sends its `sha256sum`. `<sha>` is the full 40-hex sha of the merge that carries this pack (and #1246 and the twin, which are already on main by then).
+The manager builds the manifest in his own clone at the install sha, over the **tracked tree only, `.git` excluded** (`cd clone && find . -path ./.git -prune -o -type f -print0 | LC_ALL=C sort -z | xargs -0 sha256sum`). Two clones never agree byte for byte inside `.git` (index, logs, packs), so `.git` is never hashed; it is checked by content address instead (W's commit is in the installed object store; the twin verifies the blobs it loads). `<sha>` is the full 40-hex sha of the merge that carries this pack (and #1246 and the twin, which are already on main by then).
 
 ```
 D=/opt/mal-r4b-c0; S=<sha>
@@ -88,9 +91,9 @@ sudo install -d -m 0755 -o root -g root $D/$S
 git -C /root/mal-r4bt-src archive $S | sudo tar -x --no-same-owner -C $D/$S
 # The twin needs the git object store (it verifies loaded modules against their blobs at W): copy the clone's .git into the tree, read-only for everyone but root.
 sudo cp -a /root/mal-r4bt-src/.git $D/$S/.git
-git -C /root/mal-r4bt-src cat-file -e 17e3b05a7696900cda7fcf93e4af4008d8fa0184^{commit} && echo "W is in the object store"
+git -c safe.directory='*' --git-dir=$D/$S/.git cat-file -e 17e3b05a7696900cda7fcf93e4af4008d8fa0184^{commit} && echo "W is in the INSTALLED object store"
 sudo chown -R root:root $D/$S && sudo find $D/$S -type d -exec chmod 0755 {} + && sudo find $D/$S -type f -exec chmod 0644 {} +
-(cd $D/$S && find . -type f -print0 | LC_ALL=C sort -z | xargs -0 sha256sum) | diff - /root/r4bt-c0-manifest.txt && echo "hashes match"   # any output: STOP
+(cd $D/$S && find . -path ./.git -prune -o -type f -print0 | LC_ALL=C sort -z | xargs -0 sha256sum) | diff - /root/r4bt-c0-manifest.txt && echo "hashes match"   # any output: STOP
 sudo install -m 0644 -o root -g root /root/r4bt-c0-manifest.txt $D/$S.manifest
 sudo ln -sfn $S $D/current && readlink $D/current
 sudo env -i PATH=/usr/bin:/bin /usr/bin/python3 -I -m venv $D/venv
@@ -99,9 +102,10 @@ sudo $D/venv/bin/python -I -m pip freeze | sort      # expect exactly jsonalias=
 sudo install -m 0644 -o root -g root $D/$S/scripts/mal-fast/r4bt-c0/mal-r4bt-c0-executor.service /etc/systemd/system/mal-r4bt-c0-executor.service
 sed -e 's#<AT-EVENT:feed_delay_slots>#<d>#' $D/$S/scripts/mal-fast/r4bt-c0/mal-r4bt-c0-twin.service | sudo tee /etc/systemd/system/mal-r4bt-c0-twin.service >/dev/null
 sudo chmod 0644 /etc/systemd/system/mal-r4bt-c0-twin.service && grep -c AT-EVENT /etc/systemd/system/mal-r4bt-c0-twin.service   # expect 0
+sudo install -m 0644 -o root -g root $D/$S/scripts/mal-fast/r4bt-c0/mal-r4bt-c0-parity.service $D/$S/scripts/mal-fast/r4bt-c0/mal-r4bt-c0-parity.timer /etc/systemd/system/
 sudo systemctl daemon-reload
-sudo systemd-analyze verify /etc/systemd/system/mal-r4bt-c0-executor.service /etc/systemd/system/mal-r4bt-c0-twin.service; echo "rc=$?"     # expect no output, rc=0
-test ! -e /etc/systemd/system/mal-r4bt-c0-executor.service.d && test ! -e /etc/systemd/system/mal-r4bt-c0-twin.service.d && echo "no drop-in"
+sudo systemd-analyze verify /etc/systemd/system/mal-r4bt-c0-executor.service /etc/systemd/system/mal-r4bt-c0-twin.service /etc/systemd/system/mal-r4bt-c0-parity.service /etc/systemd/system/mal-r4bt-c0-parity.timer; echo "rc=$?"     # expect no output, rc=0
+test ! -e /etc/systemd/system/mal-r4bt-c0-executor.service.d && test ! -e /etc/systemd/system/mal-r4bt-c0-twin.service.d && test ! -e /etc/systemd/system/mal-r4bt-c0-parity.service.d && echo "no drop-in"
 ```
 
 `<d>` is the whole number of slots pinned in the registration record (`feed_delay_slots`); the manager gives it. The twin unit pins `tools/r4bt_c0_twin.py` by sha256 (a test fails if the tool changes without the unit). The wrapper also pins `tools/arena_paper.py` at `9d2fdb04…3514` and refuses on any other host.
@@ -123,11 +127,11 @@ sudo chown root:root /etc/mal-r4bt-c0/r4bt-c0.dry.json && sudo chmod 0644 /etc/m
 
 Fixed in the template (Am.9; DEC-032 section 3 C0 table; a change is refused by `make_config`, never clipped): stake 50,000,000 lamports, `max_open` 2, `max_trades_per_day` 30, `daily_loss_lamports` 100,000,000, `total_loss_lamports` 200,000,000; `send_fee_lamports` **505000** (505,000 lamports per send, the registered Am.9 section 8 figure; a lower value needs an explicit reviewed `fee_override`, Am.9 section 8; a higher one is always refused); the twin heartbeat bound `twin_heartbeat_max_ms` 900000 = 2 x `twin_interval_s` 300 + `twin_replay_s` 300 (the replay time is a declared placeholder until it is measured in the DRY smoke: if it is longer, raise `twin_replay_s` and the bound together in a reviewed change); per-bot `tier_path` `/etc/mal-arena-live/r4bt-c0/r4bt-a1/TIER` reading `T0`.
 
-**After the go (manager only, not Helm's keyless step):** the manager adds `read_result_sha256` (64 hex) and `qp_comment_id` (digits) to the config, equal to the root-owned `/etc/mal-r4bt-c0/r4bt-a1/read-record.json` (`r4bt_read_record_v1`), and creates the per-bot `TIER` (`T0`). Without both, `make_config` refuses and a start on a non-synthetic root is refused.
+**After the go (manager only, not Helm's keyless step):** the manager adds `read_result_sha256` (64 hex) and `qp_comment_id` (digits) to the config, equal to the root-owned `/etc/mal-r4bt-c0/r4bt-a1/read-record.json` (`r4bt_read_record_v1`), and creates the per-bot `TIER` (`T0`). Without both, `make_config` refuses for EVERY root, synthetic ones included, so the keyless `/etc` config (which lacks them) never passes `--config`: that is the intended fail-closed, and the checklist's smoke uses a synthetic config that carries both keys. A start on a non-synthetic root is refused separately without the read record.
 
 ### 3a. Parity job, A3 carry, constants
 
-- **Parity timer.** `mal-r4bt-c0-parity.timer` runs `mal-r4bt-c0-parity.service` every 45 s (30 to 60 s) as the **executor's user** `mal-r4b-c0`, keyless and with no network. It runs `python -m tools.r4bt_c0_parity --state-dir /var/lib/mal-r4b-c0/state --attempts /var/lib/mal-r4b-c0/state/r4bt-attempts.jsonl --now-ms <real clock>`; the clock is `$(date +%s) * 1000` read at each start, never a fixed value. It is also started after each fill (`systemctl start mal-r4bt-c0-parity.service`, by the manager or the run loop). Install both files like the executor unit; enable the timer only at the go.
+- **Parity timer.** `mal-r4bt-c0-parity.timer` runs `mal-r4bt-c0-parity.service` every 45 s (30 to 60 s) as the **executor's user** `mal-r4b-c0`, keyless and with no network. It runs `python -m tools.r4bt_c0_parity --state-dir /var/lib/mal-r4b-c0/state --twin-dir /var/lib/mal-r4b-c0/twin --attempts /var/lib/mal-r4b-c0/state/r4bt-attempts.jsonl --now-ms <real clock>`; the clock is `$(date +%s) * 1000` read at each start, never a fixed value. It is also started after each fill (`systemctl start mal-r4bt-c0-parity.service`, by the manager or the run loop). Install both files like the executor unit; enable the timer only at the go.
 - **A3 carry.** On research-0 `scripts/ops/r4bt-c0-a3-carry.sh` runs **hourly** as one MiScusi job (its header lists the env). Helm then copies the carry to the root-owned `a3_carry_path` on fast-0 **right after, at least hourly**: sha256 verified against the research-0 file, written to a temp name in the same dir and `rename`d atomically (no following of links), root:root 0644. **A missing, unreadable or invalid source on research-0 (no file, bad JSON, wrong schema or identity, stale `written_utc`) must REMOVE the fast-0 copy or replace it with a LATCHING carry** (verdict ERROR, `hard_halt` true): the copy step never leaves the previous good carry in place, never skips silently, and exits nonzero so the watchdog alerts. The 3 h `written_utc` bound is the backstop only, not the mechanism: if the whole copy job dies, the carry goes stale within 3 h and the executor latches `r4bt_a3`. The executor config sets `a3_carry_max_age_ms` **10800000** (3 h) on the carry's `written_utc`, leaving slack for one missed hour; stale latches `r4bt_a3`.
 - **FILL:c0_constants** (each is stated in the confirmation read, none is tuned after seeing results): (1) twin replay time, `twin_replay_s`, a placeholder 300 s until it is measured in the DRY smoke; (2) twin heartbeat bound 900 s (`twin_heartbeat_max_ms` 900000 = 2 x 300 + 300); (3) parity cadence 45 s plus after each fill, and the measured parity run time (p50 and p99), both recorded before the timer is enabled (step 11); (4) `p_fail_press` 0.0 disclosure: the parity tool feeds `p_fail_press` 0.0 into P2, so the pressure term is zero and the flat `FLAT_FAIL` bound alone decides P2; (5) permission conditions: state dir 0750 or tighter owned by the executor user, twin files and carry root-owned and not group/other writable, gate dir root 0755, key dir root 0700.
 
