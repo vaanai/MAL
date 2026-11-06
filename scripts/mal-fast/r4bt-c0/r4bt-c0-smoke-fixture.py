@@ -8,8 +8,8 @@ executor's synthetic-root exemption from the read-record gate, DRY only), a hand
 the hash chain is the real format: a `start` row repeating W and the change_id, three SYNmint entries, one rank exit), a state dir and a dry config in the executor's
 r4-b-T profile shape (W and the registered change_id; the caps; the 505,000 fee; read_result_sha256 / qp_comment_id synthetic). The mints are named SYNmint*: no real
 mint, pool, decision, ledger or record is read or written, and nothing here touches the real declog or the tape.
-The executor's config check on it (`python -m tools.r4bt_c0_executor --config <cfg>`) must print ok true with the live gates open (none of them exist), and with --live it
-must exit 2 with live_not_built. Stdlib only, plus the pinned tree's tools.arena_declog (stdlib only itself).
+The executor's config check on it (`python -m tools.r4bt_c0_executor --config <cfg>`) must print ok true with the live gates open (none of them exist); `run --config <cfg> --live` on this DRY config must exit 2 (live_flag_mode_mismatch)
+and `run --once` must print mode=dry (health.dry.json is written beside health_path, inside the mktemp dir). Stdlib only, plus the pinned tree's tools.arena_declog (stdlib only itself).
 """
 from __future__ import annotations
 
@@ -48,7 +48,7 @@ def build(tree: str, out: str) -> str:
            "send_fee_lamports": 505_000, "twin_dir": state, "twin_interval_s": 300, "twin_replay_s": 300, "twin_heartbeat_max_ms": 900_000,
            "a3_carry_path": os.path.join(out, "a3-carry.json"), "read_record_path": os.path.join(out, "read-record.json"),
            "read_result_sha256": "5e" * 32, "qp_comment_id": "000000000",
-           "owner_file": os.path.join(out, "CANARY_DEC.md"), "live_ok_path": os.path.join(out, "LIVE_OK"), "tier_path": os.path.join(out, "TIER")}
+           "health_path": os.path.join(out, "health.json"), "owner_file": os.path.join(out, "CANARY_DEC.md"), "live_ok_path": os.path.join(out, "LIVE_OK"), "tier_path": os.path.join(out, "TIER")}
     cp = os.path.join(out, "synthetic-dry.json")
     with open(cp, "w") as fh:
         fh.write(json.dumps(cfg, sort_keys=True) + "\n")

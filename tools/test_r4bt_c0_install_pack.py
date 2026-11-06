@@ -60,8 +60,10 @@ def filled(post: bool = False, **over) -> dict:
 
 class UnitFile(unittest.TestCase):
     def test_keyless_dry_executor(self):
-        self.assertEqual(values("ExecStart"), ["/opt/mal-r4b-c0/venv/bin/python -E -s -B -u -m tools.r4bt_c0_executor --config /etc/mal-r4bt-c0/r4bt-c0.dry.json"])
+        self.assertEqual(values("ExecStart"), ["/opt/mal-r4b-c0/venv/bin/python -E -s -B -u -m tools.r4bt_c0_executor run --config /etc/mal-r4bt-c0/r4bt-c0.dry.json"])
         self.assertEqual(values("User"), ["mal-r4b-c0"])
+        self.assertEqual(values("Type"), ["simple"])
+        self.assertEqual(values("Restart"), ["on-failure"])  # latches live in the state file: a restart does not clear them
         self.assertEqual(values("WorkingDirectory"), ["/opt/mal-r4b-c0/current"])
         for k in ("LoadCredential", "LoadCredentialEncrypted", "SetCredential", "ImportCredential", "EnvironmentFile", "PassEnvironment", "BindPaths"):
             self.assertEqual(values(k), [], k)
@@ -70,7 +72,7 @@ class UnitFile(unittest.TestCase):
         self.assertEqual(values("RestrictAddressFamilies"), ["AF_UNIX"])
 
     def test_sandbox_and_the_changed_declog_bind(self):
-        self.assertEqual(values("ReadWritePaths"), ["/var/lib/mal-r4b-c0/state"])
+        self.assertEqual(values("ReadWritePaths"), ["/var/lib/mal-r4b-c0/state /var/lib/mal-r4b-c0/health"])
         # correction (a): the bind source is item 6's r4-b-T declog root of the change_id, not /var/lib/mal-r4b-c0/declog
         self.assertEqual(values("BindReadOnlyPaths"), [DECLOG_ROOT])
         self.assertNotIn("/var/lib/mal-r4b-c0/declog", UNIT.read_text())
@@ -84,7 +86,9 @@ class UnitFile(unittest.TestCase):
     def test_paths_match_the_template(self):
         c = filled()
         self.assertEqual(c["root"], values("BindReadOnlyPaths")[0])
-        self.assertEqual(c["state_dir"], values("ReadWritePaths")[0])
+        self.assertEqual(c["state_dir"], values("ReadWritePaths")[0].split()[0])
+        self.assertEqual(os.path.dirname(c["health_path"]), values("ReadWritePaths")[0].split()[1])  # the watchdog-readable health dir, not the 0750 state dir
+        self.assertNotEqual(os.path.dirname(c["health_path"]), c["state_dir"])
         self.assertNotEqual(c["twin_dir"], c["state_dir"])
         self.assertTrue(c["stop_file"].startswith(c["state_dir"] + "/") and c["halt_file"].startswith(c["state_dir"] + "/"))
         self.assertIn("/etc/mal-r4bt-c0/r4bt-c0.dry.json", values("ExecStart")[0])
@@ -149,11 +153,29 @@ class Template(unittest.TestCase):
         self.assertEqual(E.twin_heartbeat_problem(cfg.twin_interval_s, cfg.twin_replay_s, cfg.twin_heartbeat_max_ms), None)
 
     @need_exec
-    def test_live_is_refused_in_code(self):
+    def test_a_dry_config_can_never_send(self):
+        """#1257 flipped LIVE_BUILT True, so the guard is the pair (config mode, --live): a DRY config never takes a live port."""
         from tools import r4bt_c0_executor as E
-        self.assertIs(E.LIVE_BUILT, False)
-        with self.assertRaises(E.Refused):
-            E.make_config({**filled(post=True), "mode": "live"})
+        cfg = E.make_config(filled(post=True))
+        self.assertEqual(cfg.mode, "dry")
+        calls = []
+        # --live on a DRY config: refused before any port is built
+        self.assertEqual(E.run(filled(post=True), live_flag=True, port_factory=lambda c: calls.append(c)), 2)
+        # a live config without --live: refused too (never half-live, never a silent DRY)
+        self.assertEqual(E.run({**filled(post=True), "mode": "live"}, live_flag=False, port_factory=lambda c: calls.append(c)), 2)
+        self.assertEqual(calls, [])
+        # a DRY bridge refuses a live port outright
+        from tools import arena_live_bridge as B
+        self.assertIs(B.DryPort(cfg.dry_balance_lamports).live, False)
+
+    def test_live_example_is_a_separate_config_and_state_dir(self):
+        ex = json.loads((PACK / "r4bt-c0.live.json.example").read_text())
+        self.assertEqual(ex["mode"], "live")
+        self.assertNotEqual(ex["state_dir"], filled()["state_dir"])  # DRY and live never share a state dir
+        for k in ("frozen_sha", "change_id", "bot_id", "root", "a3_carry_path", "tier_path", "live_ok_path", "owner_file", "send_fee_lamports"):
+            self.assertEqual(ex[k], filled()[k], k)
+        self.assertEqual(ex["health_path"], filled()["health_path"])  # one shared, watchdog-readable health dir for both modes
+        self.assertFalse(ex["health_path"].startswith(ex["state_dir"] + "/"))
 
     def test_pins_identical_to_the_hv4_bridge_venv(self):
         strip = lambda p: [ln for ln in p.read_text().splitlines() if ln.strip() and not ln.startswith("#")]  # noqa: E731
@@ -175,13 +197,19 @@ class Smoke(unittest.TestCase):
             rows = [json.loads(ln) for f in sorted(Path(cfg["root"]).rglob("*.jsonl")) for ln in f.read_text().splitlines()]
             self.assertTrue(all(r.get("meta", {}).get("mint", "SYN").startswith("SYN") for r in rows if r.get("kind") == "entry"))
             self.assertEqual([r["kind"] for r in rows], ["start", "entry", "entry", "entry", "exit"])
-            run = subprocess.run([sys.executable, "-E", "-s", "-B", "-u", "-m", "tools.r4bt_c0_executor", "--config", cp], cwd=REPO, capture_output=True, text=True, timeout=60)
-            self.assertEqual(run.returncode, 0, run.stdout + run.stderr)
-            self.assertTrue(json.loads(run.stdout)["ok"], run.stdout)
-            live = subprocess.run([sys.executable, "-E", "-s", "-B", "-u", "-m", "tools.r4bt_c0_executor", "--config", cp, "--live"], cwd=REPO, capture_output=True, text=True, timeout=60)
+            chk = subprocess.run([sys.executable, "-E", "-s", "-B", "-u", "-m", "tools.r4bt_c0_executor", "--config", cp], cwd=REPO, capture_output=True, text=True, timeout=60)
+            self.assertEqual(chk.returncode, 0, chk.stdout + chk.stderr)
+            self.assertTrue(json.loads(chk.stdout)["ok"], chk.stdout)
+            live = subprocess.run([sys.executable, "-E", "-s", "-B", "-u", "-m", "tools.r4bt_c0_executor", "run", "--config", cp, "--live"], cwd=REPO, capture_output=True, text=True, timeout=60)
             self.assertEqual(live.returncode, 2)
-            self.assertIn("live_not_built", live.stdout)
-            self.assertEqual(sorted(p.name for p in Path(d).iterdir()), ["declog", "state", "synthetic-dry.json"])
+            self.assertIn("live_flag_mode_mismatch", live.stdout)
+            once = subprocess.run([sys.executable, "-E", "-s", "-B", "-u", "-m", "tools.r4bt_c0_executor", "run", "--config", cp, "--once"], cwd=REPO, capture_output=True, text=True, timeout=60)
+            self.assertEqual(once.returncode, 0, once.stdout + once.stderr)
+            self.assertTrue(once.stdout.startswith("r4bt_c0_executor mode=dry bot=r4bt-a1 "), once.stdout)
+            names = sorted(p.name for p in Path(d).iterdir())
+            self.assertIn("health.dry.json", names)  # DRY writes its own health file, never health.json
+            self.assertNotIn("health.json", names)
+            self.assertEqual(sorted(set(names) - {"health.dry.json"}), ["declog", "state", "synthetic-dry.json"])
 
 
 def _sha256(p: Path) -> str:
@@ -268,6 +296,172 @@ class ReviewerItems(unittest.TestCase):
         sc = (REPO / "scripts" / "ops" / "r4bt-c0-twin-sandbox-check.sh").read_text()
         self.assertIn("head -c 0", sc)
         self.assertNotIn("test -r", sc)
+
+
+class LiveDropIn(unittest.TestCase):
+    EX = PACK / "live.conf.example"
+
+    def test_live_dropin_shape(self):
+        self.assertEqual(values("LoadCredential", self.EX), ["probe-wallet:/etc/mal-r4bt-c0-key/<HELM-SETS-WALLET-FILE>"])  # Helm's path; the name tools.probe_live reads
+        ex = values("ExecStart", self.EX)
+        self.assertEqual(ex[0], "")  # resets the base ExecStart
+        self.assertEqual(ex[1], "/opt/mal-r4b-c0/venv/bin/python -E -s -B -u -m tools.r4bt_c0_executor run --config /etc/mal-r4bt-c0/r4bt-c0.live.json --live")
+        self.assertEqual(values("PrivateNetwork", self.EX), ["false"])
+        self.assertEqual(values("ReadWritePaths", self.EX), ["", "/var/lib/mal-r4b-c0/state-live /var/lib/mal-r4b-c0/health"])
+        txt = self.EX.read_text()
+        self.assertNotRegex(txt, r"(?m)^[^#\n]*(?:PRIVATE KEY|\[\d+,\s*\d+)")  # no key material of any shape
+        self.assertNotIn("/etc/mal-r4bt-c0-key/r4bt", txt)  # the real key file name is Helm's, never in the repo
+
+    def test_checklist_and_runbook_treat_the_dropin_as_live_only(self):
+        t = RUNBOOK.read_text()
+        for want in ("live.conf.example", "screen PASS", "owner", "steps 5 and 6", "T0", "sandbox check after the executor's first DRY start", "KeyboardInterrupt", "SystemExit",
+                     "by hand", "Helm confirms the RPC env file path", "ln -s health/health.json", "tieout_dir", "only tie-out outputs", "health.dry.json", "Restart=on-failure"):
+            self.assertIn(want, t, want)
+        # the unit text with the live example appended trips the keyless checklist (credential directive and drop-in)
+        for d in values("LoadCredential", self.EX):
+            self.assertTrue(d)
+
+
+class HealthFile(unittest.TestCase):
+    @need_exec
+    def test_executor_health_file_mode_and_keys(self):
+        """The executor writes its health file 0644 with only the pinned keys (the watchdog is a different user)."""
+        from tools import arena_live_bridge as B
+        from tools import r4bt_c0_executor as E
+        self.assertEqual(filled()["health_path"], E.HEALTH_PATH_DEFAULT.replace("/health.json", "/health/health.json"))
+        with tempfile.TemporaryDirectory() as d:
+            root, state = Path(d) / "declog", Path(d) / "state"
+            root.mkdir()
+            state.mkdir(mode=0o700)
+            (root / "SYNTHETIC_FIXTURE_ROOT").write_text("")
+            cfg = E.make_config({**filled(post=True), "health_path": os.path.join(d, "health", "health.json"), "root": str(root), "state_dir": str(state),
+                                 "stop_file": str(state / "STOP"), "halt_file": str(state / "HALT")})
+            br = E.R4btBridge(cfg, B.DryPort(cfg.dry_balance_lamports), now_ms=lambda: 1_794_000_000_000, root_checks=False)
+            br.write_health(force=True)
+            p = Path(d) / "health" / "health.dry.json"
+            self.assertTrue(p.is_file(), os.listdir(os.path.join(d, "health")))
+            self.assertEqual(oct(os.stat(p).st_mode & 0o777), "0o644")
+            self.assertEqual(tuple(json.loads(p.read_text())), tuple(sorted(E.HEALTH_KEYS)))
+
+
+class LiveSet(unittest.TestCase):
+    """The executor, twin and parity units must name the same state dir, ledger, attempts and twin dir in each mode (QP/REVIEWER on #1258)."""
+    PAR = PACK / "mal-r4bt-c0-parity.service"
+
+    @staticmethod
+    def effective(base: Path, dropin: Path | None) -> dict:
+        """systemd-style merge of one unit and an optional drop-in: an empty `Key=` resets, Environment and ExecStart keep order."""
+        out: dict = {}
+        for p in (base, dropin):
+            if p is None:
+                continue
+            for k, v in (ln.split("=", 1) for ln in unit_lines(p) if "=" in ln):
+                if v == "":
+                    out[k] = []
+                else:
+                    out.setdefault(k, []).append(v)
+        return out
+
+    def paths(self, live: bool) -> dict:
+        ex = self.effective(UNIT, PACK / "live.conf.example" if live else None)
+        tw = self.effective(TWIN_UNIT, PACK / "live-twin.conf.example" if live else None)
+        pa = self.effective(self.PAR, PACK / "live-parity.conf.example" if live else None)
+        cfg_path = PACK / ("r4bt-c0.live.json.example" if live else "r4bt-c0.dry.json")
+        cfg = json.loads(cfg_path.read_text())
+        env = dict(v.split("=", 1) for v in tw["Environment"])  # later assignment wins
+        pcmd = pa["ExecStart"][-1]
+        arg = lambda flag: re.search(flag + r" (\S+)", pcmd).group(1)  # noqa: E731
+        return {"cfg_state": cfg["state_dir"], "cfg_twin": cfg["twin_dir"], "ex_rw": ex["ReadWritePaths"][-1].split(), "ex_cmd": ex["ExecStart"][-1],
+                "tw_orders": env["R4BT_C0_ORDERS"], "tw_out": env["R4BT_C0_STATE_DIR"], "tw_rw": tw["ReadWritePaths"], "tw_ro": tw["ReadOnlyPaths"][-1].split(),
+                "pa_state": arg("--state-dir"), "pa_twin": arg("--twin-dir"), "pa_attempts": arg("--attempts"), "pa_rw": pa["ReadWritePaths"]}
+
+    def test_each_mode_names_one_state_dir_everywhere(self):
+        for live, want_state, want_twin in ((False, "/var/lib/mal-r4b-c0/state", "/var/lib/mal-r4b-c0/twin"), (True, "/var/lib/mal-r4b-c0/state-live", "/var/lib/mal-r4b-c0/twin-live")):
+            p = self.paths(live)
+            self.assertEqual(p["cfg_state"], want_state, live)
+            self.assertEqual(p["cfg_twin"], want_twin, live)
+            self.assertIn(want_state, p["ex_rw"], live)  # executor writes its state dir
+            self.assertEqual(p["tw_orders"], want_state + "/r4bt-order-ledger.jsonl", live)  # twin reads the SAME ledger the executor writes
+            self.assertEqual(p["tw_out"], want_twin, live)  # twin writes the twin dir the executor's config reads
+            self.assertEqual(p["tw_rw"], [want_twin], live)
+            self.assertIn(want_state, p["tw_ro"], live)
+            self.assertEqual(p["pa_state"], want_state, live)  # parity writes <state>/r4bt-parity-state.json, the executor's parity gate input
+            self.assertEqual(p["pa_attempts"], want_state + "/r4bt-attempts.jsonl", live)
+            self.assertEqual(p["pa_twin"], want_twin, live)
+            self.assertEqual(p["pa_rw"], [want_state], live)
+            self.assertIn("--live" in p["ex_cmd"], (live,))
+        self.assertNotEqual(self.paths(False)["cfg_twin"], self.paths(True)["cfg_twin"])  # twin dirs are not shared across modes
+
+    def test_live_config_example_is_accepted_by_the_real_parser(self):
+        from_ = RUNBOOK  # noqa: F841
+        if not HAVE_EXEC:
+            self.skipTest("executor module not on this branch")
+        from tools import r4bt_c0_executor as E
+        txt = (PACK / "r4bt-c0.live.json.example").read_text()
+        txt = txt.replace('"<AT-GO:end_ms>"', "1794700800000").replace('"<AT-GO:slot_s>"', "0.4").replace('"<AT-GO:funded_lamports>"', "350000000")
+        txt = txt.replace("<AT-GO:read_result_sha256>", "ab" * 32).replace("<AT-GO:qp_comment_id>", "4567890123")
+        raw = json.loads(txt)
+        self.assertNotIn("stop_file", raw)
+        self.assertNotIn("halt_file", raw)
+        cfg = E.make_config(raw)  # the REAL parser: raises Refused if the example is not a valid live config
+        self.assertEqual((cfg.mode, cfg.bot_id, cfg.frozen_sha, cfg.change_id), ("live", "r4bt-a1", W, CHANGE_ID))
+        self.assertEqual(cfg.state_dir, "/var/lib/mal-r4b-c0/state-live")
+        # the start gate runs (no crash); without the live gate files it refuses with a label, never accepts
+        why = E.start_refusal(cfg, live=True, root_checks=False)
+        self.assertIsInstance(why, str)
+        self.assertTrue(why)
+        for bad in ("stop_file", "halt_file"):
+            with self.assertRaises(E.Refused):
+                E.make_config({**raw, bad: "/var/lib/mal-r4b-c0/state-live/X"})
+
+    def test_wording_follows_am9_section_9(self):
+        for p in (PACK / "live.conf.example", RUNBOOK):
+            txt = p.read_text()
+            self.assertNotIn("the manager restarts the unit", txt)
+            self.assertIn("Helm restarts", txt.replace("**Helm restarts**", "Helm restarts").replace("THEN Helm restarts", "Helm restarts")) if p == RUNBOOK else None
+        ex = (PACK / "live.conf.example").read_text()
+        self.assertIn("the manager restarts nothing on a host unit", ex)
+        self.assertLess(ex.index("daemon-reload"), ex.index("THEN Helm writes LIVE_OK"))  # drop-in first, then LIVE_OK / TIER / owner line
+        self.assertLess(ex.index("THEN Helm writes LIVE_OK"), ex.index("THEN Helm restarts"))
+        self.assertNotIn("LIVE_BUILT is False", UNIT.read_text())
+        rb = RUNBOOK.read_text()
+        for want in ("/var/lib/mal-r4b-c0/state-live", "setfacl -m u:root:rX /var/lib/mal-r4b-c0/state-live", "twin-live", "R4BTC0_TWIN_DROPIN", "O_NOFOLLOW"):
+            self.assertIn(want, rb, want)
+
+    def test_stop_table_names_both_modes(self):
+        rb = RUNBOOK.read_text()
+        sect = rb[rb.index("## 6. Stop"):rb.index("## 7.")]
+        for want in ("/var/lib/mal-r4b-c0/state/STOP", "/var/lib/mal-r4b-c0/state-live/STOP", "/var/lib/mal-r4b-c0/state/HALT", "/var/lib/mal-live/HALT", "also freezes every other live unit"):
+            self.assertIn(want, sect, want)
+        # the live config sets no stop_file/halt_file, so the executor's STOP/HALT are under its state_dir
+        live = json.loads((PACK / "r4bt-c0.live.json.example").read_text())
+        self.assertNotIn("stop_file", live)
+        self.assertNotIn("halt_file", live)
+        self.assertIn("state-live/HALT` is NOT read by live", sect)
+        self.assertEqual(live["state_dir"], "/var/lib/mal-r4b-c0/state-live")
+
+    def test_sandbox_check_proves_mal_live_reachable_in_the_executor_sandbox(self):
+        sc = (REPO / "scripts" / "ops" / "r4bt-c0-twin-sandbox-check.sh").read_text()
+        self.assertIn("R4BTC0_EXEC_UNIT_FILE", sc)
+        self.assertIn("cd /var/lib/mal-live", sc)
+        self.assertIn("executor_can_reach_var_lib_mal_live_in_its_sandbox", sc)
+        rb = RUNBOOK.read_text()
+        for want in ("R4BTC0_EXEC_DROPIN", "Live HALT reachability", "setfacl -m u:mal-r4b-c0:--x /var/lib/mal-live"):
+            self.assertIn(want, rb, want)
+        self.assertEqual(subprocess.run(["sh", "-n", str(REPO / "scripts" / "ops" / "r4bt-c0-twin-sandbox-check.sh")]).returncode, 0)
+        # the executor unit + live drop-in merge to User=mal-r4b-c0 with no write path to /var/lib/mal-live
+        eff = LiveSet.effective(UNIT, PACK / "live.conf.example")
+        self.assertEqual(eff["User"], ["mal-r4b-c0"])
+        self.assertFalse(any("/var/lib/mal-live" in p for p in eff["ReadWritePaths"]))
+
+    def test_sandbox_check_applies_the_live_dropin(self):
+        sc = REPO / "scripts" / "ops" / "r4bt-c0-twin-sandbox-check.sh"
+        r = subprocess.run(["sh", str(sc), "--print"], env={"PATH": os.environ["PATH"], "R4BTC0_TWIN_UNIT_FILE": str(TWIN_UNIT),
+                           "R4BTC0_TWIN_DROPIN": str(PACK / "live-twin.conf.example")}, capture_output=True, text=True)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        out = r.stdout.splitlines()
+        self.assertIn("-p ReadWritePaths=/var/lib/mal-r4b-c0/twin-live", out)
+        self.assertNotIn("-p ReadWritePaths=/var/lib/mal-r4b-c0/twin", out)  # the DRY value was reset by the empty assignment
 
 
 class PushNames(unittest.TestCase):
@@ -371,10 +565,10 @@ class Checklist(unittest.TestCase):
         fails = [ln for ln in out if ln.startswith("FAIL")]
         self.assertEqual([f.split(" ")[1] for f in fails], ["venv_differs_from_pins"], out)  # the test interpreter is not the pinned venv
         for want in ("PASS no_credential_directives_in_unit", "PASS execstart_is_the_r4bt_executor_dry", "PASS private_network_true", "PASS declog_bind_is_the_change_id_root_read_only",
-                     "PASS only_the_state_dir_is_writable", "PASS config_root_owned_0644", f"PASS tree_is_a_sha_dir ({SHA})",
-                     "PASS executor_live_not_built (LIVE_BUILT = False, W pinned)", "PASS venv_imports_the_executor_closure", "PASS key_dir_root_0700",
+                     "PASS only_the_state_and_health_dirs_are_writable", "PASS config_root_owned_0644", f"PASS tree_is_a_sha_dir ({SHA})",
+                     "PASS executor_pins_W", "PASS venv_imports_the_executor_closure", "PASS key_dir_root_0700",
                      "PASS declog_has_the_arm_dir", "PASS twin_dir_root_0755", "PASS state_dir_owned_by_this_user", "PASS read_record_absent_before_the_go",
-                     "PASS installed_object_store_has_W", "PASS smoke_config_check_ok", "PASS smoke_live_refused", "PASS config_valid_dry_r4bt", "PASS tree_equals_manifest"):
+                     "PASS installed_object_store_has_W", "PASS smoke_config_check_ok", "PASS smoke_dry_config_with_live_flag_refused", "PASS smoke_run_once_prints_mode_dry", "PASS config_valid_dry_r4bt", "PASS tree_equals_manifest"):
             self.assertTrue(any(ln.startswith(want) for ln in out), (want, out))
         self.assertFalse(any(ln.startswith("FAIL declog_dir_not_empty") or "declog_dir_empty" in ln for ln in out))  # correction (b): no emptiness check
         self.assertFalse(any("SECRET-DECISION-ROW-MARKER" in ln or "2026-11-07" in ln for ln in out))  # no content, no file name inside the declog

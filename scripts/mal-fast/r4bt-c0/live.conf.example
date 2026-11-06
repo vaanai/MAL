@@ -1,0 +1,28 @@
+# r4-b-T C0 LIVE switch (DEC-032 Am.9), an EXAMPLE. NOT installed by default and NOT installed by merging this file or by the keyless install.
+# It is the ONLY thing that hands the executor a key. Install it (Helm, root) from the manifest-verified root-owned copy in the sha dir, never from a working tree:
+#   sudo install -D -m 0644 /opt/mal-r4b-c0/<sha>/scripts/mal-fast/r4bt-c0/live.conf.example /etc/systemd/system/mal-r4bt-c0-executor.service.d/live.conf
+#   sudo systemctl daemon-reload     (NO restart yet)
+# Order (DEC-032 Am.9 section 9, Helm's steps 5 and 6; the manager restarts nothing on a host unit and agents never start, fund or configure a live executor):
+#   1. only after the screen PASS with QP's OK on the read's exact files, the amendment merged, and the owner's yes (steps 1-4);
+#   2. Helm installs this drop-in and the two companion drop-ins (live-twin.conf.example, live-parity.conf.example) and runs daemon-reload, with no restart;
+#   3. THEN Helm writes LIVE_OK, the per-bot TIER file (T0) and the owner-confirmation line;
+#   4. THEN Helm restarts the executor, the twin and the parity units with their live drop-ins (a live start without those files exits 2 with live_gate:* and StartLimitBurst stops it).
+# The checklist FAILS on any drop-in in a keyless install; remove the drop-ins and have Helm restart to go back to DRY.
+# Live still needs, before EVERY buy, in the executor: config mode "live" (r4bt-c0.live.json) AND --live below, LIVE_OK naming r4bt-a1, TIER T0, the owner-confirmation line, the read record,
+# a fresh A3 carry, the twin gate, the parity gate and the C0 caps. A DRY config never sends.
+# The wallet is Helm's: the credential SOURCE path below is a placeholder Helm sets; the key is root:root 0400 in root:root 0700 /etc/mal-r4bt-c0-key. No agent reads, prints or copies it.
+# systemd hands the unit a private copy as $CREDENTIALS_DIRECTORY/probe-wallet (the name tools.probe_live reads, as in the probe and H5 arena live drop-ins).
+# The RPC key (HELIUS_API_KEY) comes from Helm's root-owned env file, the same way the probe live unit gets it; the path is Helm's and is read by systemd, not by an agent.
+[Service]
+LoadCredential=probe-wallet:/etc/mal-r4bt-c0-key/<HELM-SETS-WALLET-FILE>
+EnvironmentFile=/etc/mal-probe-rpc/helius.env
+# Live needs the network (the DRY base unit has none) ...
+PrivateNetwork=false
+RestrictAddressFamilies=
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+# ... and its OWN state dir: DRY and live never share one (the executor refuses other_mode_state_present). health.json goes to the shared health dir (the config's health_path), readable by the watchdog.
+ReadWritePaths=
+ReadWritePaths=/var/lib/mal-r4b-c0/state-live /var/lib/mal-r4b-c0/health
+ExecStart=
+ExecStart=/opt/mal-r4b-c0/venv/bin/python -E -s -B -u -m tools.r4bt_c0_executor run --config /etc/mal-r4bt-c0/r4bt-c0.live.json --live
+LimitCORE=0

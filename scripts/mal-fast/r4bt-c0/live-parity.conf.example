@@ -1,0 +1,7 @@
+# r4-b-T C0 LIVE companion drop-in for mal-r4bt-c0-parity.service. NOT installed by default. Installed by Helm in the same step as live.conf.example (see its header for the order).
+# The live executor's parity gate reads <state_dir>/r4bt-parity-state.json, so parity must write the LIVE state dir and read the live attempts and the live twin dir.
+[Service]
+ExecStart=
+ExecStart=/bin/sh -c 'exec /opt/mal-r4b-c0/venv/bin/python -E -s -B -u -m tools.r4bt_c0_parity --state-dir /var/lib/mal-r4b-c0/state-live --twin-dir /var/lib/mal-r4b-c0/twin-live --attempts /var/lib/mal-r4b-c0/state-live/r4bt-attempts.jsonl --now-ms $(( $(date +%%s) * 1000 ))'
+ReadWritePaths=
+ReadWritePaths=/var/lib/mal-r4b-c0/state-live
