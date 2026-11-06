@@ -646,3 +646,140 @@ def test_main_loop_rereads_config_on_every_pass(tmp_path, monkeypatch):
     assert [x["info"] for x in lines] == [[], ["config changed: sha256 %s -> %s" % (s[0], s[1])],
                                           ["config changed: sha256 %s -> %s" % (s[1], s[2])]]
     assert [x["config_sha256"] for x in lines] == s
+
+
+# --- r4-b-T C0 entries (check_r4bt_c0) ---------------------------------------------------------------------------------------------------------------------------------
+
+
+def r4bt_world(tmp, now=NOW):
+    """A healthy r4bt C0 tree under tmp; returns the config dict and the paths."""
+    sd, dl, tw, to = (tmp / n for n in ("state", "declog", "twin", "tieout"))
+    for d in (sd, dl, tw, to):
+        d.mkdir(parents=True, exist_ok=True)
+    ts = now.timestamp()
+    (dl / "decisions-2026-10-29.jsonl").write_text("SECRET-DECLOG-BODY")
+    os.utime(dl / "decisions-2026-10-29.jsonl", (ts - 120, ts - 120))
+    (tw / "twins.run.json").write_text("SECRET-TWIN-BODY")
+    os.utime(tw / "twins.run.json", (ts - 300, ts - 300))
+    carry = tmp / "carry.json"
+    carry.write_text(json.dumps({"written_utc": (now - dt.timedelta(minutes=20)).strftime("%Y-%m-%dT%H:%M:%SZ"), "hard_halt": False, "verdict": "NONE"}))
+    (sd / "r4bt-parity-state.json").write_text(json.dumps({"schema": "r4bt_parity_state_v1", "at_ms": int(ts * 1000) - 60_000, "exit_code": 0, "stop_required": False}))
+    (sd / "bridge-state-dry.json").write_text(json.dumps({"latches": {}, "orders": {"SECRET-MINT": 1}}))
+    (to / "tieout-2026-10-28.json").write_text(json.dumps({"day": "2026-10-28", "signed_off": True}))
+    return {"state_dir": str(sd), "declog_dir": str(dl), "a3_carry_path": str(carry), "twin_dir": str(tw), "tieout_dir": str(to)}, sd, to
+
+
+def r4bt_keys(tmp, mutate=None, now=NOW):
+    rc, sd, to = r4bt_world(tmp, now)
+    if mutate:
+        mutate(rc, sd, to)
+    c, ctx = mk(tmp, jl(), cfg={"r4bt_c0": rc}, now=now)
+    line, fresh = passn(tmp, c, ctx)
+    return line, {a["key"] for a in fresh}, fresh
+
+
+def test_r4bt_off_by_default_and_healthy_is_silent(tmp_path):
+    c, ctx = mk(tmp_path, jl())
+    line, fresh = passn(tmp_path, c, ctx)
+    assert "r4bt_c0" not in line["checks"]
+    line, keys, _ = r4bt_keys(tmp_path / "w")
+    assert keys == set() and line["checks"]["r4bt_c0"]["alert_target"] == "FILL:alert_target" and line["checks"]["r4bt_c0"]["latches"] == 0
+
+
+def test_r4bt_latch_and_stop_names_only(tmp_path):
+    def m(rc, sd, to):
+        (sd / "bridge-state-dry.json").write_text(json.dumps({"latches": {"r4bt_a3": "SECRET WHY TEXT", "Chain Break": "x"}}))
+        (sd / "STOP").write_text("")
+    _, keys, fresh = r4bt_keys(tmp_path, m)
+    assert keys == {"r4bt:latch:r4bt_a3", "r4bt:latch:chain_break", "r4bt:stop_present"}
+    assert "SECRET" not in json.dumps(fresh)
+
+
+def test_r4bt_latch_state_unreadable_alerts(tmp_path):
+    _, keys, fresh = r4bt_keys(tmp_path, lambda rc, sd, to: (sd / "bridge-state-dry.json").write_text("{torn"))
+    assert keys == {"r4bt:latch_state_unreadable"}
+
+
+def test_r4bt_stale_declog(tmp_path):
+    def m(rc, sd, to):
+        p = Path(rc["declog_dir"]) / "decisions-2026-10-29.jsonl"
+        os.utime(p, (NOW.timestamp() - 3 * 3600,) * 2)
+    _, keys, fresh = r4bt_keys(tmp_path, m)
+    assert keys == {"r4bt:declog_stale"} and "SECRET" not in json.dumps(fresh)
+    _, keys, _ = r4bt_keys(tmp_path / "e", lambda rc, sd, to: [p.unlink() for p in Path(rc["declog_dir"]).iterdir()])
+    assert keys == {"r4bt:declog_stale"}
+
+
+def test_r4bt_a3_carry_stale_missing_and_latching(tmp_path):
+    def stale(rc, sd, to):
+        Path(rc["a3_carry_path"]).write_text(json.dumps({"written_utc": "2026-10-29T08:00:00Z", "hard_halt": False}))
+    assert r4bt_keys(tmp_path / "a", stale)[1] == {"r4bt:a3_carry_stale"}
+    assert r4bt_keys(tmp_path / "b", lambda rc, sd, to: Path(rc["a3_carry_path"]).unlink())[1] == {"r4bt:a3_carry_stale"}
+
+    def latch(rc, sd, to):
+        Path(rc["a3_carry_path"]).write_text(json.dumps({"written_utc": "2026-10-29T12:10:00Z", "hard_halt": True}))
+    assert r4bt_keys(tmp_path / "c", latch)[1] == {"r4bt:a3_carry_latching"}
+    assert r4bt_keys(tmp_path / "d", lambda rc, sd, to: Path(rc["a3_carry_path"]).write_text("{"))[1] == {"r4bt:a3_carry_stale"}
+
+
+def test_r4bt_twin_run_record_stale_or_missing(tmp_path):
+    def old(rc, sd, to):
+        os.utime(Path(rc["twin_dir"]) / "twins.run.json", (NOW.timestamp() - 7200,) * 2)
+    assert r4bt_keys(tmp_path / "a", old)[1] == {"r4bt:twin_run_stale"}
+    assert r4bt_keys(tmp_path / "b", lambda rc, sd, to: (Path(rc["twin_dir"]) / "twins.run.json").unlink())[1] == {"r4bt:twin_run_stale"}
+
+
+def test_r4bt_twin_and_declog_are_never_opened(tmp_path):
+    rc, sd, to = r4bt_world(tmp_path)
+    c, ctx = mk(tmp_path, jl(), cfg={"r4bt_c0": rc})
+    opened = []
+    real = ctx["read_small"]
+    ctx["read_small"] = lambda p: (opened.append(p), real(p))[1]
+    passn(tmp_path, c, ctx)
+    assert opened and not any(os.path.basename(p) == "twins.run.json" or os.path.basename(os.path.dirname(p)) in ("twin", "declog") for p in opened)
+
+
+def test_r4bt_parity_state_unreadable_stale_or_stop(tmp_path):
+    def ps(sd):
+        return sd / "r4bt-parity-state.json"
+    assert r4bt_keys(tmp_path / "a", lambda rc, sd, to: ps(sd).unlink())[1] == {"r4bt:parity_state_bad"}
+    assert r4bt_keys(tmp_path / "b", lambda rc, sd, to: ps(sd).write_text("{x"))[1] == {"r4bt:parity_state_bad"}
+
+    def old(rc, sd, to):
+        ps(sd).write_text(json.dumps({"schema": "r4bt_parity_state_v1", "at_ms": int(NOW.timestamp() * 1000) - 3_600_000, "exit_code": 0, "stop_required": False}))
+    assert r4bt_keys(tmp_path / "c", old)[1] == {"r4bt:parity_state_bad"}
+
+    def stop(rc, sd, to):
+        ps(sd).write_text(json.dumps({"schema": "r4bt_parity_state_v1", "at_ms": int(NOW.timestamp() * 1000) - 1000, "exit_code": 11, "stop_required": True}))
+    assert r4bt_keys(tmp_path / "d", stop)[1] == {"r4bt:parity_stop_required"}
+
+
+def test_r4bt_tieout_not_signed_off_for_yesterday(tmp_path):
+    def f(to):
+        return to / "tieout-2026-10-28.json"
+    assert r4bt_keys(tmp_path / "a", lambda rc, sd, to: f(to).unlink())[1] == {"r4bt:tieout_unsigned"}
+    assert r4bt_keys(tmp_path / "b", lambda rc, sd, to: f(to).write_text(json.dumps({"day": "2026-10-28", "signed_off": False})))[1] == {"r4bt:tieout_unsigned"}
+    assert r4bt_keys(tmp_path / "c", lambda rc, sd, to: f(to).write_text(json.dumps({"day": "2026-10-27", "signed_off": True})))[1] == {"r4bt:tieout_unsigned"}
+    early = dt.datetime(2026, 10, 29, 1, 23, tzinfo=dt.timezone.utc)  # inside the grace window: no alert yet
+    rc, sd, to = r4bt_world(tmp_path / "d", early)
+    (to / "tieout-2026-10-28.json").unlink()
+    c, ctx = mk(tmp_path / "d", jl(), cfg={"r4bt_c0": rc}, now=early)
+    assert passn(tmp_path / "d", c, ctx)[1] == []
+
+
+def test_r4bt_config_validation_and_sealed_paths(tmp_path):
+    rc, _, _ = r4bt_world(tmp_path)
+    base = dict(w.DEFAULTS, r4bt_c0=rc)
+    w.validate_config(base)
+    with pytest.raises(ValueError):
+        w.validate_config(dict(base, r4bt_c0=dict(rc, declog_stale_min=0)))
+    with pytest.raises(ValueError):
+        w.validate_config(dict(base, r4bt_c0={k: v for k, v in rc.items() if k != "tieout_dir"}))
+    with pytest.raises(ValueError):
+        w.validate_config(dict(base, r4bt_c0="x"))
+    cfgp = tmp_path / "c.json"
+    cfgp.write_text(json.dumps(dict(r4bt_c0=dict(rc, twin_dir="/data/mal/blocks/forward-1016/x"))))
+    with pytest.raises(ValueError):
+        w.read_config(str(cfgp))
+    cfgp.write_text(json.dumps(dict(r4bt_c0=rc)))
+    assert w.read_config(str(cfgp))[0]["r4bt_c0"] == rc
