@@ -16,6 +16,7 @@ from pathlib import Path
 import pytest
 
 from tools import arena_live_bridge as B
+from tools import arena_stack as AS
 from tools import hv4_live_c0 as HV
 from tools import r4b_arena_executor as X
 from tools import r4bt_c0_executor as T
@@ -65,7 +66,7 @@ def jwrite(p, obj, lines=False):
 
 
 class World:
-    """A tmp world: synthetic decision root, twin dir, carry, applied log, read record, owner file, LIVE_OK, TIER; all fresh around `at`."""
+    """A tmp world: synthetic decision root, twin dir, carry, read record, owner file, LIVE_OK, TIER; all fresh around `at`."""
 
     def __init__(self, tmp, synthetic=True, **over):
         self.tmp = tmp
@@ -76,18 +77,18 @@ class World:
         self.at = ms(0) + 50
         self.d = {"root": str(self.root), "state_dir": str(tmp / "state"), "bot_id": T.BOT_ID, "frozen_sha": W, "change_id": CID, "end_ms": (BT0 + 400 * 86400) * 1000,
                   "slot_s": 0.4, "funded_lamports": 350_000_000, "twin_dir": str(tmp / "twin"), "a3_carry_path": str(tmp / "a3" / "carry.json"),
-                  "a3_applied_path": str(tmp / "a3" / "a3-applied.jsonl"), "read_record_path": str(tmp / "read.json"), "read_result_sha256": SHA_READ, "qp_comment_id": QP_ID,
+                  "read_record_path": str(tmp / "read.json"), "read_result_sha256": SHA_READ, "qp_comment_id": QP_ID,
                   "owner_file": str(tmp / "owner.md"), "live_ok_path": str(tmp / "LIVE_OK"), "tier_path": str(tmp / "TIER"), **T.C0_CAPS}
         self.d.update(over)
         self.log = DecisionLog(str(self.root))
         self.fresh()
 
-    def fresh(self, *, carry=None, applied=None, run=None, rows=None):
+    def fresh(self, *, carry=None, run=None, rows=None):
         t = self.tmp
         run_utc = iso(self.at - 3_600_000)
-        jwrite(t / "a3" / "carry.json", {"schema": T.CARRY_SCHEMA, "bot_id": T.BOT_ID, "change_id": CID, "run_utc": run_utc, "verdict": "NONE", "halt_at_ms": None, "deadline_ms": None,
-                                         **(carry or {})})
-        jwrite(t / "a3" / "a3-applied.jsonl", [{"run_utc": run_utc, "verdict": "PASS", **(applied or {})}], lines=True)
+        jwrite(t / "a3" / "carry.json", {"schema": T.CARRY_SCHEMA, "bot_id": T.BOT_ID, "change_id": CID, "run_utc": run_utc, "verdict": "NONE", "halt_at_ms": None,
+                                         "halt": {"flags": {"pins_changed": {"halt": False, "evaluated": True}, "synthetic_share_high": {"halt": False, "evaluated": True}}},
+                                         "warn": {"flags": {"program_changed": {"warn": False}}}, **(carry or {})})
         jwrite(t / "twin" / T.TWINS_NAME, rows or [], lines=True)
         sha = hashlib.sha256((t / "twin" / T.TWINS_NAME).read_bytes()).hexdigest()
         jwrite(t / "twin" / T.RUN_RECORD_NAME, {"schema": T.RUN_SCHEMA, "tool": "r4bt_c0_twin", "status": "ok", "run_ms": self.at - 1000, "heartbeat_ms": self.at - 1000, "w_sha": W,
@@ -169,14 +170,14 @@ def test_good_config_and_exp027_path_unchanged(tmp_path):
     {"mode": "live"}, {"bot_id": "r4b-exp027"}, {"bot_id": None}, {"frozen_sha": "ab" * 20}, {"frozen_sha": None}, {"change_id": "r4bt-a1-other"}, {"change_id": None},
     {"change_id": "x/y"}, {"stake_lamports": 50_000_001}, {"max_open": 3}, {"max_trades_per_day": 31}, {"daily_loss_lamports": 100_000_001},
     {"total_loss_lamports": 200_000_001}, {"stake_lamports": 0}, {"max_open": True}, {"funded_lamports": 349_999_999}, {"funded_lamports": 1_000_000_001},
-    {"funded_lamports": None}, {"twin_dir": "rel/dir"}, {"a3_carry_path": ""}, {"a3_applied_path": None}, {"read_record_path": "r.json"},
+    {"funded_lamports": None}, {"twin_dir": "rel/dir"}, {"a3_carry_path": ""}, {"read_record_path": "r.json"},
     {"read_result_sha256": "xyz"}, {"read_result_sha256": "CD" * 32}, {"qp_comment_id": "abc"}, {"qp_comment_id": ""}, {"sl_backstop": 0.3}, {"slot_s": 0}, {"end_ms": None}])
 def test_make_config_refusals(tmp_path, bad):
     with pytest.raises(T.Refused):
         World(tmp_path, **bad).cfg()
 
 
-@pytest.mark.parametrize("key", list(T.C0_CAPS) + ["funded_lamports", "twin_dir", "a3_carry_path", "a3_applied_path", "read_record_path", "read_result_sha256", "qp_comment_id",
+@pytest.mark.parametrize("key", list(T.C0_CAPS) + ["funded_lamports", "twin_dir", "a3_carry_path", "read_record_path", "read_result_sha256", "qp_comment_id",
                                                     "change_id"])
 def test_make_config_requires_every_profile_key(tmp_path, key):
     w = World(tmp_path)
@@ -258,7 +259,7 @@ def test_module_never_imports_or_calls_r4b_book_round_trip():
 
 
 @pytest.mark.parametrize("run,label", [
-    ({"run_ms": 1}, "twin_gate:stale"), ({"run_ms": None}, "twin_gate:heartbeat_missing"), ({"run_ms": 10 ** 15}, "twin_gate:heartbeat_future"),
+    ({"run_ms": 1}, "twin_gate:stale"), ({"run_ms": None}, "twin_gate:run_ms_missing"), ({"run_ms": 10 ** 15}, "twin_gate:run_ms_future"),
     ({"w_sha": "ee" * 20}, "twin_gate:pin_mismatch"), ({"engine_sha256": "00" * 32}, "twin_gate:pin_mismatch"), ({"status": "error"}, "twin_gate:status_not_ok"),
     ({"twins_sha256": "00" * 32}, "twin_gate:twins_sha_mismatch"), ({"schema": "other"}, "twin_gate:run_record_schema")])
 def test_twin_gate_refuses_a_bad_run_record(tmp_path, run, label):
@@ -288,80 +289,130 @@ def test_twin_gate_missing_malformed_and_unsafe_run_record(tmp_path):
     assert T._read_small(link, False)[1] == "not_regular"
 
 
-def test_twin_gate_row_missing_after_grace_and_present(tmp_path):
+def twin_row(oid, **leg):
+    return {"schema": T.TWIN_SCHEMA, "order_id": oid, "status": "open", "entry_leg": {"effective_slot": 1, "corrected_slot": 1000, "sps_entry": 2.5, "k_1p9": 1, "k_3p0": 2, **leg}}
+
+
+def test_twin_gate_entry_row_needed_after_the_grace(tmp_path):
     w = World(tmp_path)
     cfg = w.cfg()
-    orders = {"A:1": {"status": "closed", "sell_landed_ms": w.at - T.TWIN_GRACE_MS - 1}, "B:1": {"status": "closed", "sell_landed_ms": w.at - 5}, "C:1": {"status": "open"}}
+    orders = {"A:1": {"buy_landed_ms": w.at - T.TWIN_ROW_GRACE_MS - 1}, "B:1": {"buy_landed_ms": w.at - 5}, "C:1": {"status": "buy_sending"}}
     assert T.twin_gate_problem(cfg.twin_dir, w.at, orders, cfg, False) == "twin_gate:row_missing"  # A:1 is past the grace with no row
-    w.fresh(rows=[{"schema": T.TWIN_SCHEMA, "order_id": "A:1"}])
-    assert T.twin_gate_problem(cfg.twin_dir, w.at, orders, cfg, False) is None  # B:1 is inside the grace; C:1 is open
-    w.fresh(rows=[{"schema": "wrong", "order_id": "A:1"}, {"order_id": 5}])
+    w.fresh(rows=[twin_row("A:1")])
+    assert T.twin_gate_problem(cfg.twin_dir, w.at, orders, cfg, False) is None  # B:1 is inside the grace; C:1 never landed
+    w.fresh(rows=[{**twin_row("A:1"), "entry_leg": None}])
+    assert T.twin_gate_problem(cfg.twin_dir, w.at, orders, cfg, False) == "twin_gate:row_missing"  # a row without its entry stage is not enough
+    w.fresh(rows=[{**twin_row("A:1"), "schema": "wrong"}])
     assert T.twin_gate_problem(cfg.twin_dir, w.at, orders, cfg, False) == "twin_gate:row_missing"  # rows of another schema are not twins
     (Path(cfg.twin_dir) / T.TWINS_NAME).unlink()
     assert T.twin_gate_problem(cfg.twin_dir, w.at, orders, cfg, False) == "twin_gate:twins_unreadable"
+    assert T.twin_entry_legs(cfg.twin_dir, False) == {}
 
 
-# ------------------------------------------------------------------------------------------------ F2: the latency origin is the decision row's ms
-def test_latency_origin_is_the_decision_row_instant_with_sdT_beside():
-    o = {"decision_ms": 10_000, "buy_landed_ms": 12_000, "decision_slot": 100, "buy_landed_slot": 103}  # 2.0 s after the row; sd(T) says 3 slots
-    r = T.landed_buy_latencies_t({"a": o}, 0.4)[0]
-    assert r["lat_s"] == 2.0 and r["slots"] == pytest.approx(5.0) and r["sdT_slots"] == 3
-    assert (r["k19"], r["k30"]) == (X.k_slots(1.9, 0.4), X.k_slots(3.0, 0.4))
-    assert r["x19"] == pytest.approx(r["slots"] - r["k19"]) and r["x30"] == pytest.approx(r["slots"] - r["k30"])
-    s = T.latency_summary_t({"a": o}, 0.4)
-    assert s["origin"].startswith("decision row ms") and s["diag_sdT"]["all_slots_p50"] == 3 and s["all_slots_p50"] == pytest.approx(5.0)
-    base = X.landed_buy_latencies({"a": {**o, "buy_landed_ms": 12_000}}, 0.4)[0]
-    assert base["slots"] == 3 and base["slots"] != r["slots"]  # EXP-027's sd(T) origin would decide on another number
+def test_twin_gate_checks_w_sha_against_the_pinned_w_not_the_run_record(tmp_path):
+    w = World(tmp_path)
+    cfg = w.cfg()
+    w.fresh(run={"w_sha": W.upper()})
+    assert T.twin_gate_problem(cfg.twin_dir, w.at, {}, cfg, False) == "twin_gate:pin_mismatch"
+    w.fresh(run={"w_sha": None})
+    assert T.twin_gate_problem(cfg.twin_dir, w.at, {}, cfg, False) == "twin_gate:pin_mismatch"
 
 
-def test_latency_decides_on_the_decision_ms_not_sdT():
-    # 20 landed buys: sd(T) latency 1 slot (passes), decision-ms latency 4.0 s (above 3.0 s): the P5 soft halt only under the r4-b-T origin
-    orders = {f"o{i}": {"decision_ms": 1000 * i, "buy_landed_ms": 1000 * i + 4000, "decision_slot": 10 * i, "buy_landed_slot": 10 * i + 1} for i in range(20)}
-    chk = X.latency_check(T.latency_summary_t(orders, 0.4))
+def test_twin_gate_heartbeat_stale_but_run_ms_fresh(tmp_path):
+    w = World(tmp_path)
+    w.fresh(run={"heartbeat_ms": w.at - T.TWIN_HEARTBEAT_MAX_MS - 1})
+    assert T.twin_gate_problem(w.cfg().twin_dir, w.at, {}, w.cfg(), False) == "twin_gate:heartbeat_stale"
+
+
+def test_twin_entry_legs_read_the_per_trip_sps_entry(tmp_path):
+    w = World(tmp_path)
+    w.fresh(rows=[twin_row("A:1", sps_entry=2.5), twin_row("B:1", sps_entry=0), twin_row("C:1", corrected_slot="x")])
+    assert T.twin_entry_legs(w.cfg().twin_dir, False) == {"A:1": {"corrected_slot": 1000, "sps_entry": 2.5}}
+
+
+# ------------------------------------------------------------------------------------------------ F2: origin = the twin's corrected slot, ceil, own sps_entry
+def test_latency_origin_is_the_twin_corrected_slot_with_sdT_beside():
+    o = {"decision_slot": 100, "buy_landed_ms": 5, "buy_landed_slot": 1007}
+    legs = {"a": {"corrected_slot": 1000, "sps_entry": 2.5}}  # sd(T) is 100, the twin's corrected slot (decision ms + d) is 1000
+    r = T.landed_buy_latencies_t({"a": o}, legs)[0]
+    assert r["slots"] == 7 and r["sdT_slots"] == 907 and r["sps_entry"] == 2.5
+    assert (r["k19"], r["k30"]) == (1, 2) or (r["k19"], r["k30"]) == (AS.k_slots(1.9, 2.5, "ceil"), AS.k_slots(3.0, 2.5, "ceil"))
+    assert (r["k19"], r["k30"]) == (1, 2)  # ceil(1.9 / 2.5) = 1, ceil(3.0 / 2.5) = 2
+    assert r["x19"] == 6 and r["x30"] == 5
+    s = T.latency_summary_t({"a": o}, legs)
+    assert s["origin"].startswith("twin row corrected_slot") and s["diag_sdT"]["all_slots_p50"] == 907 and s["all_slots_p50"] == 7
+
+
+def test_k_is_ceil_with_each_trips_own_sps_entry():
+    legs = {"a": {"corrected_slot": 0, "sps_entry": 2.5}, "b": {"corrected_slot": 0, "sps_entry": 0.5}}
+    orders = {k: {"buy_landed_ms": i, "buy_landed_slot": 10} for i, k in enumerate("ab")}
+    got = {r["order_id"]: (r["k19"], r["k30"]) for r in T.landed_buy_latencies_t(orders, legs)}
+    assert got == {"a": (1, 2), "b": (4, 6)}  # ceil(1.9 / 0.5) = 4 (3.8), ceil(3.0 / 0.5) = 6 exactly (the 1e-9 tolerance); round would give 4 and 6, 1.9/2.5 -> round 1
+    assert AS.k_slots(1.9, 1.0, "ceil") == 2 and AS.k_slots(1.9, 1.0, "round") == 2 and AS.k_slots(2.1, 1.0, "ceil") == 3 != AS.k_slots(2.1, 1.0, "round")
+
+
+def test_latency_decides_on_the_twin_origin_not_sdT():
+    # 20 landed buys: 9 slots after the twin's corrected slot (k30 = 2 at sps 2.5, so excess 7 > 0: P5 soft halt); sd(T) would say -1 (passes)
+    orders = {f"o{i}": {"buy_landed_ms": i, "buy_landed_slot": 1009 + 10 * i, "decision_slot": 1010 + 10 * i} for i in range(20)}
+    legs = {f"o{i}": {"corrected_slot": 1000 + 10 * i, "sps_entry": 2.5} for i in range(20)}
+    chk = X.latency_check(T.latency_summary_t(orders, legs))
     assert chk["enough"] and chk["p5_soft_halt"] and not chk["match_latency_ok"]
     assert not X.latency_check(X.latency_summary(orders, 0.4))["p5_soft_halt"]
 
 
-def test_latency_unmeasured_when_landing_precedes_decision():
-    r = T.landed_buy_latencies_t({"a": {"decision_ms": 5000, "buy_landed_ms": 4000}, "b": {"buy_landed_ms": 4000}}, 0.4)
-    assert [x["slots"] for x in r] == [None, None]
-    assert T.latency_summary_t({"a": {"decision_ms": 5000, "buy_landed_ms": 4000}}, 0.4)["measured"] == 0
+def test_latency_unmeasured_without_a_twin_row_or_a_landed_slot():
+    orders = {"a": {"buy_landed_ms": 1, "buy_landed_slot": 10}, "b": {"buy_landed_ms": 2}}
+    legs = {"b": {"corrected_slot": 0, "sps_entry": 2.5}}
+    assert [r["slots"] for r in T.landed_buy_latencies_t(orders, legs)] == [None, None]
+    assert T.latency_summary_t(orders, legs)["measured"] == 0
 
 
-def test_bridge_latency_report_uses_the_r4bt_origin(tmp_path):
-    br, _, _ = World(tmp_path).bridge()
-    br.state.orders["a"] = {"decision_ms": 1000, "buy_landed_ms": 3000, "decision_slot": 1, "buy_landed_slot": 2, "status": "open"}
+def test_bridge_latency_report_reads_the_twin_rows(tmp_path):
+    w = World(tmp_path)
+    w.fresh(rows=[twin_row("a", corrected_slot=100, sps_entry=2.5)])
+    br, _, _ = w.bridge()
+    br.state.orders["a"] = {"decision_slot": 1, "buy_landed_ms": 3000, "buy_landed_slot": 103, "status": "open"}
     rep = br.latency_report()
-    assert rep["summary"]["origin"].startswith("decision row ms") and rep["summary"]["diag_sdT"]["measured"] == 1
+    assert rep["summary"]["measured"] == 1 and rep["summary"]["all_slots_p50"] == 3 and rep["summary"]["diag_sdT"]["measured"] == 1
 
 
-# ------------------------------------------------------------------------------------------------ A3: carry (item 12) and the Am.3 guard
+# ------------------------------------------------------------------------------------------------ A3: carry (Am.9 F4)
 @pytest.mark.parametrize("carry,label", [
-    ({"verdict": "HALT", "halt_at_ms": 1}, "a3_carry:HALT"), ({"verdict": "ERROR"}, "a3_carry:ERROR"), ({"verdict": "MAYBE"}, "a3_carry_verdict_unknown"),
+    ({"verdict": "HALT", "halt_at_ms": 1}, "a3_carry:HALT"), ({"verdict": "ERROR"}, "a3_carry:ERROR"), ({"verdict": "NEEDS_CHECK"}, "a3_carry:NEEDS_CHECK"),
+    ({"verdict": None}, "a3_carry_verdict_unknown"), ({"verdict": "MAYBE"}, "a3_carry:MAYBE"),
     ({"bot_id": "r4b-exp027"}, "a3_carry_identity"), ({"change_id": "x"}, "a3_carry_identity"), ({"schema": "s"}, "a3_carry_identity"),
     ({"run_utc": "2026-08-12T00:00:00Z"}, "a3_carry_stale"), ({"run_utc": "2026-08-15T00:00:00Z"}, "a3_carry_future"), ({"run_utc": "garbage"}, "a3_carry_no_run_utc"),
-    ({"verdict": "NEEDS_CHECK", "deadline_ms": None}, "a3_needs_check_deadline"), ({"verdict": "NEEDS_CHECK", "deadline_ms": 1}, "a3_needs_check_deadline")])
+    ({"halt": None}, "a3_record_no_halt_flags"), ({"halt": {"flags": {}}}, "a3_record_no_halt_flags"),
+    ({"halt": {"flags": {"pins_changed": {"halt": True, "evaluated": True}}}}, "a3_flags:pins_changed"),
+    ({"halt": {"flags": {"pins_changed": {"halt": False, "evaluated": False}}}}, "a3_flags:pins_changed"),
+    ({"halt": {"flags": {"pins_changed": "yes"}}}, "a3_flags:pins_changed"),
+    ({"halt": {"flags": {"mystery_flag": {"halt": True, "evaluated": True}}}}, "a3_flags:mystery_flag"),
+    ({"warn": {"flags": {"program_changed": {"warn": True}}}}, "a3_flags:program_changed")])
 def test_a3_carry_latches(tmp_path, carry, label):
     br, port, w = run_one(tmp_path, carry=carry)
     assert sends(port) == [] and br.state.latches[T.LATCH_A3] == label
 
 
-def test_a3_needs_check_inside_deadline_refuses_without_a_latch(tmp_path):
-    w = World(tmp_path)
-    w.fresh(carry={"verdict": "NEEDS_CHECK", "deadline_ms": w.at + 3_600_000})
-    assert T.a3_problem(w.cfg(), w.at, False) == (None, "a3_needs_check")
-    w.start()
-    w.entry(0, "MINT", 0)
-    br, port, clk = w.bridge()
-    feed(br, clk)
-    assert sends(port) == [] and not br.state.latches and br.state.counts.get("a3_needs_check_refusal") == 1
+def test_a3_non_halting_flags_are_skipped_and_counted(tmp_path):
+    flags = {"pins_changed": {"halt": False, "evaluated": True}, **{k: {"halt": True, "evaluated": True} for k in T.NOT_HALTING_FLAGS}}
+    br, port, w = run_one(tmp_path, carry={"halt": {"flags": flags}})
+    assert sends(port) == [("buy", f"MINT:{mark(0)}")] and not br.state.latches
+    assert all(br.state.counts.get("a3_skipped_" + k) == 1 for k in T.NOT_HALTING_FLAGS)
+    assert T.a3_problem(w.cfg(), w.at, False) == (None, sorted(T.NOT_HALTING_FLAGS))
 
 
 def test_a3_record_only_and_none_clear(tmp_path):
     w = World(tmp_path)
     for v in ("NONE", "RECORD_ONLY"):
         w.fresh(carry={"verdict": v})
-        assert T.a3_problem(w.cfg(), w.at, False) == (None, None)
+        assert T.a3_problem(w.cfg(), w.at, False) == (None, [])
+
+
+def test_am3_pooled_guard_does_not_apply_and_no_applied_log_is_read(tmp_path):
+    w = World(tmp_path)
+    (tmp_path / "a3" / "a3-applied.jsonl").write_text(json.dumps({"run_utc": iso(w.at - 3_600_000), "verdict": "HALT"}) + "\n")
+    assert T.a3_problem(w.cfg(), w.at, False) == (None, [])  # a guard HALT in a log next to the carry changes nothing (Am.9 F4)
+    assert not hasattr(T.R4btConfig, "a3_applied_path") and "a3_applied_path" not in T.R4btConfig.__dataclass_fields__
 
 
 def test_a3_carry_unreadable_missing_malformed_or_not_root(tmp_path):
@@ -378,7 +429,7 @@ def test_a3_carry_unreadable_missing_malformed_or_not_root(tmp_path):
     assert T.a3_problem(cfg, w.at, False)[0] == "a3_carry_malformed"
     p.unlink()
     assert T.a3_problem(cfg, w.at, False)[0] == "a3_carry_missing"
-    p.symlink_to(Path(cfg.a3_applied_path))
+    p.symlink_to(Path(cfg.twin_dir) / T.TWINS_NAME)
     assert T.a3_problem(cfg, w.at, False)[0] == "a3_carry_not_regular"
     p.unlink()
     p.write_bytes(b"x" * (T.FILE_MAX_BYTES + 1))
@@ -386,49 +437,88 @@ def test_a3_carry_unreadable_missing_malformed_or_not_root(tmp_path):
     assert T.a3_problem(cfg, w.at, False)[0] == "a3_carry_swapped_or_large"
 
 
-@pytest.mark.parametrize("verdict", ["HALT", "FAIL", "ERROR"])
-def test_a3_guard_halting_verdicts_latch(tmp_path, verdict):
+def test_a3_carry_older_than_36h_fails_closed(tmp_path):
     w = World(tmp_path)
-    w.fresh(applied={"verdict": verdict})
-    assert T.a3_problem(w.cfg(), w.at, False) == (f"a3_guard:{verdict}", None)
+    assert T.a3_problem(w.cfg(), w.at + 34 * 3_600_000, False)[0] is None  # 35 h old: not yet stale
+    assert T.a3_problem(w.cfg(), w.at + 36 * 3_600_000 + 3_600_000 + 1, False)[0] == "a3_carry_stale"
 
 
-def test_a3_guard_clear_verdicts(tmp_path):
-    w = World(tmp_path)
-    for v in ("NONE", "PASS"):
-        w.fresh(applied={"verdict": v})
-        assert T.a3_problem(w.cfg(), w.at, False) == (None, None)
+# ------------------------------------------------------------------------------------------------ send fee (Am.9 section 8) and the order ledger
+def test_default_send_fee_is_the_registered_505000(tmp_path):
+    assert World(tmp_path).cfg().send_fee_lamports == 505_000 == T.REGISTERED_SEND_LAMPORTS == X.SEND_FEE_LAMPORTS
 
 
-def test_a3_guard_pending_ahead_malformed_unreadable(tmp_path):
-    w = World(tmp_path)
+OVR = {"lamports": 255_000, "fill_fee": "FILL:fee 255000", "owner_line": "owner OK 2026-11-12", "qp_comment_id": "6700000009"}
+
+
+@pytest.mark.parametrize("over", [
+    {"send_fee_lamports": 255_000}, {"send_fee_lamports": 255_000, "fee_override": {**OVR, "lamports": 250_000}}, {"send_fee_lamports": 255_000, "fee_override": {**OVR, "fill_fee": ""}},
+    {"send_fee_lamports": 255_000, "fee_override": {**OVR, "owner_line": None}}, {"send_fee_lamports": 255_000, "fee_override": {**OVR, "qp_comment_id": "x"}},
+    {"send_fee_lamports": 255_000, "fee_override": "yes"}, {"send_fee_lamports": 505_001, "fee_override": {**OVR, "lamports": 505_001}},
+    {"send_fee_lamports": 505_000, "fee_override": OVR}, {"send_fee_lamports": 5_000, "fee_override": {**OVR, "lamports": 5_000}}, {"send_fee_lamports": 0}, {"send_fee_lamports": True},
+    {"send_fee_lamports": 1.5}, {"fee_override": OVR}])
+def test_send_fee_below_or_off_the_registered_value_is_refused_without_a_reviewed_override(tmp_path, over):
+    with pytest.raises(T.Refused):
+        World(tmp_path, **over).cfg()
+
+
+def test_a_reviewed_fee_override_is_accepted(tmp_path):
+    cfg = World(tmp_path, send_fee_lamports=255_000, fee_override=OVR).cfg()
+    assert cfg.send_fee_lamports == 255_000 and cfg.fee_override == OVR
+
+
+def test_ledger_records_the_actual_entry_and_exit_fees_with_escalations(tmp_path):
+    class FeePort(B.DryPort):
+        def buy(self, order):
+            ok, why = super().buy(order)
+            self._events[-1].update(fees_lamports=505_000 + 650_000, landed_slot=2000)  # a buy that needed one escalated resend: both sends are paid
+            return ok, why
+
+        def sell(self, order, reason):
+            ok, why = super().sell(order, reason)
+            self._events[-1].update(fees_lamports=505_000, landed_slot=2100)
+            return ok, why
+
+    w = World(tmp_path, send_fee_lamports=255_000, fee_override=OVR)
+    w.start()
+    w.entry(0, "MINT", 0)
+    clk = Clock(w.at)
     cfg = w.cfg()
-    run_ms = w.at - 3_600_000
-    w.fresh(applied={"run_utc": iso(run_ms - 3_600_000)})  # behind the carry's run; the carry file was just written: pending (a refusal, no latch)
-    assert T.a3_problem(cfg, w.at, False) == (None, "a3_guard_pending")
-    w.fresh(applied={"run_utc": iso(run_ms + 3_600_000)})
-    assert T.a3_problem(cfg, w.at, False) == ("a3_guard_ahead", None)
-    w.fresh(applied={"verdict": "MAYBE"})
-    assert T.a3_problem(cfg, w.at, False) == ("a3_guard_malformed", None)
-    w.fresh(applied={"run_utc": "nope"})
-    assert T.a3_problem(cfg, w.at, False) == ("a3_guard_malformed", None)
-    Path(cfg.a3_applied_path).unlink()
-    assert T.a3_problem(cfg, w.at, False) == ("a3_guard_unreadable", None)
-    Path(cfg.a3_applied_path).write_text("{oops")
-    assert T.a3_problem(cfg, w.at, False) == ("a3_guard_unreadable", None)
+    br = T.R4btBridge(cfg, FeePort(cfg.dry_balance_lamports), now_ms=clk, root_checks=False)
+    feed(br, clk)
+    rows = [json.loads(ln) for ln in (Path(cfg.state_dir) / T.LEDGER_NAME).read_text().splitlines()]
+    assert len(rows) == 1
+    r = rows[0]
+    assert r["order_id"] == f"MINT:{mark(0)}" and r["sent"] is True and r["entry_fee_lamports"] == 1_155_000 and r["exit_fee_lamports"] is None
+    assert r["entry_ms"] == ms(0) and r["stake_sol"] == 0.05 and r["pool"] == "PDA_MINT" and r["landed_slot_entry"] == 2000 and r["decision_slot"] == SD0
+    assert r["restart"] is False and r["gap_hold"] is False and set(r) >= {"rank", "t_mark", "exit_ms", "landed_slot_exit", "exit_reason"}
+    br.handle_row({"kind": "exit", "order_id": f"MINT:{mark(0)}", "mint": "MINT", "reason": "rank", "t_mark": mark(0), "ms": ms(0) + 3_600_000, "seq": 99})
+    br._poll_ports()
+    r = json.loads((Path(cfg.state_dir) / T.LEDGER_NAME).read_text().splitlines()[0])
+    assert r["exit_fee_lamports"] == 505_000 and r["landed_slot_exit"] == 2100 and r["exit_ms"] is not None and r["exit_reason"] == "rank"
 
 
-def test_a3_guard_behind_longer_than_the_lag_latches(tmp_path):
-    w = World(tmp_path)
-    cfg = w.cfg()
-    w.fresh(applied={"run_utc": iso(w.at - 2 * 3_600_000)})
-    os.utime(cfg.a3_carry_path, (1, 1))  # the carry was written long ago
-    assert T.a3_problem(cfg, w.at + 3 * 3_600_000, False) == ("a3_guard_missing", None)
+def test_ledger_dry_default_fee_is_marked_and_refused_orders_are_not_listed(tmp_path):
+    br, port, w = run_one(tmp_path)
+    o = br.state.orders[f"MINT:{mark(0)}"]
+    assert o["entry_fee_lamports"] == 505_000 and o["fee_source"] == "dry_default"
+    assert [r["order_id"] for r in T.ledger_rows({"x": {**o, "status": "refused"}, "y": o})] == ["y"]
 
 
-def test_a3_guard_halt_reaches_the_bridge(tmp_path):
-    br, port, _ = run_one(tmp_path, applied={"verdict": "HALT"})
-    assert sends(port) == [] and br.state.latches[T.LATCH_A3] == "a3_guard:HALT"
+def test_non_dry_event_without_fees_latches():
+    class P:
+        pass
+
+    # unit-level: the bridge latches r4bt_fee_unreported for a non-dry event carrying no fees_lamports
+    import tempfile
+    with tempfile.TemporaryDirectory() as td:
+        w = World(Path(td))
+        w.start()
+        w.entry(0, "MINT", 0)
+        br, port, clk = w.bridge()
+        feed(br, clk)
+        br.apply_events([{"order_id": f"MINT:{mark(0)}", "event": "sell_landed", "pnl_lamports": 0, "landed_slot": 5}])
+        assert T.LATCH_FEE in br.state.latches
 
 
 # ------------------------------------------------------------------------------------------------ read-record gate and the start gate

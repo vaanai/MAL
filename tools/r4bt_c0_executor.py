@@ -1,22 +1,43 @@
 """r4bt_c0_executor: the r4-b-T PROFILE of the DRY r4-b executor (bot_id `r4bt-a1`). PAPER / DRY ONLY: LIVE_BUILT is False, no key, no wallet, no send.
 
-Ruling: /data/mal/hunt-1008/ops/manager20/QP-RULING-1106-r4bt-c0.md build-list item 2 and findings F1, F2 (a1 to a5). Builds on tools/r4b_arena_executor.py (EXP-027's
-DRY bridge), which is NOT edited: the EXP-027 path (bot_id `r4b-exp027`) keeps its bytes and its behavior. This module is a separate subclass and config; it refuses
-nothing of EXP-027's and shares none of its state files (state names carry the r4-b-T bot_id through the bridge's `cfg.bot_id`).
+Ruling: /data/mal/hunt-1008/ops/manager20/QP-RULING-1106-r4bt-c0.md build-list item 2 and findings F1, F2, and DEC-032 Amendment 9 (merged; sections 3, 4, 5 F4, 8 control).
+Builds on tools/r4b_arena_executor.py (EXP-027's DRY bridge), which is NOT edited: the EXP-027 path (bot_id `r4b-exp027`) keeps its bytes and its behavior. This module is a
+separate subclass and config.
 
 WHAT THE PROFILE ADDS (each is a refusal path with a test in tools/test_r4bt_c0_executor.py)
   PIN        bot_id `r4bt-a1`, W (frozen_sha) and the registered change_id come from config and must equal the code pins (REGISTERED_*); the declog `start` row must repeat
              W (the bridge latches frozen_sha_mismatch) AND the config change_id (this profile latches `change_id_mismatch`). a2: no buy otherwise. A successor run at W
              (Am.27 item 20) needs its change_id added to REGISTERED_CHANGE_IDS in a reviewed PR; no other host, change_id or sha ever feeds the sender (a1).
-  F1 TWIN    `twin_round_trip` (tools.r4b_book.round_trip) is REFUSED for r4-b-T (Am.27 item 24: "refused, as the deciding route and as a report-only figure"). This module
-             imports neither tools.r4b_book nor round_trip (a test reads the source). Twins come ONLY from the twin writer's files in config `twin_dir`:
-               twins.run.json   the run record   (RUN_RECORD_NAME)
-               twins.jsonl      one row per sent order (TWINS_NAME)
-             and the buy is refused unless the run record is fresh (the HV4 `twin_gate` + grace pattern): see `twin_gate_problem` and TWIN INTERFACE = the twin builder's, PR #1243: /data/mal/hunt-1008/ops/reports/2026-11-06/r4bt-c0-twin-interface.md. The executor reads only:
-  twins.run.json  schema r4bt_c0_twin_run_v1, status "ok", run_ms (fresh within TWIN_HEARTBEAT_MAX_MS), w_sha == W, engine_sha256 == ENGINE_SHA256, twins_sha256 == sha256(twins.jsonl)
-  twins.jsonl     schema r4bt_c0_twin_row_v1 rows; only `order_id` is read (a row exists for every sent order once its entry leg is observable)
-`twin_gate_problem` is the only reader. The run record carries no bot_id / change_id: the pin is w_sha and the engine sha. The executor's ORDER LEDGER for the twin (the
-twin's input) is not written by this DRY build; it belongs to the live port.
+  F1 TWIN    `twin_round_trip` (tools.r4b_book.round_trip) is REFUSED for r4-b-T (Am.27 item 24). This module imports neither tools.r4b_book nor round_trip (a test reads
+             the source). Twins come ONLY from the twin writer's files in config `twin_dir` (the twin builder's schema, PR #1243,
+             /data/mal/hunt-1008/ops/reports/2026-11-06/r4bt-c0-twin-interface.md). The executor reads:
+               twins.run.json  schema r4bt_c0_twin_run_v1, status "ok", w_sha == W (the twin VERIFIES its modules against W; the gate compares), engine_sha256 ==
+                               ENGINE_SHA256, run_ms within TWIN_ROW_GRACE_MS, heartbeat_ms fresh when stamped, twins_sha256 == sha256(twins.jsonl)
+               twins.jsonl     schema r4bt_c0_twin_row_v1; from each row `order_id` and `entry_leg.{corrected_slot, sps_entry}` (the F2 origin)
+             and refuses a buy unless that gate passes (Am.9 section 3 item 10: the HV4 `twin_gate` + grace pattern; after TWIN_ROW_GRACE_MS an order whose buy landed needs
+             its entry-stage row).
+  F2 ORIGIN  Am.9 section 4: d_land = buy_landed_slot - the twin row's entry_leg.corrected_slot (the decision row's `ms` on the tape's slot clock, plus d). k = ceil(L / sps_entry)
+             via tools.arena_stack.k_slots(L, sps_entry, "ceil") with each trip's OWN sps_entry. The sd(T) figures of EXP-027 are printed beside it (`diag_sdT`), never decide.
+  A3         r4-b-T's OWN regime (Am.9 F4; DEC-031 Am.27 item 12; DEC-032 section 5 item 1 raw-record checks): a root-owned CARRY file (config a3_carry_path), JSON, ONE object,
+             schema `r4bt_a3_carry_v1`: {"schema", "bot_id", "change_id", "run_utc" (YYYY-MM-DDTHH:MM:SSZ), "verdict" (tools/r4bt_a3.py: NONE | RECORD_ONLY clear; anything
+             else latches), "halt": {"flags": {<flag>: {"halt": bool, "evaluated": bool}}}, "warn": {"flags": {"program_changed": {"warn": bool}}}} (the monitor record's
+             shape). Missing, unreadable, non-root-owned, malformed, a wrong identity, a run_utc older than 36 h or 300 s in the future, no halt flags, any flag other than the five
+             non-halting ones set / unevaluated / malformed, program_changed warn, or a verdict HALT / ERROR / NEEDS_CHECK: LATCH `r4bt_a3` (new buys stop, exits run). The five
+             (boost_disabled, boost_share_low, boost_last_slice_early, boost_budget_or_slices_changed, synthetic_share_high) are skipped and counted. DEC-032 Amendment 3's
+             pooled guard does NOT apply to r4bt-a1 (Am.9 F4): no a3-applied.jsonl is read.
+  READ       config read_result_sha256 and qp_comment_id must both equal the fields of the read-record file (config read_record_path, JSON, `r4bt_read_record_v1`:
+             {"schema","bot_id","change_id","status":"PASS","read_result_sha256","qp_comment_id","qp_verdict":"OK"}), else the bridge reads no decision row (latch
+             `r4bt_read_record`) and a start on a non-synthetic root is refused (`start_refusal`). A synthetic root (SYNTHETIC_FIXTURE_ROOT marker) is exempt, DRY only.
+  OWNER      the owner's confirmation file (config owner_file): ROOT-OWNED, exactly one line `OWNER_CANARY_CONFIRMED: bot_id=r4bt-a1`; per-bot LIVE_OK (content exactly
+             `r4bt-a1`) and the shared TIER file reading `T1`. LIVE gates: `live_gate_problems` lists them; a LIVE start is refused anyway (LIVE_BUILT False), and the DRY bridge
+             records which are open at its start (`r4bt_start` log row).
+  CAPS       the DEC-032 section 3 C0 caps are REQUIRED in config and VALIDATED, not clipped: stake <= 0.05 SOL, max_open <= 2, max_trades_per_day <= 30, daily_loss <= 0.10 SOL,
+             total_loss <= 0.20 SOL (the bridge counts open exposure in the total stop), funded_lamports in [0.35, 1.00] SOL. Above = refused.
+  FEE        Am.9 section 8: config send_fee_lamports defaults to the registered 505,000 per send. A lower value is refused unless an explicit reviewed `fee_override`
+             {lamports, fill_fee, owner_line, qp_comment_id} names that exact value; a higher value is always refused. Reserves in the bridge stay at 505,000 (conservative).
+  LEDGER     the executor writes its order ledger (`r4bt-order-ledger.jsonl` in the state dir, atomic rewrite, one row per SENT order) for the twin writer, with the ACTUAL
+             entry_fee_lamports and exit_fee_lamports: the sum of the `fees_lamports` the port reports on each leg's events (every send, escalated resends included). A DRY
+             port's events are marked `fee_source: dry_default` (the configured per-send fee); a non-DRY event without `fees_lamports` latches `r4bt_fee_unreported`.
 
 Nothing here says r4-b-T makes money. r4-b-T has no read. No book has cleared the promotion gate. A C0 is an execution measurement, never gate evidence.
 """
@@ -37,6 +58,7 @@ from pathlib import Path
 from typing import Any, Mapping, Sequence
 
 from tools import arena_live_bridge as B
+from tools import arena_stack as AS
 from tools import hv4_live_c0 as HV
 from tools import r4b_arena_executor as X
 
@@ -55,15 +77,18 @@ LATCH_PIN = "change_id_mismatch"
 LATCH_A3 = "r4bt_a3"
 LATCH_READ = "r4bt_read_record"
 LATCH_TWIN_PIN = "r4bt_twin_pin"
-TWIN_GRACE_MS = 60_000  # the HV4 pattern (hv4_c0_parity.TWIN_GRACE_MS): a closed trip's twin row may arrive this long after its sell landed
+TWIN_ROW_GRACE_MS = 9_000_000  # Am.9 section 3 item 10: >= 1 h + the writer's close / compaction / verification lag + one twin run (the twin reads closed verified hours only); 2.5 h is a declared choice, not measured
 TWIN_HEARTBEAT_MAX_MS = 300_000  # a declared choice, not measured: a run record older than this refuses buys
 TWIN_FUTURE_SKEW_MS = 300_000
 TWIN_MAX_BYTES = 32 * 1024 * 1024
 RUN_RECORD_NAME, TWINS_NAME = "twins.run.json", "twins.jsonl"
 RUN_SCHEMA, TWIN_SCHEMA = "r4bt_c0_twin_run_v1", "r4bt_c0_twin_row_v1"
 CARRY_SCHEMA, READ_SCHEMA = "r4bt_a3_carry_v1", "r4bt_read_record_v1"
-CARRY_VERDICTS = ("NONE", "RECORD_ONLY", "NEEDS_CHECK", "HALT", "ERROR")
-CARRY_CLEAR = ("NONE", "RECORD_ONLY")
+CARRY_CLEAR = ("NONE", "RECORD_ONLY")  # the classifier verdicts that are not an item 12 hard halt
+NOT_HALTING_FLAGS = ("boost_disabled", "boost_share_low", "boost_last_slice_early", "boost_budget_or_slices_changed", "synthetic_share_high")  # Am.9 F4 / DEC-031 Am.27 item 12
+REGISTERED_SEND_LAMPORTS = X.SEND_FEE_LAMPORTS  # 505,000: Am.9 section 8 "Send priority"
+LEDGER_NAME = "r4bt-order-ledger.jsonl"
+LATCH_FEE = "r4bt_fee_unreported"
 FILE_MAX_BYTES = 1 << 20
 A3_MAX_AGE_MS, A3_FUTURE_SKEW_MS = HV.A3_MAX_AGE_MS, HV.A3_FUTURE_SKEW_MS
 OWNER_FILE_DEFAULT = "/etc/mal-r4bt-c0/r4bt-a1/CANARY_DEC.md"
@@ -72,7 +97,7 @@ TIER_DEFAULT = "/etc/mal-arena-live/TIER"
 SHA64_RE = re.compile(r"[0-9a-f]{64}")
 CHANGE_RE = re.compile(r"[A-Za-z0-9_.-]{1,64}")
 
-_PROFILE_KEYS = ("change_id", "twin_dir", "a3_carry_path", "a3_applied_path", "read_record_path", "read_result_sha256", "qp_comment_id", "owner_file", "live_ok_path", "tier_path")
+_PROFILE_KEYS = ("change_id", "twin_dir", "a3_carry_path", "read_record_path", "read_result_sha256", "qp_comment_id", "owner_file", "live_ok_path", "tier_path", "send_fee_lamports", "fee_override")
 
 
 class Refused(ValueError):
@@ -106,13 +131,32 @@ class R4btConfig(X.R4bConfig):
     change_id: str = ""
     twin_dir: str = ""
     a3_carry_path: str = ""
-    a3_applied_path: str = ""
     read_record_path: str = ""
     read_result_sha256: str = ""
     qp_comment_id: str = ""
     owner_file: str = OWNER_FILE_DEFAULT
     live_ok_path: str = LIVE_OK_DEFAULT
     tier_path: str = TIER_DEFAULT
+    send_fee_lamports: int = REGISTERED_SEND_LAMPORTS  # per send (priority + base): the registered 505,000 unless a reviewed override is present (Am.9 section 8)
+    fee_override: Any = None
+
+
+def send_fee_problem(fee: Any, override: Any) -> str | None:
+    """Am.9 section 8 "Send priority": the per-send fee stays the registered 505,000. A lower fee only with an explicit reviewed override naming that exact value, `fill_fee`
+    (the FILL:fee text), `owner_line` and `qp_comment_id` (QP's sighting of >= 30 landed sends at that priority, p90 <= 4 slots). Anything else is refused."""
+    if not _int(fee) or fee <= 0:
+        return "send_fee_lamports must be a positive int"
+    if fee == REGISTERED_SEND_LAMPORTS:
+        return None if override is None else "fee_override given at the registered fee: remove it"
+    if fee > REGISTERED_SEND_LAMPORTS:
+        return f"send_fee_lamports {fee} is above the registered {REGISTERED_SEND_LAMPORTS}"
+    if fee <= X.BASE_FEE_LAMPORTS:
+        return "send_fee_lamports leaves no priority"
+    ov = override
+    if (not isinstance(ov, dict) or ov.get("lamports") != fee or not all(isinstance(ov.get(k), str) and ov[k].strip() for k in ("fill_fee", "owner_line"))
+            or not isinstance(ov.get("qp_comment_id"), str) or not re.fullmatch(r"[0-9]{6,20}", ov["qp_comment_id"])):
+        return f"send_fee_lamports {fee} is below the registered {REGISTERED_SEND_LAMPORTS}: needs a reviewed fee_override {{lamports, fill_fee, owner_line, qp_comment_id}}"
+    return None
 
 
 def make_config(d: Mapping[str, Any]) -> R4btConfig:
@@ -136,13 +180,16 @@ def make_config(d: Mapping[str, Any]) -> R4btConfig:
     funded = d.get("funded_lamports")
     if not _num(funded) or not FUNDED_MIN_LAMPORTS <= funded <= FUNDED_MAX_LAMPORTS:
         raise Refused("funded_lamports is required, 0.35 to 1.00 SOL")
-    for k in ("twin_dir", "a3_carry_path", "a3_applied_path", "read_record_path"):
+    for k in ("twin_dir", "a3_carry_path", "read_record_path"):
         if not isinstance(d.get(k), str) or not os.path.isabs(d[k]):
             raise Refused(f"config {k} is required (absolute path)")
     if not isinstance(d.get("read_result_sha256"), str) or not SHA64_RE.fullmatch(d["read_result_sha256"]):
         raise Refused("config read_result_sha256 is required (64 hex)")
     if not isinstance(d.get("qp_comment_id"), str) or not re.fullmatch(r"[0-9]{6,20}", d["qp_comment_id"]):
         raise Refused("config qp_comment_id is required (digits)")
+    fee_problem = send_fee_problem(d.get("send_fee_lamports", REGISTERED_SEND_LAMPORTS), d.get("fee_override"))
+    if fee_problem:
+        raise Refused(fee_problem)
     base = {k: v for k, v in d.items() if k not in _PROFILE_KEYS and k != "bot_id"}
     try:
         cfg = X.make_config(base)  # the EXP-027 validator (bot_id defaults to r4b-exp027 there): pins W as 40 hex, slot_s, end_ms, no sl_backstop, floor from funded
@@ -233,9 +280,11 @@ def read_record_problem(cfg: R4btConfig, root_checks: bool) -> str | None:
 
 
 def twin_gate_problem(twin_dir: str, now_ms: int, orders: Mapping[str, Mapping[str, Any]] | None, cfg: R4btConfig, root_checks: bool = True) -> str | None:
-    """Fail closed (the HV4 twin_gate + grace pattern). The twin writer's run record must exist, carry this bot_id / change_id / W / the engine pin, and be fresh
-    (heartbeat within TWIN_HEARTBEAT_MAX_MS, not future-stamped). Then every closed order whose sell landed more than TWIN_GRACE_MS ago must have a row in twins.jsonl
-    (inside the grace the twin can still arrive). A pin mismatch is `twin_gate:pin_mismatch` (the bridge latches it). Returns the refusal label or None."""
+    """Fail closed (Am.9 section 3 item 10: the HV4 twin_gate + grace pattern; the twin builder's schema, PR #1243). The run record must exist and have schema
+    r4bt_c0_twin_run_v1, status "ok", this W in `w_sha` (the twin VERIFIES its modules against W; the gate compares it to the pinned W), the engine sha256 pin, run_ms
+    within TWIN_ROW_GRACE_MS, a fresh heartbeat_ms (TWIN_HEARTBEAT_MAX_MS) when it is stamped, and `twins_sha256` equal to the sha256 of twins.jsonl. Then every order whose buy
+    landed more than TWIN_ROW_GRACE_MS ago must have an entry-stage row (entry_leg not null) in twins.jsonl (before the entry leg is observable the run record is the
+    only twin). A pin mismatch is `twin_gate:pin_mismatch` (the bridge latches it). Returns the refusal label or None."""
     rec, why, _ = _json_obj(os.path.join(twin_dir, RUN_RECORD_NAME), root_checks, "twin_run_record")
     if why:
         return "twin_gate:" + why
@@ -245,84 +294,92 @@ def twin_gate_problem(twin_dir: str, now_ms: int, orders: Mapping[str, Mapping[s
         return "twin_gate:pin_mismatch"
     if rec.get("status") != "ok":
         return "twin_gate:status_not_ok"
-    hb = rec.get("run_ms")
-    if not _int(hb):
-        return "twin_gate:heartbeat_missing"
-    if hb - now_ms > TWIN_FUTURE_SKEW_MS:
-        return "twin_gate:heartbeat_future"
-    if now_ms - hb > TWIN_HEARTBEAT_MAX_MS:
+    run = rec.get("run_ms")
+    if not _int(run):
+        return "twin_gate:run_ms_missing"
+    if run - now_ms > TWIN_FUTURE_SKEW_MS:
+        return "twin_gate:run_ms_future"
+    if now_ms - run > TWIN_ROW_GRACE_MS:
         return "twin_gate:stale"
+    hb = rec.get("heartbeat_ms")
+    if hb is not None and (not _int(hb) or now_ms - hb > TWIN_HEARTBEAT_MAX_MS):
+        return "twin_gate:heartbeat_stale"
     data, why, _ = _read_small(os.path.join(twin_dir, TWINS_NAME), root_checks, TWIN_MAX_BYTES)
     if why:
         return "twin_gate:twins_unreadable"
     if rec.get("twins_sha256") != hashlib.sha256(data).hexdigest():
         return "twin_gate:twins_sha_mismatch"  # the run record is written AFTER twins.jsonl and names its sha256
-    due = [oid for oid, o in (orders or {}).items() if o.get("status") == "closed" and _int(o.get("sell_landed_ms")) and now_ms - int(o["sell_landed_ms"]) > TWIN_GRACE_MS]
+    due = [oid for oid, o in (orders or {}).items() if _int(o.get("buy_landed_ms")) and now_ms - int(o["buy_landed_ms"]) > TWIN_ROW_GRACE_MS]
     if due:
-        have = _order_ids(data)
-        if any(oid not in have for oid in due):
+        have = _twin_rows(data)
+        if any(not isinstance(have.get(oid, {}).get("entry_leg"), dict) for oid in due):
             return "twin_gate:row_missing"
     return None
 
 
-def _order_ids(data: bytes) -> set[str]:
-    """The order ids that have a well-formed row (schema r4bt_c0_twin_row_v1) in twins.jsonl bytes. A malformed line is skipped, never trusted."""
-    out: set[str] = set()
+def _twin_rows(data: bytes) -> dict[str, dict[str, Any]]:
+    """order_id -> row, for the well-formed rows (schema r4bt_c0_twin_row_v1) of twins.jsonl bytes. A malformed line is skipped, never trusted."""
+    out: dict[str, dict[str, Any]] = {}
     for ln in data.decode("utf-8", "replace").splitlines():
         try:
             r = json.loads(ln)
         except ValueError:
             continue
         if isinstance(r, dict) and r.get("schema") == TWIN_SCHEMA and isinstance(r.get("order_id"), str):
-            out.add(r["order_id"])
+            out[r["order_id"]] = r
     return out
 
 
-# --- A3 regime (item 12) and the Am.3 pooled guard, read side -------------------------------------------------------------------------------------
-
-
-def a3_problem(cfg: R4btConfig, now_ms: int, root_checks: bool = True) -> tuple[str | None, str | None]:
-    """(latch, refuse). See the module docstring (A3). Fail closed: any unreadable input is a latch."""
-    car, why, st = _json_obj(cfg.a3_carry_path, root_checks, "a3_carry")
+def twin_entry_legs(twin_dir: str, root_checks: bool = True) -> dict[str, dict[str, Any]]:
+    """order_id -> {corrected_slot, sps_entry} from the entry-stage rows of twins.jsonl (the F2 origin). Empty when the file is unreadable; rows whose fields are not
+    ints / positive numbers are left out (the order is then unmeasured, never guessed)."""
+    data, why, _ = _read_small(os.path.join(twin_dir, TWINS_NAME), root_checks, TWIN_MAX_BYTES)
     if why:
-        return why, None
+        return {}
+    out = {}
+    for oid, r in _twin_rows(data).items():
+        leg = r.get("entry_leg")
+        if isinstance(leg, dict) and _int(leg.get("corrected_slot")) and _num(leg.get("sps_entry")) and leg["sps_entry"] > 0:
+            out[oid] = {"corrected_slot": leg["corrected_slot"], "sps_entry": float(leg["sps_entry"])}
+    return out
+
+
+# --- A3 regime (Am.9 F4: DEC-031 Am.27 item 12 hard halts, and DEC-032 section 5 item 1 raw-record checks) -----------------------------------------------------
+
+
+def a3_problem(cfg: R4btConfig, now_ms: int, root_checks: bool = True) -> tuple[str | None, list[str]]:
+    """(latch, skipped). Reads the root-owned CARRY file (module docstring). Latch (new buys stop, exits run) when: the carry is missing, unreadable, linked, not root-owned,
+    oversize or malformed; has another bot_id / change_id; run_utc is missing, older than 36 h or more than 300 s in the future; its classifier verdict is HALT, ERROR,
+    NEEDS_CHECK or unknown (item 12 hard halts, earliest instant); `halt.flags` is missing or empty, or any flag other than the five non-halting ones is set, unevaluated or
+    malformed; or `warn.flags.program_changed.warn` is true (section 5 item 1 is stricter than the read: any pins_changed and any program_changed latch at once). The five
+    non-halting flags (boost_*, synthetic_share_high) are skipped and returned in `skipped` when set (the bridge counts them for the tie-out). Amendment 3's pooled guard does
+    NOT apply to r4bt-a1 (Am.9 F4): no a3-applied.jsonl is read."""
+    car, why, _ = _json_obj(cfg.a3_carry_path, root_checks, "a3_carry")
+    if why:
+        return why, []
     if car.get("schema") != CARRY_SCHEMA or car.get("bot_id") != BOT_ID or car.get("change_id") != cfg.change_id:
-        return "a3_carry_identity", None
+        return "a3_carry_identity", []
     rec_ms = _iso_ms(car.get("run_utc"))
     if rec_ms is None:
-        return "a3_carry_no_run_utc", None
+        return "a3_carry_no_run_utc", []
     if rec_ms - now_ms > A3_FUTURE_SKEW_MS:
-        return "a3_carry_future", None
+        return "a3_carry_future", []
     if now_ms - rec_ms > A3_MAX_AGE_MS:
-        return "a3_carry_stale", None
+        return "a3_carry_stale", []
     v = car.get("verdict")
-    if v not in CARRY_VERDICTS:
-        return "a3_carry_verdict_unknown", None
-    if v in ("HALT", "ERROR"):
-        return f"a3_carry:{v}", None
-    refuse = None
-    if v == "NEEDS_CHECK":
-        dl = car.get("deadline_ms")
-        if not _int(dl) or now_ms >= dl:
-            return "a3_needs_check_deadline", None
-        refuse = "a3_needs_check"
-    # DEC-032 Am.3 pooled guard: the newest line of a3-applied.jsonl for the SAME run
-    line, why, _ = _json_obj(cfg.a3_applied_path, root_checks, "a3_guard", last_line=True)
-    if why:
-        return "a3_guard_unreadable", None
-    app_ms = _iso_ms(line.get("run_utc"))
-    verdict = line.get("verdict")
-    if app_ms is None or verdict not in HV.A3_GUARD_VERDICTS:
-        return "a3_guard_malformed", None
-    if app_ms > rec_ms:
-        return "a3_guard_ahead", None
-    if app_ms < rec_ms:
-        if now_ms - max(rec_ms, int(st.st_mtime * 1000)) <= HV.A3_GUARD_LAG_MS:
-            return None, "a3_guard_pending"
-        return "a3_guard_missing", None
-    if verdict not in HV.A3_GUARD_CLEAR:
-        return "a3_guard:" + str(verdict), None
-    return None, refuse
+    if v not in CARRY_CLEAR:
+        return f"a3_carry:{v}" if isinstance(v, str) else "a3_carry_verdict_unknown", []
+    halt = car.get("halt")
+    flags = halt.get("flags") if isinstance(halt, dict) else None
+    if not isinstance(flags, dict) or not flags:
+        return "a3_record_no_halt_flags", []
+    skipped = sorted(k for k, f in flags.items() if k in NOT_HALTING_FLAGS and isinstance(f, dict) and f.get("halt") is True)
+    bad = sorted(k for k, f in flags.items() if k not in NOT_HALTING_FLAGS and (not (isinstance(f, dict) and isinstance(f.get("halt"), bool)) or f["halt"] or f.get("evaluated") is False))
+    warn = car.get("warn")
+    pc = ((warn.get("flags") or {}).get("program_changed")) if isinstance(warn, dict) and isinstance(warn.get("flags"), dict) else None
+    if isinstance(pc, dict) and pc.get("warn") is True:
+        bad.append("program_changed")
+    return (("a3_flags:" + ",".join(bad)) if bad else None), skipped
 
 
 # --- live gates (the owner's confirmation, LIVE_OK, TIER) -----------------------------------------------------------------------------------------
@@ -369,39 +426,57 @@ def start_refusal(cfg: R4btConfig, *, live: bool = False, root_checks: bool = Tr
 # --- latency (F2) ---------------------------------------------------------------------------------------------------------------------------------
 
 
-def landed_buy_latencies_t(orders: Mapping[str, Mapping[str, Any]], slot_s: float, slot_s_by_date: Mapping[str, float] | None = None) -> list[dict[str, Any]]:
-    """One record per landed buy, landing order. `slots` = (buy_landed_ms - decision_ms) / 1000 / slot_s: the origin is the DECISION ROW's instant `ms` (decision_ms).
-    k19 / k30 = round(1.9 / slot_s), round(3.0 / slot_s) (np.round), x19 / x30 = slots - k. `sdT_slots` = landed_slot - decision_slot (the EXP-027 origin) is carried beside
-    as a diagnostic and never decides."""
+def landed_buy_latencies_t(orders: Mapping[str, Mapping[str, Any]], legs: Mapping[str, Mapping[str, Any]]) -> list[dict[str, Any]]:
+    """One record per landed buy, landing order (Am.9 section 4). d_land = buy_landed_slot - the twin row's entry_leg.corrected_slot (the decision row's `ms` mapped to the
+    tape's slot clock, plus d). k19 / k30 = tools.arena_stack.k_slots(L, sps_entry, "ceil") with the sps_entry of THAT trip's twin row. x19 / x30 = d_land - k. A buy
+    without an entry-stage twin row, or without a landed slot, is unmeasured. `sdT_slots` = landed slot - decision_slot (the EXP-027 origin) is carried beside as a
+    diagnostic and never decides."""
     rows = []
     for oid, o in orders.items():
         if not _int(o.get("buy_landed_ms")):
             continue
-        ss, src = X.order_slot_s(o, slot_s, slot_s_by_date)
-        dm = o.get("decision_ms")
-        lat = (o["buy_landed_ms"] - dm) / 1000.0 if _int(dm) and o["buy_landed_ms"] >= dm else None
-        d = None if lat is None else lat / ss
-        k19, k30 = X.k_slots(X.MATCH_P50_S, ss), X.k_slots(X.P5_SOFT_HALT_S, ss)
-        ds, ls = o.get("decision_slot"), o.get("buy_landed_slot")
-        rows.append({"order_id": oid, "landed_ms": o["buy_landed_ms"], "slots": d, "lat_s": lat, "k19": k19, "k30": k30, "x19": None if d is None else d - k19,
-                     "x30": None if d is None else d - k30, "slot_s_used": ss, "slot_s_source": src, "gap": bool(o.get("gap")),
+        leg, ls, ds = legs.get(oid), o.get("buy_landed_slot"), o.get("decision_slot")
+        d = (ls - leg["corrected_slot"]) if leg and _int(ls) else None
+        k19 = AS.k_slots(X.MATCH_P50_S, leg["sps_entry"], "ceil") if leg else None
+        k30 = AS.k_slots(X.P5_SOFT_HALT_S, leg["sps_entry"], "ceil") if leg else None
+        rows.append({"order_id": oid, "landed_ms": o["buy_landed_ms"], "slots": d, "k19": k19, "k30": k30, "x19": None if d is None else d - k19,
+                     "x30": None if d is None else d - k30, "sps_entry": leg["sps_entry"] if leg else None, "gap": bool(o.get("gap")),
                      "sdT_slots": (ls - ds) if _int(ds) and _int(ls) and ls >= ds else None})
     rows.sort(key=lambda r: (r["landed_ms"], r["order_id"]))
     return rows
 
 
-def latency_summary_t(orders: Mapping[str, Mapping[str, Any]], slot_s: float, *, window: int = X.P5_WINDOW, slot_s_by_date: Mapping[str, float] | None = None) -> dict[str, Any]:
-    """The `X.latency_summary` keys that `X.latency_check` reads, counted from the decision row's instant; the sd(T) figures of EXP-027 sit beside it under `diag_sdT`."""
-    rows = landed_buy_latencies_t(orders, slot_s, slot_s_by_date)
+def latency_summary_t(orders: Mapping[str, Mapping[str, Any]], legs: Mapping[str, Mapping[str, Any]], *, window: int = X.P5_WINDOW) -> dict[str, Any]:
+    """The `X.latency_summary` keys that `X.latency_check` reads, counted from the twin's corrected slot (the decision row's instant); the sd(T) figures of EXP-027 sit
+    beside it under `diag_sdT`."""
+    rows = landed_buy_latencies_t(orders, legs)
     meas = [r for r in rows if r["slots"] is not None]
     last = meas[-window:]
     sd = [r["sdT_slots"] for r in rows if r["sdT_slots"] is not None]
-    return {"origin": "decision row ms (sd(T) is a diagnostic beside it)", "slot_s": slot_s, "landed_buys": len(rows), "measured": len(meas), "unmeasured": len(rows) - len(meas),
-            "window": window, "window_n": len(last), "window_p50_s": X._med([r["lat_s"] for r in last]), "all_p50_s": X._med([r["lat_s"] for r in meas]),
-            "non_gap_p50_s": X._med([r["lat_s"] for r in meas if not r["gap"]]), "window_x30_p50_slots": X._med([r["x30"] for r in last]),
-            "all_x19_p50_slots": X._med([r["x19"] for r in meas]), "all_slots_p50": X._med([r["slots"] for r in meas]),
-            "wall_measured": 0, "wall_missing": len(rows), "wall_window_p50_s": None, "wall_all_p50_s": None,
+    return {"origin": "twin row corrected_slot (decision row ms + d); sd(T) is a diagnostic beside it", "rounding": "ceil, each trip's own sps_entry", "landed_buys": len(rows),
+            "measured": len(meas), "unmeasured": len(rows) - len(meas), "window": window, "window_n": len(last),
+            "window_x30_p50_slots": X._med([r["x30"] for r in last]), "all_x19_p50_slots": X._med([r["x19"] for r in meas]),
+            "all_slots_p50": X._med([r["slots"] for r in meas]), "wall_measured": 0, "wall_missing": len(rows), "wall_window_p50_s": None, "wall_all_p50_s": None,
             "diag_sdT": {"measured": len(sd), "all_slots_p50": X._med(sd), "origin": "sd(T) = decision_slot: diagnostic only"}}
+
+
+# --- the order ledger (the twin's input; Am.9 section 3 item 4 (2)) ----------------------------------------------------------------------------------
+
+
+def ledger_rows(orders: Mapping[str, Mapping[str, Any]]) -> list[dict[str, Any]]:
+    """One row per SENT order (status not refused), the keys the twin reads (r4bt-c0-twin-interface.md): order_id, sent, pool, mint, rank, t_mark, stake_sol, entry_ms,
+    exit_ms, entry_fee_lamports, exit_fee_lamports (the ACTUAL totals of every send of the leg incl. escalated resends, as the port reported them; null = not reported),
+    restart, gap_hold, decision_slot, landed_slot_entry, landed_slot_exit, exit_reason."""
+    out = []
+    for oid, o in sorted(orders.items(), key=lambda kv: (kv[1].get("decision_ms") or 0, kv[0])):
+        if o.get("status") == "refused":
+            continue
+        out.append({"order_id": oid, "sent": True, "pool": o.get("pool"), "mint": o.get("mint"), "rank": o.get("rank"), "t_mark": o.get("t_mark"),
+                    "stake_sol": o["stake_lamports"] / 1e9, "entry_ms": o.get("decision_ms"), "exit_ms": o.get("exit_decision_ms"),
+                    "entry_fee_lamports": o.get("entry_fee_lamports"), "exit_fee_lamports": o.get("exit_fee_lamports"), "restart": bool(o.get("restart_exit")),
+                    "gap_hold": bool(o.get("gap")), "decision_slot": o.get("decision_slot"), "landed_slot_entry": o.get("buy_landed_slot"),
+                    "landed_slot_exit": o.get("sell_landed_slot"), "exit_reason": o.get("sell_reason")})
+    return out
 
 
 # --- the bridge -----------------------------------------------------------------------------------------------------------------------------------
@@ -459,13 +534,12 @@ class R4btBridge(X.R4bBridge):
         why = super().entry_refusal(row, now, lim, scope)
         if why:
             return why
-        latch, refuse = a3_problem(self.cfg, now, self.root_checks_r4bt)
+        latch, skipped = a3_problem(self.cfg, now, self.root_checks_r4bt)
+        for k in skipped:
+            self._count("a3_skipped_" + k)  # the five non-halting flags: skipped and counted (Am.9 F4), disclosed in the daily tie-out
         if latch:
             self._latch(LATCH_A3, latch)
             return "latched:" + LATCH_A3
-        if refuse:
-            self._count(refuse + "_refusal")
-            return refuse
         why = twin_gate_problem(self.cfg.twin_dir, now, self.state.orders, self.cfg, self.root_checks_r4bt)
         if why:
             if why.startswith("twin_gate:pin_mismatch"):
@@ -474,10 +548,44 @@ class R4btBridge(X.R4bBridge):
             return why
         return None
 
-    # -- F2: latency origin is the decision row's instant
+    # -- F2: the latency origin is the twin row's corrected slot (the decision row's instant + d); ceil with each trip's own sps_entry
     def latency_report(self) -> dict[str, Any]:
-        s = latency_summary_t(self.state.orders, self.cfg.slot_s, slot_s_by_date=self.slot_s_by_date)
+        s = latency_summary_t(self.state.orders, twin_entry_legs(self.cfg.twin_dir, self.root_checks_r4bt))
         return {"summary": s, "check": X.latency_check(s)}
+
+    # -- the actual fee of every send (entry and exit, escalated resends included), as the port reports it in `fees_lamports` of the event
+    def apply_events(self, events: list[dict[str, Any]]) -> None:
+        by_mint = {o["mint"]: k for k, o in self.state.orders.items()}
+        for ev in events:
+            leg = {"buy_landed": "entry", "buy_failed": "entry", "sell_landed": "exit", "sell_failed": "exit"}.get(ev.get("event"))
+            o = self.state.orders.get(ev.get("order_id") or by_mint.get(ev.get("mint"))) if leg else None
+            if o is None:
+                continue
+            fee = ev.get("fees_lamports")
+            if _int(fee) and fee >= 0:
+                o[f"{leg}_fee_lamports"] = int(o.get(f"{leg}_fee_lamports") or 0) + fee
+            elif ev.get("dry"):  # a DRY port sends nothing: the configured per-send fee, once per event (marked)
+                o[f"{leg}_fee_lamports"] = int(o.get(f"{leg}_fee_lamports") or 0) + self.cfg.send_fee_lamports
+                o["fee_source"] = "dry_default"
+            else:
+                self._latch(LATCH_FEE, f"{ev.get('event')} of {o['order_id']} carries no fees_lamports")
+        super().apply_events(events)
+
+    def _save(self) -> None:
+        super()._save()
+        self.write_ledger()
+
+    def write_ledger(self) -> None:
+        """Rewrite the order ledger (one row per sent order) atomically in the state dir, for the twin writer."""
+        sd = Path(self.cfg.state_dir)
+        sd.mkdir(parents=True, exist_ok=True)
+        tmp = sd / (LEDGER_NAME + ".tmp")
+        with tmp.open("w") as fh:
+            for r in ledger_rows(self.state.orders):
+                fh.write(json.dumps(r, sort_keys=True) + "\n")
+            fh.flush()
+            os.fsync(fh.fileno())
+        os.replace(tmp, sd / LEDGER_NAME)
 
 
 # --- CLI: config check only (no executor loop, no send) ---------------------------------------------------------------------------------------------
