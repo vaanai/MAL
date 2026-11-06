@@ -70,8 +70,8 @@ class World:
 
     def __init__(self, tmp, synthetic=True, **over):
         self.tmp = tmp
-        self.root = tmp / "rules"
-        self.root.mkdir()
+        self.root = tmp / "rules" if synthetic else tmp / "r4b-dry" / CID / "declog"  # a real root sits under the change_id root
+        self.root.mkdir(parents=True)
         if synthetic:
             (self.root / HV.SYNTHETIC_MARKER).write_text("x")
         self.at = ms(0) + 50
@@ -111,11 +111,11 @@ class World:
         return T.R4btBridge(cfg, port, now_ms=clk, root_checks=False), port, clk
 
     def start(self, sha=W, change_id=CID):
-        self.log.append(T.BOT_ID, mark(0) * 1000, {"kind": "start", "book": "r4-b-T", "mode": "dry", "frozen_sha": sha, "change_id": change_id})
+        self.log.append(T.DECLOG_ARM, mark(0) * 1000, {"kind": "start", "book": "r4-b-T", "mode": "dry", "frozen_sha": sha, "change_id": change_id})
 
     def entry(self, i, mint, rank_, dt=1200):
         tm = mark(i)
-        self.log.append(T.BOT_ID, tm * 1000 + dt, {"kind": "entry", "order_id": f"{mint}:{tm}", "pool": "PDA_" + mint, "meta": {"mint": mint, "v0": V, "mbt": tm - 7200, "s0": 1},
+        self.log.append(T.DECLOG_ARM, tm * 1000 + dt, {"kind": "entry", "order_id": f"{mint}:{tm}", "pool": "PDA_" + mint, "meta": {"mint": mint, "v0": V, "mbt": tm - 7200, "s0": 1},
                                                   "stake_sol": 0.25, "decision_slot": SD0 + 9000 * i, "t_mark": tm, "rank": rank_, "score": 0.5})
 
 
@@ -229,7 +229,7 @@ def test_start_row_with_another_w_latches_and_no_buy(tmp_path):
 
 def test_start_row_without_change_id_latches(tmp_path):
     w = World(tmp_path)
-    w.log.append(T.BOT_ID, mark(0) * 1000, {"kind": "start", "book": "r4-b-T", "mode": "dry", "frozen_sha": W})
+    w.log.append(T.DECLOG_ARM, mark(0) * 1000, {"kind": "start", "book": "r4-b-T", "mode": "dry", "frozen_sha": W})
     w.entry(0, "MINT", 0)
     br, port, clk = w.bridge()
     feed(br, clk)
@@ -727,3 +727,160 @@ def test_tier_is_a_per_bot_t0_file(tmp_path):
     assert T.live_gate_problems(w.cfg(), False) == []
     (tmp_path / "TIER").write_text("T0 extra\n")
     assert T.live_gate_problems(w.cfg(), False) == ["tier_file_invalid"]
+
+
+# ------------------------------------------------------------------------------------------------ declog arm, STOP file, fills, attempts (parity PR #1250)
+def test_bridge_tails_arm_r4b_exp027_not_the_bot_id(tmp_path):
+    w = World(tmp_path)
+    w.start()
+    w.entry(0, "MINT", 0)
+    assert (w.root / "decisions" / "r4b-exp027").is_dir() and not (w.root / "decisions" / "r4bt-a1").exists()
+    br, port, clk = w.bridge()
+    feed(br, clk)
+    assert sends(port) == [("buy", f"MINT:{mark(0)}")] and br.cfg.bot_id == "r4bt-a1" and T.DECLOG_ARM == "r4b-exp027"
+    # rows under decisions/r4bt-a1 are not read
+    other = DecisionLog(str(w.root))
+    other.append("r4bt-a1", ms(1), {"kind": "start", "frozen_sha": "ee" * 20, "change_id": "zzz"})
+    assert br.read_new_rows() == [] and not br.state.latches
+
+
+def test_chain_is_verified_on_the_arm(tmp_path):
+    w = World(tmp_path)
+    w.start()
+    w.entry(0, "MINT", 0)
+    f = next((w.root / "decisions" / "r4b-exp027").glob("*.jsonl"))
+    f.write_text(f.read_text().replace('"MINT"', '"MINX"', 1))
+    br, port, clk = w.bridge()
+    assert "chain_break" in br.state.latches and sends(port) == []
+
+
+def test_real_root_must_be_under_the_change_id_root(tmp_path):
+    (tmp_path / "w1").mkdir()
+    assert World(tmp_path / "w1", synthetic=False).cfg().root.endswith(f"r4b-dry/{CID}/declog")
+    (tmp_path / "w2").mkdir()
+    bad = tmp_path / "r4b-dry" / "other" / "declog"
+    bad.mkdir(parents=True)
+    with pytest.raises(T.Refused, match="change_id root"):
+        T.make_config({**World(tmp_path / "w2").d, "root": str(bad)})
+
+
+def test_parity_stop_file_in_the_state_dir_stops_buys(tmp_path):
+    w = World(tmp_path)
+    w.start()
+    w.entry(0, "MINT", 0)
+    br, port, clk = w.bridge()
+    Path(br.cfg.state_dir).mkdir(parents=True, exist_ok=True)
+    (Path(br.cfg.state_dir) / T.STOP_NAME).write_text("{}")
+    feed(br, clk)
+    assert sends(port) == [] and br.state.counts.get("parity_stop_file_refusal", 0) >= 1 and br._files()[1] is True
+
+
+def test_parity_stop_file_symlink_also_counts(tmp_path):
+    br = World(tmp_path).bridge()[0]
+    sd = Path(br.cfg.state_dir)
+    sd.mkdir(parents=True, exist_ok=True)
+    (sd / T.STOP_NAME).symlink_to(tmp_path / "nowhere")
+    assert br._files()[1] is True
+
+
+def test_no_stop_file_no_stop(tmp_path):
+    br = World(tmp_path).bridge()[0]
+    assert br._files() == (False, False)
+
+
+class FillPort(B.DryPort):
+    """A non-DRY-looking event stream: events carry the live fill facts the parity tool needs."""
+
+    def __init__(self, bal, fills=True, fail=False):
+        super().__init__(bal)
+        self.fills, self.fail = fills, fail
+
+    def buy(self, order):
+        ok, why = super().buy(order)
+        ev = self._events[-1]
+        ev.pop("dry")
+        ev.update(fees_lamports=505_000, landed_slot=2000, landed_ms=9_000)
+        if self.fills:
+            ev.update(live_buy_price=1.25e-7)
+        if self.fail:
+            ev.update(event="buy_failed", pnl_lamports=-505_000, label="expired")
+        return ok, why
+
+    def sell(self, order, reason):
+        ok, why = super().sell(order, reason)
+        ev = self._events[-1]
+        ev.pop("dry")
+        ev.update(fees_lamports=505_000, landed_slot=2100, landed_ms=12_345)
+        if self.fills:
+            ev.update(live_sell_price=1.1e-7, live_net_lamports=-123_456, gap_through=True)
+        return ok, why
+
+
+def run_fill(tmp_path, **kw):
+    w = World(tmp_path)
+    w.start()
+    w.entry(0, "MINT", 0)
+    clk = Clock(w.at)
+    cfg = w.cfg()
+    br = T.R4btBridge(cfg, FillPort(cfg.dry_balance_lamports, **kw), now_ms=clk, root_checks=False)
+    feed(br, clk)
+    return br, cfg, clk
+
+
+def ledger(cfg, name=None):
+    return [json.loads(ln) for ln in (Path(cfg.state_dir) / (name or T.LEDGER_NAME)).read_text().splitlines()]
+
+
+def test_ledger_carries_the_live_fill_fields_from_the_events(tmp_path):
+    br, cfg, clk = run_fill(tmp_path)
+    r = ledger(cfg)[0]
+    assert r["live_buy_price"] == 1.25e-7 and r["live_sell_price"] is None and r["fee_source"] is None
+    br.handle_row({"kind": "exit", "order_id": f"MINT:{mark(0)}", "mint": "MINT", "reason": "rank", "t_mark": mark(0), "ms": ms(0) + 3_600_000, "seq": 99})
+    br._poll_ports()
+    r = ledger(cfg)[0]
+    assert (r["live_sell_price"], r["live_net_lamports"], r["exit_landed_ms"], r["gap_through"]) == (1.1e-7, -123_456, 12_345, True)
+    assert not br.state.latches
+
+
+def test_dry_rows_leave_the_live_fields_null_and_are_marked(tmp_path):
+    br, port, w = run_one(tmp_path)
+    r = ledger(w.cfg())[0]
+    assert r["fee_source"] == "dry_default" and r["live_buy_price"] is None and r["live_sell_price"] is None and r["live_net_lamports"] is None
+    assert r["exit_landed_ms"] is None and r["gap_through"] is None and not br.state.latches
+
+
+def test_non_dry_landed_events_without_fill_facts_latch(tmp_path):
+    br, cfg, clk = run_fill(tmp_path, fills=False)
+    assert T.LATCH_FILL in br.state.latches and "live_buy_price" in br.state.latches[T.LATCH_FILL]
+
+
+def test_attempts_file_has_a_row_per_buy_including_failures(tmp_path):
+    br, cfg, clk = run_fill(tmp_path)
+    rows = ledger(cfg, T.ATTEMPTS_NAME)
+    assert len(rows) == 1 and rows[0] == {"attempt_id": f"a:MINT:{mark(0)}", "trip_id": f"MINT:{mark(0)}", "decision_ms": ms(0), "landed": True, "landed_ms": 9_000,
+                                          "failed_or_expired": False, "p_fail_press": 0.0}
+    # a failed buy: a row with failed_or_expired true and no trip
+    tmp2 = tmp_path / "f"
+    tmp2.mkdir()
+    br2, cfg2, _ = run_fill(tmp2, fail=True)
+    rows = ledger(cfg2, T.ATTEMPTS_NAME)
+    assert len(rows) == 1 and rows[0]["landed"] is False and rows[0]["failed_or_expired"] is True and rows[0]["trip_id"] is None and rows[0]["landed_ms"] is None
+
+
+def test_attempts_file_round_trips_through_the_arena_parity_validator(tmp_path):
+    AP = pytest.importorskip("tools.arena_live_parity")
+    rows = []
+    for i, sub in enumerate(("a", "b")):
+        d = tmp_path / sub
+        d.mkdir()
+        rows += ledger(run_fill(d, fail=bool(i))[1], T.ATTEMPTS_NAME)
+    rows = [{**r, "attempt_id": r["attempt_id"] + str(i)} for i, r in enumerate(rows)]
+    AP.validate_inputs([], [], rows)  # the arena tool's own strict attempts schema (what #1250's --attempts feeds)
+
+
+def test_ledger_and_attempts_round_trip_through_the_parity_tool_if_present(tmp_path):
+    parity = pytest.importorskip("tools.r4bt_c0_parity")
+    br, cfg, clk = run_fill(tmp_path)
+    ldg = parity.load_ledger(Path(cfg.state_dir))
+    assert ldg[0]["live_buy_price"] == 1.25e-7
+    assert parity._jsonl((Path(cfg.state_dir) / T.ATTEMPTS_NAME).read_bytes(), "attempts")[0]["landed"] is True

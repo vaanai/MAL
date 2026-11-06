@@ -5,6 +5,9 @@ Builds on tools/r4b_arena_executor.py (EXP-027's DRY bridge), which is NOT edite
 separate subclass and config.
 
 WHAT THE PROFILE ADDS (each is a refusal path with a test in tools/test_r4bt_c0_executor.py)
+  DECLOG     the bridge tails `<root>/decisions/r4b-exp027/` (DECLOG_ARM), r4-b-T's declog arm, not `decisions/r4bt-a1/` (DEC-031 Am.27 item 6; QP-RULING-1106-r4bt-prereg-risks
+             section 3: `r4bt-a1` <-> arm `r4b-exp027`). bot_id, state, logs, LIVE_OK and the owner file keep `r4bt-a1`. For a real (non-synthetic) root, config `root` must be
+             the declog root of the registered change_id: a path with the change_id as a component (`.../r4b-dry/<change_id>/declog`).
   PIN        bot_id `r4bt-a1`, W (frozen_sha) and the registered change_id come from config and must equal the code pins (REGISTERED_*); the declog `start` row must repeat
              W (the bridge latches frozen_sha_mismatch) AND the config change_id (this profile latches `change_id_mismatch`). a2: no buy otherwise. A successor run at W
              (Am.27 item 20) needs its change_id added to REGISTERED_CHANGE_IDS in a reviewed PR; no other host, change_id or sha ever feeds the sender (a1).
@@ -35,6 +38,12 @@ WHAT THE PROFILE ADDS (each is a refusal path with a test in tools/test_r4bt_c0_
              total_loss <= 0.20 SOL (the bridge counts open exposure in the total stop), funded_lamports in [0.35, 1.00] SOL. Above = refused.
   FEE        Am.9 section 8: config send_fee_lamports defaults to the registered 505,000 per send. A lower value is refused unless an explicit reviewed `fee_override`
              {lamports, fill_fee, owner_line, qp_comment_id} names that exact value; a higher value is always refused. Reserves in the bridge stay at 505,000 (conservative).
+  PARITY     (tools/r4bt_c0_parity.py, PR #1250) <state_dir>/STOP counts as STOP (new buys stop, exits run) whatever else is set. The ledger rows also carry
+             live_buy_price / live_sell_price (SOL per token, the twin's Qe/Be convention), live_net_lamports (the trip's chain wallet delta), exit_landed_ms and gap_through,
+             filled from the port events of the same names (buy_landed: live_buy_price; sell_landed: live_sell_price, live_net_lamports, landed_ms, gap_through). A DRY port
+             leaves them null and the row has `fee_source: dry_default`: the parity tool must not refuse a DRY row for missing live fields (it should key on fee_source).
+             A non-DRY event without them latches `r4bt_fill_unreported`. `r4bt-attempts.jsonl` (ATTEMPTS_NAME) holds one row per buy send outcome INCLUDING failures
+             ({attempt_id "a:<order_id>", trip_id (landed only), decision_ms, landed, landed_ms, failed_or_expired, p_fail_press 0.0 = the flat 15 % floor of P2}).
   LEDGER     the executor writes its order ledger (`r4bt-order-ledger.jsonl` in the state dir, atomic rewrite, one row per SENT order) for the twin writer, with the ACTUAL
              entry_fee_lamports and exit_fee_lamports: the sum of the `fees_lamports` the port reports on each leg's events (every send, escalated resends included). A DRY
              port's events are marked `fee_source: dry_default` (the configured per-send fee); a non-DRY event without `fees_lamports` latches `r4bt_fee_unreported`.
@@ -61,9 +70,11 @@ from tools import arena_live_bridge as B
 from tools import arena_stack as AS
 from tools import hv4_live_c0 as HV
 from tools import r4b_arena_executor as X
+from tools.arena_declog import DecisionLog
 
 LIVE_BUILT = False  # the live port is a later, separate PR; a live config is refused
 BOT_ID = "r4bt-a1"
+DECLOG_ARM = "r4b-exp027"  # r4-b-T's declog arm: <root>/decisions/r4b-exp027/ under $HOME/mal-data/r4b-dry/<change_id>/declog (DEC-031 Am.27 item 6; bot_id stays r4bt-a1)
 REGISTERED_W = "17e3b05a7696900cda7fcf93e4af4008d8fa0184"  # SEALS-BRIEF r4-b-T reader line; the tree $HOME/mal-install/r4bt-W
 REGISTERED_CHANGE_IDS = ("r4bt-a1-1107a",)  # a successor run at W (Am.27 item 20) is added here in its own reviewed PR
 ENGINE_SHA256 = "9d2fdb04a3da9bb38de9e30c91154f5a9ab2de513e6f4d7936c1eb1a54863514"  # tools/arena_paper.py (Am.27 item 24, item 29 A6)
@@ -91,6 +102,9 @@ NOT_HALTING_FLAGS = ("boost_disabled", "boost_share_low", "boost_last_slice_earl
 REGISTERED_SEND_LAMPORTS = X.SEND_FEE_LAMPORTS  # 505,000: Am.9 section 8 "Send priority"
 LEDGER_NAME = "r4bt-order-ledger.jsonl"
 LATCH_FEE = "r4bt_fee_unreported"
+LATCH_FILL = "r4bt_fill_unreported"
+STOP_NAME = "STOP"  # <state_dir>/STOP, written by tools/r4bt_c0_parity.py (tools.arena_live_parity.write_stop); any entry at that path is a STOP
+ATTEMPTS_NAME = "r4bt-attempts.jsonl"  # per buy-send attempt rows (tools.arena_live_parity attempts schema), read by the parity tool's P2 via --attempts
 FILE_MAX_BYTES = 1 << 20
 A3_MAX_AGE_MS, A3_FUTURE_SKEW_MS = HV.A3_MAX_AGE_MS, HV.A3_FUTURE_SKEW_MS
 OWNER_FILE_DEFAULT = "/etc/mal-r4bt-c0/r4bt-a1/CANARY_DEC.md"
@@ -207,6 +221,8 @@ def make_config(d: Mapping[str, Any]) -> R4btConfig:
                                         d.get("twin_heartbeat_max_ms", TWIN_HEARTBEAT_DEFAULT_MS))
     if hb_problem:
         raise Refused(hb_problem)
+    if isinstance(d.get("root"), str) and not HV.synthetic_root(d["root"]) and d["change_id"] not in Path(d["root"]).parts:
+        raise Refused(f"config root {d['root']} is not under the change_id root (.../r4b-dry/{d['change_id']}/declog)")
     fee_problem = send_fee_problem(d.get("send_fee_lamports", REGISTERED_SEND_LAMPORTS), d.get("fee_override"))
     if fee_problem:
         raise Refused(fee_problem)
@@ -495,7 +511,8 @@ def latency_summary_t(orders: Mapping[str, Mapping[str, Any]], legs: Mapping[str
 def ledger_rows(orders: Mapping[str, Mapping[str, Any]]) -> list[dict[str, Any]]:
     """One row per CONFIRMED sent order (status not refused AND its buy event reported the entry fee; in-flight orders are left out until then), the keys the twin reads (r4bt-c0-twin-interface.md): order_id, sent, pool, mint, rank, t_mark, stake_sol, entry_ms,
     exit_ms, entry_fee_lamports, exit_fee_lamports (the ACTUAL totals of every send of the leg incl. escalated resends, as the port reported them; null = not reported),
-    restart, gap_hold, decision_slot, landed_slot_entry, landed_slot_exit, exit_reason."""
+    restart, gap_hold, decision_slot, landed_slot_entry, landed_slot_exit, exit_reason; then, for tools/r4bt_c0_parity.py: live_buy_price, live_sell_price, live_net_lamports,
+    exit_landed_ms, gap_through (null from a DRY port) and fee_source ("dry_default" from a DRY port)."""
     out = []
     for oid, o in sorted(orders.items(), key=lambda kv: (kv[1].get("decision_ms") or 0, kv[0])):
         if o.get("status") == "refused" or not _int(o.get("entry_fee_lamports")) or not _int(o.get("decision_ms")):
@@ -504,17 +521,55 @@ def ledger_rows(orders: Mapping[str, Mapping[str, Any]]) -> list[dict[str, Any]]
                     "stake_sol": o["stake_lamports"] / 1e9, "entry_ms": o.get("decision_ms"), "exit_ms": o.get("exit_decision_ms"),
                     "entry_fee_lamports": o.get("entry_fee_lamports"), "exit_fee_lamports": o.get("exit_fee_lamports"), "restart": bool(o.get("restart_exit")),
                     "gap_hold": bool(o.get("gap")), "decision_slot": o.get("decision_slot"), "landed_slot_entry": o.get("buy_landed_slot"),
-                    "landed_slot_exit": o.get("sell_landed_slot"), "exit_reason": o.get("sell_reason")})
+                    "landed_slot_exit": o.get("sell_landed_slot"), "exit_reason": o.get("sell_reason"), "live_buy_price": o.get("live_buy_price"),
+                    "live_sell_price": o.get("live_sell_price"), "live_net_lamports": o.get("live_net_lamports"), "exit_landed_ms": o.get("exit_landed_ms"),
+                    "gap_through": o.get("gap_through"), "fee_source": o.get("fee_source")})
+    return out
+
+
+def attempt_rows(orders: Mapping[str, Mapping[str, Any]]) -> list[dict[str, Any]]:
+    """One row per buy SEND OUTCOME, failures included (tools.arena_live_parity attempts schema; P2 reads it). A landed buy: landed true, trip_id = the order, landed_ms the
+    buy event's. A failed or expired buy (buy_failed): landed false, failed_or_expired true, no trip_id. p_fail_press is 0.0: the executor does not know the pressure leg, so
+    P2's threshold is the flat 15 % floor (the stricter side). An order whose buy has no event yet has no row."""
+    out = []
+    for oid, o in sorted(orders.items(), key=lambda kv: (kv[1].get("decision_ms") or 0, kv[0])):
+        out_ = o.get("buy_outcome")
+        if out_ not in ("landed", "failed") or not _int(o.get("decision_ms")):
+            continue
+        landed = out_ == "landed"
+        out.append({"attempt_id": "a:" + oid, "trip_id": oid if landed else None, "decision_ms": o["decision_ms"], "landed": landed,
+                    "landed_ms": o.get("buy_event_ms") if landed else None, "failed_or_expired": not landed, "p_fail_press": 0.0})
     return out
 
 
 # --- the bridge -----------------------------------------------------------------------------------------------------------------------------------
 
 
+class _ArmLog(DecisionLog):
+    """A DecisionLog whose every call reads the r4-b-T arm (DECLOG_ARM), whatever name the bridge passes (it passes cfg.bot_id = r4bt-a1)."""
+
+    def files(self, name: str) -> list[Path]:
+        return super().files(DECLOG_ARM)
+
+    def rows(self, name: str) -> list[dict]:
+        return super().rows(DECLOG_ARM)
+
+    def verify(self, name: str) -> Any:
+        return super().verify(DECLOG_ARM)
+
+
 class R4btBridge(X.R4bBridge):
     """The EXP-027 DRY bridge with the r4-b-T profile. It skips R4bBridge.__init__ (which pins bot_id to EXP-027's) and repeats its setup; X is not edited."""
 
     twin_round_trip = staticmethod(twin_round_trip)  # F1: refused
+
+    @property
+    def dlog(self) -> DecisionLog:
+        return self._dlog
+
+    @dlog.setter
+    def dlog(self, value: DecisionLog) -> None:
+        self._dlog = _ArmLog(value.dir.parent)  # the bridge assigns DecisionLog(cfg.root); this profile reads the r4b-exp027 arm of the same root
 
     def __init__(self, cfg: R4btConfig, port: B.OrderPort, *, now_ms: Any = None, dry_replay_caps: bool = False, live_ok_path: Path | None = None,
                  tier_path: Path | None = None, root_checks: bool = True, close_blocked: Any = None, slot_s_by_date: Mapping[str, float] | None = None,
@@ -601,7 +656,38 @@ class R4btBridge(X.R4bBridge):
                 o["fee_source"] = "dry_default"
             else:
                 self._latch(LATCH_FEE, f"{ev.get('event')} of {o['order_id']} carries no fees_lamports")
+            self._note_fill(o, ev, leg)
         super().apply_events(events)
+
+    def _files(self) -> tuple[bool, bool]:
+        """(HALT, STOP). `<state_dir>/STOP` (the parity tool's) is a STOP whatever else is set, any entry at that path (a link included); an unstat-able state dir is a STOP."""
+        halt, stop = super()._files()
+        if not stop:
+            try:
+                stop = os.path.lexists(os.path.join(self.cfg.state_dir, STOP_NAME))
+            except OSError:
+                stop = True
+            if stop:
+                self._count("parity_stop_file_refusal")
+        return halt, stop
+
+    def _note_fill(self, o: dict[str, Any], ev: Mapping[str, Any], leg: str) -> None:
+        """The live fill facts the parity tool needs, from the port event: buy_landed live_buy_price; sell_landed live_sell_price, live_net_lamports, landed_ms (the exit's
+        landing instant), gap_through. Also the buy outcome row for the attempts file. A DRY event leaves the facts null; a non-DRY landed event without them latches."""
+        names = {"buy_landed": ("live_buy_price",), "sell_landed": ("live_sell_price", "live_net_lamports")}.get(ev.get("event"), ())
+        for k in names:
+            v = ev.get(k)
+            if isinstance(v, (int, float)) and not isinstance(v, bool) and v == v and abs(v) != float("inf"):
+                o[k] = v
+            elif not ev.get("dry"):
+                self._latch(LATCH_FILL, f"{ev.get('event')} of {o['order_id']} carries no {k}")
+        if ev.get("event") == "sell_landed" and _int(ev.get("landed_ms")):
+            o["exit_landed_ms"] = int(ev["landed_ms"])
+        if isinstance(ev.get("gap_through"), bool):
+            o["gap_through"] = bool(o.get("gap_through")) or ev["gap_through"]
+        if ev.get("event") in ("buy_landed", "buy_failed") and o.get("buy_outcome") is None:
+            o["buy_outcome"] = "landed" if ev["event"] == "buy_landed" else "failed"
+            o["buy_event_ms"] = int(ev["landed_ms"]) if _int(ev.get("landed_ms")) else self.now_ms()
 
     def _save(self) -> None:
         super()._save()
@@ -611,13 +697,14 @@ class R4btBridge(X.R4bBridge):
         """Rewrite the order ledger (one row per sent order) atomically in the state dir, for the twin writer."""
         sd = Path(self.cfg.state_dir)
         sd.mkdir(parents=True, exist_ok=True)
-        tmp = sd / (LEDGER_NAME + ".tmp")
-        with tmp.open("w") as fh:
-            for r in ledger_rows(self.state.orders):
-                fh.write(json.dumps(r, sort_keys=True) + "\n")
-            fh.flush()
-            os.fsync(fh.fileno())
-        os.replace(tmp, sd / LEDGER_NAME)
+        for name, rows in ((LEDGER_NAME, ledger_rows(self.state.orders)), (ATTEMPTS_NAME, attempt_rows(self.state.orders))):
+            tmp = sd / (name + ".tmp")
+            with tmp.open("w") as fh:
+                for r in rows:
+                    fh.write(json.dumps(r, sort_keys=True) + "\n")
+                fh.flush()
+                os.fsync(fh.fileno())
+            os.replace(tmp, sd / name)
 
 
 # --- CLI: config check only (no executor loop, no send) ---------------------------------------------------------------------------------------------
