@@ -1,0 +1,63 @@
+[Unit]
+Description=MAL r4-b-T C0 executor (bot r4bt-a1, DEC-032 Amendment 9; tools/r4bt_c0_executor), keyless DRY base unit: no signing, no sending, no network
+Documentation=https://github.com/vaanai/MAL/blob/main/docs/runbooks/r4bt-c0-executor.md
+# One instance: the book r4-b-T (bot_id r4bt-a1, W 17e3b05a7696900cda7fcf93e4af4008d8fa0184, change_id r4bt-a1-1107a). The executor reads the r4-b-T decision host's
+# hash-chained declog through the read-only bind below. tools/r4bt_c0_executor.LIVE_BUILT is False at this pack's sha: a live config or --live is refused in code.
+# This base unit has NO drop-in in a keyless install: a drop-in directory for this unit means a live switch, and scripts/ops/r4bt-c0-dry-checklist.sh fails on it.
+# The declog is non-empty by construction from the clock (the decision host writes it). The unit is NOT enabled or started against it until DEC-032 Am.9 (a4): the
+# screen PASS has QP's OK on the read's exact files AND the amendment has merged. Until then the only start is the checklist's synthetic smoke, in a mktemp dir.
+# AT THIS PACK'S SHA the executor module's only CLI is the config check (`--config`, prints one JSON line, exits 0 or 2); a run loop is a later reviewed PR. So the
+# unit is Type=oneshot with no restart: starting it validates the config against the pins and the open gates and exits.
+StartLimitIntervalSec=600
+StartLimitBurst=3
+
+[Service]
+Type=oneshot
+User=mal-r4b-c0
+Group=mal-r4b-c0
+Nice=10
+WorkingDirectory=/opt/mal-r4b-c0/current
+Environment=LC_ALL=C.UTF-8
+Environment=LANG=C.UTF-8
+# Root-owned gate dir (root-run check, "+"; %% is systemd's escape for %).
+ExecStartPre=+/usr/bin/env -i /bin/sh -c 'test "$(/usr/bin/stat -c %%u:%%g:%%a /etc/mal-r4bt-c0)" = 0:0:755'
+# KEYLESS dry run: no --live, no LoadCredential, no EnvironmentFile. -E/-s: no PYTHON* variables, no user site; the pinned tree (cwd) is the only extra sys.path entry.
+ExecStart=/opt/mal-r4b-c0/venv/bin/python -E -s -B -u -m tools.r4bt_c0_executor --config /etc/mal-r4bt-c0/r4bt-c0.dry.json
+NoNewPrivileges=true
+# Dry makes no RPC: no network at all.
+PrivateNetwork=true
+RestrictAddressFamilies=AF_UNIX
+# Writes only its state dir (mal-r4b-c0:mal-r4b-c0 0750: no agent group; STOP is set by `sudo touch`). The twin dir /var/lib/mal-r4b-c0/twin is root-owned and read-only here.
+ProtectSystem=strict
+ReadWritePaths=/var/lib/mal-r4b-c0/state
+ReadOnlyPaths=/opt/mal-r4b-c0
+TemporaryFileSystem=/var/lib/mal:ro
+TemporaryFileSystem=/data:ro
+ProtectHome=tmpfs
+# Read-only bind of the r4-b-T declog root of change_id r4bt-a1-1107a (the config `root`; decisions/<arm>/ under it; QP-RULING-1106-r4bt-c0 item 6). A missing source
+# fails the start (no "-" prefix). The unit is not started against it before Am.9 (a4). Nothing else of /home/claude is visible (ProtectHome=tmpfs).
+BindReadOnlyPaths=/home/claude/mal-data/r4b-dry/r4bt-a1-1107a/declog
+InaccessiblePaths=-/etc/mal-probe -/etc/mal-probe-rpc -/etc/mal-h5-arena-key -/etc/mal-hv4-c0-key -/etc/mal-r4b-c0-key -/etc/mal-r4bt-c0-key
+PrivateTmp=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+LockPersonality=true
+CapabilityBoundingSet=
+PrivateDevices=true
+ProtectProc=invisible
+SystemCallFilter=@system-service
+SystemCallArchitectures=native
+RestrictNamespaces=true
+RestrictRealtime=true
+ProtectClock=true
+ProtectKernelLogs=true
+ProtectHostname=true
+UMask=0027
+LimitCORE=0
+MemoryMax=1500M
+MemorySwapMax=0
+
+[Install]
+WantedBy=multi-user.target

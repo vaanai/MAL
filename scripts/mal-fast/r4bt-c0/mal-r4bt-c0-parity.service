@@ -1,0 +1,42 @@
+[Unit]
+Description=MAL r4-b-T C0 parity P1-P7 (tools/r4bt_c0_parity), KEYLESS, as the executor's user; started by the timer and after each fill
+Documentation=https://github.com/vaanai/MAL/blob/main/docs/runbooks/r4bt-c0-executor.md
+[Service]
+Type=oneshot
+User=mal-r4b-c0
+Group=mal-r4b-c0
+Nice=10
+WorkingDirectory=/opt/mal-r4b-c0/current
+Environment=LC_ALL=C.UTF-8
+# --now-ms is the real clock at each start (never a fixed value). %% is systemd's escape for %.
+ExecStart=/bin/sh -c 'exec /opt/mal-r4b-c0/venv/bin/python -E -s -B -u -m tools.r4bt_c0_parity --state-dir /var/lib/mal-r4b-c0/state --twin-dir /var/lib/mal-r4b-c0/twin --attempts /var/lib/mal-r4b-c0/state/r4bt-attempts.jsonl --now-ms $(( $(date +%%s) * 1000 ))'
+NoNewPrivileges=true
+PrivateNetwork=true
+RestrictAddressFamilies=AF_UNIX
+ProtectSystem=strict
+ReadWritePaths=/var/lib/mal-r4b-c0/state
+ReadOnlyPaths=/opt/mal-r4b-c0
+TemporaryFileSystem=/var/lib/mal:ro
+TemporaryFileSystem=/data:ro
+ProtectHome=tmpfs
+InaccessiblePaths=-/etc/mal-probe -/etc/mal-probe-rpc -/etc/mal-h5-arena-key -/etc/mal-hv4-c0-key -/etc/mal-r4b-c0-key -/etc/mal-r4bt-c0-key
+PrivateTmp=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+LockPersonality=true
+CapabilityBoundingSet=
+PrivateDevices=true
+ProtectProc=invisible
+SystemCallFilter=@system-service
+SystemCallArchitectures=native
+RestrictNamespaces=true
+RestrictRealtime=true
+ProtectClock=true
+ProtectKernelLogs=true
+ProtectHostname=true
+UMask=0027
+LimitCORE=0
+MemoryMax=1G
+MemorySwapMax=0
