@@ -132,6 +132,64 @@ class B2(Base):
         self.assertEqual(self.b2([rec("2026-11-10T07:11:00Z", 320, n=1), rec("2026-11-10T19:10:00Z", 320, n=2)]), 3)
 
 
+class Daily(Base):
+    def test_b1_two_runs_same_date_are_one_day(self):
+        # two good runs on one UTC date are ONE daily record: fewer than two dates -> FAIL
+        rows = [rec("2026-11-09T07:10:00Z", 340), rec("2026-11-09T12:10:00Z", 340)]
+        self.assertEqual(self.b1(rows), 3)
+
+    def test_b1_latest_run_of_a_date_decides(self):
+        rows = [rec("2026-11-08T07:10:00Z", 340), rec("2026-11-09T07:10:00Z", 340), rec("2026-11-09T12:10:00Z", 320)]
+        self.assertEqual(self.b1(rows), 3)  # 11-09's latest run is low
+        rows = [rec("2026-11-08T07:10:00Z", 340), rec("2026-11-09T07:10:00Z", 320), rec("2026-11-09T12:10:00Z", 340)]
+        self.assertEqual(self.b1(rows), 0)  # the earlier low run of 11-09 is superseded
+
+    def test_b1_date_after_registration_run_not_used(self):
+        rows = [rec("2026-11-08T07:10:00Z", 340), rec("2026-11-09T07:10:00Z", 340), rec("2026-11-09T19:10:00Z", 100)]
+        self.assertEqual(self.b1(rows, reg="2026-11-09T14:00:00Z"), 0)
+
+    def test_b1_equal_run_utc_later_line_wins(self):
+        rows = [rec("2026-11-08T07:10:00Z", 340), rec("2026-11-09T07:10:00Z", 320), rec("2026-11-09T07:10:00Z", 340)]
+        self.assertEqual(self.b1(rows), 0)
+
+    def test_b2_counts_every_record_not_one_per_date(self):
+        rows = [rec("2026-11-10T07:10:00Z", 320), rec("2026-11-10T19:10:00Z", 320)]
+        self.assertEqual(self.b2(rows, after="2026-11-09T14:00:00Z"), 3)
+
+    def test_b2_starts_from_registration_pre_clock_pair(self):
+        # the pre-clock green run (before the 11-10T00Z clock) is low, the first in-window run is low: HALT
+        rows = [rec("2026-11-09T19:10:00Z", 320), rec("2026-11-10T07:10:00Z", 320)]
+        self.assertEqual(self.b2(rows, after="2026-11-09T14:00:00Z"), 3)
+        self.assertEqual(self.b2(rows, after="2026-11-10T00:00:00Z"), 0)  # a clock start would drop the first
+
+    def test_b2_ok_prints_newest_and_count(self):
+        with tempfile.TemporaryDirectory() as d:
+            p = os.path.join(d, "d.jsonl")
+            with open(p, "w") as f:
+                f.write(json.dumps(rec("2026-11-10T07:10:00Z", 340)) + "\n" + json.dumps(rec("2026-11-10T19:10:00Z", 0, field=False)) + "\n")
+            r = subprocess.run([sys.executable, "-I", os.path.join(HERE, "s1t_boost_bar.py"), "b2",
+                                "--after-run-utc", "2026-11-09T14:00:00Z", "--daily", p], capture_output=True, text=True)
+        self.assertEqual(r.returncode, 0)
+        self.assertIn("newest_run_utc=2026-11-10T19:10:00Z evaluated_records=1", r.stdout)
+
+    def test_daily_is_required(self):
+        self.assertEqual(bar.main(["b1", "--registration-utc", "2026-11-09T14:00:00Z"]), 2)
+        self.assertEqual(bar.main(["b2", "--after-run-utc", "2026-11-09T14:00:00Z"]), 2)
+        self.assertFalse(hasattr(bar, "DEFAULT_DAILY"))
+
+    def test_non_finite_medians_unevaluable(self):
+        inf = '{"run_utc": "%s", "status": "ok", "boost": {"last_slice_after_migrate_s": {"n": 7, "median": %s}}}\n'
+        raw = inf % ("2026-11-08T07:10:00Z", "Infinity") + inf % ("2026-11-09T07:10:00Z", "Infinity")
+        self.assertEqual(self.run_cmd(None, "b1", "--registration-utc", "2026-11-09T14:00:00Z", raw=raw), 3)
+        raw = inf % ("2026-11-08T07:10:00Z", "-Infinity") + inf % ("2026-11-09T07:10:00Z", "NaN")
+        self.assertEqual(self.run_cmd(None, "b1", "--registration-utc", "2026-11-09T14:00:00Z", raw=raw), 3)
+        # low, NaN, low: NaN is skipped (does not reset) -> HALT
+        raw = inf % ("2026-11-10T07:10:00Z", "320") + inf % ("2026-11-10T13:10:00Z", "NaN") + inf % ("2026-11-10T19:10:00Z", "320")
+        self.assertEqual(self.run_cmd(None, "b2", "--after-run-utc", "2026-11-09T14:00:00Z", raw=raw), 3)
+        raw = inf % ("2026-11-10T07:10:00Z", "Infinity") + inf % ("2026-11-10T19:10:00Z", "-Infinity")
+        self.assertEqual(self.run_cmd(None, "b2", "--after-run-utc", "2026-11-09T14:00:00Z", raw=raw), 0)
+
+
 class InputErrors(Base):
     def test_malformed_line(self):
         self.assertEqual(self.run_cmd(None, "b1", "--registration-utc", "2026-11-09T14:00:00Z", raw="{not json\n"), 2)
