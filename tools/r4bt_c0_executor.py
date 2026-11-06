@@ -29,7 +29,7 @@ WHAT THE PROFILE ADDS (each is a refusal path with a test in tools/test_r4bt_c0_
              {"schema","bot_id","change_id","status":"PASS","read_result_sha256","qp_comment_id","qp_verdict":"OK"}), else the bridge reads no decision row (latch
              `r4bt_read_record`) and a start on a non-synthetic root is refused (`start_refusal`). A synthetic root (SYNTHETIC_FIXTURE_ROOT marker) is exempt, DRY only.
   OWNER      the owner's confirmation file (config owner_file): ROOT-OWNED, exactly one line `OWNER_CANARY_CONFIRMED: bot_id=r4bt-a1`; per-bot LIVE_OK (content exactly
-             `r4bt-a1`) and the shared TIER file reading `T1`. LIVE gates: `live_gate_problems` lists them; a LIVE start is refused anyway (LIVE_BUILT False), and the DRY bridge
+             `r4bt-a1`) and the per-bot TIER file reading exactly `T0` (DEC-032 section 3, Am.9 section 9 step 5). LIVE gates: `live_gate_problems` lists them; a LIVE start is refused anyway (LIVE_BUILT False), and the DRY bridge
              records which are open at its start (`r4bt_start` log row).
   CAPS       the DEC-032 section 3 C0 caps are REQUIRED in config and VALIDATED, not clipped: stake <= 0.05 SOL, max_open <= 2, max_trades_per_day <= 30, daily_loss <= 0.10 SOL,
              total_loss <= 0.20 SOL (the bridge counts open exposure in the total stop), funded_lamports in [0.35, 1.00] SOL. Above = refused.
@@ -78,9 +78,11 @@ LATCH_A3 = "r4bt_a3"
 LATCH_READ = "r4bt_read_record"
 LATCH_TWIN_PIN = "r4bt_twin_pin"
 TWIN_ROW_GRACE_MS = 9_000_000  # Am.9 section 3 item 10: >= 1 h + the writer's close / compaction / verification lag + one twin run (the twin reads closed verified hours only); 2.5 h is a declared choice, not measured
-TWIN_HEARTBEAT_MAX_MS = 300_000  # a declared choice, not measured: a run record older than this refuses buys
+TWIN_INTERVAL_S_DEFAULT, TWIN_REPLAY_S_DEFAULT = 300, 300  # the twin wrapper sleeps 300 s between runs; the full-length replay time is NOT measured yet (a declared placeholder)
+TWIN_HEARTBEAT_DEFAULT_MS = 2 * TWIN_INTERVAL_S_DEFAULT * 1000 + TWIN_REPLAY_S_DEFAULT * 1000  # 900 s: >= 2 x interval + replay (QP on #1246); the twin stamps heartbeat_ms at the START of a run
 TWIN_FUTURE_SKEW_MS = 300_000
 TWIN_MAX_BYTES = 32 * 1024 * 1024
+TWIN_FINAL_NO_ENTRY = ("refused", "excluded")  # final twin statuses without an entry stage: counted `no_twin` for P7 (DEC-032 section 5), not a block
 RUN_RECORD_NAME, TWINS_NAME = "twins.run.json", "twins.jsonl"
 RUN_SCHEMA, TWIN_SCHEMA = "r4bt_c0_twin_run_v1", "r4bt_c0_twin_row_v1"
 CARRY_SCHEMA, READ_SCHEMA = "r4bt_a3_carry_v1", "r4bt_read_record_v1"
@@ -93,11 +95,12 @@ FILE_MAX_BYTES = 1 << 20
 A3_MAX_AGE_MS, A3_FUTURE_SKEW_MS = HV.A3_MAX_AGE_MS, HV.A3_FUTURE_SKEW_MS
 OWNER_FILE_DEFAULT = "/etc/mal-r4bt-c0/r4bt-a1/CANARY_DEC.md"
 LIVE_OK_DEFAULT = "/etc/mal-arena-live/r4bt-c0/r4bt-a1/LIVE_OK"
-TIER_DEFAULT = "/etc/mal-arena-live/TIER"
+TIER_DEFAULT = "/etc/mal-arena-live/r4bt-c0/r4bt-a1/TIER"  # per bot, beside its LIVE_OK; content exactly T0
+TIER_REQUIRED = "T0"
 SHA64_RE = re.compile(r"[0-9a-f]{64}")
 CHANGE_RE = re.compile(r"[A-Za-z0-9_.-]{1,64}")
 
-_PROFILE_KEYS = ("change_id", "twin_dir", "a3_carry_path", "read_record_path", "read_result_sha256", "qp_comment_id", "owner_file", "live_ok_path", "tier_path", "send_fee_lamports", "fee_override")
+_PROFILE_KEYS = ("change_id", "twin_dir", "a3_carry_path", "read_record_path", "read_result_sha256", "qp_comment_id", "owner_file", "live_ok_path", "tier_path", "send_fee_lamports", "fee_override", "twin_interval_s", "twin_replay_s", "twin_heartbeat_max_ms")
 
 
 class Refused(ValueError):
@@ -139,6 +142,19 @@ class R4btConfig(X.R4bConfig):
     tier_path: str = TIER_DEFAULT
     send_fee_lamports: int = REGISTERED_SEND_LAMPORTS  # per send (priority + base): the registered 505,000 unless a reviewed override is present (Am.9 section 8)
     fee_override: Any = None
+    twin_interval_s: int = TWIN_INTERVAL_S_DEFAULT  # the twin wrapper's sleep between runs
+    twin_replay_s: int = TWIN_REPLAY_S_DEFAULT  # the declared full-length replay time (measure it in the DRY smoke; owed before install)
+    twin_heartbeat_max_ms: int = TWIN_HEARTBEAT_DEFAULT_MS  # run-record heartbeat bound; floor 2 x interval + replay
+
+
+def twin_heartbeat_problem(interval_s: Any, replay_s: Any, max_ms: Any) -> str | None:
+    """The run-record freshness bound must cover the twin's cycle: twin_heartbeat_max_ms >= 2 x twin_interval_s + twin_replay_s (QP on #1246). The twin stamps heartbeat_ms
+    when a run STARTS and sleeps `interval` between runs, so a shorter bound refuses buys for most of every cycle."""
+    if not all(_int(v) and v > 0 for v in (interval_s, replay_s, max_ms)):
+        return "twin_interval_s, twin_replay_s and twin_heartbeat_max_ms must be positive ints"
+    if max_ms < (2 * interval_s + replay_s) * 1000:
+        return f"twin_heartbeat_max_ms {max_ms} is below 2 x twin_interval_s + twin_replay_s = {(2 * interval_s + replay_s) * 1000}"
+    return None
 
 
 def send_fee_problem(fee: Any, override: Any) -> str | None:
@@ -187,6 +203,10 @@ def make_config(d: Mapping[str, Any]) -> R4btConfig:
         raise Refused("config read_result_sha256 is required (64 hex)")
     if not isinstance(d.get("qp_comment_id"), str) or not re.fullmatch(r"[0-9]{6,20}", d["qp_comment_id"]):
         raise Refused("config qp_comment_id is required (digits)")
+    hb_problem = twin_heartbeat_problem(d.get("twin_interval_s", TWIN_INTERVAL_S_DEFAULT), d.get("twin_replay_s", TWIN_REPLAY_S_DEFAULT),
+                                        d.get("twin_heartbeat_max_ms", TWIN_HEARTBEAT_DEFAULT_MS))
+    if hb_problem:
+        raise Refused(hb_problem)
     fee_problem = send_fee_problem(d.get("send_fee_lamports", REGISTERED_SEND_LAMPORTS), d.get("fee_override"))
     if fee_problem:
         raise Refused(fee_problem)
@@ -279,10 +299,11 @@ def read_record_problem(cfg: R4btConfig, root_checks: bool) -> str | None:
 # --- twin gate (F1) -------------------------------------------------------------------------------------------------------------------------------
 
 
-def twin_gate_problem(twin_dir: str, now_ms: int, orders: Mapping[str, Mapping[str, Any]] | None, cfg: R4btConfig, root_checks: bool = True) -> str | None:
+def twin_gate_problem(twin_dir: str, now_ms: int, orders: Mapping[str, Mapping[str, Any]] | None, cfg: R4btConfig, root_checks: bool = True,
+                      counts: dict[str, int] | None = None) -> str | None:
     """Fail closed (Am.9 section 3 item 10: the HV4 twin_gate + grace pattern; the twin builder's schema, PR #1243). The run record must exist and have schema
     r4bt_c0_twin_run_v1, status "ok", this W in `w_sha` (the twin VERIFIES its modules against W; the gate compares it to the pinned W), the engine sha256 pin, run_ms
-    within TWIN_ROW_GRACE_MS, a fresh heartbeat_ms (TWIN_HEARTBEAT_MAX_MS) when it is stamped, and `twins_sha256` equal to the sha256 of twins.jsonl. Then every order whose buy
+    within TWIN_ROW_GRACE_MS, an int heartbeat_ms no older than cfg.twin_heartbeat_max_ms, and `twins_sha256` equal to the sha256 of twins.jsonl. Then every order whose buy
     landed more than TWIN_ROW_GRACE_MS ago must have an entry-stage row (entry_leg not null) in twins.jsonl (before the entry leg is observable the run record is the
     only twin). A pin mismatch is `twin_gate:pin_mismatch` (the bridge latches it). Returns the refusal label or None."""
     rec, why, _ = _json_obj(os.path.join(twin_dir, RUN_RECORD_NAME), root_checks, "twin_run_record")
@@ -302,7 +323,11 @@ def twin_gate_problem(twin_dir: str, now_ms: int, orders: Mapping[str, Mapping[s
     if now_ms - run > TWIN_ROW_GRACE_MS:
         return "twin_gate:stale"
     hb = rec.get("heartbeat_ms")
-    if hb is not None and (not _int(hb) or now_ms - hb > TWIN_HEARTBEAT_MAX_MS):
+    if not _int(hb):
+        return "twin_gate:heartbeat_missing"  # the twin always writes it: a record without one is malformed
+    if hb - now_ms > TWIN_FUTURE_SKEW_MS:
+        return "twin_gate:heartbeat_future"
+    if now_ms - hb > cfg.twin_heartbeat_max_ms:
         return "twin_gate:heartbeat_stale"
     data, why, _ = _read_small(os.path.join(twin_dir, TWINS_NAME), root_checks, TWIN_MAX_BYTES)
     if why:
@@ -312,8 +337,12 @@ def twin_gate_problem(twin_dir: str, now_ms: int, orders: Mapping[str, Mapping[s
     due = [oid for oid, o in (orders or {}).items() if _int(o.get("buy_landed_ms")) and now_ms - int(o["buy_landed_ms"]) > TWIN_ROW_GRACE_MS]
     if due:
         have = _twin_rows(data)
-        if any(not isinstance(have.get(oid, {}).get("entry_leg"), dict) for oid in due):
-            return "twin_gate:row_missing"
+        for oid in due:
+            row = have.get(oid)
+            if row is None or (not isinstance(row.get("entry_leg"), dict) and row.get("status") not in TWIN_FINAL_NO_ENTRY):
+                return "twin_gate:row_missing"  # an ABSENT row, or a pending_tape row without its entry stage, past the grace
+            if not isinstance(row.get("entry_leg"), dict) and counts is not None:
+                counts["no_twin"] = counts.get("no_twin", 0) + 1  # a twin that refused or excluded the buy: a P7 no_twin, never a block
     return None
 
 
@@ -350,7 +379,7 @@ def twin_entry_legs(twin_dir: str, root_checks: bool = True) -> dict[str, dict[s
 def a3_problem(cfg: R4btConfig, now_ms: int, root_checks: bool = True) -> tuple[str | None, list[str]]:
     """(latch, skipped). Reads the root-owned CARRY file (module docstring). Latch (new buys stop, exits run) when: the carry is missing, unreadable, linked, not root-owned,
     oversize or malformed; has another bot_id / change_id; run_utc is missing, older than 36 h or more than 300 s in the future; its classifier verdict is HALT, ERROR,
-    NEEDS_CHECK or unknown (item 12 hard halts, earliest instant); `halt.flags` is missing or empty, or any flag other than the five non-halting ones is set, unevaluated or
+    NEEDS_CHECK or unknown (item 12 hard halts, earliest instant); `halt.flags` is missing or empty, or any flag other than the five non-halting ones is set, not `evaluated: true` or
     malformed; or `warn.flags.program_changed.warn` is true (section 5 item 1 is stricter than the read: any pins_changed and any program_changed latch at once). The five
     non-halting flags (boost_*, synthetic_share_high) are skipped and returned in `skipped` when set (the bridge counts them for the tie-out). Amendment 3's pooled guard does
     NOT apply to r4bt-a1 (Am.9 F4): no a3-applied.jsonl is read."""
@@ -374,7 +403,7 @@ def a3_problem(cfg: R4btConfig, now_ms: int, root_checks: bool = True) -> tuple[
     if not isinstance(flags, dict) or not flags:
         return "a3_record_no_halt_flags", []
     skipped = sorted(k for k, f in flags.items() if k in NOT_HALTING_FLAGS and isinstance(f, dict) and f.get("halt") is True)
-    bad = sorted(k for k, f in flags.items() if k not in NOT_HALTING_FLAGS and (not (isinstance(f, dict) and isinstance(f.get("halt"), bool)) or f["halt"] or f.get("evaluated") is False))
+    bad = sorted(k for k, f in flags.items() if k not in NOT_HALTING_FLAGS and (not (isinstance(f, dict) and isinstance(f.get("halt"), bool)) or f["halt"] or f.get("evaluated") is not True))
     warn = car.get("warn")
     pc = ((warn.get("flags") or {}).get("program_changed")) if isinstance(warn, dict) and isinstance(warn.get("flags"), dict) else None
     if isinstance(pc, dict) and pc.get("warn") is True:
@@ -386,7 +415,7 @@ def a3_problem(cfg: R4btConfig, now_ms: int, root_checks: bool = True) -> tuple[
 
 
 def live_gate_problems(cfg: R4btConfig, root_checks: bool = True) -> list[str]:
-    """Every LIVE gate that is not met, in order. Empty = all met. Per bot: the owner's confirmation line, LIVE_OK (exactly the bot_id), and the TIER file reading T1."""
+    """Every LIVE gate that is not met, in order. Empty = all met. Per bot: the owner's confirmation line, LIVE_OK (exactly the bot_id), and the per-bot TIER file reading exactly T0."""
     out = []
     root_check = (lambda p: None if root_checks is False else _root_label(p))
     why = HV.owner_line_problem(cfg.owner_file, BOT_ID, root_check)
@@ -397,7 +426,7 @@ def live_gate_problems(cfg: R4btConfig, root_checks: bool = True) -> list[str]:
         out.append("live_ok_" + why)
     elif HV.live_ok_problem(data.decode("utf-8", "replace"), BOT_ID):
         out.append("live_ok_other_book")
-    tier, why = B.read_tier(Path(cfg.tier_path), root_checks, allowed=(HV.TIER_NAME,))
+    tier, why = B.read_tier(Path(cfg.tier_path), root_checks, allowed=(TIER_REQUIRED,))
     if why:
         out.append(why)
     return out
@@ -464,13 +493,13 @@ def latency_summary_t(orders: Mapping[str, Mapping[str, Any]], legs: Mapping[str
 
 
 def ledger_rows(orders: Mapping[str, Mapping[str, Any]]) -> list[dict[str, Any]]:
-    """One row per SENT order (status not refused), the keys the twin reads (r4bt-c0-twin-interface.md): order_id, sent, pool, mint, rank, t_mark, stake_sol, entry_ms,
+    """One row per CONFIRMED sent order (status not refused AND its buy event reported the entry fee; in-flight orders are left out until then), the keys the twin reads (r4bt-c0-twin-interface.md): order_id, sent, pool, mint, rank, t_mark, stake_sol, entry_ms,
     exit_ms, entry_fee_lamports, exit_fee_lamports (the ACTUAL totals of every send of the leg incl. escalated resends, as the port reported them; null = not reported),
     restart, gap_hold, decision_slot, landed_slot_entry, landed_slot_exit, exit_reason."""
     out = []
     for oid, o in sorted(orders.items(), key=lambda kv: (kv[1].get("decision_ms") or 0, kv[0])):
-        if o.get("status") == "refused":
-            continue
+        if o.get("status") == "refused" or not _int(o.get("entry_fee_lamports")) or not _int(o.get("decision_ms")):
+            continue  # a sent order whose buy has no event yet is PENDING: the twin rejects a sent row without int entry_ms / entry_fee_lamports (exit 3 for the whole ledger)
         out.append({"order_id": oid, "sent": True, "pool": o.get("pool"), "mint": o.get("mint"), "rank": o.get("rank"), "t_mark": o.get("t_mark"),
                     "stake_sol": o["stake_lamports"] / 1e9, "entry_ms": o.get("decision_ms"), "exit_ms": o.get("exit_decision_ms"),
                     "entry_fee_lamports": o.get("entry_fee_lamports"), "exit_fee_lamports": o.get("exit_fee_lamports"), "restart": bool(o.get("restart_exit")),
@@ -540,7 +569,10 @@ class R4btBridge(X.R4bBridge):
         if latch:
             self._latch(LATCH_A3, latch)
             return "latched:" + LATCH_A3
-        why = twin_gate_problem(self.cfg.twin_dir, now, self.state.orders, self.cfg, self.root_checks_r4bt)
+        nt: dict[str, int] = {}
+        why = twin_gate_problem(self.cfg.twin_dir, now, self.state.orders, self.cfg, self.root_checks_r4bt, nt)
+        if nt.get("no_twin"):
+            self.es["no_twin_seen"] = max(int(self.es.get("no_twin_seen", 0)), nt["no_twin"])  # P7 no_twin: the count of twin-refused / excluded trips past the grace
         if why:
             if why.startswith("twin_gate:pin_mismatch"):
                 self._latch(LATCH_TWIN_PIN, why)

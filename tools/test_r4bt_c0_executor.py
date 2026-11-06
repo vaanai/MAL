@@ -97,7 +97,7 @@ class World:
                                  "qp_verdict": "OK"})
         (t / "owner.md").write_text(f"OWNER_CANARY_CONFIRMED: bot_id={T.BOT_ID}\n")
         (t / "LIVE_OK").write_text(T.BOT_ID + "\n")
-        (t / "TIER").write_text("T1\n")
+        (t / "TIER").write_text("T0\n")
         for f in ("owner.md", "LIVE_OK", "TIER"):
             os.chmod(t / f, 0o644)
 
@@ -259,7 +259,8 @@ def test_module_never_imports_or_calls_r4b_book_round_trip():
 
 
 @pytest.mark.parametrize("run,label", [
-    ({"run_ms": 1}, "twin_gate:stale"), ({"run_ms": None}, "twin_gate:run_ms_missing"), ({"run_ms": 10 ** 15}, "twin_gate:run_ms_future"),
+    ({"run_ms": 1}, "twin_gate:stale"), ({"heartbeat_ms": None}, "twin_gate:heartbeat_missing"), ({"heartbeat_ms": "x"}, "twin_gate:heartbeat_missing"),
+    ({"heartbeat_ms": 10 ** 15}, "twin_gate:heartbeat_future"), ({"run_ms": None}, "twin_gate:run_ms_missing"), ({"run_ms": 10 ** 15}, "twin_gate:run_ms_future"),
     ({"w_sha": "ee" * 20}, "twin_gate:pin_mismatch"), ({"engine_sha256": "00" * 32}, "twin_gate:pin_mismatch"), ({"status": "error"}, "twin_gate:status_not_ok"),
     ({"twins_sha256": "00" * 32}, "twin_gate:twins_sha_mismatch"), ({"schema": "other"}, "twin_gate:run_record_schema")])
 def test_twin_gate_refuses_a_bad_run_record(tmp_path, run, label):
@@ -320,7 +321,7 @@ def test_twin_gate_checks_w_sha_against_the_pinned_w_not_the_run_record(tmp_path
 
 def test_twin_gate_heartbeat_stale_but_run_ms_fresh(tmp_path):
     w = World(tmp_path)
-    w.fresh(run={"heartbeat_ms": w.at - T.TWIN_HEARTBEAT_MAX_MS - 1})
+    w.fresh(run={"heartbeat_ms": w.at - T.TWIN_HEARTBEAT_DEFAULT_MS - 1})
     assert T.twin_gate_problem(w.cfg().twin_dir, w.at, {}, w.cfg(), False) == "twin_gate:heartbeat_stale"
 
 
@@ -386,6 +387,8 @@ def test_bridge_latency_report_reads_the_twin_rows(tmp_path):
     ({"halt": {"flags": {"pins_changed": {"halt": True, "evaluated": True}}}}, "a3_flags:pins_changed"),
     ({"halt": {"flags": {"pins_changed": {"halt": False, "evaluated": False}}}}, "a3_flags:pins_changed"),
     ({"halt": {"flags": {"pins_changed": "yes"}}}, "a3_flags:pins_changed"),
+    ({"halt": {"flags": {"pins_changed": {"halt": False}}}}, "a3_flags:pins_changed"),  # no `evaluated` key: not evaluated, fail closed
+    ({"halt": {"flags": {"pins_changed": {"halt": False, "evaluated": None}}}}, "a3_flags:pins_changed"),
     ({"halt": {"flags": {"mystery_flag": {"halt": True, "evaluated": True}}}}, "a3_flags:mystery_flag"),
     ({"warn": {"flags": {"program_changed": {"warn": True}}}}, "a3_flags:program_changed")])
 def test_a3_carry_latches(tmp_path, carry, label):
@@ -593,8 +596,8 @@ def test_live_gates_each_missing_or_wrong(tmp_path):
     (tmp_path / "LIVE_OK").unlink()
     assert T.live_gate_problems(cfg, False) == ["live_ok_missing"]
     w.fresh()
-    (tmp_path / "TIER").write_text("T0\n")
-    assert T.live_gate_problems(cfg, False) == ["tier_file_invalid"]
+    (tmp_path / "TIER").write_text("T1\n")
+    assert T.live_gate_problems(cfg, False) == ["tier_file_invalid"]  # the HV4 / H5 shared-file value T1 is not this bot's T0
     (tmp_path / "TIER").unlink()
     assert T.live_gate_problems(cfg, False) == ["tier_file_missing"]
 
@@ -631,3 +634,96 @@ def test_max_open_cap_refuses_the_next_buy(tmp_path):
 
 def test_live_built_stays_false():
     assert T.LIVE_BUILT is False and X.LIVE_BUILT is False
+
+
+# ------------------------------------------------------------------------------------------------ round 2 (reviewer / QP on 1a12de37)
+def test_ledger_leaves_out_an_in_flight_order_so_the_twin_never_rejects_the_file(tmp_path):
+    class SilentPort(B.DryPort):
+        def buy(self, order):  # sent, but no buy event yet: in flight
+            self.would_send.append({"side": "buy", "order_id": order["order_id"], "mint": order["mint"]})
+            return True, None
+
+    w = World(tmp_path)
+    w.start()
+    w.entry(0, "MINT", 0)
+    clk = Clock(w.at)
+    cfg = w.cfg()
+    br = T.R4btBridge(cfg, SilentPort(cfg.dry_balance_lamports), now_ms=clk, root_checks=False)
+    feed(br, clk)
+    assert f"MINT:{mark(0)}" in br.state.orders and br.state.orders[f"MINT:{mark(0)}"].get("entry_fee_lamports") is None
+    assert (Path(cfg.state_dir) / T.LEDGER_NAME).read_text() == ""  # no pending row, so the twin's parse (int entry_ms and entry_fee_lamports) cannot fail
+    br.apply_events([{"order_id": f"MINT:{mark(0)}", "event": "buy_landed", "pnl_lamports": 0, "landed_slot": 7, "fees_lamports": 505_000}])
+    rows = [json.loads(ln) for ln in (Path(cfg.state_dir) / T.LEDGER_NAME).read_text().splitlines()]
+    assert len(rows) == 1 and rows[0]["entry_fee_lamports"] == 505_000 and isinstance(rows[0]["entry_ms"], int)
+
+
+def test_every_ledger_row_satisfies_the_twins_required_ints(tmp_path):
+    br, port, w = run_one(tmp_path)
+    for r in T.ledger_rows(br.state.orders):
+        assert r["sent"] is True and isinstance(r["entry_ms"], int) and isinstance(r["entry_fee_lamports"], int) and r["entry_fee_lamports"] >= 0
+        assert r["exit_ms"] is None or r["exit_ms"] >= r["entry_ms"]
+
+
+def test_ledger_row_check_matches_the_twins_parser(tmp_path):
+    twin = pytest.importorskip("tools.r4bt_c0_twin")
+    br, port, w = run_one(tmp_path)
+    led = Path(br.cfg.state_dir) / T.LEDGER_NAME
+    orders, skipped = twin.load_orders(led)  # the merged twin's own parser: it raises Untrusted on a sent row without int entry_ms / entry_fee_lamports
+    assert len(orders) == 1 and skipped == 0
+
+
+@pytest.mark.parametrize("bad", [{"twin_heartbeat_max_ms": 899_999}, {"twin_interval_s": 600}, {"twin_replay_s": 301}, {"twin_interval_s": 0}, {"twin_replay_s": None},
+                                 {"twin_heartbeat_max_ms": True}, {"twin_interval_s": 300, "twin_replay_s": 300, "twin_heartbeat_max_ms": 100_000}])
+def test_twin_heartbeat_bound_must_cover_two_intervals_plus_replay(tmp_path, bad):
+    with pytest.raises(T.Refused):
+        World(tmp_path, **bad).cfg()
+
+
+def test_twin_heartbeat_bound_accepts_the_floor_and_a_record_aged_interval_plus_run_time(tmp_path):
+    w = World(tmp_path, twin_interval_s=300, twin_replay_s=600, twin_heartbeat_max_ms=1_200_000)
+    cfg = w.cfg()
+    w.fresh(run={"heartbeat_ms": w.at - 300_000 - 600_000, "run_ms": w.at - 300_000 - 600_000})  # interval + run time old: must pass
+    assert T.twin_gate_problem(cfg.twin_dir, w.at, {}, cfg, False) is None
+    w.fresh(run={"heartbeat_ms": w.at - 1_200_001})
+    assert T.twin_gate_problem(cfg.twin_dir, w.at, {}, cfg, False) == "twin_gate:heartbeat_stale"
+
+
+def test_default_heartbeat_bound_is_the_floor(tmp_path):
+    assert T.TWIN_HEARTBEAT_DEFAULT_MS == 900_000 == (2 * T.TWIN_INTERVAL_S_DEFAULT + T.TWIN_REPLAY_S_DEFAULT) * 1000
+    assert World(tmp_path).cfg().twin_heartbeat_max_ms == 900_000
+
+
+def test_a_refused_twin_row_is_no_twin_not_a_block(tmp_path):
+    w = World(tmp_path)
+    cfg = w.cfg()
+    old = w.at - T.TWIN_ROW_GRACE_MS - 1
+    orders = {"A:1": {"buy_landed_ms": old}, "B:1": {"buy_landed_ms": old}}
+    refused = {"schema": T.TWIN_SCHEMA, "order_id": "A:1", "status": "refused", "entry_leg": None, "refused_reason": "no_pool_print"}
+    w.fresh(rows=[refused, twin_row("B:1")])
+    counts = {}
+    assert T.twin_gate_problem(cfg.twin_dir, w.at, orders, cfg, False, counts) is None and counts == {"no_twin": 1}
+    w.fresh(rows=[{**refused, "status": "excluded"}, twin_row("B:1")])
+    assert T.twin_gate_problem(cfg.twin_dir, w.at, orders, cfg, False) is None
+    w.fresh(rows=[{**refused, "status": "pending_tape"}, twin_row("B:1")])  # pending_tape without its entry stage, past the grace: a block
+    assert T.twin_gate_problem(cfg.twin_dir, w.at, orders, cfg, False) == "twin_gate:row_missing"
+    w.fresh(rows=[twin_row("B:1")])  # an absent row: a block
+    assert T.twin_gate_problem(cfg.twin_dir, w.at, orders, cfg, False) == "twin_gate:row_missing"
+
+
+def test_a_refused_twin_row_does_not_block_later_buys_in_the_bridge(tmp_path):
+    w = World(tmp_path)
+    w.start()
+    w.entry(0, "MINT", 0)
+    br, port, clk = w.bridge()
+    br.state.orders["OLD:1"] = {"order_id": "OLD:1", "mint": "OLD", "status": "closed", "live": True, "stake_lamports": 1, "buy_landed_ms": w.at - T.TWIN_ROW_GRACE_MS - 1}
+    w.fresh(rows=[{"schema": T.TWIN_SCHEMA, "order_id": "OLD:1", "status": "refused", "entry_leg": None}])
+    feed(br, clk)
+    assert sends(port) == [("buy", f"MINT:{mark(0)}")] and br.es["no_twin_seen"] == 1
+
+
+def test_tier_is_a_per_bot_t0_file(tmp_path):
+    w = World(tmp_path)
+    assert T.TIER_REQUIRED == "T0" and "r4bt-a1" in T.TIER_DEFAULT and T.TIER_DEFAULT != "/etc/mal-arena-live/TIER"
+    assert T.live_gate_problems(w.cfg(), False) == []
+    (tmp_path / "TIER").write_text("T0 extra\n")
+    assert T.live_gate_problems(w.cfg(), False) == ["tier_file_invalid"]
