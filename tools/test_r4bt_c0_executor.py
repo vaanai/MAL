@@ -159,7 +159,7 @@ def run_one(tmp_path, **mut):
 
 # ------------------------------------------------------------------------------------------------ constants and config
 def test_pins_and_caps_follow_the_dec_and_the_other_modules():
-    assert T.LIVE_BUILT is False and T.BOT_ID == "r4bt-a1"
+    assert T.LIVE_BUILT is True and T.BOT_ID == "r4bt-a1"
     assert T.C0_CAPS == X.C0 == HV.C0_LIMITS == {"stake_lamports": 50_000_000, "max_open": 2, "max_trades_per_day": 30, "daily_loss_lamports": 100_000_000,
                                                  "total_loss_lamports": 200_000_000}
     assert (T.FUNDED_MIN_LAMPORTS, T.FUNDED_MAX_LAMPORTS) == (350_000_000, 1_000_000_000)
@@ -179,7 +179,7 @@ def test_good_config_and_exp027_path_unchanged(tmp_path):
 
 
 @pytest.mark.parametrize("bad", [
-    {"mode": "live"}, {"bot_id": "r4b-exp027"}, {"bot_id": None}, {"frozen_sha": "ab" * 20}, {"frozen_sha": None}, {"change_id": "r4bt-a1-other"}, {"change_id": None},
+    {"mode": "paper"}, {"mode": "live", "stop_file": "/x/STOP"}, {"bot_id": "r4b-exp027"}, {"bot_id": None}, {"frozen_sha": "ab" * 20}, {"frozen_sha": None}, {"change_id": "r4bt-a1-other"}, {"change_id": None},
     {"change_id": "x/y"}, {"stake_lamports": 50_000_001}, {"max_open": 3}, {"max_trades_per_day": 31}, {"daily_loss_lamports": 100_000_001},
     {"total_loss_lamports": 200_000_001}, {"stake_lamports": 0}, {"max_open": True}, {"funded_lamports": 349_999_999}, {"funded_lamports": 1_000_000_001},
     {"funded_lamports": None}, {"twin_dir": "rel/dir"}, {"a3_carry_path": ""}, {"read_record_path": "r.json"},
@@ -579,11 +579,11 @@ def test_a_real_root_reads_no_row_when_the_record_goes_bad(tmp_path):
 
 def test_start_refusal_live_and_check_cli(tmp_path, capsys):
     w = World(tmp_path)
-    assert T.start_refusal(w.cfg(), live=True) == "live_not_built"
+    assert T.start_refusal(w.cfg(), live=True) == "live_flag_mode_mismatch"  # a DRY config never goes live by a flag
     assert T.start_refusal(w.cfg(), root_checks=False) is None
     cfgp = jwrite(tmp_path / "cfg.json", w.d)
     assert T.check(str(cfgp), root_checks=False)["ok"] is True
-    assert T.check(str(cfgp), live=True, root_checks=False)["problem"] == "live_not_built"
+    assert T.check(str(cfgp), live=True, root_checks=False)["problem"] == "live_flag_mode_mismatch"
     assert T.main(["--config", str(cfgp), "--live"]) == 2
     bad = jwrite(tmp_path / "bad.json", {**w.d, "stake_lamports": 10 ** 9})
     assert T.check(str(bad))["ok"] is False and "above the DEC-032" in T.check(str(bad))["problem"]
@@ -645,8 +645,8 @@ def test_max_open_cap_refuses_the_next_buy(tmp_path):
     assert sends(port) == [("buy", f"AAA:{mark(0)}")]
 
 
-def test_live_built_stays_false():
-    assert T.LIVE_BUILT is False and X.LIVE_BUILT is False
+def test_x_live_built_stays_false():
+    assert X.LIVE_BUILT is False  # EXP-027's own module is untouched
 
 
 # ------------------------------------------------------------------------------------------------ round 2 (reviewer / QP on 1a12de37)

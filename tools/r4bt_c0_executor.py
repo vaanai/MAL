@@ -1,4 +1,6 @@
-"""r4bt_c0_executor: the r4-b-T PROFILE of the DRY r4-b executor (bot_id `r4bt-a1`). PAPER / DRY ONLY: LIVE_BUILT is False, no key, no wallet, no send.
+"""r4bt_c0_executor: the r4-b-T PROFILE of the r4-b executor (bot_id `r4bt-a1`). DRY by default. The LIVE port (QP-RULING-1106-r4bt-c0 build-list item 10, this module's
+`LIVE_BUILT` / `R4btLivePort` / `run` CLI) sends only when ALL of: config mode "live", the `--live` flag, and every gate of `live_buy_problem` holds, re-checked immediately
+before EVERY buy. A DRY config can never send (the DRY path gets a `B.DryPort`; a live port with a DRY config is refused at start).
 
 Ruling: /data/mal/hunt-1008/ops/manager20/QP-RULING-1106-r4bt-c0.md build-list item 2 and findings F1, F2, and DEC-032 Amendment 9 (merged; sections 3, 4, 5 F4, 8 control).
 Builds on tools/r4b_arena_executor.py (EXP-027's DRY bridge), which is NOT edited: the EXP-027 path (bot_id `r4b-exp027`) keeps its bytes and its behavior. This module is a
@@ -76,7 +78,8 @@ from tools import hv4_live_c0 as HV
 from tools import r4b_arena_executor as X
 from tools.arena_declog import DecisionLog
 
-LIVE_BUILT = False  # the live port is a later, separate PR; a live config is refused
+LIVE_BUILT = True  # THE single constant of the live port (QP-RULING-1106-r4bt-c0 item 10). It flips only in a reviewed diff. True removes the `live_not_built` refusal and nothing else:
+# a live send still needs config mode "live" + `--live` + every live gate (LIVE_OK, TIER T0, owner file, read record, A3 carry, twin, parity, caps) before EVERY buy.
 BOT_ID = "r4bt-a1"
 DECLOG_ARM = "r4b-exp027"  # r4-b-T's declog arm: <root>/decisions/r4b-exp027/ under $HOME/mal-data/r4b-dry/<change_id>/declog (DEC-031 Am.27 item 6; bot_id stays r4bt-a1)
 REGISTERED_W = "17e3b05a7696900cda7fcf93e4af4008d8fa0184"  # SEALS-BRIEF r4-b-T reader line; the tree $HOME/mal-install/r4bt-W
@@ -111,6 +114,10 @@ STOP_NAME = "STOP"  # <state_dir>/STOP, written by tools/r4bt_c0_parity.py (tool
 PARITY_STATE_NAME = "r4bt-parity-state.json"  # written by the parity run (tools/r4bt_c0_parity.py)
 PARITY_SCHEMA = "r4bt_parity_state_v1"
 PARITY_MAX_AGE_MS = 60_000  # a buy needs a parity result at most this old
+PARITY_FUTURE_SKEW_MS = 5_000  # the parity state is written by a job on the SAME host clock (the job passes the real clock): a stamp more than ~5 s ahead is refused
+PRICE_UNIT = "lamports per raw base-token unit"  # the twin pins Qe/Be (quote reserve lamports / base reserve raw units); live_buy_price / live_sell_price use the same unit (see fill_facts)
+BASE_FEE_LAMPORTS = X.BASE_FEE_LAMPORTS
+LATCH_FEE_OVER = "r4bt_fee_over_registered"
 A3_CARRY_MAX_AGE_DEFAULT_MS = 2 * 3_600_000  # written_utc bound: the carry copy is hourly, so 2 h; a stalled copy cannot serve a stale clean carry
 ATTEMPTS_NAME = "r4bt-attempts.jsonl"  # per buy-send attempt rows (tools.arena_live_parity attempts schema), read by the parity tool's P2 via --attempts
 FILE_MAX_BYTES = 1 << 20
@@ -201,8 +208,13 @@ def send_fee_problem(fee: Any, override: Any) -> str | None:
 def make_config(d: Mapping[str, Any]) -> R4btConfig:
     """Fail closed: any pin that does not hold raises Refused. Caps are VALIDATED against DEC-032 section 3 (a value above is refused, not clipped) and required."""
     d = dict(d)
-    if d.get("mode", B.DRY) != B.DRY or LIVE_BUILT:
+    mode = d.get("mode", B.DRY)
+    if mode not in (B.DRY, B.LIVE):
+        raise Refused("config mode must be 'dry' or 'live'")
+    if mode == B.LIVE and not LIVE_BUILT:
         raise Refused("live_not_built: LIVE_BUILT is False, only mode 'dry' exists")
+    if mode == B.LIVE and any(d.get(k) for k in ("stop_file", "halt_file")):
+        raise Refused("live refused: stop_file / halt_file cannot be set in live (the wallet-wide files are pinned)")
     if d.get("bot_id") != BOT_ID:
         raise Refused(f"bot_id must be {BOT_ID}")
     if d.get("frozen_sha") != REGISTERED_W:
@@ -238,7 +250,7 @@ def make_config(d: Mapping[str, Any]) -> R4btConfig:
     fee_problem = send_fee_problem(d.get("send_fee_lamports", REGISTERED_SEND_LAMPORTS), d.get("fee_override"))
     if fee_problem:
         raise Refused(fee_problem)
-    base = {k: v for k, v in d.items() if k not in _PROFILE_KEYS and k != "bot_id"}
+    base = {k: v for k, v in d.items() if k not in _PROFILE_KEYS and k not in ("bot_id", "mode")}
     try:
         cfg = X.make_config(base)  # the EXP-027 validator (bot_id defaults to r4b-exp027 there): pins W as 40 hex, slot_s, end_ms, no sl_backstop, floor from funded
     except ValueError as exc:
@@ -246,7 +258,7 @@ def make_config(d: Mapping[str, Any]) -> R4btConfig:
     if cfg.stake_lamports != d["stake_lamports"] or cfg.max_open != d["max_open"] or cfg.total_loss_lamports != d["total_loss_lamports"]:
         raise Refused("caps changed in validation")  # unreachable unless the EXP-027 validator changes: the caps are not clipped here
     extra = {k: d[k] for k in _PROFILE_KEYS if k in d}
-    return R4btConfig(**{**{f.name: getattr(cfg, f.name) for f in dataclasses.fields(cfg)}, "bot_id": BOT_ID, **extra})
+    return R4btConfig(**{**{f.name: getattr(cfg, f.name) for f in dataclasses.fields(cfg)}, "bot_id": BOT_ID, "mode": mode, **extra})
 
 
 # --- safe small-file reads ------------------------------------------------------------------------------------------------------------------------
@@ -476,14 +488,60 @@ def _root_label(p: Any) -> str | None:
 
 
 def start_refusal(cfg: R4btConfig, *, live: bool = False, root_checks: bool = True) -> str | None:
-    """The start gate. LIVE is refused (LIVE_BUILT False). A DRY start on a non-synthetic root needs the read record (a4: no start against the real declog before the
-    screen PASS has QP's OK). Returns a refusal label or None."""
-    if live or LIVE_BUILT:
+    """The start gate. A LIVE start (the `--live` flag AND config mode live) needs LIVE_BUILT, every live gate and the recorded PASS read, on any root (no synthetic exemption);
+    the flag and the config mode must agree (a DRY config with --live, or a live config without it, is refused here, never half-live). A DRY start on a non-synthetic root
+    needs the read record (a4: no start against the real declog before the screen PASS has QP's OK). Returns a refusal label or None."""
+    if live and not LIVE_BUILT:
         return "live_not_built"
+    if live != (cfg.mode == B.LIVE):
+        return "live_flag_mode_mismatch"
+    if live:
+        gates = live_gate_problems(cfg, root_checks)
+        if gates:
+            return "live_gate:" + gates[0]
+        why = read_record_problem(cfg, root_checks)
+        return ("start_" + why) if why else None
     if not HV.synthetic_root(cfg.root):
         why = read_record_problem(cfg, root_checks)
         if why:
             return "start_" + why
+    return None
+
+
+def live_buy_problem(cfg: R4btConfig, now_ms: int, orders: Mapping[str, Mapping[str, Any]], order: Mapping[str, Any], state: Any, *, root_checks: bool = True,
+                     open_count: int = 0, day_trades: int = 0, day_realized: int = 0) -> str | None:
+    """EVERY gate a LIVE buy needs, evaluated afresh from the files at `now_ms`; the first problem as a label, or None. Called by R4btLivePort immediately before the send
+    (and by effective_live for routing), so nothing checked earlier in handle_entry is trusted: LIVE_OK / TIER T0 / owner file (live_gate_problems), the recorded read
+    (read_record_problem), the A3 carry incl. its written_utc bound (a3_problem), the twin gate, the fresh parity gate (parity_state_problem: <= 60 s, ledger and attempts
+    sha match), the order's stake against the C0 caps and the C0 counters (`open_count` includes this order). Latches and STOP / HALT files are the caller's."""
+    if not LIVE_BUILT or cfg.mode != B.LIVE:
+        return "not_live"
+    gates = live_gate_problems(cfg, root_checks)
+    if gates:
+        return "live_gate:" + gates[0]
+    why = read_record_problem(cfg, root_checks)
+    if why:
+        return why
+    why, _skipped = a3_problem(cfg, now_ms, root_checks)
+    if why:
+        return "a3:" + why
+    why = twin_gate_problem(cfg.twin_dir, now_ms, orders, cfg, root_checks, {})
+    if why:
+        return why
+    why = parity_state_problem(cfg.state_dir, now_ms)
+    if why:
+        return why
+    stake = order.get("stake_lamports")
+    if isinstance(stake, bool) or not isinstance(stake, int) or not 0 < stake <= min(cfg.stake_lamports, C0_CAPS["stake_lamports"]):
+        return "caps:stake"
+    if open_count > min(cfg.max_open, C0_CAPS["max_open"]):
+        return "caps:max_open"
+    if day_trades > min(cfg.max_trades_per_day, C0_CAPS["max_trades_per_day"]):
+        return "caps:max_trades_per_day"
+    if day_realized <= -min(cfg.daily_loss_lamports, C0_CAPS["daily_loss_lamports"]):
+        return "caps:daily_loss"
+    if getattr(state, "realized_lamports", 0) <= -min(cfg.total_loss_lamports, C0_CAPS["total_loss_lamports"]):
+        return "caps:total_loss"
     return None
 
 
@@ -563,7 +621,7 @@ def parity_state_problem(state_dir: str, now_ms: int) -> str | None:
     run = st.get("at_ms")
     if not _int(run):
         return "parity_gate:at_ms_missing"
-    if run - now_ms > TWIN_FUTURE_SKEW_MS:
+    if run - now_ms > PARITY_FUTURE_SKEW_MS:
         return "parity_gate:at_ms_future"
     if now_ms - run > PARITY_MAX_AGE_MS:
         return "parity_gate:stale"
@@ -589,6 +647,118 @@ def attempt_rows(orders: Mapping[str, Mapping[str, Any]]) -> list[dict[str, Any]
         out.append({"attempt_id": "a:" + oid, "trip_id": oid if landed else None, "decision_ms": o["decision_ms"], "landed": landed,
                     "landed_ms": o.get("buy_event_ms") if landed else None, "failed_or_expired": not landed, "p_fail_press": 0.0})
     return out
+
+
+# --- the live port: fill facts, fees and the pre-buy gate --------------------------------------------------------------------------------------------
+
+_EVENT_KIND = {"buy_landed": "buy", "buy_failed": "buy", "sell_landed": "sell", "sell_failed": "sell"}
+
+
+def fill_facts(event: str, row: Mapping[str, Any]) -> dict[str, Any]:
+    """The facts the executor and the parity tool read, from the probe executor's own fill row of the SAME send outcome (probe_live._finish_buy / _finish_sell /
+    _resolve_expired). Keys are left out, never guessed, when the row does not hold them (the bridge then latches r4bt_fee_unreported / r4bt_fill_unreported).
+
+      fees_lamports   the chain fee of THIS transaction (`fee_lamports`: base + priority as paid), or 0 for an EXPIRED send (it never landed, nothing was paid). Every send of a
+                      leg, escalated resends included, is its own event, and apply_events sums them per leg: entry_fee_lamports / exit_fee_lamports.
+      live_buy_price  PINNED UNIT = PRICE_UNIT = lamports per raw base-token unit = spend_lamports / tokens_received (pool leg: the stake sent, tokens as received). This is the
+                      ratio convention of the twin's pool price Qe / Be (tools/r4bt_c0_parity._price: quote reserve lamports / base reserve raw units), so g_entry and the live price
+                      compare like with like. Not SOL per UI token: no decimals factor is applied on either side.
+      live_sell_price the same unit: sol_received_lamports (pool leg, no fee, no rent) / tokens sold (raw units).
+      live_net_lamports the trip's chain wallet delta: the sell row's pnl_lamports (SOL after the sell - SOL before the buy, failed-attempt costs and ATA rent included).
+      landed_ms       the confirm instant the executor saw (`confirm_seen_ms`)."""
+    out: dict[str, Any] = {}
+    fee = row.get("fee_lamports")
+    if _int(fee) and fee >= 0:
+        out["fees_lamports"] = int(fee)
+    elif row.get("fail_class") == "expired":
+        out["fees_lamports"] = 0
+    if _int(row.get("confirm_seen_ms")):
+        out["landed_ms"] = int(row["confirm_seen_ms"])
+    if event == "buy_landed":
+        spend, tok = row.get("spend_lamports"), row.get("tokens_received")
+        if _int(spend) and _int(tok) and spend > 0 and tok > 0:
+            out["live_buy_price"] = spend / tok
+    elif event == "sell_landed":
+        got, tok = row.get("sol_received_lamports"), row.get("tokens")
+        if _int(got) and _int(tok) and got > 0 and tok > 0:
+            out["live_sell_price"] = got / tok
+        if _int(row.get("pnl_lamports")):
+            out["live_net_lamports"] = int(row["pnl_lamports"])
+    return out
+
+
+class R4btLivePort(B.OrderPort):
+    """The LIVE order port: wraps the bridge's probe_live.LiveExecutor port (B.make_live_port; the key only from the systemd credential, loaded by the caller) and (1) refuses
+    every buy unless `pre_buy(order)` returns None, called immediately before the executor is touched; (2) adds fees_lamports / live_* fill facts to each event from the
+    executor's own fill rows. It exists only for a live config with LIVE_BUILT. Exits are never gated."""
+
+    name = "live"
+    live = True
+
+    def __init__(self, inner: B.OrderPort, cfg: R4btConfig, pre_buy: Any = None) -> None:
+        if not LIVE_BUILT or cfg.mode != B.LIVE or not getattr(inner, "live", False):
+            raise SystemExit("r4bt live port refused: needs LIVE_BUILT, a live config and a live inner port")
+        self.inner, self.cfg, self.pre_buy = inner, cfg, pre_buy
+        self._rows: dict[tuple[str, str], list[dict[str, Any]]] = {}
+        ex = getattr(inner, "ex", None)
+        if ex is not None:
+            orig = ex._log
+
+            def _log(kind: str, mint: str, **kw: Any) -> None:
+                if kind in ("buy", "sell"):
+                    self._rows.setdefault((kind, mint), []).append(dict(kw))
+                orig(kind, mint, **kw)
+
+            ex._log = _log
+            if cfg.send_fee_lamports != REGISTERED_SEND_LAMPORTS:  # a reviewed fee_override: the executor's priority is the override's, minus the base fee
+                object.__setattr__(ex.limits, "priority_lamports", cfg.send_fee_lamports - BASE_FEE_LAMPORTS)
+
+    def mint_for_pool(self, pool: str, meta: Mapping[str, Any]) -> str | None:
+        return self.inner.mint_for_pool(pool, meta)
+
+    def universe_problem(self, pool: str, mint: str) -> str | None:
+        return self.inner.universe_problem(pool, mint)
+
+    def mint_screen_problem(self, mint: str) -> str | None:
+        return self.inner.mint_screen_problem(mint)
+
+    def balance(self) -> int | None:
+        return self.inner.balance()
+
+    def buy(self, order: Mapping[str, Any]) -> tuple[bool, str | None]:
+        if self.pre_buy is None:
+            return False, "gate:no_pre_buy_check"  # fail closed: a live port without its gate never buys
+        try:
+            why = self.pre_buy(order)
+        except Exception:  # noqa: BLE001 - deny on error
+            why = "pre_buy_error"
+        if why:
+            return False, "gate:" + str(why)
+        return self.inner.buy(order)
+
+    def sell(self, order: Mapping[str, Any], reason: str) -> tuple[bool, str | None]:
+        return self.inner.sell(order, reason)
+
+    def holdings(self) -> dict[str, str] | None:
+        return self.inner.holdings()
+
+    def warm(self, mints: list[str]) -> None:
+        self.inner.warm(mints)
+
+    def position_return(self, mint: str) -> float | None:
+        return self.inner.position_return(mint)
+
+    def drain_ledger(self) -> list[tuple[str, str, dict[str, Any]]]:
+        return self.inner.drain_ledger()
+
+    def poll(self) -> list[dict[str, Any]]:
+        out = []
+        for ev in self.inner.poll():
+            kind = _EVENT_KIND.get(ev.get("event"))
+            q = self._rows.get((kind, ev.get("mint"))) if kind else None
+            row = q.pop(0) if q else None
+            out.append({**ev, **fill_facts(ev["event"], row)} if row is not None else dict(ev))
+        return out
 
 
 # --- the bridge -----------------------------------------------------------------------------------------------------------------------------------
@@ -625,11 +795,14 @@ class R4btBridge(X.R4bBridge):
                  gap_clear_dir: Path | str | None = None, require_gap_review: bool = False) -> None:
         if not isinstance(cfg, R4btConfig) or cfg.bot_id != BOT_ID or cfg.frozen_sha != REGISTERED_W or cfg.change_id not in REGISTERED_CHANGE_IDS:
             raise SystemExit("r4bt executor start refused: bot / W / change_id pin")
-        if cfg.mode != B.DRY or port.live or LIVE_BUILT:
-            raise SystemExit("r4bt executor start refused: live_not_built")
+        if cfg.mode == B.DRY and port.live:
+            raise SystemExit("r4bt executor start refused: a DRY config never takes a live port")
+        if cfg.mode == B.LIVE and not (LIVE_BUILT and port.live and isinstance(port, R4btLivePort)):
+            raise SystemExit("r4bt executor start refused: live_not_built (a live config needs LIVE_BUILT and an R4btLivePort)")
+        live = cfg.mode == B.LIVE
         if dry_replay_caps:
             raise SystemExit("r4bt executor start refused: dry_replay_caps is EXP-027's replay tool, not an r4-b-T mode")
-        why = start_refusal(cfg, root_checks=root_checks)
+        why = start_refusal(cfg, live=live, root_checks=root_checks)
         if why:
             raise SystemExit(f"r4bt executor start refused: {why}")
         self.root_checks_r4bt = bool(root_checks)
@@ -637,14 +810,37 @@ class R4btBridge(X.R4bBridge):
         if any(not _num(v) or not X.SLOT_S_MIN <= v <= X.SLOT_S_MAX for v in self.slot_s_by_date.values()):
             raise SystemExit("r4bt executor start refused: slot_s_by_date out of range")
         self.dry_replay_caps = False
-        self.require_gap_review = bool(require_gap_review)
+        self.require_gap_review = bool(require_gap_review) or live  # live always needs the manager's gap review
         self._a3_refuse_t: str | None = None
         self.es_path = Path(cfg.state_dir) / f"r4b-state-{cfg.mode}.json"
         self.es = self._load_es()
         B.Bridge.__init__(self, cfg, port, now_ms=now_ms, live_ok_path=live_ok_path or Path(cfg.live_ok_path), tier_path=tier_path or Path(cfg.tier_path),
                           root_checks=root_checks, close_blocked=close_blocked, gap_clear_dir=gap_clear_dir)
+        if live:
+            port.pre_buy = self.live_buy_gate
         self.write_ledger()  # the parity gate hashes both files: they exist from the start (empty until the first confirmed buy)
         self._log("r4bt_start", w=cfg.frozen_sha, change_id=cfg.change_id, live_gates_open=live_gate_problems(cfg, root_checks))
+
+    # -- the live route: a live-configured bridge sends only while EVERY gate holds; otherwise the entry is routed to the DRY port (logged, never sent)
+    def effective_live(self) -> tuple[bool, str | None]:
+        if self.cfg.mode != B.LIVE or not LIVE_BUILT:
+            return False, "mode_dry"
+        gates = live_gate_problems(self.cfg, self.root_checks_r4bt)
+        if gates:
+            return False, "live_gate:" + gates[0]
+        return True, None
+
+    def live_buy_gate(self, order: Mapping[str, Any]) -> str | None:
+        """Called by R4btLivePort.buy immediately before the executor sends: EVERY live gate afresh (live_buy_problem) plus the bridge's latches and STOP / HALT files."""
+        now = self.now_ms()
+        if self.state.latches:
+            return "latched:" + sorted(self.state.latches)[0]
+        halt, stop = self._files()
+        if halt or stop:
+            return "halt_file" if halt else "stop_file"
+        day = self.state.days.get(B.utc_day(now), {})
+        return live_buy_problem(self.cfg, now, self.state.orders, order, self.state, root_checks=self.root_checks_r4bt, open_count=len(self.open_orders(True)),
+                                day_trades=day.get("trades", 0), day_realized=day.get("realized", 0))
 
     # -- reads: nothing is read without the recorded PASS read (a4)
     def read_new_rows(self) -> list[dict[str, Any]]:
@@ -705,6 +901,8 @@ class R4btBridge(X.R4bBridge):
             fee = ev.get("fees_lamports")
             if _int(fee) and fee >= 0:
                 o[f"{leg}_fee_lamports"] = int(o.get(f"{leg}_fee_lamports") or 0) + fee
+                if fee > self.cfg.send_fee_lamports and not ev.get("dry"):
+                    self._latch(LATCH_FEE_OVER, f"{ev.get('event')} of {o['order_id']} paid {fee} above the configured {self.cfg.send_fee_lamports} per send")
             elif ev.get("dry"):  # a DRY port sends nothing: the configured per-send fee, once per event (marked)
                 o[f"{leg}_fee_lamports"] = int(o.get(f"{leg}_fee_lamports") or 0) + self.cfg.send_fee_lamports
                 o["fee_source"] = "dry_default"
@@ -761,7 +959,7 @@ class R4btBridge(X.R4bBridge):
             os.replace(tmp, sd / name)
 
 
-# --- CLI: config check only (no executor loop, no send) ---------------------------------------------------------------------------------------------
+# --- CLI: the config check and the run loop -------------------------------------------------------------------------------------------------------
 
 
 def check(config_path: str, *, live: bool = False, root_checks: bool = True) -> dict[str, Any]:
@@ -774,11 +972,60 @@ def check(config_path: str, *, live: bool = False, root_checks: bool = True) -> 
     return {"ok": why is None, "problem": why, "live_gates_open": live_gate_problems(cfg, root_checks)}
 
 
+def build_live_port(cfg: R4btConfig) -> R4btLivePort:
+    """The LIVE port (only `run --live` with a live config reaches this). The key comes ONLY from the systemd credential (probe_live.load_probe_key reads
+    $CREDENTIALS_DIRECTORY/...; no path argument), is held by the executor object and is never printed. Imports are local: a DRY run never imports the solana stack."""
+    from tools import probe_executor as pe
+    from tools import probe_live as pl
+    from tools import pumpswap_simulate as sim
+
+    if not (os.environ.get("HELIUS_API_KEY") or "").strip():
+        raise SystemExit("r4bt live start refused: rpc_key_missing")
+    pl.harden_process()
+    kp = pl.load_probe_key()
+    rpc = pe.LimitedRpc(pe.ProbeRpc(sim.load_rpc_url(None, None, use_env_file=False)), rps=float(pe.MAX_RPS), max_rps=pl.LIVE_MAX_RPS)
+    return R4btLivePort(B.make_live_port(cfg, rpc, kp), cfg)
+
+
+def run(raw: Mapping[str, Any], *, live_flag: bool, once: bool = False, root_checks: bool = True, port_factory: Any = None, now_ms: Any = None,
+        sleep: Any = None) -> int:
+    """The run loop: tail the declog arm r4b-exp027 under the change_id root and act per Am.9 (R4btBridge.run). DRY unless the config says mode live AND `live_flag`;
+    one without the other runs DRY (the live flag never upgrades a DRY config; a live config never goes live on its own). Returns the process exit code."""
+    want_live = raw.get("mode") == B.LIVE and live_flag
+    if (raw.get("mode") == B.LIVE) != live_flag:
+        print("r4bt_c0_executor: --live and config mode 'live' must both be given: running DRY", flush=True)
+    try:
+        cfg = make_config({**raw, "mode": B.LIVE if want_live else B.DRY})
+    except (ValueError, TypeError) as exc:
+        print(f"r4bt_c0_executor ALERT startup_refused {exc}", flush=True)
+        return 2
+    why = start_refusal(cfg, live=want_live, root_checks=root_checks)
+    if why:
+        print(f"r4bt_c0_executor ALERT startup_refused {why}", flush=True)
+        return 2
+    port = (port_factory or build_live_port)(cfg) if want_live else B.DryPort(cfg.dry_balance_lamports)
+    br = R4btBridge(cfg, port, now_ms=now_ms, root_checks=root_checks)
+    print(f"r4bt_c0_executor mode={cfg.mode} bot={cfg.bot_id} change_id={cfg.change_id} stake={cfg.stake_lamports}", flush=True)
+    kw = {"sleep": sleep} if sleep is not None else {}
+    br.run(once=once, **kw)
+    return 0
+
+
 def main(argv: Sequence[str] | None = None) -> int:
-    ap = argparse.ArgumentParser(description="r4-b-T C0 executor profile: config check only. LIVE_BUILT is False.")
+    args = list(sys.argv[1:] if argv is None else argv)
+    ap = argparse.ArgumentParser(description="r4-b-T C0 executor. `run` is DRY unless config mode is live AND --live is given; `check` (or the bare --config form) validates only.")
+    if args and args[0] == "run":
+        ap.add_argument("cmd")
+        ap.add_argument("--config", required=True)
+        ap.add_argument("--live", action="store_true", help="with config mode 'live': send real transactions")
+        ap.add_argument("--once", action="store_true")
+        a = ap.parse_args(args)
+        return run(json.loads(Path(a.config).read_text()), live_flag=a.live, once=a.once)
+    if args and args[0] == "check":
+        args = args[1:]
     ap.add_argument("--config", required=True)
     ap.add_argument("--live", action="store_true")
-    a = ap.parse_args(argv)
+    a = ap.parse_args(args)
     out = check(a.config, live=a.live)
     print(json.dumps(out, sort_keys=True))
     return 0 if out["ok"] else 2
