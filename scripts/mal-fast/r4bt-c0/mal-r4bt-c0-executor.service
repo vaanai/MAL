@@ -2,7 +2,7 @@
 Description=MAL r4-b-T C0 executor (bot r4bt-a1, DEC-032 Amendment 9; tools/r4bt_c0_executor), keyless DRY base unit: no signing, no sending, no network
 Documentation=https://github.com/vaanai/MAL/blob/main/docs/runbooks/r4bt-c0-executor.md
 # One instance: the book r4-b-T (bot_id r4bt-a1, W 17e3b05a7696900cda7fcf93e4af4008d8fa0184, change_id r4bt-a1-1107a). The executor reads the r4-b-T decision host's
-# hash-chained declog through the read-only bind below. tools/r4bt_c0_executor.LIVE_BUILT is False at this pack's sha: a live config or --live is refused in code.
+# hash-chained declog through the read-only bind below. This base unit is DRY and keyless: a DRY config, no --live, no credential, no network. `run --live` on a DRY config exits 2 (live_flag_mode_mismatch), and a live config without --live does not start.
 # This base unit has NO drop-in in a keyless install: a drop-in directory for this unit means a live switch, and scripts/ops/r4bt-c0-dry-checklist.sh fails on it.
 # The declog is non-empty by construction from the clock (the decision host writes it). The unit is NOT enabled or started against it until DEC-032 Am.9 (a4): the
 # screen PASS has QP's OK on the read's exact files AND the amendment has merged. Until then the only start is the checklist's synthetic smoke, in a mktemp dir.

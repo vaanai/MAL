@@ -172,7 +172,7 @@ class Template(unittest.TestCase):
         ex = json.loads((PACK / "r4bt-c0.live.json.example").read_text())
         self.assertEqual(ex["mode"], "live")
         self.assertNotEqual(ex["state_dir"], filled()["state_dir"])  # DRY and live never share a state dir
-        for k in ("frozen_sha", "change_id", "bot_id", "root", "twin_dir", "a3_carry_path", "tier_path", "live_ok_path", "owner_file", "send_fee_lamports"):
+        for k in ("frozen_sha", "change_id", "bot_id", "root", "a3_carry_path", "tier_path", "live_ok_path", "owner_file", "send_fee_lamports"):
             self.assertEqual(ex[k], filled()[k], k)
         self.assertEqual(ex["health_path"], filled()["health_path"])  # one shared, watchdog-readable health dir for both modes
         self.assertFalse(ex["health_path"].startswith(ex["state_dir"] + "/"))
@@ -314,7 +314,7 @@ class LiveDropIn(unittest.TestCase):
 
     def test_checklist_and_runbook_treat_the_dropin_as_live_only(self):
         t = RUNBOOK.read_text()
-        for want in ("live.conf.example", "screen PASS", "owner", "step 5", "T0", "sandbox check after the executor's first DRY start", "KeyboardInterrupt", "SystemExit",
+        for want in ("live.conf.example", "screen PASS", "owner", "steps 5 and 6", "T0", "sandbox check after the executor's first DRY start", "KeyboardInterrupt", "SystemExit",
                      "by hand", "Helm confirms the RPC env file path", "ln -s health/health.json", "tieout_dir", "only tie-out outputs", "health.dry.json", "Restart=on-failure"):
             self.assertIn(want, t, want)
         # the unit text with the live example appended trips the keyless checklist (credential directive and drop-in)
@@ -342,6 +342,100 @@ class HealthFile(unittest.TestCase):
             self.assertTrue(p.is_file(), os.listdir(os.path.join(d, "health")))
             self.assertEqual(oct(os.stat(p).st_mode & 0o777), "0o644")
             self.assertEqual(tuple(json.loads(p.read_text())), tuple(sorted(E.HEALTH_KEYS)))
+
+
+class LiveSet(unittest.TestCase):
+    """The executor, twin and parity units must name the same state dir, ledger, attempts and twin dir in each mode (QP/REVIEWER on #1258)."""
+    PAR = PACK / "mal-r4bt-c0-parity.service"
+
+    @staticmethod
+    def effective(base: Path, dropin: Path | None) -> dict:
+        """systemd-style merge of one unit and an optional drop-in: an empty `Key=` resets, Environment and ExecStart keep order."""
+        out: dict = {}
+        for p in (base, dropin):
+            if p is None:
+                continue
+            for k, v in (ln.split("=", 1) for ln in unit_lines(p) if "=" in ln):
+                if v == "":
+                    out[k] = []
+                else:
+                    out.setdefault(k, []).append(v)
+        return out
+
+    def paths(self, live: bool) -> dict:
+        ex = self.effective(UNIT, PACK / "live.conf.example" if live else None)
+        tw = self.effective(TWIN_UNIT, PACK / "live-twin.conf.example" if live else None)
+        pa = self.effective(self.PAR, PACK / "live-parity.conf.example" if live else None)
+        cfg_path = PACK / ("r4bt-c0.live.json.example" if live else "r4bt-c0.dry.json")
+        cfg = json.loads(cfg_path.read_text())
+        env = dict(v.split("=", 1) for v in tw["Environment"])  # later assignment wins
+        pcmd = pa["ExecStart"][-1]
+        arg = lambda flag: re.search(flag + r" (\S+)", pcmd).group(1)  # noqa: E731
+        return {"cfg_state": cfg["state_dir"], "cfg_twin": cfg["twin_dir"], "ex_rw": ex["ReadWritePaths"][-1].split(), "ex_cmd": ex["ExecStart"][-1],
+                "tw_orders": env["R4BT_C0_ORDERS"], "tw_out": env["R4BT_C0_STATE_DIR"], "tw_rw": tw["ReadWritePaths"], "tw_ro": tw["ReadOnlyPaths"][-1].split(),
+                "pa_state": arg("--state-dir"), "pa_twin": arg("--twin-dir"), "pa_attempts": arg("--attempts"), "pa_rw": pa["ReadWritePaths"]}
+
+    def test_each_mode_names_one_state_dir_everywhere(self):
+        for live, want_state, want_twin in ((False, "/var/lib/mal-r4b-c0/state", "/var/lib/mal-r4b-c0/twin"), (True, "/var/lib/mal-r4b-c0/state-live", "/var/lib/mal-r4b-c0/twin-live")):
+            p = self.paths(live)
+            self.assertEqual(p["cfg_state"], want_state, live)
+            self.assertEqual(p["cfg_twin"], want_twin, live)
+            self.assertIn(want_state, p["ex_rw"], live)  # executor writes its state dir
+            self.assertEqual(p["tw_orders"], want_state + "/r4bt-order-ledger.jsonl", live)  # twin reads the SAME ledger the executor writes
+            self.assertEqual(p["tw_out"], want_twin, live)  # twin writes the twin dir the executor's config reads
+            self.assertEqual(p["tw_rw"], [want_twin], live)
+            self.assertIn(want_state, p["tw_ro"], live)
+            self.assertEqual(p["pa_state"], want_state, live)  # parity writes <state>/r4bt-parity-state.json, the executor's parity gate input
+            self.assertEqual(p["pa_attempts"], want_state + "/r4bt-attempts.jsonl", live)
+            self.assertEqual(p["pa_twin"], want_twin, live)
+            self.assertEqual(p["pa_rw"], [want_state], live)
+            self.assertIn("--live" in p["ex_cmd"], (live,))
+        self.assertNotEqual(self.paths(False)["cfg_twin"], self.paths(True)["cfg_twin"])  # twin dirs are not shared across modes
+
+    def test_live_config_example_is_accepted_by_the_real_parser(self):
+        from_ = RUNBOOK  # noqa: F841
+        if not HAVE_EXEC:
+            self.skipTest("executor module not on this branch")
+        from tools import r4bt_c0_executor as E
+        txt = (PACK / "r4bt-c0.live.json.example").read_text()
+        txt = txt.replace('"<AT-GO:end_ms>"', "1794700800000").replace('"<AT-GO:slot_s>"', "0.4").replace('"<AT-GO:funded_lamports>"', "350000000")
+        txt = txt.replace("<AT-GO:read_result_sha256>", "ab" * 32).replace("<AT-GO:qp_comment_id>", "4567890123")
+        raw = json.loads(txt)
+        self.assertNotIn("stop_file", raw)
+        self.assertNotIn("halt_file", raw)
+        cfg = E.make_config(raw)  # the REAL parser: raises Refused if the example is not a valid live config
+        self.assertEqual((cfg.mode, cfg.bot_id, cfg.frozen_sha, cfg.change_id), ("live", "r4bt-a1", W, CHANGE_ID))
+        self.assertEqual(cfg.state_dir, "/var/lib/mal-r4b-c0/state-live")
+        # the start gate runs (no crash); without the live gate files it refuses with a label, never accepts
+        why = E.start_refusal(cfg, live=True, root_checks=False)
+        self.assertIsInstance(why, str)
+        self.assertTrue(why)
+        for bad in ("stop_file", "halt_file"):
+            with self.assertRaises(E.Refused):
+                E.make_config({**raw, bad: "/var/lib/mal-r4b-c0/state-live/X"})
+
+    def test_wording_follows_am9_section_9(self):
+        for p in (PACK / "live.conf.example", RUNBOOK):
+            txt = p.read_text()
+            self.assertNotIn("the manager restarts the unit", txt)
+            self.assertIn("Helm restarts", txt.replace("**Helm restarts**", "Helm restarts").replace("THEN Helm restarts", "Helm restarts")) if p == RUNBOOK else None
+        ex = (PACK / "live.conf.example").read_text()
+        self.assertIn("the manager restarts nothing on a host unit", ex)
+        self.assertLess(ex.index("daemon-reload"), ex.index("THEN Helm writes LIVE_OK"))  # drop-in first, then LIVE_OK / TIER / owner line
+        self.assertLess(ex.index("THEN Helm writes LIVE_OK"), ex.index("THEN Helm restarts"))
+        self.assertNotIn("LIVE_BUILT is False", UNIT.read_text())
+        rb = RUNBOOK.read_text()
+        for want in ("/var/lib/mal-r4b-c0/state-live", "setfacl -m u:root:rX /var/lib/mal-r4b-c0/state-live", "twin-live", "R4BTC0_TWIN_DROPIN", "O_NOFOLLOW"):
+            self.assertIn(want, rb, want)
+
+    def test_sandbox_check_applies_the_live_dropin(self):
+        sc = REPO / "scripts" / "ops" / "r4bt-c0-twin-sandbox-check.sh"
+        r = subprocess.run(["sh", str(sc), "--print"], env={"PATH": os.environ["PATH"], "R4BTC0_TWIN_UNIT_FILE": str(TWIN_UNIT),
+                           "R4BTC0_TWIN_DROPIN": str(PACK / "live-twin.conf.example")}, capture_output=True, text=True)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        out = r.stdout.splitlines()
+        self.assertIn("-p ReadWritePaths=/var/lib/mal-r4b-c0/twin-live", out)
+        self.assertNotIn("-p ReadWritePaths=/var/lib/mal-r4b-c0/twin", out)  # the DRY value was reset by the empty assignment
 
 
 class PushNames(unittest.TestCase):

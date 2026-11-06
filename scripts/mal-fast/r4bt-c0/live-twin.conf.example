@@ -1,0 +1,9 @@
+# r4-b-T C0 LIVE companion drop-in for mal-r4bt-c0-twin.service. NOT installed by default. Installed by Helm in the same step as live.conf.example (see its header for the order).
+# Keeps the twin on the LIVE state: it twins the LIVE order ledger in state-live and writes a SEPARATE live twin dir, so DRY-era twins.jsonl rows are never in the live gate's input.
+[Service]
+Environment=R4BT_C0_ORDERS=/var/lib/mal-r4b-c0/state-live/r4bt-order-ledger.jsonl
+Environment=R4BT_C0_STATE_DIR=/var/lib/mal-r4b-c0/twin-live
+ReadWritePaths=
+ReadWritePaths=/var/lib/mal-r4b-c0/twin-live
+ReadOnlyPaths=
+ReadOnlyPaths=/opt/mal-r4b-c0 /var/lib/mal-r4b-c0/state-live

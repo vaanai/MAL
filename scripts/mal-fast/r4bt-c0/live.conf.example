@@ -1,9 +1,13 @@
 # r4-b-T C0 LIVE switch (DEC-032 Am.9), an EXAMPLE. NOT installed by default and NOT installed by merging this file or by the keyless install.
 # It is the ONLY thing that hands the executor a key. Install it (Helm, root) from the manifest-verified root-owned copy in the sha dir, never from a working tree:
 #   sudo install -D -m 0644 /opt/mal-r4b-c0/<sha>/scripts/mal-fast/r4bt-c0/live.conf.example /etc/systemd/system/mal-r4bt-c0-executor.service.d/live.conf
-#   sudo systemctl daemon-reload     (the manager restarts the unit; agents never start, fund or configure a live executor)
-# Install ONLY after ALL of: the screen PASS with QP's OK on the read's exact files, the owner's yes (DEC-032 Am.9 section 9 step 5), and the per-bot TIER file reads T0. The checklist
-# FAILS on any drop-in in a keyless install; remove this file and restart to go back to DRY.
+#   sudo systemctl daemon-reload     (NO restart yet)
+# Order (DEC-032 Am.9 section 9, Helm's steps 5 and 6; the manager restarts nothing on a host unit and agents never start, fund or configure a live executor):
+#   1. only after the screen PASS with QP's OK on the read's exact files, the amendment merged, and the owner's yes (steps 1-4);
+#   2. Helm installs this drop-in and the two companion drop-ins (live-twin.conf.example, live-parity.conf.example) and runs daemon-reload, with no restart;
+#   3. THEN Helm writes LIVE_OK, the per-bot TIER file (T0) and the owner-confirmation line;
+#   4. THEN Helm restarts the executor, the twin and the parity units with their live drop-ins (a live start without those files exits 2 with live_gate:* and StartLimitBurst stops it).
+# The checklist FAILS on any drop-in in a keyless install; remove the drop-ins and have Helm restart to go back to DRY.
 # Live still needs, before EVERY buy, in the executor: config mode "live" (r4bt-c0.live.json) AND --live below, LIVE_OK naming r4bt-a1, TIER T0, the owner-confirmation line, the read record,
 # a fresh A3 carry, the twin gate, the parity gate and the C0 caps. A DRY config never sends.
 # The wallet is Helm's: the credential SOURCE path below is a placeholder Helm sets; the key is root:root 0400 in root:root 0700 /etc/mal-r4bt-c0-key. No agent reads, prints or copies it.
