@@ -70,8 +70,8 @@ class World:
 
     def __init__(self, tmp, synthetic=True, **over):
         self.tmp = tmp
-        self.root = tmp / "rules"
-        self.root.mkdir()
+        self.root = tmp / "rules" if synthetic else tmp / "r4b-dry" / CID / "declog"  # a real root sits under the change_id root
+        self.root.mkdir(parents=True)
         if synthetic:
             (self.root / HV.SYNTHETIC_MARKER).write_text("x")
         self.at = ms(0) + 50
@@ -86,7 +86,7 @@ class World:
     def fresh(self, *, carry=None, run=None, rows=None):
         t = self.tmp
         run_utc = iso(self.at - 3_600_000)
-        jwrite(t / "a3" / "carry.json", {"schema": T.CARRY_SCHEMA, "bot_id": T.BOT_ID, "change_id": CID, "run_utc": run_utc, "verdict": "NONE", "halt_at_ms": None,
+        jwrite(t / "a3" / "carry.json", {"schema": T.CARRY_SCHEMA, "bot_id": T.BOT_ID, "change_id": CID, "run_utc": run_utc, "written_utc": iso(self.at - 60_000), "verdict": "NONE", "halt_at_ms": None,
                                          "halt": {"flags": {"pins_changed": {"halt": False, "evaluated": True}, "synthetic_share_high": {"halt": False, "evaluated": True}}},
                                          "warn": {"flags": {"program_changed": {"warn": False}}}, **(carry or {})})
         jwrite(t / "twin" / T.TWINS_NAME, rows or [], lines=True)
@@ -104,18 +104,30 @@ class World:
     def cfg(self):
         return T.make_config(self.d)
 
-    def bridge(self, clk=None, port=None):
+    def bridge(self, clk=None, port=None, parity=True):
         clk = clk or Clock(self.at)
         cfg = self.cfg()
         port = port or B.DryPort(cfg.dry_balance_lamports)
-        return T.R4btBridge(cfg, port, now_ms=clk, root_checks=False), port, clk
+        br = T.R4btBridge(cfg, port, now_ms=clk, root_checks=False)
+        if parity:
+            self.parity(cfg)
+        return br, port, clk
+
+    def parity(self, cfg=None, **over):
+        """A fresh parity result for the CURRENT order ledger (the gate hashes it)."""
+        cfg = cfg or self.cfg()
+        sd = Path(cfg.state_dir)
+        sha = lambda n: hashlib.sha256((sd / n).read_bytes()).hexdigest()  # noqa: E731
+        jwrite(sd / T.PARITY_STATE_NAME, {"schema": T.PARITY_SCHEMA, "at_ms": self.at - 1000, "run_ms": self.at - 1000, "exit_code": 0, "verdict": "parity not shown",
+                                          "stop_required": False, "ledger_sha256": sha(T.LEDGER_NAME), "attempts_sha256": sha(T.ATTEMPTS_NAME), "twins_sha256": None,
+                                          "twin_run_ms": None, "counts": {}, "p_status": {}, "note": None, **over})
 
     def start(self, sha=W, change_id=CID):
-        self.log.append(T.BOT_ID, mark(0) * 1000, {"kind": "start", "book": "r4-b-T", "mode": "dry", "frozen_sha": sha, "change_id": change_id})
+        self.log.append(T.DECLOG_ARM, mark(0) * 1000, {"kind": "start", "book": "r4-b-T", "mode": "dry", "frozen_sha": sha, "change_id": change_id})
 
     def entry(self, i, mint, rank_, dt=1200):
         tm = mark(i)
-        self.log.append(T.BOT_ID, tm * 1000 + dt, {"kind": "entry", "order_id": f"{mint}:{tm}", "pool": "PDA_" + mint, "meta": {"mint": mint, "v0": V, "mbt": tm - 7200, "s0": 1},
+        self.log.append(T.DECLOG_ARM, tm * 1000 + dt, {"kind": "entry", "order_id": f"{mint}:{tm}", "pool": "PDA_" + mint, "meta": {"mint": mint, "v0": V, "mbt": tm - 7200, "s0": 1},
                                                   "stake_sol": 0.25, "decision_slot": SD0 + 9000 * i, "t_mark": tm, "rank": rank_, "score": 0.5})
 
 
@@ -229,7 +241,7 @@ def test_start_row_with_another_w_latches_and_no_buy(tmp_path):
 
 def test_start_row_without_change_id_latches(tmp_path):
     w = World(tmp_path)
-    w.log.append(T.BOT_ID, mark(0) * 1000, {"kind": "start", "book": "r4-b-T", "mode": "dry", "frozen_sha": W})
+    w.log.append(T.DECLOG_ARM, mark(0) * 1000, {"kind": "start", "book": "r4-b-T", "mode": "dry", "frozen_sha": W})
     w.entry(0, "MINT", 0)
     br, port, clk = w.bridge()
     feed(br, clk)
@@ -441,7 +453,7 @@ def test_a3_carry_unreadable_missing_malformed_or_not_root(tmp_path):
 
 
 def test_a3_carry_older_than_36h_fails_closed(tmp_path):
-    w = World(tmp_path)
+    w = World(tmp_path, a3_carry_max_age_ms=36 * 3_600_000)  # the written_utc bound at its maximum, so the record run_utc bound is what is tested
     assert T.a3_problem(w.cfg(), w.at + 34 * 3_600_000, False)[0] is None  # 35 h old: not yet stale
     assert T.a3_problem(w.cfg(), w.at + 36 * 3_600_000 + 3_600_000 + 1, False)[0] == "a3_carry_stale"
 
@@ -488,6 +500,7 @@ def test_ledger_records_the_actual_entry_and_exit_fees_with_escalations(tmp_path
     clk = Clock(w.at)
     cfg = w.cfg()
     br = T.R4btBridge(cfg, FeePort(cfg.dry_balance_lamports), now_ms=clk, root_checks=False)
+    w.parity(cfg)
     feed(br, clk)
     rows = [json.loads(ln) for ln in (Path(cfg.state_dir) / T.LEDGER_NAME).read_text().splitlines()]
     assert len(rows) == 1
@@ -649,6 +662,7 @@ def test_ledger_leaves_out_an_in_flight_order_so_the_twin_never_rejects_the_file
     clk = Clock(w.at)
     cfg = w.cfg()
     br = T.R4btBridge(cfg, SilentPort(cfg.dry_balance_lamports), now_ms=clk, root_checks=False)
+    w.parity(cfg)
     feed(br, clk)
     assert f"MINT:{mark(0)}" in br.state.orders and br.state.orders[f"MINT:{mark(0)}"].get("entry_fee_lamports") is None
     assert (Path(cfg.state_dir) / T.LEDGER_NAME).read_text() == ""  # no pending row, so the twin's parse (int entry_ms and entry_fee_lamports) cannot fail
@@ -727,3 +741,279 @@ def test_tier_is_a_per_bot_t0_file(tmp_path):
     assert T.live_gate_problems(w.cfg(), False) == []
     (tmp_path / "TIER").write_text("T0 extra\n")
     assert T.live_gate_problems(w.cfg(), False) == ["tier_file_invalid"]
+
+
+# ------------------------------------------------------------------------------------------------ declog arm, STOP file, fills, attempts (parity PR #1250)
+def test_bridge_tails_arm_r4b_exp027_not_the_bot_id(tmp_path):
+    w = World(tmp_path)
+    w.start()
+    w.entry(0, "MINT", 0)
+    assert (w.root / "decisions" / "r4b-exp027").is_dir() and not (w.root / "decisions" / "r4bt-a1").exists()
+    br, port, clk = w.bridge()
+    feed(br, clk)
+    assert sends(port) == [("buy", f"MINT:{mark(0)}")] and br.cfg.bot_id == "r4bt-a1" and T.DECLOG_ARM == "r4b-exp027"
+    # rows under decisions/r4bt-a1 are not read
+    other = DecisionLog(str(w.root))
+    other.append("r4bt-a1", ms(1), {"kind": "start", "frozen_sha": "ee" * 20, "change_id": "zzz"})
+    assert br.read_new_rows() == [] and not br.state.latches
+
+
+def test_chain_is_verified_on_the_arm(tmp_path):
+    w = World(tmp_path)
+    w.start()
+    w.entry(0, "MINT", 0)
+    f = next((w.root / "decisions" / "r4b-exp027").glob("*.jsonl"))
+    f.write_text(f.read_text().replace('"MINT"', '"MINX"', 1))
+    br, port, clk = w.bridge()
+    assert "chain_break" in br.state.latches and sends(port) == []
+
+
+def test_real_root_must_be_under_the_change_id_root(tmp_path):
+    (tmp_path / "w1").mkdir()
+    assert World(tmp_path / "w1", synthetic=False).cfg().root.endswith(f"r4b-dry/{CID}/declog")
+    (tmp_path / "w2").mkdir()
+    bad = tmp_path / "r4b-dry" / "other" / "declog"
+    bad.mkdir(parents=True)
+    with pytest.raises(T.Refused, match="change_id root"):
+        T.make_config({**World(tmp_path / "w2").d, "root": str(bad)})
+
+
+def test_parity_stop_file_in_the_state_dir_stops_buys(tmp_path):
+    w = World(tmp_path)
+    w.start()
+    w.entry(0, "MINT", 0)
+    br, port, clk = w.bridge()
+    Path(br.cfg.state_dir).mkdir(parents=True, exist_ok=True)
+    (Path(br.cfg.state_dir) / T.STOP_NAME).write_text("{}")
+    feed(br, clk)
+    assert sends(port) == [] and br.state.counts.get("parity_stop_file_refusal", 0) >= 1 and br._files()[1] is True
+
+
+def test_parity_stop_file_symlink_also_counts(tmp_path):
+    br = World(tmp_path).bridge()[0]
+    sd = Path(br.cfg.state_dir)
+    sd.mkdir(parents=True, exist_ok=True)
+    (sd / T.STOP_NAME).symlink_to(tmp_path / "nowhere")
+    assert br._files()[1] is True
+
+
+def test_no_stop_file_no_stop(tmp_path):
+    br = World(tmp_path).bridge()[0]
+    assert br._files() == (False, False)
+
+
+class FillPort(B.DryPort):
+    """A non-DRY-looking event stream: events carry the live fill facts the parity tool needs."""
+
+    def __init__(self, bal, fills=True, fail=False):
+        super().__init__(bal)
+        self.fills, self.fail = fills, fail
+
+    def buy(self, order):
+        ok, why = super().buy(order)
+        ev = self._events[-1]
+        ev.pop("dry")
+        ev.update(fees_lamports=505_000, landed_slot=2000, landed_ms=9_000)
+        if self.fills:
+            ev.update(live_buy_price=1.25e-7)
+        if self.fail:
+            ev.update(event="buy_failed", pnl_lamports=-505_000, label="expired")
+        return ok, why
+
+    def sell(self, order, reason):
+        ok, why = super().sell(order, reason)
+        ev = self._events[-1]
+        ev.pop("dry")
+        ev.update(fees_lamports=505_000, landed_slot=2100, landed_ms=12_345)
+        if self.fills:
+            ev.update(live_sell_price=1.1e-7, live_net_lamports=-123_456, gap_through=True)
+        return ok, why
+
+
+def run_fill(tmp_path, **kw):
+    w = World(tmp_path)
+    w.start()
+    w.entry(0, "MINT", 0)
+    clk = Clock(w.at)
+    cfg = w.cfg()
+    br = T.R4btBridge(cfg, FillPort(cfg.dry_balance_lamports, **kw), now_ms=clk, root_checks=False)
+    w.parity(cfg)
+    feed(br, clk)
+    return br, cfg, clk
+
+
+def ledger(cfg, name=None):
+    return [json.loads(ln) for ln in (Path(cfg.state_dir) / (name or T.LEDGER_NAME)).read_text().splitlines()]
+
+
+def test_ledger_carries_the_live_fill_fields_from_the_events(tmp_path):
+    br, cfg, clk = run_fill(tmp_path)
+    r = ledger(cfg)[0]
+    assert r["live_buy_price"] == 1.25e-7 and r["live_sell_price"] is None and r["fee_source"] is None
+    br.handle_row({"kind": "exit", "order_id": f"MINT:{mark(0)}", "mint": "MINT", "reason": "rank", "t_mark": mark(0), "ms": ms(0) + 3_600_000, "seq": 99})
+    br._poll_ports()
+    r = ledger(cfg)[0]
+    assert (r["live_sell_price"], r["live_net_lamports"], r["exit_landed_ms"], r["gap_through"]) == (1.1e-7, -123_456, 12_345, True)
+    assert not br.state.latches
+
+
+def test_dry_rows_leave_the_live_fields_null_and_are_marked(tmp_path):
+    br, port, w = run_one(tmp_path)
+    r = ledger(w.cfg())[0]
+    assert r["fee_source"] == "dry_default" and r["live_buy_price"] is None and r["live_sell_price"] is None and r["live_net_lamports"] is None
+    assert r["exit_landed_ms"] is None and r["gap_through"] is None and not br.state.latches
+
+
+def test_non_dry_landed_events_without_fill_facts_latch(tmp_path):
+    br, cfg, clk = run_fill(tmp_path, fills=False)
+    assert T.LATCH_FILL in br.state.latches and "live_buy_price" in br.state.latches[T.LATCH_FILL]
+
+
+def test_attempts_file_has_a_row_per_buy_including_failures(tmp_path):
+    br, cfg, clk = run_fill(tmp_path)
+    rows = ledger(cfg, T.ATTEMPTS_NAME)
+    assert len(rows) == 1 and rows[0] == {"attempt_id": f"a:MINT:{mark(0)}", "trip_id": f"MINT:{mark(0)}", "decision_ms": ms(0), "landed": True, "landed_ms": 9_000,
+                                          "failed_or_expired": False, "p_fail_press": 0.0}
+    # a failed buy: a row with failed_or_expired true and no trip
+    tmp2 = tmp_path / "f"
+    tmp2.mkdir()
+    br2, cfg2, _ = run_fill(tmp2, fail=True)
+    rows = ledger(cfg2, T.ATTEMPTS_NAME)
+    assert len(rows) == 1 and rows[0]["landed"] is False and rows[0]["failed_or_expired"] is True and rows[0]["trip_id"] is None and rows[0]["landed_ms"] is None
+
+
+def test_attempts_file_round_trips_through_the_arena_parity_validator(tmp_path):
+    AP = pytest.importorskip("tools.arena_live_parity")
+    rows = []
+    for i, sub in enumerate(("a", "b")):
+        d = tmp_path / sub
+        d.mkdir()
+        rows += ledger(run_fill(d, fail=bool(i))[1], T.ATTEMPTS_NAME)
+    rows = [{**r, "attempt_id": r["attempt_id"] + str(i)} for i, r in enumerate(rows)]
+    AP.validate_inputs([], [], rows)  # the arena tool's own strict attempts schema (what #1250's --attempts feeds)
+
+
+def test_ledger_and_attempts_round_trip_through_the_parity_tool_if_present(tmp_path):
+    parity = pytest.importorskip("tools.r4bt_c0_parity")
+    br, cfg, clk = run_fill(tmp_path)
+    ldg = parity.load_ledger(Path(cfg.state_dir))
+    assert ldg[0]["live_buy_price"] == 1.25e-7
+    assert parity._jsonl((Path(cfg.state_dir) / T.ATTEMPTS_NAME).read_bytes(), "attempts")[0]["landed"] is True
+
+
+# ------------------------------------------------------------------------------------------------ fresh-parity gate and carry written_utc bound
+def gate_world(tmp_path):
+    w = World(tmp_path)
+    w.start()
+    w.entry(0, "MINT", 0)
+    return w
+
+
+@pytest.mark.parametrize("over,label", [
+    ({"exit_code": 10}, "parity_gate:exit_code"), ({"exit_code": 2}, "parity_gate:exit_code"), ({"exit_code": None}, "parity_gate:exit_code"), ({"exit_code": False}, "parity_gate:exit_code"),
+    ({"at_ms": None}, "parity_gate:at_ms_missing"), ({"at_ms": "x"}, "parity_gate:at_ms_missing"), ({"at_ms": 1}, "parity_gate:stale"),
+    ({"at_ms": 10 ** 15}, "parity_gate:at_ms_future"), ({"ledger_sha256": "00" * 32}, "parity_gate:ledger_sha_mismatch"), ({"ledger_sha256": None}, "parity_gate:ledger_sha_mismatch"),
+    ({"attempts_sha256": "00" * 32}, "parity_gate:attempts_sha_mismatch"), ({"attempts_sha256": None}, "parity_gate:attempts_sha_mismatch"),
+    ({"stop_required": True}, "parity_gate:stop_required"), ({"stop_required": None}, "parity_gate:stop_required"), ({"stop_required": 0}, "parity_gate:stop_required"),
+    ({"schema": "other"}, "parity_gate:schema"), ({"schema": None}, "parity_gate:schema")])
+def test_parity_gate_refuses_each_bad_state(tmp_path, over, label):
+    w = gate_world(tmp_path)
+    br, port, clk = w.bridge(parity=False)
+    w.parity(**over)
+    feed(br, clk)
+    assert sends(port) == [] and br.state.counts.get("parity_gate_refusal") == 1
+    assert T.parity_state_problem(br.cfg.state_dir, w.at) == label
+
+
+def test_parity_gate_missing_malformed_and_unsafe_state(tmp_path):
+    w = gate_world(tmp_path)
+    br, port, clk = w.bridge(parity=False)
+    f = Path(br.cfg.state_dir) / T.PARITY_STATE_NAME
+    assert T.parity_state_problem(br.cfg.state_dir, w.at) == "parity_gate:parity_state_missing"
+    f.write_text("{oops")
+    assert T.parity_state_problem(br.cfg.state_dir, w.at) == "parity_gate:parity_state_malformed"
+    w.parity()
+    os.chmod(f, 0o666)
+    assert T.parity_state_problem(br.cfg.state_dir, w.at) == "parity_gate:parity_state_owner_mode"
+    f.unlink()
+    f.symlink_to(tmp_path / "x")
+    assert T.parity_state_problem(br.cfg.state_dir, w.at) == "parity_gate:parity_state_not_regular"
+    feed(br, clk)
+    assert sends(port) == []
+
+
+def test_parity_gate_passes_with_a_fresh_matching_state_and_run_ms_at_the_bound(tmp_path):
+    w = gate_world(tmp_path)
+    br, port, clk = w.bridge(parity=False)
+    w.parity(at_ms=w.at - T.PARITY_MAX_AGE_MS)
+    assert T.parity_state_problem(br.cfg.state_dir, w.at) is None
+    w.parity(at_ms=w.at - T.PARITY_MAX_AGE_MS - 1)
+    assert T.parity_state_problem(br.cfg.state_dir, w.at) == "parity_gate:stale"
+    w.parity()
+    feed(br, clk)
+    assert sends(port) == [("buy", f"MINT:{mark(0)}")]
+
+
+def test_parity_gate_needs_a_new_run_after_the_ledger_changes(tmp_path):
+    w = gate_world(tmp_path)
+    w.entry(0, "OTHER", 1)
+    br, port, clk = w.bridge()
+    feed(br, clk)  # the first buy changes the ledger (a confirmed buy), so the second is refused until parity is rerun
+    assert sends(port) == [("buy", f"MINT:{mark(0)}")] and br.state.counts.get("parity_gate_refusal") == 1
+    w.parity(cfg=br.cfg)
+    assert T.parity_state_problem(br.cfg.state_dir, w.at) is None
+
+
+def test_parity_gate_refuses_when_the_ledger_file_is_missing(tmp_path):
+    w = gate_world(tmp_path)
+    br, port, clk = w.bridge()
+    (Path(br.cfg.state_dir) / T.LEDGER_NAME).unlink()
+    assert T.parity_state_problem(br.cfg.state_dir, w.at) == "parity_gate:ledger_missing"
+    (Path(br.cfg.state_dir) / T.ATTEMPTS_NAME).unlink() if False else None
+
+
+def test_ledger_exists_from_the_start(tmp_path):
+    br = World(tmp_path).bridge(parity=False)[0]
+    assert (Path(br.cfg.state_dir) / T.LEDGER_NAME).read_text() == ""
+
+
+@pytest.mark.parametrize("carry,label", [
+    ({"written_utc": None}, "a3_carry_no_written_utc"), ({"written_utc": "garbage"}, "a3_carry_no_written_utc"),
+    ({"written_utc": "2026-08-14T00:00:00Z"}, "a3_carry_written_stale"), ({"written_utc": "2026-08-15T00:00:00Z"}, "a3_carry_written_future")])
+def test_a3_carry_written_utc_bound_latches(tmp_path, carry, label):
+    br, port, w = run_one(tmp_path, carry=carry)
+    assert sends(port) == [] and br.state.latches[T.LATCH_A3] == label
+
+
+def test_a3_carry_written_utc_bound_is_config_and_a_clean_but_stale_copy_is_refused(tmp_path):
+    w = World(tmp_path)  # record run_utc is 1 h old and clean, written_utc 60 s old
+    assert T.a3_problem(w.cfg(), w.at, False) == (None, [])
+    assert T.a3_problem(w.cfg(), w.at + T.A3_CARRY_MAX_AGE_DEFAULT_MS - 62_000, False) == (None, [])  # just under 2 h after the write
+    assert T.a3_problem(w.cfg(), w.at + T.A3_CARRY_MAX_AGE_DEFAULT_MS, False)[0] == "a3_carry_written_stale"  # the copy stalled; run_utc alone (36 h) would pass
+    tight = World(tmp_path / "t", a3_carry_max_age_ms=30_000) if (tmp_path / "t").mkdir() is None else None
+    assert T.a3_problem(tight.cfg(), tight.at, False)[0] == "a3_carry_written_stale"
+
+
+@pytest.mark.parametrize("bad", [0, -1, True, 1.5, "2h", 36 * 3_600_000 + 1])
+def test_a3_carry_max_age_config_is_validated(tmp_path, bad):
+    with pytest.raises(T.Refused):
+        World(tmp_path, a3_carry_max_age_ms=bad).cfg()
+
+
+def test_parity_gate_round_trip_with_the_parity_tools_own_state_writer(tmp_path):
+    """The state file written by tools/r4bt_c0_parity.write_state (PR #1250), read by this gate."""
+    parity = pytest.importorskip("tools.r4bt_c0_parity")
+    w = gate_world(tmp_path)
+    br, port, clk = w.bridge(parity=False)
+    sd = br.cfg.state_dir
+    res = {"verdict": "parity not shown", "stop_required": False, "r4bt": {"hashes": {"ledger_sha256": hashlib.sha256((Path(sd) / T.LEDGER_NAME).read_bytes()).hexdigest(),
+                                                                                    "attempts_sha256": hashlib.sha256((Path(sd) / T.ATTEMPTS_NAME).read_bytes()).hexdigest()},
+                                                         "counts": {}, "twin_run_ms": 1, "p2_evaluated": True}, "halts": {}}
+    assert parity.write_state(sd, w.at - 1000, 0, res) is None
+    assert T.parity_state_problem(sd, w.at) is None
+    feed(br, clk)
+    assert sends(port) == [("buy", f"MINT:{mark(0)}")]
+    # a failed run (exit 2, stop required) writes a state the gate refuses
+    assert parity.write_state(sd, w.at - 1000, 2, None) is None
+    assert T.parity_state_problem(sd, w.at) == "parity_gate:exit_code"
+    assert T.PARITY_SCHEMA == parity.STATE_SCHEMA and T.PARITY_STATE_NAME == parity.STATE_NAME
