@@ -50,6 +50,19 @@ while [ "$attempt" -le 2 ]; do
     --change-id "$R4BT_CHANGE_ID" --out "$R4BT_CARRY_OUT" --classify-rc "$crc" $final
   rc=$?
   echo "R4BT_CARRY_RC=$rc"
+  case "$rc" in 0|2|3) ;; *)
+    # the python died (import error, signal, traceback, write failure): write the latching ERROR carry from the shell (atomic), else remove the old carry
+    echo "r4bt-c0-a3-carry: carry tool exit $rc; writing the shell latch carry" >&2
+    NOW=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+    TMPC=$(mktemp "$(dirname "$R4BT_CARRY_OUT")/.carry-XXXXXX.tmp" 2>/dev/null)
+    if [ -n "$TMPC" ] && printf '{"schema": "r4bt_a3_carry_v1", "bot_id": "r4bt-a1", "change_id": "%s", "run_utc": "%s", "written_utc": "%s", "verdict": "ERROR", "halt_at_ms": null, "hard_halt": true, "hard_halt_reasons": ["refused:carry tool exit %s"], "halt": {"flags": {}}, "warn": {"flags": {"program_changed": {"warn": true}}}, "flags_evaluated": [], "skipped_flags": [], "skipped_counts": {}, "source": {}}\n' "$R4BT_CHANGE_ID" "$NOW" "$NOW" "$rc" > "$TMPC" && chmod 644 "$TMPC" && mv -f "$TMPC" "$R4BT_CARRY_OUT"; then
+      rc=2
+    else
+      [ -n "$TMPC" ] && rm -f "$TMPC"
+      rm -f "$R4BT_CARRY_OUT"
+      rc=12
+    fi ;;
+  esac
   if [ "$rc" -ne 3 ]; then break; fi
   attempt=$((attempt + 1))
 done
