@@ -60,8 +60,10 @@ def filled(post: bool = False, **over) -> dict:
 
 class UnitFile(unittest.TestCase):
     def test_keyless_dry_executor(self):
-        self.assertEqual(values("ExecStart"), ["/opt/mal-r4b-c0/venv/bin/python -E -s -B -u -m tools.r4bt_c0_executor --config /etc/mal-r4bt-c0/r4bt-c0.dry.json"])
+        self.assertEqual(values("ExecStart"), ["/opt/mal-r4b-c0/venv/bin/python -E -s -B -u -m tools.r4bt_c0_executor run --config /etc/mal-r4bt-c0/r4bt-c0.dry.json"])
         self.assertEqual(values("User"), ["mal-r4b-c0"])
+        self.assertEqual(values("Type"), ["simple"])
+        self.assertEqual(values("Restart"), ["on-failure"])  # latches live in the state file: a restart does not clear them
         self.assertEqual(values("WorkingDirectory"), ["/opt/mal-r4b-c0/current"])
         for k in ("LoadCredential", "LoadCredentialEncrypted", "SetCredential", "ImportCredential", "EnvironmentFile", "PassEnvironment", "BindPaths"):
             self.assertEqual(values(k), [], k)
@@ -149,11 +151,28 @@ class Template(unittest.TestCase):
         self.assertEqual(E.twin_heartbeat_problem(cfg.twin_interval_s, cfg.twin_replay_s, cfg.twin_heartbeat_max_ms), None)
 
     @need_exec
-    def test_live_is_refused_in_code(self):
+    def test_a_dry_config_can_never_send(self):
+        """#1257 flipped LIVE_BUILT True, so the guard is the pair (config mode, --live): a DRY config never takes a live port."""
         from tools import r4bt_c0_executor as E
-        self.assertIs(E.LIVE_BUILT, False)
-        with self.assertRaises(E.Refused):
-            E.make_config({**filled(post=True), "mode": "live"})
+        cfg = E.make_config(filled(post=True))
+        self.assertEqual(cfg.mode, "dry")
+        calls = []
+        # --live on a DRY config: refused before any port is built
+        self.assertEqual(E.run(filled(post=True), live_flag=True, port_factory=lambda c: calls.append(c)), 2)
+        # a live config without --live: refused too (never half-live, never a silent DRY)
+        self.assertEqual(E.run({**filled(post=True), "mode": "live"}, live_flag=False, port_factory=lambda c: calls.append(c)), 2)
+        self.assertEqual(calls, [])
+        # a DRY bridge refuses a live port outright
+        from tools import arena_live_bridge as B
+        self.assertIs(B.DryPort(cfg.dry_balance_lamports).live, False)
+
+    def test_live_example_is_a_separate_config_and_state_dir(self):
+        ex = json.loads((PACK / "r4bt-c0.live.json.example").read_text())
+        self.assertEqual(ex["mode"], "live")
+        self.assertNotEqual(ex["state_dir"], filled()["state_dir"])  # DRY and live never share a state dir
+        for k in ("frozen_sha", "change_id", "bot_id", "root", "twin_dir", "a3_carry_path", "tier_path", "live_ok_path", "owner_file", "send_fee_lamports"):
+            self.assertEqual(ex[k], filled()[k], k)
+        self.assertTrue(ex["health_path"].startswith(ex["state_dir"] + "/"))
 
     def test_pins_identical_to_the_hv4_bridge_venv(self):
         strip = lambda p: [ln for ln in p.read_text().splitlines() if ln.strip() and not ln.startswith("#")]  # noqa: E731
@@ -175,13 +194,19 @@ class Smoke(unittest.TestCase):
             rows = [json.loads(ln) for f in sorted(Path(cfg["root"]).rglob("*.jsonl")) for ln in f.read_text().splitlines()]
             self.assertTrue(all(r.get("meta", {}).get("mint", "SYN").startswith("SYN") for r in rows if r.get("kind") == "entry"))
             self.assertEqual([r["kind"] for r in rows], ["start", "entry", "entry", "entry", "exit"])
-            run = subprocess.run([sys.executable, "-E", "-s", "-B", "-u", "-m", "tools.r4bt_c0_executor", "--config", cp], cwd=REPO, capture_output=True, text=True, timeout=60)
-            self.assertEqual(run.returncode, 0, run.stdout + run.stderr)
-            self.assertTrue(json.loads(run.stdout)["ok"], run.stdout)
-            live = subprocess.run([sys.executable, "-E", "-s", "-B", "-u", "-m", "tools.r4bt_c0_executor", "--config", cp, "--live"], cwd=REPO, capture_output=True, text=True, timeout=60)
+            chk = subprocess.run([sys.executable, "-E", "-s", "-B", "-u", "-m", "tools.r4bt_c0_executor", "--config", cp], cwd=REPO, capture_output=True, text=True, timeout=60)
+            self.assertEqual(chk.returncode, 0, chk.stdout + chk.stderr)
+            self.assertTrue(json.loads(chk.stdout)["ok"], chk.stdout)
+            live = subprocess.run([sys.executable, "-E", "-s", "-B", "-u", "-m", "tools.r4bt_c0_executor", "run", "--config", cp, "--live"], cwd=REPO, capture_output=True, text=True, timeout=60)
             self.assertEqual(live.returncode, 2)
-            self.assertIn("live_not_built", live.stdout)
-            self.assertEqual(sorted(p.name for p in Path(d).iterdir()), ["declog", "state", "synthetic-dry.json"])
+            self.assertIn("live_flag_mode_mismatch", live.stdout)
+            once = subprocess.run([sys.executable, "-E", "-s", "-B", "-u", "-m", "tools.r4bt_c0_executor", "run", "--config", cp, "--once"], cwd=REPO, capture_output=True, text=True, timeout=60)
+            self.assertEqual(once.returncode, 0, once.stdout + once.stderr)
+            self.assertTrue(once.stdout.startswith("r4bt_c0_executor mode=dry bot=r4bt-a1 "), once.stdout)
+            names = sorted(p.name for p in Path(d).iterdir())
+            self.assertIn("health.dry.json", names)  # DRY writes its own health file, never health.json
+            self.assertNotIn("health.json", names)
+            self.assertEqual(sorted(set(names) - {"health.dry.json"}), ["declog", "state", "synthetic-dry.json"])
 
 
 def _sha256(p: Path) -> str:
@@ -268,6 +293,30 @@ class ReviewerItems(unittest.TestCase):
         sc = (REPO / "scripts" / "ops" / "r4bt-c0-twin-sandbox-check.sh").read_text()
         self.assertIn("head -c 0", sc)
         self.assertNotIn("test -r", sc)
+
+
+class LiveDropIn(unittest.TestCase):
+    EX = PACK / "live.conf.example"
+
+    def test_live_dropin_shape(self):
+        self.assertEqual(values("LoadCredential", self.EX), ["probe-wallet:/etc/mal-r4bt-c0-key/<HELM-SETS-WALLET-FILE>"])  # Helm's path; the name tools.probe_live reads
+        ex = values("ExecStart", self.EX)
+        self.assertEqual(ex[0], "")  # resets the base ExecStart
+        self.assertEqual(ex[1], "/opt/mal-r4b-c0/venv/bin/python -E -s -B -u -m tools.r4bt_c0_executor run --config /etc/mal-r4bt-c0/r4bt-c0.live.json --live")
+        self.assertEqual(values("PrivateNetwork", self.EX), ["false"])
+        self.assertEqual(values("ReadWritePaths", self.EX), ["", "/var/lib/mal-r4b-c0/state-live"])
+        txt = self.EX.read_text()
+        self.assertNotRegex(txt, r"(?m)^[^#\n]*(?:PRIVATE KEY|\[\d+,\s*\d+)")  # no key material of any shape
+        self.assertNotIn("/etc/mal-r4bt-c0-key/r4bt", txt)  # the real key file name is Helm's, never in the repo
+
+    def test_checklist_and_runbook_treat_the_dropin_as_live_only(self):
+        t = RUNBOOK.read_text()
+        for want in ("live.conf.example", "screen PASS", "owner", "step 5", "T0", "sandbox check after the executor's first DRY start", "KeyboardInterrupt", "SystemExit",
+                     "by hand", "tieout_dir", "only tie-out outputs", "health.dry.json", "Restart=on-failure"):
+            self.assertIn(want, t, want)
+        # the unit text with the live example appended trips the keyless checklist (credential directive and drop-in)
+        for d in values("LoadCredential", self.EX):
+            self.assertTrue(d)
 
 
 class PushNames(unittest.TestCase):
@@ -372,9 +421,9 @@ class Checklist(unittest.TestCase):
         self.assertEqual([f.split(" ")[1] for f in fails], ["venv_differs_from_pins"], out)  # the test interpreter is not the pinned venv
         for want in ("PASS no_credential_directives_in_unit", "PASS execstart_is_the_r4bt_executor_dry", "PASS private_network_true", "PASS declog_bind_is_the_change_id_root_read_only",
                      "PASS only_the_state_dir_is_writable", "PASS config_root_owned_0644", f"PASS tree_is_a_sha_dir ({SHA})",
-                     "PASS executor_live_not_built (LIVE_BUILT = False, W pinned)", "PASS venv_imports_the_executor_closure", "PASS key_dir_root_0700",
+                     "PASS executor_pins_W", "PASS venv_imports_the_executor_closure", "PASS key_dir_root_0700",
                      "PASS declog_has_the_arm_dir", "PASS twin_dir_root_0755", "PASS state_dir_owned_by_this_user", "PASS read_record_absent_before_the_go",
-                     "PASS installed_object_store_has_W", "PASS smoke_config_check_ok", "PASS smoke_live_refused", "PASS config_valid_dry_r4bt", "PASS tree_equals_manifest"):
+                     "PASS installed_object_store_has_W", "PASS smoke_config_check_ok", "PASS smoke_dry_config_with_live_flag_refused", "PASS smoke_run_once_prints_mode_dry", "PASS config_valid_dry_r4bt", "PASS tree_equals_manifest"):
             self.assertTrue(any(ln.startswith(want) for ln in out), (want, out))
         self.assertFalse(any(ln.startswith("FAIL declog_dir_not_empty") or "declog_dir_empty" in ln for ln in out))  # correction (b): no emptiness check
         self.assertFalse(any("SECRET-DECISION-ROW-MARKER" in ln or "2026-11-07" in ln for ln in out))  # no content, no file name inside the declog

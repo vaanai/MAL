@@ -6,13 +6,16 @@ Documentation=https://github.com/vaanai/MAL/blob/main/docs/runbooks/r4bt-c0-exec
 # This base unit has NO drop-in in a keyless install: a drop-in directory for this unit means a live switch, and scripts/ops/r4bt-c0-dry-checklist.sh fails on it.
 # The declog is non-empty by construction from the clock (the decision host writes it). The unit is NOT enabled or started against it until DEC-032 Am.9 (a4): the
 # screen PASS has QP's OK on the read's exact files AND the amendment has merged. Until then the only start is the checklist's synthetic smoke, in a mktemp dir.
-# AT THIS PACK'S SHA the executor module's only CLI is the config check (`--config`, prints one JSON line, exits 0 or 2); a run loop is a later reviewed PR. So the
-# unit is Type=oneshot with no restart: starting it validates the config against the pins and the open gates and exits.
+# The executor module (PR #1257) runs `run --config <config>`: DRY unless the config says mode live AND --live is given. This base unit is DRY: a DRY config never takes a live
+# port (a test asserts it). Restart=on-failure does NOT clear latches: latches live in <state_dir>/r4b-state-dry.json and survive a restart; a restart only re-reads them. A SystemExit
+# or KeyboardInterrupt latch must be cleared BY HAND by the manager (runbook section 3b); a start refusal exits nonzero and StartLimitBurst stops a loop of refusals.
 StartLimitIntervalSec=600
 StartLimitBurst=3
 
 [Service]
-Type=oneshot
+Type=simple
+Restart=on-failure
+RestartSec=30
 User=mal-r4b-c0
 Group=mal-r4b-c0
 Nice=10
@@ -22,7 +25,7 @@ Environment=LANG=C.UTF-8
 # Root-owned gate dir (root-run check, "+"; %% is systemd's escape for %).
 ExecStartPre=+/usr/bin/env -i /bin/sh -c 'test "$(/usr/bin/stat -c %%u:%%g:%%a /etc/mal-r4bt-c0)" = 0:0:755'
 # KEYLESS dry run: no --live, no LoadCredential, no EnvironmentFile. -E/-s: no PYTHON* variables, no user site; the pinned tree (cwd) is the only extra sys.path entry.
-ExecStart=/opt/mal-r4b-c0/venv/bin/python -E -s -B -u -m tools.r4bt_c0_executor --config /etc/mal-r4bt-c0/r4bt-c0.dry.json
+ExecStart=/opt/mal-r4b-c0/venv/bin/python -E -s -B -u -m tools.r4bt_c0_executor run --config /etc/mal-r4bt-c0/r4bt-c0.dry.json
 NoNewPrivileges=true
 # Dry makes no RPC: no network at all.
 PrivateNetwork=true

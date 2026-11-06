@@ -3,7 +3,7 @@
 This page is what Helm installs so that the r4-b-T C0 executor (`tools/r4bt_c0_executor.py`, bot_id `r4bt-a1`, W `17e3b05a7696900cda7fcf93e4af4008d8fa0184`, change_id `r4bt-a1-1107a`) and its paper twin writer (`scripts/mal-fast/r4bt-c0-twin.sh`) exist on mal-fast-0 **keyless and DRY** before the screen read. Sources: QP-RULING-1106-r4bt-c0 section 3 ("PR #1176: revive on a new branch") and section 8 (by 2026-11-12T12Z), DEC-032 Amendment 9. Revived from PR #1176 (r4b, EXP-027), which stays untouched.
 
 Pack files:
-- `scripts/mal-fast/r4bt-c0/`: executor unit, twin unit, parity service and timer, dry config template, hashed requirements, synthetic smoke fixture;
+- `scripts/mal-fast/r4bt-c0/`: executor unit, twin unit, parity service and timer, dry config template, `live.conf.example` (live drop-in, NOT installed by the keyless install) and `r4bt-c0.live.json.example`, hashed requirements, synthetic smoke fixture;
 - `scripts/ops/r4bt-c0-dry-checklist.sh` and `scripts/ops/r4bt-c0-twin-sandbox-check.sh`;
 - tests: `tools/test_r4bt_c0_install_pack.py`.
 
@@ -11,9 +11,9 @@ Pack files:
 
 ## 0. What this pack is, and what it does not do
 
-- **`tools/r4bt_c0_executor.LIVE_BUILT` is False** (PR #1246, head `5e6403ed`). `make_config` refuses any mode but `dry`, so no config, file or flag makes this tree send. The live path is a later, separately reviewed code change (section 8).
+- **A DRY config can never send.** `tools/r4bt_c0_executor` (live port PR #1257, `LIVE_BUILT` True) sends only when the config says mode `live` AND `--live` is given AND every live gate holds before each buy. `run` with a DRY config and `--live`, or a live config without it, exits 2 (`live_flag_mode_mismatch`); a DRY config never takes a live port. The keyless install has no live config, no `--live`, no credential and no drop-in, so it cannot send. The live drop-in is section 3b.
 - **Declog.** r4-b-T's decision host writes `$HOME/mal-data/r4b-dry/r4bt-a1-1107a/declog/decisions/r4b-exp027/` from its clock, so that directory is **non-empty by construction**. The executor unit binds the declog root read-only. **The unit is not enabled or started against it until DEC-032 Am.9 (a4)**: the screen PASS has QP's OK on the read's exact files AND the amendment has merged. Until then the only start is the checklist's synthetic smoke, in a mktemp dir with `SYNmint*` rows. Nobody opens, lists or `cat`s a file inside the declog (Am.27 item 2; seals). The checklist is **names only**.
-- **Executor CLI at `5e6403ed`.** The module's only entry point is the config check (`python -m tools.r4bt_c0_executor --config <file>` prints one JSON line, exit 0 or 2; `--live` is refused as `live_not_built`). The executor unit is therefore `Type=oneshot`. A run loop is a later reviewed PR; when it lands the unit's `ExecStart` changes in that PR.
+- **Executor CLI.** `python -m tools.r4bt_c0_executor run --config <config> [--live] [--once]` is the run loop; the bare `--config <file>` form is a config check (one JSON line, exit 0 or 2). The executor unit is `Type=simple` and runs the DRY config. A DRY run writes `health.dry.json` beside the config's `health_path`, never `health.json` (the watchdog's live file).
 - **Twin files are root-owned.** The executor's twin gate accepts `twins.run.json` and `twins.jsonl` only when root-owned and not group/other writable, so the twin unit runs as root with an empty capability set (open question on the PR).
 - **Not in this pack:** the live drop-in; the A3 carry job (a root-owned file from the research-0 monitor); the read-record file (written by the manager at the go); the watchdog entries; the daily tie-out; the wallet.
 
@@ -135,6 +135,15 @@ Fixed in the template (Am.9; DEC-032 section 3 C0 table; a change is refused by 
 - **A3 carry.** On research-0 `scripts/ops/r4bt-c0-a3-carry.sh` runs **hourly** as one MiScusi job (its header lists the env). Helm then copies the carry to the root-owned `a3_carry_path` on fast-0 **right after, at least hourly**: sha256 verified against the research-0 file, written to a temp name in the same dir and `rename`d atomically (no following of links), root:root 0644. **A missing, unreadable or invalid source on research-0 (no file, bad JSON, wrong schema or identity, stale `written_utc`) must REMOVE the fast-0 copy or replace it with a LATCHING carry** (verdict ERROR, `hard_halt` true): the copy step never leaves the previous good carry in place, never skips silently, and exits nonzero so the watchdog alerts. The 3 h `written_utc` bound is the backstop only, not the mechanism: if the whole copy job dies, the carry goes stale within 3 h and the executor latches `r4bt_a3`. The executor config sets `a3_carry_max_age_ms` **10800000** (3 h) on the carry's `written_utc`, leaving slack for one missed hour; stale latches `r4bt_a3`.
 - **FILL:c0_constants** (each is stated in the confirmation read, none is tuned after seeing results): (1) twin replay time, `twin_replay_s`, a placeholder 300 s until it is measured in the DRY smoke; (2) twin heartbeat bound 900 s (`twin_heartbeat_max_ms` 900000 = 2 x 300 + 300); (3) parity cadence 45 s plus after each fill, and the measured parity run time (p50 and p99), both recorded before the timer is enabled (step 11); (4) `p_fail_press` 0.0 disclosure: the parity tool feeds `p_fail_press` 0.0 into P2, so the pressure term is zero and the flat `FLAT_FAIL` bound alone decides P2; (5) permission conditions: state dir 0750 or tighter owned by the executor user, twin files and carry root-owned and not group/other writable, gate dir root 0755, key dir root 0700.
 
+### 3b. Run loop, restarts, and the LIVE drop-in
+
+- **Restart policy.** `Restart=on-failure`, `RestartSec=30`, `StartLimitBurst=3`. A restart does **not** clear latches: they live in `<state_dir>/r4b-state-<mode>.json` and a restart only re-reads them. A start refusal (a pin, a gate, `other_mode_state_present`) exits nonzero and the start limit stops a refusal loop. Never delete the state file to "clear" something.
+- **KeyboardInterrupt / SystemExit latch.** A latch written by a `KeyboardInterrupt` or `SystemExit` in the run loop must be **cleared by hand** by the manager after looking at why (the executor never self-clears it, and a systemd restart does not). Record the clearing in LAB_STATE.
+- **`tieout_dir`.** The daily tie-out job (`tools/r4bt_c0_tieout.py`) reads a folder that holds **only tie-out outputs** (its own fills export and ledger copy, aggregates). Never point it at the state dir, the twin dir or the declog: those hold the live order ledger and sealed twin files that agents must not read before the confirmation read.
+- **Health files.** DRY writes `health.dry.json` beside `health_path` (`/var/lib/mal-r4b-c0/state/health.json` in the DRY template); live writes `health.json` at the live config's `health_path` inside the live state dir `/var/lib/mal-r4b-c0/state-live`. The two modes never share a health file or a state dir. The watchdog reads the live file only; DRY state is read with `health.dry.json`.
+- **Sandbox check after the executor's first DRY start.** After the first DRY start of the executor (never before the start gate, section 5), run `sudo sh /opt/mal-r4b-c0/current/scripts/ops/r4bt-c0-twin-sandbox-check.sh` again, so the ACLs are proven with the real files (`twins.run.json`, the ledger, the attempts file) present, and confirm `health.dry.json` is fresh.
+- **LIVE drop-in (`live.conf.example`).** It is the only thing that hands the executor a key: `LoadCredential=probe-wallet:<Helm's wallet file>` (the name `tools.probe_live` reads, as in the probe and H5 arena live drop-ins; the source is `root:root 0400` in `/etc/mal-r4bt-c0-key`, a path Helm sets and no agent reads, prints or copies), `EnvironmentFile` for the RPC key (Helm's root-owned file), network on, the live state dir writable, and `ExecStart` with the live config (`r4bt-c0.live.json`, from `r4bt-c0.live.json.example`) and `--live`. **It is installed only after ALL of: the screen PASS with QP's OK on the read's exact files, the owner's yes (DEC-032 Am.9 section 9 step 5), and the per-bot TIER file reads `T0`.** It is installed by Helm from the manifest-verified copy in the sha dir (command in the file's header), and the manager restarts the unit. The keyless checklist fails if the drop-in exists. Remove the drop-in and restart to go back to DRY. Live still needs, before every buy, the config mode, `--live`, `LIVE_OK`, `TIER` T0, the owner line, the read record, a fresh A3 carry, the twin gate, the parity gate and the caps.
+
 ## 4. Keyless checklist
 
 ```
@@ -149,12 +158,12 @@ It prints only paths, labels and PASS/FAIL, never contents. Expect `RESULT PASS`
 - the config is dry, `r4bt-a1`, W, `r4bt-a1-1107a`, the declog root of the change_id, all five C0 caps at or under the table, fee 505000 unless a `fee_override` is present, absolute paths, no placeholder, root:root 0644;
 - no `LIVE_OK`, no `CANARY_DEC.md`; a `TIER` file, if present, reads `T0`; no `read-record.json` before the go (`postread` requires it);
 - no key file is readable by this user;
-- the tree is a root-owned 40-hex sha dir equal to its manifest, with `LIVE_BUILT = False` and W pinned, and the twin files are present;
+- the tree is a root-owned 40-hex sha dir equal to its manifest, with W pinned, and the twin files are present;
 - the venv holds exactly the four pins and imports the executor closure;
 - the gate dir is root 0755, the key dir root 0700, the state dir 0750 or tighter and owned by the executor user;
 - **declog, names only:** the bind source exists, and holds `decisions/r4b-exp027` (read-only to the executor by the unit's bind, which is checked on the unit text). The declog being non-empty is expected; no emptiness check exists and no name or content inside it is listed;
 - the twin dir is root 0755 and not writable by this user; the state dir is owned by this user with group not `claude`; the twin's recursive read ACLs are proven by `r4bt-c0-twin-sandbox-check.sh` (root, from inside the twin unit's sandbox), not by this checklist;
-- the synthetic smoke passes: the executor's config check prints `"ok": true`, and `--live` exits 2 with `live_not_built`;
+- the synthetic smoke passes: the config check prints `"ok": true`; `run --live` on the DRY config exits 2 (`live_flag_mode_mismatch`); `run --once` prints `mode=dry` and writes `health.dry.json` in the mktemp dir;
 - the unit is not enabled and not active.
 
 `R4BTC0_MODE=postread` (after the go) additionally requires the read record (root 0644) and the two read keys in the config, and does not check unit state.
@@ -164,7 +173,7 @@ It prints only paths, labels and PASS/FAIL, never contents. Expect `RESULT PASS`
 Per DEC-032 Am.9 (a4) the executor is not started against the real declog before the screen PASS has QP's OK on the read's exact files AND the amendment has merged. At the go the manager:
 1. writes the read record and the config keys (section 3), the A3 carry job runs, the per-bot `TIER` reads `T0`;
 2. runs the `postread` checklist (expect `RESULT PASS`);
-3. starts the twin unit, then waits for a fresh `twins.run.json` (the executor's twin gate refuses on a stale heartbeat);
+3. starts the twin unit, then waits for a fresh `twins.run.json` (the executor's twin gate refuses on a stale heartbeat), and re-runs the sandbox check after the executor's first DRY start (section 3b);
 4. starts the executor unit. Its logs are names and counts only for marks before the confirmation read (Am.8 B1).
 
 ## 6. Stop
@@ -183,9 +192,9 @@ Per DEC-032 Am.9 (a4) the executor is not started against the real declog before
 - template and runbook pin W and the change_id instead of EXP-027 `frozen_sha` placeholders and the old long-DRY-host sha; the module is `tools.r4bt_c0_executor`, the bot is `r4bt-a1`;
 - per-bot gate paths (`LIVE_OK`, `TIER` = `T0`, owner file, read record, A3 carry), the C0 caps and the 505000 fee are in the template and checked; the twin unit, the git-object-store requirement, the tape read ACL and the 400 h keep-verified dependency are new.
 
-## 8. Live (NOT built; listed so that nobody improvises it)
+## 8. Live
 
-Live needs a reviewed code change with its own QP pass, and none of it exists at this pack's sha: `LIVE_BUILT` flipped behind a refusal that its own diff removes; the owner confirmation (`OWNER_CANARY_CONFIRMED: bot_id=r4bt-a1`) and the per-bot `LIVE_OK`; the live drop-in (`LoadCredential` from `/etc/mal-r4bt-c0-key/`, network on); the wallet, which Helm makes on the owner's word, a dedicated one (QP-RULING-1106-r4bt-c0 section 4). Helm acts on each live step only on the owner's word.
+The live port is built (PR #1257) and the drop-in is an example in this pack (section 3b), not installed. Live is the owner's call at the time: the screen PASS with QP's OK, the owner's yes, TIER `T0`, a dedicated wallet Helm makes (QP-RULING-1106-r4bt-c0 section 4), then Helm installs the drop-in. Nothing here funds, configures or starts a live executor; only the manager starts it.
 
 No book has cleared the promotion gate.
 

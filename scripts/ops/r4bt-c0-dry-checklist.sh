@@ -65,7 +65,7 @@ else
   bad=$(printf '%s\n' "$code" | grep -Ei '^[[:space:]]*BindPaths[[:space:]]*=' | sed 's/=.*/=<paths hidden>/')
   [ -n "$bad" ] && fail "writable_bind_in_unit: $bad" || pass "no_writable_bind_in_unit"
   if printf '%s\n' "$code" | grep -E '^[[:space:]]*ExecStart' | grep -q -- '--live'; then fail "execstart_has_--live"; else pass "execstart_has_no_--live"; fi
-  if printf '%s\n' "$code" | grep -E '^[[:space:]]*ExecStart=' | grep -q -- '-m tools.r4bt_c0_executor --config '; then pass "execstart_is_the_r4bt_executor_dry"; else fail "execstart_not_the_r4bt_executor_dry"; fi
+  if printf '%s\n' "$code" | grep -E '^[[:space:]]*ExecStart=' | grep -q -- '-m tools.r4bt_c0_executor run --config '; then pass "execstart_is_the_r4bt_executor_dry"; else fail "execstart_not_the_r4bt_executor_dry"; fi
   if printf '%s\n' "$code" | grep -Eq '^[[:space:]]*PrivateNetwork[[:space:]]*=[[:space:]]*true[[:space:]]*$'; then pass "private_network_true"; else fail "private_network_not_true"; fi
   rw=$(printf '%s\n' "$code" | grep -E '^[[:space:]]*ReadWritePaths[[:space:]]*=' | sed 's/^[^=]*=[[:space:]]*//' | tr ' ' '\n' | grep -v '^$' | sort -u | tr '\n' ' ')
   [ "$rw" = "$UNIT_STATE_PATH " ] && pass "only_the_state_dir_is_writable" || fail "writable_paths_not_only_the_state_dir (${rw:-none})"
@@ -81,7 +81,7 @@ import json, os, sys
 p, bot, w, cid, root, mode = sys.argv[1:7]
 postread = mode == "postread"
 caps = {"stake_lamports": 50000000, "max_open": 2, "max_trades_per_day": 30, "daily_loss_lamports": 100000000, "total_loss_lamports": 200000000}
-profile = {"change_id", "a3_carry_max_age_ms", "twin_dir", "a3_carry_path", "read_record_path", "read_result_sha256", "qp_comment_id", "owner_file", "live_ok_path", "tier_path", "send_fee_lamports", "fee_override", "twin_interval_s", "twin_replay_s", "twin_heartbeat_max_ms"}
+profile = {"change_id", "a3_carry_max_age_ms", "health_path", "twin_dir", "a3_carry_path", "read_record_path", "read_result_sha256", "qp_comment_id", "owner_file", "live_ok_path", "tier_path", "send_fee_lamports", "fee_override", "twin_interval_s", "twin_replay_s", "twin_heartbeat_max_ms"}
 allowed = {"mode", "bot_id", "frozen_sha", "root", "state_dir", "end_ms", "slot_s", "funded_lamports", "dry_balance_lamports", "stop_file", "halt_file"} | set(caps) | profile
 need = {"mode", "bot_id", "frozen_sha", "change_id", "root", "state_dir", "end_ms", "slot_s", "stop_file", "halt_file", "twin_dir", "a3_carry_path", "read_record_path"} | set(caps)
 if postread: need |= {"read_result_sha256", "qp_comment_id"}
@@ -163,7 +163,7 @@ if [ -d "$real_tree" ]; then
   for f in tools/r4bt_c0_executor.py tools/r4b_arena_executor.py tools/arena_live_bridge.py tools/r4b_book.py tools/arena_declog.py tools/r4bt_c0_twin.py tools/arena_paper.py scripts/mal-fast/r4bt-c0-twin.sh scripts/mal-fast/r4bt-c0/r4bt-c0-smoke-fixture.py scripts/mal-fast/r4bt-c0/mal-r4bt-c0-twin.service; do
     [ -f "$real_tree/$f" ] && pass "tree_has $f" || fail "tree_missing $f"
   done
-  if grep -Eq '^LIVE_BUILT = False' "$real_tree/tools/r4bt_c0_executor.py" 2>/dev/null && grep -Eq '^REGISTERED_W = "'$W'"' "$real_tree/tools/r4bt_c0_executor.py" 2>/dev/null; then pass "executor_live_not_built (LIVE_BUILT = False, W pinned)"; else fail "executor_live_built_or_unreadable: this checklist is for a keyless dry-only tree"; fi
+  if grep -Eq '^REGISTERED_W = "'$W'"' "$real_tree/tools/r4bt_c0_executor.py" 2>/dev/null; then pass "executor_pins_W (a DRY config never takes a live port; the live drop-in is absent in a keyless install)"; else fail "executor_unreadable_or_W_not_pinned: this checklist is for a keyless dry-only tree"; fi
 else fail "tree_missing ($TREE)"; fi
 
 # 5. The venv: exactly the four pinned distributions (plus pip), Python 3.12, and the executor closure imports from the tree.
@@ -222,9 +222,14 @@ else
     out=$(cd "$real_tree" && "$VPY" -E -s -B -u -m tools.r4bt_c0_executor --config "$scfg" 2>&1)
     rc=$?
     if [ "$rc" -eq 0 ] && printf '%s\n' "$out" | grep -q '"ok": true'; then pass "smoke_config_check_ok (synthetic root, bot=$BOT)"; else fail "smoke_config_check_failed (rc=$rc): $(printf '%s\n' "$out" | tail -n 1 | tr -cd 'A-Za-z0-9_:. "-' | cut -c1-120)"; fi
-    out=$(cd "$real_tree" && "$VPY" -E -s -B -u -m tools.r4bt_c0_executor --config "$scfg" --live 2>&1)
+    # a DRY config with --live never starts: exit 2, live_flag_mode_mismatch (never half-live)
+    out=$(cd "$real_tree" && "$VPY" -E -s -B -u -m tools.r4bt_c0_executor run --config "$scfg" --live 2>&1)
     rc=$?
-    if [ "$rc" -eq 2 ] && printf '%s\n' "$out" | grep -q 'live_not_built'; then pass "smoke_live_refused (live_not_built)"; else fail "smoke_live_not_refused (rc=$rc)"; fi
+    if [ "$rc" -eq 2 ] && printf '%s\n' "$out" | grep -q 'live_flag_mode_mismatch'; then pass "smoke_dry_config_with_live_flag_refused"; else fail "smoke_dry_config_with_live_flag_not_refused (rc=$rc)"; fi
+    # the DRY run loop on the synthetic root, one pass: prints mode=dry and writes only its DRY health file (health.dry.json) in the mktemp dir
+    out=$(cd "$real_tree" && "$VPY" -E -s -B -u -m tools.r4bt_c0_executor run --config "$scfg" --once 2>&1)
+    rc=$?
+    if [ "$rc" -eq 0 ] && printf '%s\n' "$out" | grep -q "^r4bt_c0_executor mode=dry bot=$BOT "; then pass "smoke_run_once_prints_mode_dry"; else fail "smoke_run_once_failed (rc=$rc): $(printf '%s\n' "$out" | tail -n 1 | tr -cd 'A-Za-z0-9_:. "-' | cut -c1-120)"; fi
   fi
 fi
 
