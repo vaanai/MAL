@@ -32,7 +32,8 @@ PrivateNetwork=true
 RestrictAddressFamilies=AF_UNIX
 # Writes only its state dir (mal-r4b-c0:mal-r4b-c0 0750: no agent group; STOP is set by `sudo touch`). The twin dir /var/lib/mal-r4b-c0/twin is root-owned and read-only here.
 ProtectSystem=strict
-ReadWritePaths=/var/lib/mal-r4b-c0/state
+# The health dir is separate from the 0750 state dir so the watchdog (user claude) can read health.json / health.dry.json (0644, written by the executor).
+ReadWritePaths=/var/lib/mal-r4b-c0/state /var/lib/mal-r4b-c0/health
 ReadOnlyPaths=/opt/mal-r4b-c0
 TemporaryFileSystem=/var/lib/mal:ro
 TemporaryFileSystem=/data:ro

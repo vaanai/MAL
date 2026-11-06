@@ -30,7 +30,7 @@ PY3=${R4BTC0_PY3:-python3}
 ROOT_UID=${R4BTC0_STAT_OWNER:-0}
 # Key-like files the executor user must NOT be able to read. Tests on a non-fast host replace the list (set to empty) with R4BTC0_SYSTEM_KEY_PATHS; on mal-fast-0 leave it unset.
 SYSTEM_KEY_PATHS=${R4BTC0_SYSTEM_KEY_PATHS-/etc/mal-probe/probe-wallet.json /var/lib/mal-live/probe-wallet.json /var/lib/mal/fast-listener/helius.env /etc/mal-probe-rpc/helius.env}
-UNIT_STATE_PATH=/var/lib/mal-r4b-c0/state   # the unit's one ReadWritePaths entry (a constant of the unit file)
+UNIT_STATE_PATH="/var/lib/mal-r4b-c0/health /var/lib/mal-r4b-c0/state"   # the unit's ReadWritePaths entries, sorted (a constant of the unit file)
 BOT=r4bt-a1
 W=17e3b05a7696900cda7fcf93e4af4008d8fa0184
 CHANGE_ID=r4bt-a1-1107a
@@ -68,7 +68,7 @@ else
   if printf '%s\n' "$code" | grep -E '^[[:space:]]*ExecStart=' | grep -q -- '-m tools.r4bt_c0_executor run --config '; then pass "execstart_is_the_r4bt_executor_dry"; else fail "execstart_not_the_r4bt_executor_dry"; fi
   if printf '%s\n' "$code" | grep -Eq '^[[:space:]]*PrivateNetwork[[:space:]]*=[[:space:]]*true[[:space:]]*$'; then pass "private_network_true"; else fail "private_network_not_true"; fi
   rw=$(printf '%s\n' "$code" | grep -E '^[[:space:]]*ReadWritePaths[[:space:]]*=' | sed 's/^[^=]*=[[:space:]]*//' | tr ' ' '\n' | grep -v '^$' | sort -u | tr '\n' ' ')
-  [ "$rw" = "$UNIT_STATE_PATH " ] && pass "only_the_state_dir_is_writable" || fail "writable_paths_not_only_the_state_dir (${rw:-none})"
+  [ "$rw" = "$UNIT_STATE_PATH " ] && pass "only_the_state_and_health_dirs_are_writable" || fail "writable_paths_not_only_the_state_and_health_dirs (${rw:-none})"
   if printf '%s\n' "$utext" | grep -Eq '^#[[:space:]]*/.*\.service\.d/'; then fail "drop_in_present_in_unit_text"; else pass "no_drop_in_in_unit_text"; fi
 fi
 for dd in "/etc/systemd/system/$UNIT.d" "/run/systemd/system/$UNIT.d" "/usr/lib/systemd/system/$UNIT.d"; do

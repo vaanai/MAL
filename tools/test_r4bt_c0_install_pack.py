@@ -72,7 +72,7 @@ class UnitFile(unittest.TestCase):
         self.assertEqual(values("RestrictAddressFamilies"), ["AF_UNIX"])
 
     def test_sandbox_and_the_changed_declog_bind(self):
-        self.assertEqual(values("ReadWritePaths"), ["/var/lib/mal-r4b-c0/state"])
+        self.assertEqual(values("ReadWritePaths"), ["/var/lib/mal-r4b-c0/state /var/lib/mal-r4b-c0/health"])
         # correction (a): the bind source is item 6's r4-b-T declog root of the change_id, not /var/lib/mal-r4b-c0/declog
         self.assertEqual(values("BindReadOnlyPaths"), [DECLOG_ROOT])
         self.assertNotIn("/var/lib/mal-r4b-c0/declog", UNIT.read_text())
@@ -86,7 +86,9 @@ class UnitFile(unittest.TestCase):
     def test_paths_match_the_template(self):
         c = filled()
         self.assertEqual(c["root"], values("BindReadOnlyPaths")[0])
-        self.assertEqual(c["state_dir"], values("ReadWritePaths")[0])
+        self.assertEqual(c["state_dir"], values("ReadWritePaths")[0].split()[0])
+        self.assertEqual(os.path.dirname(c["health_path"]), values("ReadWritePaths")[0].split()[1])  # the watchdog-readable health dir, not the 0750 state dir
+        self.assertNotEqual(os.path.dirname(c["health_path"]), c["state_dir"])
         self.assertNotEqual(c["twin_dir"], c["state_dir"])
         self.assertTrue(c["stop_file"].startswith(c["state_dir"] + "/") and c["halt_file"].startswith(c["state_dir"] + "/"))
         self.assertIn("/etc/mal-r4bt-c0/r4bt-c0.dry.json", values("ExecStart")[0])
@@ -172,7 +174,8 @@ class Template(unittest.TestCase):
         self.assertNotEqual(ex["state_dir"], filled()["state_dir"])  # DRY and live never share a state dir
         for k in ("frozen_sha", "change_id", "bot_id", "root", "twin_dir", "a3_carry_path", "tier_path", "live_ok_path", "owner_file", "send_fee_lamports"):
             self.assertEqual(ex[k], filled()[k], k)
-        self.assertTrue(ex["health_path"].startswith(ex["state_dir"] + "/"))
+        self.assertEqual(ex["health_path"], filled()["health_path"])  # one shared, watchdog-readable health dir for both modes
+        self.assertFalse(ex["health_path"].startswith(ex["state_dir"] + "/"))
 
     def test_pins_identical_to_the_hv4_bridge_venv(self):
         strip = lambda p: [ln for ln in p.read_text().splitlines() if ln.strip() and not ln.startswith("#")]  # noqa: E731
@@ -304,7 +307,7 @@ class LiveDropIn(unittest.TestCase):
         self.assertEqual(ex[0], "")  # resets the base ExecStart
         self.assertEqual(ex[1], "/opt/mal-r4b-c0/venv/bin/python -E -s -B -u -m tools.r4bt_c0_executor run --config /etc/mal-r4bt-c0/r4bt-c0.live.json --live")
         self.assertEqual(values("PrivateNetwork", self.EX), ["false"])
-        self.assertEqual(values("ReadWritePaths", self.EX), ["", "/var/lib/mal-r4b-c0/state-live"])
+        self.assertEqual(values("ReadWritePaths", self.EX), ["", "/var/lib/mal-r4b-c0/state-live /var/lib/mal-r4b-c0/health"])
         txt = self.EX.read_text()
         self.assertNotRegex(txt, r"(?m)^[^#\n]*(?:PRIVATE KEY|\[\d+,\s*\d+)")  # no key material of any shape
         self.assertNotIn("/etc/mal-r4bt-c0-key/r4bt", txt)  # the real key file name is Helm's, never in the repo
@@ -312,11 +315,33 @@ class LiveDropIn(unittest.TestCase):
     def test_checklist_and_runbook_treat_the_dropin_as_live_only(self):
         t = RUNBOOK.read_text()
         for want in ("live.conf.example", "screen PASS", "owner", "step 5", "T0", "sandbox check after the executor's first DRY start", "KeyboardInterrupt", "SystemExit",
-                     "by hand", "tieout_dir", "only tie-out outputs", "health.dry.json", "Restart=on-failure"):
+                     "by hand", "Helm confirms the RPC env file path", "ln -s health/health.json", "tieout_dir", "only tie-out outputs", "health.dry.json", "Restart=on-failure"):
             self.assertIn(want, t, want)
         # the unit text with the live example appended trips the keyless checklist (credential directive and drop-in)
         for d in values("LoadCredential", self.EX):
             self.assertTrue(d)
+
+
+class HealthFile(unittest.TestCase):
+    @need_exec
+    def test_executor_health_file_mode_and_keys(self):
+        """The executor writes its health file 0644 with only the pinned keys (the watchdog is a different user)."""
+        from tools import arena_live_bridge as B
+        from tools import r4bt_c0_executor as E
+        self.assertEqual(filled()["health_path"], E.HEALTH_PATH_DEFAULT.replace("/health.json", "/health/health.json"))
+        with tempfile.TemporaryDirectory() as d:
+            root, state = Path(d) / "declog", Path(d) / "state"
+            root.mkdir()
+            state.mkdir(mode=0o700)
+            (root / "SYNTHETIC_FIXTURE_ROOT").write_text("")
+            cfg = E.make_config({**filled(post=True), "health_path": os.path.join(d, "health", "health.json"), "root": str(root), "state_dir": str(state),
+                                 "stop_file": str(state / "STOP"), "halt_file": str(state / "HALT")})
+            br = E.R4btBridge(cfg, B.DryPort(cfg.dry_balance_lamports), now_ms=lambda: 1_794_000_000_000, root_checks=False)
+            br.write_health(force=True)
+            p = Path(d) / "health" / "health.dry.json"
+            self.assertTrue(p.is_file(), os.listdir(os.path.join(d, "health")))
+            self.assertEqual(oct(os.stat(p).st_mode & 0o777), "0o644")
+            self.assertEqual(tuple(json.loads(p.read_text())), tuple(sorted(E.HEALTH_KEYS)))
 
 
 class PushNames(unittest.TestCase):
@@ -420,7 +445,7 @@ class Checklist(unittest.TestCase):
         fails = [ln for ln in out if ln.startswith("FAIL")]
         self.assertEqual([f.split(" ")[1] for f in fails], ["venv_differs_from_pins"], out)  # the test interpreter is not the pinned venv
         for want in ("PASS no_credential_directives_in_unit", "PASS execstart_is_the_r4bt_executor_dry", "PASS private_network_true", "PASS declog_bind_is_the_change_id_root_read_only",
-                     "PASS only_the_state_dir_is_writable", "PASS config_root_owned_0644", f"PASS tree_is_a_sha_dir ({SHA})",
+                     "PASS only_the_state_and_health_dirs_are_writable", "PASS config_root_owned_0644", f"PASS tree_is_a_sha_dir ({SHA})",
                      "PASS executor_pins_W", "PASS venv_imports_the_executor_closure", "PASS key_dir_root_0700",
                      "PASS declog_has_the_arm_dir", "PASS twin_dir_root_0755", "PASS state_dir_owned_by_this_user", "PASS read_record_absent_before_the_go",
                      "PASS installed_object_store_has_W", "PASS smoke_config_check_ok", "PASS smoke_dry_config_with_live_flag_refused", "PASS smoke_run_once_prints_mode_dry", "PASS config_valid_dry_r4bt", "PASS tree_equals_manifest"):

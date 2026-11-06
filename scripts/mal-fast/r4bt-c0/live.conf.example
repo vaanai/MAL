@@ -16,9 +16,9 @@ EnvironmentFile=/etc/mal-probe-rpc/helius.env
 PrivateNetwork=false
 RestrictAddressFamilies=
 RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
-# ... and its OWN state dir: DRY and live never share one (the executor refuses other_mode_state_present). health.json (the watchdog's file) lives there too.
+# ... and its OWN state dir: DRY and live never share one (the executor refuses other_mode_state_present). health.json goes to the shared health dir (the config's health_path), readable by the watchdog.
 ReadWritePaths=
-ReadWritePaths=/var/lib/mal-r4b-c0/state-live
+ReadWritePaths=/var/lib/mal-r4b-c0/state-live /var/lib/mal-r4b-c0/health
 ExecStart=
 ExecStart=/opt/mal-r4b-c0/venv/bin/python -E -s -B -u -m tools.r4bt_c0_executor run --config /etc/mal-r4bt-c0/r4bt-c0.live.json --live
 LimitCORE=0
