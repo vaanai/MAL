@@ -6,8 +6,8 @@
   {
    "id": "r4bt-c0-code-complete-1106",
    "kind": "job",
-   "title": "r4-b-T C0 code complete on main 02d2d3a8 (DEC-032 Am.9 #1244 through #1258); Helm keyless pre-install requested",
-   "detail": "Merged with QP OK and reviewer APPROVE: DEC-032 Am.9 #1244, twin writer #1243, executor #1246 and #1252, carry #1249, parity #1250, install pack #1251, live port #1257, install follow-up #1258. Main C0 tests pass (separate processes). HELM-ASK-1106-1: keyless DRY pre-install requested at main 02d2d3a8; no live drop-in, no LIVE_OK, no key. r4-b-T registration is due 2026-11-07 (clock 2026-11-08T00Z). Code and plumbing only; nothing is live. No book has cleared the promotion gate.",
+   "title": "r4-b-T C0 code complete on main fb187372 or later (adds #1259: sandbox check keeps the wallet credential/RPC key out of probe shells) (DEC-032 Am.9 #1244 through #1259); Helm keyless pre-install requested",
+   "detail": "Merged with QP OK and reviewer APPROVE: DEC-032 Am.9 #1244, twin writer #1243, executor #1246 and #1252, carry #1249, parity #1250, install pack #1251, live port #1257, install follow-up #1258, sandbox check #1259. Main C0 tests pass (separate processes). HELM-ASK-1106-1: keyless DRY pre-install requested at main fb187372 or later (adds #1259: sandbox check keeps the wallet credential/RPC key out of probe shells); no live drop-in, no LIVE_OK, no key. r4-b-T registration is due 2026-11-07 (clock 2026-11-08T00Z). Code and plumbing only; nothing is live. No book has cleared the promotion gate.",
    "atUtc": "2026-11-06T19:08:00Z",
    "approx": true
   },
@@ -1925,7 +1925,7 @@
   {
    "id": "fy-20261106-helm-direct-yes",
    "from": "claude",
-   "text": "Please approve slowbot-h-1 go-live and r4bt-c0 key create directly in Helm chat. Helm does not accept a relayed approval (HELM-REPLY-1104-1h); both approval widgets are pending. slowbot-h-1: the 24 h keyless dry ended clean (3 fresh dry_would_send, 0 errors). r4bt-c0: code is complete on main 02d2d3a8; the key create waits on your yes. Nothing is live and nothing is funded until you say so. No book has cleared the promotion gate.",
+   "text": "Please approve slowbot-h-1 go-live and r4bt-c0 key create directly in Helm chat. Helm does not accept a relayed approval (HELM-REPLY-1104-1h); both approval widgets are pending. slowbot-h-1: the 24 h keyless dry ended clean (3 fresh dry_would_send, 0 errors). r4bt-c0: code is complete on main fb187372 or later (adds #1259: sandbox check keeps the wallet credential/RPC key out of probe shells); the key create waits on your yes. Nothing is live and nothing is funded until you say so. No book has cleared the promotion gate.",
    "atUtc": "2026-11-06T18:57:00Z"
   },
   {
