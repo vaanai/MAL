@@ -22,7 +22,7 @@ Environment=LANG=C.UTF-8
 # Root-owned gate dir (root-run check, "+"; %% is systemd's escape for %).
 ExecStartPre=+/usr/bin/env -i /bin/sh -c 'test "$(/usr/bin/stat -c %%u:%%g:%%a /etc/mal-r4bt-c0)" = 0:0:755'
 # KEYLESS dry run: no --live, no LoadCredential, no EnvironmentFile. -E/-s: no PYTHON* variables, no user site; the pinned tree (cwd) is the only extra sys.path entry.
-ExecStart=/opt/mal-r4b-c0/venv/bin/python -E -s -B -u -m tools.r4bt_c0_executor --config /etc/mal-r4b-c0/r4bt-c0.dry.json
+ExecStart=/opt/mal-r4b-c0/venv/bin/python -E -s -B -u -m tools.r4bt_c0_executor --config /etc/mal-r4bt-c0/r4bt-c0.dry.json
 NoNewPrivileges=true
 # Dry makes no RPC: no network at all.
 PrivateNetwork=true
