@@ -51,3 +51,20 @@ class T(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class Script(unittest.TestCase):
+    ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+
+    def test_script_syntax_and_pins(self):
+        import hashlib
+        import re
+        import subprocess
+        p = os.path.join(self.ROOT, "scripts", "research", "s1t-b2-guard.sh")
+        self.assertEqual(subprocess.run(["sh", "-n", p]).returncode, 0)
+        text = open(p).read()
+        for var, rel in (("CHECKER_SHA", "tools/s1t_boost_bar.py"), ("APPLY_SHA", "tools/s1t_b2_apply.py")):
+            pin = re.search(r"^%s=([0-9a-f]{64})$" % var, text, re.M).group(1)
+            self.assertEqual(pin, hashlib.sha256(open(os.path.join(self.ROOT, rel), "rb").read()).hexdigest(), rel)
+        self.assertIn("structure-monitor-s1t", text)
+        self.assertNotIn("DEFAULT", text)
