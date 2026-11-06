@@ -431,12 +431,28 @@ class LiveSet(unittest.TestCase):
     def test_stop_table_names_both_modes(self):
         rb = RUNBOOK.read_text()
         sect = rb[rb.index("## 6. Stop"):rb.index("## 7.")]
-        for want in ("/var/lib/mal-r4b-c0/state/STOP", "/var/lib/mal-r4b-c0/state-live/STOP", "/var/lib/mal-r4b-c0/state/HALT", "/var/lib/mal-r4b-c0/state-live/HALT"):
+        for want in ("/var/lib/mal-r4b-c0/state/STOP", "/var/lib/mal-r4b-c0/state-live/STOP", "/var/lib/mal-r4b-c0/state/HALT", "/var/lib/mal-live/HALT", "also freezes every other live unit"):
             self.assertIn(want, sect, want)
         # the live config sets no stop_file/halt_file, so the executor's STOP/HALT are under its state_dir
         live = json.loads((PACK / "r4bt-c0.live.json.example").read_text())
         self.assertNotIn("stop_file", live)
+        self.assertNotIn("halt_file", live)
+        self.assertIn("state-live/HALT` is NOT read by live", sect)
         self.assertEqual(live["state_dir"], "/var/lib/mal-r4b-c0/state-live")
+
+    def test_sandbox_check_proves_mal_live_reachable_in_the_executor_sandbox(self):
+        sc = (REPO / "scripts" / "ops" / "r4bt-c0-twin-sandbox-check.sh").read_text()
+        self.assertIn("R4BTC0_EXEC_UNIT_FILE", sc)
+        self.assertIn("cd /var/lib/mal-live", sc)
+        self.assertIn("executor_can_reach_var_lib_mal_live_in_its_sandbox", sc)
+        rb = RUNBOOK.read_text()
+        for want in ("R4BTC0_EXEC_DROPIN", "Live HALT reachability", "setfacl -m u:mal-r4b-c0:--x /var/lib/mal-live"):
+            self.assertIn(want, rb, want)
+        self.assertEqual(subprocess.run(["sh", "-n", str(REPO / "scripts" / "ops" / "r4bt-c0-twin-sandbox-check.sh")]).returncode, 0)
+        # the executor unit + live drop-in merge to User=mal-r4b-c0 with no write path to /var/lib/mal-live
+        eff = LiveSet.effective(UNIT, PACK / "live.conf.example")
+        self.assertEqual(eff["User"], ["mal-r4b-c0"])
+        self.assertFalse(any("/var/lib/mal-live" in p for p in eff["ReadWritePaths"]))
 
     def test_sandbox_check_applies_the_live_dropin(self):
         sc = REPO / "scripts" / "ops" / "r4bt-c0-twin-sandbox-check.sh"
