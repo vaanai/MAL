@@ -21,6 +21,7 @@
   "twin_interval_s": 300,
   "twin_replay_s": 300,
   "twin_heartbeat_max_ms": 900000,
+  "a3_carry_max_age_ms": 10800000,
   "a3_carry_path": "/etc/mal-r4bt-c0/r4bt-a1/a3-carry.json",
   "read_record_path": "/etc/mal-r4bt-c0/r4bt-a1/read-record.json",
   "owner_file": "/etc/mal-r4bt-c0/r4bt-a1/CANARY_DEC.md",

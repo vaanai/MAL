@@ -28,7 +28,7 @@ Pack files:
 | Gate dir | `/etc/mal-r4bt-c0/` and `/etc/mal-r4bt-c0/r4bt-a1/` | root:root 0755 | keyless: no `CANARY_DEC.md`, no `read-record.json`. `a3-carry.json` appears when the monitor job writes it |
 | Per-bot live gates | `/etc/mal-arena-live/r4bt-c0/r4bt-a1/{LIVE_OK,TIER}` | root | keyless: no `LIVE_OK`. `TIER`, if present, reads exactly `T0` |
 | Key dir | `/etc/mal-r4bt-c0-key/` | root:root 0700 | empty; live only, later |
-| State | `/var/lib/mal-r4b-c0/state/` | `mal-r4b-c0:claude` 3770 | the units' only writable dir: order ledger, STOP, HALT, `twins.jsonl`, `twins.run.json` |
+| State | `/var/lib/mal-r4b-c0/state/` | `mal-r4b-c0:claude` 0750 (owned by the executor user; 0750 or tighter, QP condition) | the units' only writable dir: order ledger, STOP, HALT, `twins.jsonl`, `twins.run.json` |
 | Declog (bind source) | `/home/claude/mal-data/r4b-dry/r4bt-a1-1107a/declog` | the decision host's | read-only bind into the executor unit only. Written by the decision host, not by Helm |
 | Derived tape copy | `/home/claude/mal-data/arena-tipfeed/tape` | the receiver's | read-only bind into the twin unit only |
 
@@ -42,9 +42,9 @@ Do these in order. Record each result (path, uid, mode, sha) in the install reco
    sudo install -d -m 0755 -o root -g root /opt/mal-r4b-c0 /etc/mal-r4bt-c0 /etc/mal-r4bt-c0/r4bt-a1 /var/lib/mal-r4b-c0
    sudo install -d -m 0755 -o root -g root /etc/mal-arena-live/r4bt-c0 /etc/mal-arena-live/r4bt-c0/r4bt-a1
    sudo install -d -m 0700 -o root -g root /etc/mal-r4bt-c0-key
-   sudo install -d -m 3770 -o mal-r4b-c0 -g claude /var/lib/mal-r4b-c0/state
+   sudo install -d -m 0750 -o mal-r4b-c0 -g claude /var/lib/mal-r4b-c0/state
    sudo stat -c '%U:%G %a %n' /opt/mal-r4b-c0 /etc/mal-r4bt-c0 /etc/mal-r4bt-c0-key /var/lib/mal-r4b-c0/state
-   #   expect: root:root 755, root:root 755, root:root 700, mal-r4b-c0:claude 3770
+   #   expect: root:root 755, root:root 755, root:root 700, mal-r4b-c0:claude 750
    test -z "$(sudo ls -A /etc/mal-r4bt-c0/r4bt-a1)" && test -z "$(sudo ls -A /etc/mal-r4bt-c0-key)" && echo "gate closed, no key"
    ```
    The per-bot `TIER` file (content exactly `T0`, root-owned) is created at the manager's go, not now. `LIVE_OK` and `CANARY_DEC.md` are never created in a keyless install.
@@ -112,6 +112,12 @@ Fixed in the template (Am.9; DEC-032 section 3 C0 table; a change is refused by 
 
 **After the go (manager only, not Helm's keyless step):** the manager adds `read_result_sha256` (64 hex) and `qp_comment_id` (digits) to the config, equal to the root-owned `/etc/mal-r4bt-c0/r4bt-a1/read-record.json` (`r4bt_read_record_v1`), and creates the per-bot `TIER` (`T0`). Without both, `make_config` refuses and a start on a non-synthetic root is refused.
 
+### 3a. Parity job, A3 carry, constants
+
+- **Parity timer.** `mal-r4bt-c0-parity.timer` runs `mal-r4bt-c0-parity.service` every 45 s (30 to 60 s) as the **executor's user** `mal-r4b-c0`, keyless and with no network. It runs `python -m tools.r4bt_c0_parity --state-dir /var/lib/mal-r4b-c0/state --attempts /var/lib/mal-r4b-c0/state/r4bt-attempts.jsonl --now-ms <real clock>`; the clock is `$(date +%s) * 1000` read at each start, never a fixed value. It is also started after each fill (`systemctl start mal-r4bt-c0-parity.service`, by the manager or the run loop). Install both files like the executor unit; enable the timer only at the go.
+- **A3 carry.** On research-0 `scripts/ops/r4bt-c0-a3-carry.sh` runs **hourly** as one MiScusi job (its header lists the env). Helm then copies the carry to the root-owned `a3_carry_path` on fast-0 **right after, at least hourly**: sha256 verified against the research-0 file, written to a temp name in the same dir and `rename`d atomically (no following of links), root:root 0644. The executor config sets `a3_carry_max_age_ms` **10800000** (3 h) on the carry's `written_utc`, leaving slack for one missed hour; stale latches `r4bt_a3`.
+- **FILL:c0_constants** (each is stated in the confirmation read, none is tuned after seeing results): (1) twin replay time, `twin_replay_s`, a placeholder 300 s until it is measured in the DRY smoke; (2) twin heartbeat bound 900 s (`twin_heartbeat_max_ms` 900000 = 2 x 300 + 300); (3) parity cadence 45 s plus after each fill; (4) `p_fail_press` 0.0 disclosure: the parity tool feeds `p_fail_press` 0.0 into P2, so the pressure term is zero and the flat `FLAT_FAIL` bound alone decides P2; (5) permission conditions: state dir 0750 or tighter owned by the executor user, twin files and carry root-owned and not group/other writable, gate dir root 0755, key dir root 0700.
+
 ## 4. Keyless checklist
 
 ```
@@ -128,7 +134,7 @@ It prints only paths, labels and PASS/FAIL, never contents. Expect `RESULT PASS`
 - no key file is readable by this user;
 - the tree is a root-owned 40-hex sha dir equal to its manifest, with `LIVE_BUILT = False` and W pinned, and the twin files are present;
 - the venv holds exactly the four pins and imports the executor closure;
-- the gate dir is root 0755, the key dir root 0700, the state dir 3770;
+- the gate dir is root 0755, the key dir root 0700, the state dir 0750 or tighter and owned by the executor user;
 - **declog, names only:** the bind source exists, is not writable by this user, and holds `decisions/r4b-exp027`, which is also not writable. The declog being non-empty is expected; no emptiness check exists and no name or content inside it is listed;
 - the twin's tape-dir ACL (the dir only), reported as PASS or INFO;
 - the synthetic smoke passes: the executor's config check prints `"ok": true`, and `--live` exits 2 with `live_not_built`;

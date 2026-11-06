@@ -185,6 +185,31 @@ def _sha256(p: Path) -> str:
     return hashlib.sha256(p.read_bytes()).hexdigest()
 
 
+class ParityAndCarry(unittest.TestCase):
+    def test_parity_units(self):
+        svc, tm = PACK / "mal-r4bt-c0-parity.service", PACK / "mal-r4bt-c0-parity.timer"
+        self.assertEqual(values("User", svc), ["mal-r4b-c0"])  # the EXECUTOR's user
+        ex = values("ExecStart", svc)[0]
+        for want in ("-m tools.r4bt_c0_parity", "--state-dir /var/lib/mal-r4b-c0/state", "--attempts /var/lib/mal-r4b-c0/state/r4bt-attempts.jsonl", "--now-ms $(( $(date +%%s) * 1000 ))"):
+            self.assertIn(want, ex)
+        self.assertEqual(values("PrivateNetwork", svc), ["true"])
+        self.assertEqual(values("LoadCredential", svc), [])
+        iv = int(values("OnUnitActiveSec", tm)[0].rstrip("s"))
+        self.assertTrue(30 <= iv <= 60, iv)
+
+    def test_template_carry_bound_and_no_arm_override(self):
+        self.assertEqual(filled()["a3_carry_max_age_ms"], 10_800_000)
+        self.assertNotIn("R4BTC0_ARM", CHECKLIST.read_text())
+        t = RUNBOOK.read_text()
+        for want in ("FILL:c0_constants", "p_fail_press", "r4bt-attempts.jsonl", "r4bt-c0-a3-carry.sh", "10800000", "0750"):
+            self.assertIn(want, t, want)
+
+    @need_exec
+    def test_template_accepted_with_carry_bound(self):
+        from tools import r4bt_c0_executor as E
+        self.assertEqual(E.make_config(filled(post=True)).a3_carry_max_age_ms, 10_800_000)
+
+
 class Runbook(unittest.TestCase):
     def test_pins_and_headline_items(self):
         t = RUNBOOK.read_text()
@@ -221,7 +246,7 @@ class Checklist(unittest.TestCase):
         (F / "key").mkdir()
         os.chmod(F / "key", 0o700)
         (F / "state").mkdir()
-        os.chmod(F / "state", 0o3770)
+        os.chmod(F / "state", 0o750)
         # a NON-EMPTY declog, as r4-b-T's is by construction: the arm dir holds a day file. The checklist must not list or read it.
         (F / "declog" / "decisions" / "r4b-exp027").mkdir(parents=True)
         (F / "declog" / "decisions" / "r4b-exp027" / "2026-11-07.jsonl").write_text("SECRET-DECISION-ROW-MARKER\n")
@@ -358,8 +383,7 @@ class Checklist(unittest.TestCase):
         try:
             rc, out = self.run_list(R4BTC0_SKIP_SMOKE="1")
             self.assertTrue(any(ln.startswith("FAIL declog_dir_writable_by_this_user") for ln in out), out)
-            rc, out = self.run_list(R4BTC0_SKIP_SMOKE="1", R4BTC0_ARM="nope")
-            self.assertTrue(any(ln.startswith("FAIL declog_missing_decisions/nope") for ln in out), out)
+            self.assertTrue(any(ln.startswith("FAIL declog_dir_writable") for ln in out), out)
         finally:
             os.chmod(d, 0o555)
 

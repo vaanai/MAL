@@ -10,7 +10,7 @@
 #   R4BTC0_UNIT_TEXT=<file>   unit text from this file instead of `systemctl cat` (tests / pre-install review)     R4BTC0_UNIT=mal-r4bt-c0-executor.service
 #   R4BTC0_CONFIG=/etc/mal-r4bt-c0/r4bt-c0.dry.json   R4BTC0_TREE=/opt/mal-r4b-c0/current   R4BTC0_VENV=/opt/mal-r4b-c0/venv   R4BTC0_MANIFEST=<real tree dir>.manifest
 #   R4BTC0_ETC=/etc/mal-r4bt-c0   R4BTC0_KEY_DIR=/etc/mal-r4bt-c0-key   R4BTC0_STATE_DIR=/var/lib/mal-r4b-c0/state
-#   R4BTC0_DECLOG_DIR=/home/claude/mal-data/r4b-dry/r4bt-a1-1107a/declog   R4BTC0_ARM=r4b-exp027 (the arm dir under decisions/ that the decision host writes; QP-RULING-1106-r4bt-c0 item 6)
+#   R4BTC0_DECLOG_DIR=/home/claude/mal-data/r4b-dry/r4bt-a1-1107a/declog   (the arm dir is the constant decisions/r4b-exp027, the executor's DECLOG_ARM)
 #   R4BTC0_LIVE_DIR=/etc/mal-arena-live/r4bt-c0/r4bt-a1 (the per-bot LIVE_OK / TIER)   R4BTC0_TAPE_DIR=/home/claude/mal-data/arena-tipfeed/tape (twin read ACL, stat/ls -ld only)
 #   R4BTC0_NO_SYSTEMCTL=1 (tests), R4BTC0_SKIP_SMOKE=1 (tests), R4BTC0_PY3=python3 (stdlib python for the config check), R4BTC0_STAT_OWNER=0 (tests: expected uid of root-owned items)
 MODE=${R4BTC0_MODE:-preread}
@@ -22,7 +22,7 @@ ETC=${R4BTC0_ETC:-/etc/mal-r4bt-c0}
 KEY_DIR=${R4BTC0_KEY_DIR:-/etc/mal-r4bt-c0-key}
 STATE_DIR=${R4BTC0_STATE_DIR:-/var/lib/mal-r4b-c0/state}
 DECLOG_DIR=${R4BTC0_DECLOG_DIR:-/home/claude/mal-data/r4b-dry/r4bt-a1-1107a/declog}
-ARM=${R4BTC0_ARM:-r4b-exp027}
+ARM=r4b-exp027   # tools/r4bt_c0_executor.DECLOG_ARM (#1252): no override
 TAPE_DIR=${R4BTC0_TAPE_DIR:-/home/claude/mal-data/arena-tipfeed/tape}
 LIVE_DIR=${R4BTC0_LIVE_DIR:-/etc/mal-arena-live/r4bt-c0/r4bt-a1}
 PY3=${R4BTC0_PY3:-python3}
@@ -79,7 +79,7 @@ import json, os, sys
 p, bot, w, cid, root, mode = sys.argv[1:7]
 postread = mode == "postread"
 caps = {"stake_lamports": 50000000, "max_open": 2, "max_trades_per_day": 30, "daily_loss_lamports": 100000000, "total_loss_lamports": 200000000}
-profile = {"change_id", "twin_dir", "a3_carry_path", "read_record_path", "read_result_sha256", "qp_comment_id", "owner_file", "live_ok_path", "tier_path", "send_fee_lamports", "fee_override", "twin_interval_s", "twin_replay_s", "twin_heartbeat_max_ms"}
+profile = {"change_id", "a3_carry_max_age_ms", "twin_dir", "a3_carry_path", "read_record_path", "read_result_sha256", "qp_comment_id", "owner_file", "live_ok_path", "tier_path", "send_fee_lamports", "fee_override", "twin_interval_s", "twin_replay_s", "twin_heartbeat_max_ms"}
 allowed = {"mode", "bot_id", "frozen_sha", "root", "state_dir", "end_ms", "slot_s", "funded_lamports", "dry_balance_lamports", "stop_file", "halt_file"} | set(caps) | profile
 need = {"mode", "bot_id", "frozen_sha", "change_id", "root", "state_dir", "end_ms", "slot_s", "stop_file", "halt_file", "twin_dir", "a3_carry_path", "read_record_path"} | set(caps)
 if postread: need |= {"read_result_sha256", "qp_comment_id"}
@@ -96,6 +96,7 @@ if c.get("root") != root: bad.append("root_not_the_change_id_declog")
 for k, v in caps.items():
     x = c.get(k)
     if not (isinstance(x, (int, float)) and 0 < x <= v): bad.append("cap_missing_or_above_C0:" + k)
+if not (isinstance(c.get("a3_carry_max_age_ms"), int) and 0 < c["a3_carry_max_age_ms"] <= 10800000): bad.append("a3_carry_max_age_ms_not_set_to_3h_or_less")
 if c.get("send_fee_lamports", 505000) != 505000 and not c.get("fee_override"): bad.append("fee_not_505000_without_override")
 if postread:
     import re
@@ -180,14 +181,15 @@ print("ok" if not bad and not extra and sys.version_info[:2] == (3, 12) else "ba
   fi
 else fail "venv_python_missing ($VPY)"; fi
 
-# 6. Dirs. Gate dir root 0755; key dir root 0700 (stat only); state dir 3770 (owner mal-r4b-c0 in production); the decision dir is read-only to this user and, before
+# 6. Dirs. Gate dir root 0755; key dir root 0700 (stat only); state dir 0750 or tighter, owned by the executor user (owner mal-r4b-c0 in production); the decision dir is read-only to this user and, before
 #    the read, EMPTY: no decision row of r4-b exists here before EXP-027's read is recorded (EXP-027 section 11; names and counts only after it, B1 until B).
 st=$(stat -c %u:%g:%a "$ETC" 2>/dev/null)
 [ "$st" = "$ROOT_UID:$ROOT_UID:755" ] && pass "gate_dir_root_0755 ($ETC)" || fail "gate_dir_not_root_0755 ($ETC got ${st:-missing})"
 st=$(stat -c %u:%g:%a "$KEY_DIR" 2>/dev/null)
 [ "$st" = "$ROOT_UID:$ROOT_UID:700" ] && pass "key_dir_root_0700 ($KEY_DIR)" || fail "key_dir_not_root_0700 ($KEY_DIR got ${st:-missing})"
 st=$(stat -c %a "$STATE_DIR" 2>/dev/null)
-[ "$st" = "3770" ] && pass "state_dir_3770 ($STATE_DIR)" || fail "state_dir_not_3770 ($STATE_DIR got ${st:-missing})"
+case "$st" in 750 | 700 | 550 | 500) pass "state_dir_0750_or_tighter ($STATE_DIR $st)" ;; *) fail "state_dir_not_0750_or_tighter ($STATE_DIR got ${st:-missing})" ;; esac
+if [ "$ROOT_UID" -ne 0 ] && [ "$(stat -c %u "$STATE_DIR" 2>/dev/null)" = "$(id -u)" ]; then pass "state_dir_owned_by_this_user"; else info "state_dir_owner_not_this_user_here (production: mal-r4b-c0)"; fi
 if [ -d "$DECLOG_DIR" ]; then
   # NAMES ONLY: the bind source and the arm directory are stat'ed. The declog is non-empty by construction (the decision host writes it); nothing inside it is listed or read.
   if [ -w "$DECLOG_DIR" ]; then fail "declog_dir_writable_by_this_user ($DECLOG_DIR)"; else pass "declog_dir_not_writable_by_this_user ($DECLOG_DIR)"; fi

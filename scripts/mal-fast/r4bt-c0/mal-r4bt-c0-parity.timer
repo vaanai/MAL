@@ -1,0 +1,9 @@
+[Unit]
+Description=MAL r4-b-T C0 parity cadence (45 s; also started after each fill). Enabled only at the manager's go (DEC-032 Am.9 (a4)).
+[Timer]
+OnBootSec=60s
+OnUnitActiveSec=45s
+AccuracySec=1s
+Unit=mal-r4bt-c0-parity.service
+[Install]
+WantedBy=timers.target
