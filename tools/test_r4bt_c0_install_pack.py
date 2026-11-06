@@ -238,9 +238,20 @@ class StateAndTwinDirs(unittest.TestCase):
             self.assertNotRegex(ln, r"setfacl[^#]* -R ")
             self.assertNotIn("u:root:---", ln)
         self.assertFalse(any("setfacl -R" in ln for ln in t.splitlines() if "$T/tape" in ln))
+        self.assertIn("events.jsonl lock status.json verified.json", t)  # the full .push name set of the pusher
+        self.assertIn("must REMOVE the fast-0 copy or replace it with a LATCHING carry", t)
+        self.assertIn("backstop only", t)
         self.assertNotIn("mal-r4b-c0:claude", t)
         self.assertNotIn("sudo -u claude touch", t)
         self.assertNotIn("3770", UNIT.read_text())
+
+
+class PushNames(unittest.TestCase):
+    def test_runbook_push_set_matches_the_pusher_source(self):
+        src = (REPO / "tools" / "arena_tip_push.py").read_text()
+        for name in ("events.jsonl", "status.json", "verified.json", '"lock"'):
+            self.assertIn(name, src, name)
+        self.assertIn('PUSH_DIR = ".push"', src)
 
 
 class Runbook(unittest.TestCase):
