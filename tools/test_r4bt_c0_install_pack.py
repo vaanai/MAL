@@ -227,9 +227,17 @@ class StateAndTwinDirs(unittest.TestCase):
 
     def test_runbook_acls_and_stop(self):
         t = RUNBOOK.read_text()
-        for want in ("mal-r4b-c0:mal-r4b-c0", "setfacl -R -m u:root:rX $T/tape", "setfacl -R -d -m u:root:rX $T/tape", ".writer/state.json", "sudo touch /var/lib/mal-r4b-c0/state/STOP",
+        for want in ("mal-r4b-c0:mal-r4b-c0", "-path $T/tape/.writer -prune", "setfacl -k $T/tape/.writer", ".writer/state.json", "NO default ACL", "step 11", "p99", "sudo touch /var/lib/mal-r4b-c0/state/STOP",
                      "/var/lib/mal-r4b-c0/twin", "r4bt-c0-twin-sandbox-check.sh", "setfacl -m u:root:rX /var/lib/mal-r4b-c0/state"):
             self.assertIn(want, t, want)
+        # QP round 2 item 3: no default ACL and no recursive grant on .writer
+        acl_lines = [ln for ln in t.splitlines() if "setfacl" in ln and ".writer" in ln and "-prune" not in ln]
+        self.assertTrue(acl_lines)
+        for ln in acl_lines:
+            self.assertNotRegex(ln, r"setfacl[^#]* -d ")
+            self.assertNotRegex(ln, r"setfacl[^#]* -R ")
+            self.assertNotIn("u:root:---", ln)
+        self.assertFalse(any("setfacl -R" in ln for ln in t.splitlines() if "$T/tape" in ln))
         self.assertNotIn("mal-r4b-c0:claude", t)
         self.assertNotIn("sudo -u claude touch", t)
         self.assertNotIn("3770", UNIT.read_text())

@@ -59,16 +59,21 @@ Do these in order. Record each result (path, uid, mode, sha) in the install reco
    ```
    T=/home/claude/mal-data/arena-tipfeed
    sudo setfacl -m u:root:rX $T
-   sudo setfacl -R -m u:root:rX $T/tape && sudo setfacl -R -d -m u:root:rX $T/tape            # existing tape-*.jsonl.zst, .writer/ and .push/ included, and new files
-   sudo setfacl -R -m u:root:rX $T/tape/.writer $T/tape/.push && sudo setfacl -R -d -m u:root:rX $T/tape/.writer $T/tape/.push   # counts.jsonl and verified.json are rewritten by rename
-   sudo setfacl -m u:root:--- $T/tape/.writer/state.json                                           # the twin never reads the tip-state file
-   sudo getfacl -p $T/tape $T/tape/.writer $T/tape/.push
+   # tape/ itself and everything under it EXCEPT .writer: recursive access ACL + default ACL on dirs (new tape files). .push/verified.json is replaced by rename, so .push gets the default too.
+   sudo find $T/tape -path $T/tape/.writer -prune -o -exec setfacl -m u:root:rX {} +
+   sudo find $T/tape -path $T/tape/.writer -prune -o -type d -exec setfacl -d -m u:root:rX {} +
+   ls -A $T/tape/.push        # NAMES ONLY: expect verified.json and nothing else; any other (sealed-looking) name: STOP and ask the manager before the grants
+   # .writer: NO default ACL and no recursive grant. Access ACL on the dir and on counts.jsonl only (the writer appends to counts.jsonl in place, same inode).
+   # state.json is replaced by rename on every save, so a deny on it would be lost and a default ACL would make the new file readable: the twin gets no entry for it.
+   sudo setfacl -k $T/tape/.writer && sudo setfacl -m u:root:rX $T/tape/.writer $T/tape/.writer/counts.jsonl
+   sudo getfacl -p $T/tape $T/tape/.writer $T/tape/.push $T/tape/.writer/counts.jsonl   # .writer must show no default: entries
    sudo sh /opt/mal-r4b-c0/current/scripts/ops/r4bt-c0-twin-sandbox-check.sh      # PASS lines from INSIDE the twin unit's sandbox (systemd-run, same properties); names only
    ```
-   If the manager names another uid for the twin, the executor's root-owner rule changes first and this ACL names that uid. The twin never reads the live tip dir, the archive, `.writer/state.json` or the declog.
+   If the manager names another uid for the twin, the executor's root-owner rule changes first and this ACL names that uid. The twin never reads the live tip dir, the archive, `.writer/state.json` or the declog. If `counts.jsonl` is ever recreated by the writer, the twin refuses (fails closed) and the sandbox check shows it: re-grant the access ACL on the new file.
 8. **Keep-verified dependency (>= 400 h).** The derived copy's writer run must keep verified hours **>= 400 h** (`--keep-verified-h 400`, the successor of the derived-copy writer, DEC-031 Am.27 item 25). Retention deletes closed hours; the twin refuses with `hour_deleted_by_retention` when the oldest present hour is later than the first hour the C0 needs. After the tree is installed, the manager runs `r4bt-c0-twin.sh --check-tape` as the twin's uid (prints the oldest present hour name against the needed first hour; names only). Helm records that the writer is configured with 400 h or more; the C0 does not start otherwise.
 9. **Declog bind source exists** (names only): `test -d /home/claude/mal-data/r4b-dry/r4bt-a1-1107a/declog/decisions/r4b-exp027 && echo present`. Do not list its contents. The decision host creates it; if it is absent, the executor unit's start fails (no `-` prefix on the bind), which is the intended fail-closed.
 10. **Run the checklist** (section 4).
+11. **Measure the parity run time (QP item 8), before the parity timer is ever enabled.** In the DRY smoke on mal-fast-0, on a synthetic ledger and twins file at the full C0 size (14 days x 30 attempts), run `tools/r4bt_c0_parity` repeatedly as `mal-r4b-c0` and record p50 and p99 wall time. If 45 s + p99 > 55 s, lower `OnUnitActiveSec` in `mal-r4bt-c0-parity.timer` in a reviewed change before the start. Record the measurement and the final cadence in `FILL:c0_constants`. Never enable the timer before this is done and Am.9 (a4) holds.
 
 ## 3. Tree, venv, units (Helm, root)
 
@@ -123,7 +128,7 @@ Fixed in the template (Am.9; DEC-032 section 3 C0 table; a change is refused by 
 
 - **Parity timer.** `mal-r4bt-c0-parity.timer` runs `mal-r4bt-c0-parity.service` every 45 s (30 to 60 s) as the **executor's user** `mal-r4b-c0`, keyless and with no network. It runs `python -m tools.r4bt_c0_parity --state-dir /var/lib/mal-r4b-c0/state --attempts /var/lib/mal-r4b-c0/state/r4bt-attempts.jsonl --now-ms <real clock>`; the clock is `$(date +%s) * 1000` read at each start, never a fixed value. It is also started after each fill (`systemctl start mal-r4bt-c0-parity.service`, by the manager or the run loop). Install both files like the executor unit; enable the timer only at the go.
 - **A3 carry.** On research-0 `scripts/ops/r4bt-c0-a3-carry.sh` runs **hourly** as one MiScusi job (its header lists the env). Helm then copies the carry to the root-owned `a3_carry_path` on fast-0 **right after, at least hourly**: sha256 verified against the research-0 file, written to a temp name in the same dir and `rename`d atomically (no following of links), root:root 0644. The executor config sets `a3_carry_max_age_ms` **10800000** (3 h) on the carry's `written_utc`, leaving slack for one missed hour; stale latches `r4bt_a3`.
-- **FILL:c0_constants** (each is stated in the confirmation read, none is tuned after seeing results): (1) twin replay time, `twin_replay_s`, a placeholder 300 s until it is measured in the DRY smoke; (2) twin heartbeat bound 900 s (`twin_heartbeat_max_ms` 900000 = 2 x 300 + 300); (3) parity cadence 45 s plus after each fill; (4) `p_fail_press` 0.0 disclosure: the parity tool feeds `p_fail_press` 0.0 into P2, so the pressure term is zero and the flat `FLAT_FAIL` bound alone decides P2; (5) permission conditions: state dir 0750 or tighter owned by the executor user, twin files and carry root-owned and not group/other writable, gate dir root 0755, key dir root 0700.
+- **FILL:c0_constants** (each is stated in the confirmation read, none is tuned after seeing results): (1) twin replay time, `twin_replay_s`, a placeholder 300 s until it is measured in the DRY smoke; (2) twin heartbeat bound 900 s (`twin_heartbeat_max_ms` 900000 = 2 x 300 + 300); (3) parity cadence 45 s plus after each fill, and the measured parity run time (p50 and p99), both recorded before the timer is enabled (step 11); (4) `p_fail_press` 0.0 disclosure: the parity tool feeds `p_fail_press` 0.0 into P2, so the pressure term is zero and the flat `FLAT_FAIL` bound alone decides P2; (5) permission conditions: state dir 0750 or tighter owned by the executor user, twin files and carry root-owned and not group/other writable, gate dir root 0755, key dir root 0700.
 
 ## 4. Keyless checklist
 
