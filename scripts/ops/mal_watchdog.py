@@ -157,7 +157,8 @@ def _is_num(x):
 
 
 R4BT_PATH_KEYS = ("state_dir", "declog_dir", "a3_carry_path", "twin_dir", "tieout_dir")
-R4BT_NUM_KEYS = {"declog_stale_min": 30, "a3_carry_max_age_min": 120, "twin_stale_min": 30,
+R4BT_HEALTH_PATH = "/var/lib/mal-r4b-c0/health.json"
+R4BT_NUM_KEYS = {"health_unknown_min": 30, "declog_stale_min": 30, "a3_carry_max_age_min": 120, "twin_stale_min": 30,
                   "parity_max_age_min": 10, "tieout_grace_h": 3}
 R4BT_ALERT_TARGET = "FILL:alert_target"  # placeholder: the manager fills in where r4bt alerts are sent
 R4BT_NAME = re.compile(r"[^a-z0-9_:.-]")
@@ -168,6 +169,7 @@ def r4bt_conf(raw):
     """Defaults merged over the r4bt_c0 config dict (validated by validate_config)."""
     c = dict(R4BT_NUM_KEYS)
     c["alert_target"] = R4BT_ALERT_TARGET
+    c["health_path"] = R4BT_HEALTH_PATH
     c.update(raw)
     return c
 
@@ -206,8 +208,9 @@ def validate_config(cfg):
         for k in R4BT_NUM_KEYS:
             if k in r and (not _is_num(r[k]) or r[k] <= 0):
                 bad("r4bt_c0.%s" % k, "a positive number")
-        if "alert_target" in r and not isinstance(r["alert_target"], str):
-            bad("r4bt_c0.alert_target", "a string")
+        for k in ("alert_target", "health_path"):
+            if k in r and (not isinstance(r[k], str) or not r[k]):
+                bad("r4bt_c0." + k, "a non-empty string")
 
 
 def read_config(path):
@@ -231,6 +234,8 @@ def read_config(path):
     if cfg["r4bt_c0"]:
         for k in R4BT_PATH_KEYS:
             refuse_sealed(cfg["r4bt_c0"][k], listing=True)
+        if cfg["r4bt_c0"].get("health_path"):
+            refuse_sealed(cfg["r4bt_c0"]["health_path"], listing=True)
     return cfg, hashlib.sha256(raw).hexdigest()
 
 
@@ -482,41 +487,55 @@ def _r4bt_utc_s(v):
 
 def check_r4bt_c0(cfg, ctx):
     """r4-b-T C0 health (build-list item 8). Alerts carry names only: never a value from a
-    file. Reads: executor state files' `latches` KEY NAMES; the A3 carry's written_utc and
-    hard_halt only; the parity state's schema/at_ms/exit_code/stop_required (counts and status,
-    no per-trip data); the signed tie-out result's day and signed_off only. The declog dir
-    and the twin run record are NAMES and MTIMES only, never opened (twin files are sealed to
-    the executor gate and the pinned parity tool). Each sub-check that fails to run is its own
-    alert, so one broken input cannot hide the others."""
+    file. Contents read: the health export (booleans latched / stop_present / live_ok_present
+    and a short tier label; written by the executor to /var/lib/mal-r4b-c0/health.json, absent
+    = unknown, alert after health_unknown_min) and the A3 carry's written_utc / hard_halt.
+    Names and mtimes only, never opened: the declog dir, twins.run.json (reader-pinned to the
+    executor gate and the parity tool), r4bt-parity-state.json (stat only if the executor's
+    0750 state dir lets this user), the tie-out sign-off marker (presence). The executor's
+    state files are never read. Each sub-check is its own alert, so one broken input cannot
+    hide the others."""
     r = r4bt_conf(cfg["r4bt_c0"])
     now = ctx["now"].timestamp()
     alerts = []
     summ = {"alert_target": r["alert_target"]}
     sd = r["state_dir"]
 
-    # 1. latch present (executor state: latch names) and STOP
-    try:
-        names = ctx["listdir"](sd)
-    except OSError:
-        names = None
-    if names is None:
-        alerts.append(A("r4bt:state_dir_unreadable", "high", "r4bt state dir cannot be listed"))
+    # 1. executor health export (booleans only; the executor's state dir is not readable by this user)
+    infos = []
+    hp = r["health_path"]
+    health, why = _r4bt_read_json(ctx, hp)
+    if why in ("missing", "unreadable"):
+        # unknown, not a pass: alert once it has been unknown for health_unknown_min
+        since = ctx["state"].get("r4bt_health_unknown_since")
+        if not _is_num(since):
+            since = now
+        ctx["new_state"]["r4bt_health_unknown_since"] = since
+        mins = (now - since) / 60.0
+        summ["health"] = "unknown"
+        infos.append("r4bt health export %s (unknown for %.0f min)" % (why, mins))
+        if mins >= r["health_unknown_min"]:
+            alerts.append(A("r4bt:health_unknown", "high", "r4bt health export %s for %.0f min" % (why, mins)))
+    elif why:
+        summ["health"] = "bad"
+        alerts.append(A("r4bt:health_bad", "high", "r4bt health export is %s" % why))
     else:
-        if "STOP" in names:
-            alerts.append(A("r4bt:stop_present", "high", "r4bt STOP file present in the state dir"))
-        found = []
-        files = sorted(n for n in names if n.startswith("bridge-state-") and n.endswith(".json"))
-        for n in files:
-            obj, why = _r4bt_read_json(ctx, os.path.join(sd, n))
-            lat = obj.get("latches") if obj else None
-            if why or not isinstance(lat, dict):
-                alerts.append(A("r4bt:latch_state_unreadable", "high", "r4bt state file %s: %s" % (R4BT_NAME.sub("_", n)[:60], why or "no latches object")))
-                continue
-            found += [R4BT_NAME.sub("_", str(k).lower())[:40] for k in lat]
-        for k in sorted(set(found)):
-            alerts.append(A("r4bt:latch:" + k, "high", "r4bt latch present: " + k))
-        summ["latches"] = len(set(found))
-        summ["state_files"] = len(files)
+        ctx["new_state"]["r4bt_health_unknown_since"] = None
+        summ["health"] = {k: health[k] for k in ("latched", "stop_present", "live_ok_present") if isinstance(health.get(k), bool)}
+        if isinstance(health.get("tier"), (int, str)) and not isinstance(health.get("tier"), bool):
+            summ["health"]["tier"] = R4BT_NAME.sub("_", str(health["tier"]).lower())[:16]
+        if any(not isinstance(health.get(k), bool) for k in ("latched", "stop_present", "live_ok_present")):
+            alerts.append(A("r4bt:health_bad", "high", "r4bt health export lacks a boolean field"))
+        if health.get("latched") is True:
+            alerts.append(A("r4bt:latched", "high", "r4bt executor reports a latch"))
+        if health.get("stop_present") is True:
+            alerts.append(A("r4bt:stop_present", "high", "r4bt executor reports STOP present"))
+        try:
+            age_min = (now - ctx["mtime"](hp)) / 60.0
+            if age_min > r["health_unknown_min"]:
+                alerts.append(A("r4bt:health_stale", "high", "r4bt health export is %.0f min old" % age_min))
+        except OSError:
+            pass
 
     # 2. declog: newest file mtime
     try:
@@ -562,33 +581,28 @@ def check_r4bt_c0(cfg, ctx):
     except OSError:
         alerts.append(A("r4bt:twin_run_stale", "high", "r4bt twin run record missing or unreadable"))
 
-    # 5. parity state
-    par, why = _r4bt_read_json(ctx, os.path.join(sd, "r4bt-parity-state.json"))
-    if why:
-        alerts.append(A("r4bt:parity_state_bad", "high", "r4bt parity state %s" % why))
-    else:
-        at = par.get("at_ms")
-        if par.get("schema") != "r4bt_parity_state_v1" or not _is_int(at):
-            alerts.append(A("r4bt:parity_state_bad", "high", "r4bt parity state has the wrong schema or no at_ms"))
-        else:
-            age_min = (now * 1000 - at) / 60000.0
-            summ["parity_age_min"] = round(age_min, 1)
-            if age_min > r["parity_max_age_min"] or age_min < -5:
-                alerts.append(A("r4bt:parity_state_bad", "high", "r4bt parity state is %.0f min old (bound %s)" % (age_min, r["parity_max_age_min"])))
-        if par.get("stop_required") is not False or par.get("exit_code") != 0:
-            alerts.append(A("r4bt:parity_stop_required", "high", "r4bt parity state: stop_required or nonzero exit_code"))
+    # 5. parity state: mtime only, and only if the watchdog can stat it (the state dir is the executor's, 0750)
+    try:
+        age_min = (now - ctx["mtime"](os.path.join(sd, "r4bt-parity-state.json"))) / 60.0
+        summ["parity_age_min"] = round(age_min, 1)
+        if age_min > r["parity_max_age_min"] or age_min < -5:
+            alerts.append(A("r4bt:parity_state_bad", "high", "r4bt parity state is %.0f min old (bound %s)" % (age_min, r["parity_max_age_min"])))
+    except FileNotFoundError:
+        alerts.append(A("r4bt:parity_state_bad", "high", "r4bt parity state missing"))
+    except OSError:
+        summ["parity_age_min"] = "not_statable"
+        infos.append("r4bt parity state not statable by the watchdog")
 
     # 6. tie-out for yesterday (UTC), after a grace
     nowdt = ctx["now"]
     ydate = (nowdt - dt.timedelta(days=1)).strftime("%Y-%m-%d")
     summ["tieout_day"] = ydate
     if nowdt.hour >= r["tieout_grace_h"]:
-        res, why = _r4bt_read_json(ctx, os.path.join(r["tieout_dir"], "tieout-%s.json" % ydate))
-        if why:
-            alerts.append(A("r4bt:tieout_unsigned", "high", "r4bt tie-out for %s: %s" % (ydate, why)))
-        elif res.get("day") != ydate or res.get("signed_off") is not True:
-            alerts.append(A("r4bt:tieout_unsigned", "high", "r4bt tie-out for %s is not signed off" % ydate))
-    return alerts, [], summ
+        try:
+            ctx["mtime"](os.path.join(r["tieout_dir"], "tieout-%s.json" % ydate))
+        except OSError:
+            alerts.append(A("r4bt:tieout_unsigned", "high", "r4bt tie-out marker for %s missing" % ydate))
+    return alerts, infos, summ
 
 
 CHECKS = [("jobs", check_jobs), ("disk", check_disk), ("walker", check_walker), ("mem", check_mem),
