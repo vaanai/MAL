@@ -100,7 +100,7 @@ def test_dec_and_note_carry_the_pins():
     i = d.index("### Amendment 30 (DRAFT; H5 v2 forward on November pools, `h5v2-bx10-f1`")
     am = d[i:]
     for pin in (SSTAR, BLOB_SHADOW, BLOB_TIPW, JUDGE_SHA256[:8], "5368cc7b757a2f7a6cb064c71193b4e0cd740583f7348a60cb9a864401c190e0",
-                "9c22239bd2423d76bee2241f1f88625504a64853f5f91dec2e09bc7a44fb0401", "1794096000000", "1796083200000", "1794510000",
+                "9c22239bd2423d76bee2241f1f88625504a64853f5f91dec2e09bc7a44fb0401", "1794096000000", "1796083200000", "n_61bjmqA3xPk33g",
                 "1 - 0.95^4 = 18.5%", "scripts/research/h5v2-f1-launch.sh"):
         assert pin in am, pin
     n = NOTE.read_text()
