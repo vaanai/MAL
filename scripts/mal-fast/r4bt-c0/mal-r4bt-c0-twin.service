@@ -1,7 +1,8 @@
 [Unit]
 Description=MAL r4-b-T C0 paper twin writer (scripts/mal-fast/r4bt-c0-twin.sh --loop; tools/r4bt_c0_twin.py), PAPER ONLY: no credential, no network, reads the derived tape copy
 Documentation=https://github.com/vaanai/MAL/blob/main/docs/runbooks/r4bt-c0-executor.md
-# The twin writes twins.jsonl and twins.run.json into the executor's state dir. The executor's twin gate accepts those files only when they are ROOT-OWNED and not
+# The twin writes twins.jsonl and twins.run.json into its OWN root-owned dir /var/lib/mal-r4b-c0/twin (0755: the executor and parity units read it and cannot write it) and
+# reads the ledger / attempts in the state dir through a root read ACL (u:root:rX). The executor's twin gate accepts those files only when they are ROOT-OWNED and not
 # group/other writable (tools/r4bt_c0_executor._read_small, root_checks), so this unit runs as root with an EMPTY capability set: it reads the derived copy only through the
 # ACL Helm grants (runbook section 2) and writes only the state dir. If the manager wants another uid, the executor's owner rule changes first (open question on the PR).
 # Template placeholder: <AT-EVENT:feed_delay_slots> = d, the whole number of slots pinned in the registration record. Substituted by Helm at install (runbook section 3).
@@ -20,7 +21,7 @@ Environment=R4BT_W_SHA=17e3b05a7696900cda7fcf93e4af4008d8fa0184
 Environment=R4BT_C0_TWIN_SHA256=d3c10430b04264b5de9ea15c8ab29b6db2b3c3bf89643181faef8266f7d1b395
 Environment=R4BT_FEED_DELAY_SLOTS=<AT-EVENT:feed_delay_slots>
 Environment=R4BT_C0_ORDERS=/var/lib/mal-r4b-c0/state/r4bt-order-ledger.jsonl
-Environment=R4BT_C0_STATE_DIR=/var/lib/mal-r4b-c0/state
+Environment=R4BT_C0_STATE_DIR=/var/lib/mal-r4b-c0/twin
 Environment=R4BT_C0_PYTHON=/opt/mal-r4b-c0/venv/bin/python
 Environment=R4BT_C0_INTERVAL=300
 ExecStartPre=/bin/sh /opt/mal-r4b-c0/current/scripts/mal-fast/r4bt-c0-twin.sh --check
@@ -31,8 +32,8 @@ NoNewPrivileges=true
 PrivateNetwork=true
 RestrictAddressFamilies=AF_UNIX
 ProtectSystem=strict
-ReadWritePaths=/var/lib/mal-r4b-c0/state
-ReadOnlyPaths=/opt/mal-r4b-c0
+ReadWritePaths=/var/lib/mal-r4b-c0/twin
+ReadOnlyPaths=/opt/mal-r4b-c0 /var/lib/mal-r4b-c0/state
 TemporaryFileSystem=/var/lib/mal:ro
 TemporaryFileSystem=/data:ro
 ProtectHome=tmpfs

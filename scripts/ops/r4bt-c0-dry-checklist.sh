@@ -9,7 +9,7 @@
 # Env (defaults):
 #   R4BTC0_UNIT_TEXT=<file>   unit text from this file instead of `systemctl cat` (tests / pre-install review)     R4BTC0_UNIT=mal-r4bt-c0-executor.service
 #   R4BTC0_CONFIG=/etc/mal-r4bt-c0/r4bt-c0.dry.json   R4BTC0_TREE=/opt/mal-r4b-c0/current   R4BTC0_VENV=/opt/mal-r4b-c0/venv   R4BTC0_MANIFEST=<real tree dir>.manifest
-#   R4BTC0_ETC=/etc/mal-r4bt-c0   R4BTC0_KEY_DIR=/etc/mal-r4bt-c0-key   R4BTC0_STATE_DIR=/var/lib/mal-r4b-c0/state
+#   R4BTC0_ETC=/etc/mal-r4bt-c0   R4BTC0_KEY_DIR=/etc/mal-r4bt-c0-key   R4BTC0_STATE_DIR=/var/lib/mal-r4b-c0/state   R4BTC0_TWIN_DIR=/var/lib/mal-r4b-c0/twin
 #   R4BTC0_DECLOG_DIR=/home/claude/mal-data/r4b-dry/r4bt-a1-1107a/declog   (the arm dir is the constant decisions/r4b-exp027, the executor's DECLOG_ARM)
 #   R4BTC0_LIVE_DIR=/etc/mal-arena-live/r4bt-c0/r4bt-a1 (the per-bot LIVE_OK / TIER)   R4BTC0_TAPE_DIR=/home/claude/mal-data/arena-tipfeed/tape (twin read ACL, stat/ls -ld only)
 #   R4BTC0_NO_SYSTEMCTL=1 (tests), R4BTC0_SKIP_SMOKE=1 (tests), R4BTC0_PY3=python3 (stdlib python for the config check), R4BTC0_STAT_OWNER=0 (tests: expected uid of root-owned items)
@@ -22,6 +22,7 @@ ETC=${R4BTC0_ETC:-/etc/mal-r4bt-c0}
 KEY_DIR=${R4BTC0_KEY_DIR:-/etc/mal-r4bt-c0-key}
 STATE_DIR=${R4BTC0_STATE_DIR:-/var/lib/mal-r4b-c0/state}
 DECLOG_DIR=${R4BTC0_DECLOG_DIR:-/home/claude/mal-data/r4b-dry/r4bt-a1-1107a/declog}
+TWIN_DIR=${R4BTC0_TWIN_DIR:-/var/lib/mal-r4b-c0/twin}
 ARM=r4b-exp027   # tools/r4bt_c0_executor.DECLOG_ARM (#1252): no override
 TAPE_DIR=${R4BTC0_TAPE_DIR:-/home/claude/mal-data/arena-tipfeed/tape}
 LIVE_DIR=${R4BTC0_LIVE_DIR:-/etc/mal-arena-live/r4bt-c0/r4bt-a1}
@@ -189,12 +190,16 @@ st=$(stat -c %u:%g:%a "$KEY_DIR" 2>/dev/null)
 [ "$st" = "$ROOT_UID:$ROOT_UID:700" ] && pass "key_dir_root_0700 ($KEY_DIR)" || fail "key_dir_not_root_0700 ($KEY_DIR got ${st:-missing})"
 st=$(stat -c %a "$STATE_DIR" 2>/dev/null)
 case "$st" in 750 | 700 | 550 | 500) pass "state_dir_0750_or_tighter ($STATE_DIR $st)" ;; *) fail "state_dir_not_0750_or_tighter ($STATE_DIR got ${st:-missing})" ;; esac
-if [ "$ROOT_UID" -ne 0 ] && [ "$(stat -c %u "$STATE_DIR" 2>/dev/null)" = "$(id -u)" ]; then pass "state_dir_owned_by_this_user"; else info "state_dir_owner_not_this_user_here (production: mal-r4b-c0)"; fi
+if [ "$(stat -c %u "$STATE_DIR" 2>/dev/null)" = "$(id -u)" ]; then pass "state_dir_owned_by_this_user"; else fail "state_dir_not_owned_by_this_user"; fi
+if [ "$(stat -c %G "$STATE_DIR" 2>/dev/null)" = "claude" ] && [ "$(id -gn)" != "claude" ]; then fail "state_dir_group_is_claude (agent sessions would read the ledger and twin outputs)"; else pass "state_dir_group_not_claude"; fi
+st=$(stat -c %u:%g:%a "$TWIN_DIR" 2>/dev/null)
+[ "$st" = "$ROOT_UID:$ROOT_UID:755" ] && pass "twin_dir_root_0755 ($TWIN_DIR)" || fail "twin_dir_not_root_0755 ($TWIN_DIR got ${st:-missing})"
+if [ "$ROOT_UID" -eq 0 ] && [ -w "$TWIN_DIR" ]; then fail "twin_dir_writable_by_this_user"; else pass "twin_dir_not_writable_by_this_user"; fi
+info "the twin's recursive read ACLs are proven from INSIDE its sandbox by scripts/ops/r4bt-c0-twin-sandbox-check.sh (root, runbook section 2 step 7)"
 if [ -d "$DECLOG_DIR" ]; then
   # NAMES ONLY: the bind source and the arm directory are stat'ed. The declog is non-empty by construction (the decision host writes it); nothing inside it is listed or read.
-  if [ -w "$DECLOG_DIR" ]; then fail "declog_dir_writable_by_this_user ($DECLOG_DIR)"; else pass "declog_dir_not_writable_by_this_user ($DECLOG_DIR)"; fi
+  # (the declog is read-only to the executor by the unit's BindReadOnlyPaths, checked on the unit text above; a writability test here would fail for the decision host's owner)
   if [ -d "$DECLOG_DIR/decisions/$ARM" ]; then pass "declog_has_the_arm_dir (decisions/$ARM; names only)"; else fail "declog_missing_decisions/$ARM (the decision host has not started, or the arm name differs: ask the manager)"; fi
-  if [ -w "$DECLOG_DIR/decisions/$ARM" ]; then fail "declog_arm_dir_writable_by_this_user"; else pass "declog_arm_dir_not_writable_by_this_user"; fi
 else fail "declog_dir_missing ($DECLOG_DIR)"; fi
 # The twin's read ACL on the derived copy: the dir only (ls -ld), never a tape file name or content.
 if [ -d "$TAPE_DIR" ]; then

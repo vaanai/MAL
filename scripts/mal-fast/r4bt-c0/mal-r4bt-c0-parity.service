@@ -9,7 +9,7 @@ Nice=10
 WorkingDirectory=/opt/mal-r4b-c0/current
 Environment=LC_ALL=C.UTF-8
 # --now-ms is the real clock at each start (never a fixed value). %% is systemd's escape for %.
-ExecStart=/bin/sh -c 'exec /opt/mal-r4b-c0/venv/bin/python -E -s -B -u -m tools.r4bt_c0_parity --state-dir /var/lib/mal-r4b-c0/state --attempts /var/lib/mal-r4b-c0/state/r4bt-attempts.jsonl --now-ms $(( $(date +%%s) * 1000 ))'
+ExecStart=/bin/sh -c 'exec /opt/mal-r4b-c0/venv/bin/python -E -s -B -u -m tools.r4bt_c0_parity --state-dir /var/lib/mal-r4b-c0/state --twin-dir /var/lib/mal-r4b-c0/twin --attempts /var/lib/mal-r4b-c0/state/r4bt-attempts.jsonl --now-ms $(( $(date +%%s) * 1000 ))'
 NoNewPrivileges=true
 PrivateNetwork=true
 RestrictAddressFamilies=AF_UNIX

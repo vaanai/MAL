@@ -27,7 +27,7 @@ NoNewPrivileges=true
 # Dry makes no RPC: no network at all.
 PrivateNetwork=true
 RestrictAddressFamilies=AF_UNIX
-# Writes only its state dir (mal-r4b-c0:claude 3770: setgid so files are group claude, sticky so the job user can add STOP but not remove the executor's files).
+# Writes only its state dir (mal-r4b-c0:mal-r4b-c0 0750: no agent group; STOP is set by `sudo touch`). The twin dir /var/lib/mal-r4b-c0/twin is root-owned and read-only here.
 ProtectSystem=strict
 ReadWritePaths=/var/lib/mal-r4b-c0/state
 ReadOnlyPaths=/opt/mal-r4b-c0

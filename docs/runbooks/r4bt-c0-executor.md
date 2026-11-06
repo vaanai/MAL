@@ -28,7 +28,8 @@ Pack files:
 | Gate dir | `/etc/mal-r4bt-c0/` and `/etc/mal-r4bt-c0/r4bt-a1/` | root:root 0755 | keyless: no `CANARY_DEC.md`, no `read-record.json`. `a3-carry.json` appears when the monitor job writes it |
 | Per-bot live gates | `/etc/mal-arena-live/r4bt-c0/r4bt-a1/{LIVE_OK,TIER}` | root | keyless: no `LIVE_OK`. `TIER`, if present, reads exactly `T0` |
 | Key dir | `/etc/mal-r4bt-c0-key/` | root:root 0700 | empty; live only, later |
-| State | `/var/lib/mal-r4b-c0/state/` | `mal-r4b-c0:claude` 0750 (owned by the executor user; 0750 or tighter, QP condition) | the units' only writable dir: order ledger, STOP, HALT, `twins.jsonl`, `twins.run.json` |
+| State | `/var/lib/mal-r4b-c0/state/` | `mal-r4b-c0:mal-r4b-c0` 0750 | executor and parity writable: order ledger, attempts, STOP, HALT. **Not group `claude`**: agent sessions must not read the live order ledger or parity state (SEALS, R4BT C0 TWIN READER). Root reads it by ACL `u:root:rX` (default ACL too) |
+| Twin dir | `/var/lib/mal-r4b-c0/twin/` | `root:root` 0755, files 0644 | the twin unit's only writable dir: `twins.jsonl`, `twins.run.json`. Read-only to the executor and parity units (config `twin_dir`, parity `--twin-dir`), so the executor cannot forge twin files |
 | Declog (bind source) | `/home/claude/mal-data/r4b-dry/r4bt-a1-1107a/declog` | the decision host's | read-only bind into the executor unit only. Written by the decision host, not by Helm |
 | Derived tape copy | `/home/claude/mal-data/arena-tipfeed/tape` | the receiver's | read-only bind into the twin unit only |
 
@@ -42,9 +43,11 @@ Do these in order. Record each result (path, uid, mode, sha) in the install reco
    sudo install -d -m 0755 -o root -g root /opt/mal-r4b-c0 /etc/mal-r4bt-c0 /etc/mal-r4bt-c0/r4bt-a1 /var/lib/mal-r4b-c0
    sudo install -d -m 0755 -o root -g root /etc/mal-arena-live/r4bt-c0 /etc/mal-arena-live/r4bt-c0/r4bt-a1
    sudo install -d -m 0700 -o root -g root /etc/mal-r4bt-c0-key
-   sudo install -d -m 0750 -o mal-r4b-c0 -g claude /var/lib/mal-r4b-c0/state
-   sudo stat -c '%U:%G %a %n' /opt/mal-r4b-c0 /etc/mal-r4bt-c0 /etc/mal-r4bt-c0-key /var/lib/mal-r4b-c0/state
-   #   expect: root:root 755, root:root 755, root:root 700, mal-r4b-c0:claude 750
+   sudo install -d -m 0750 -o mal-r4b-c0 -g mal-r4b-c0 /var/lib/mal-r4b-c0/state
+   sudo install -d -m 0755 -o root -g root /var/lib/mal-r4b-c0/twin
+   sudo setfacl -m u:root:rX /var/lib/mal-r4b-c0/state && sudo setfacl -d -m u:root:rX /var/lib/mal-r4b-c0/state   # the twin (capability-less root) reads the ledger and attempts
+   sudo stat -c '%U:%G %a %n' /opt/mal-r4b-c0 /etc/mal-r4bt-c0 /etc/mal-r4bt-c0-key /var/lib/mal-r4b-c0/state /var/lib/mal-r4b-c0/twin
+   #   expect: root:root 755, root:root 755, root:root 700, mal-r4b-c0:mal-r4b-c0 750, root:root 755
    test -z "$(sudo ls -A /etc/mal-r4bt-c0/r4bt-a1)" && test -z "$(sudo ls -A /etc/mal-r4bt-c0-key)" && echo "gate closed, no key"
    ```
    The per-bot `TIER` file (content exactly `T0`, root-owned) is created at the manager's go, not now. `LIVE_OK` and `CANARY_DEC.md` are never created in a keyless install.
@@ -54,9 +57,13 @@ Do these in order. Record each result (path, uid, mode, sha) in the install reco
 6. **Manifest.** Section 3 (`/opt/mal-r4b-c0/<sha>.manifest`, equal to the tree).
 7. **Read ACL on the derived copy, for the twin.** The twin unit runs as root with an empty capability set, so it needs a named ACL entry on the tape dir (read and traverse only; no write). Record the `getfacl` output.
    ```
-   sudo setfacl -m u:root:rX /home/claude/mal-data/arena-tipfeed /home/claude/mal-data/arena-tipfeed/tape
-   sudo setfacl -d -m u:root:rX /home/claude/mal-data/arena-tipfeed/tape
-   sudo getfacl -p /home/claude/mal-data/arena-tipfeed/tape
+   T=/home/claude/mal-data/arena-tipfeed
+   sudo setfacl -m u:root:rX $T
+   sudo setfacl -R -m u:root:rX $T/tape && sudo setfacl -R -d -m u:root:rX $T/tape            # existing tape-*.jsonl.zst, .writer/ and .push/ included, and new files
+   sudo setfacl -R -m u:root:rX $T/tape/.writer $T/tape/.push && sudo setfacl -R -d -m u:root:rX $T/tape/.writer $T/tape/.push   # counts.jsonl and verified.json are rewritten by rename
+   sudo setfacl -m u:root:--- $T/tape/.writer/state.json                                           # the twin never reads the tip-state file
+   sudo getfacl -p $T/tape $T/tape/.writer $T/tape/.push
+   sudo sh /opt/mal-r4b-c0/current/scripts/ops/r4bt-c0-twin-sandbox-check.sh      # PASS lines from INSIDE the twin unit's sandbox (systemd-run, same properties); names only
    ```
    If the manager names another uid for the twin, the executor's root-owner rule changes first and this ACL names that uid. The twin never reads the live tip dir, the archive, `.writer/state.json` or the declog.
 8. **Keep-verified dependency (>= 400 h).** The derived copy's writer run must keep verified hours **>= 400 h** (`--keep-verified-h 400`, the successor of the derived-copy writer, DEC-031 Am.27 item 25). Retention deletes closed hours; the twin refuses with `hour_deleted_by_retention` when the oldest present hour is later than the first hour the C0 needs. After the tree is installed, the manager runs `r4bt-c0-twin.sh --check-tape` as the twin's uid (prints the oldest present hour name against the needed first hour; names only). Helm records that the writer is configured with 400 h or more; the C0 does not start otherwise.
@@ -135,8 +142,8 @@ It prints only paths, labels and PASS/FAIL, never contents. Expect `RESULT PASS`
 - the tree is a root-owned 40-hex sha dir equal to its manifest, with `LIVE_BUILT = False` and W pinned, and the twin files are present;
 - the venv holds exactly the four pins and imports the executor closure;
 - the gate dir is root 0755, the key dir root 0700, the state dir 0750 or tighter and owned by the executor user;
-- **declog, names only:** the bind source exists, is not writable by this user, and holds `decisions/r4b-exp027`, which is also not writable. The declog being non-empty is expected; no emptiness check exists and no name or content inside it is listed;
-- the twin's tape-dir ACL (the dir only), reported as PASS or INFO;
+- **declog, names only:** the bind source exists, and holds `decisions/r4b-exp027` (read-only to the executor by the unit's bind, which is checked on the unit text). The declog being non-empty is expected; no emptiness check exists and no name or content inside it is listed;
+- the twin dir is root 0755 and not writable by this user; the state dir is owned by this user with group not `claude`; the twin's recursive read ACLs are proven by `r4bt-c0-twin-sandbox-check.sh` (root, from inside the twin unit's sandbox), not by this checklist;
 - the synthetic smoke passes: the executor's config check prints `"ok": true`, and `--live` exits 2 with `live_not_built`;
 - the unit is not enabled and not active.
 
@@ -154,7 +161,7 @@ Per DEC-032 Am.9 (a4) the executor is not started against the real declog before
 
 | Want | Do |
 | --- | --- |
-| No new would-buys | `sudo -u claude touch /var/lib/mal-r4b-c0/state/STOP` (remove it to resume) |
+| No new would-buys | `sudo touch /var/lib/mal-r4b-c0/state/STOP` (remove it to resume) |
 | Freeze | `HALT` in the same place |
 | Stop the twin | `sudo systemctl stop mal-r4bt-c0-twin` (the executor's twin gate then refuses buys when the heartbeat ages) |
 | Take it out | `sudo systemctl disable --now mal-r4bt-c0-executor mal-r4bt-c0-twin`; keep the state dir for the manager |
@@ -171,3 +178,7 @@ Per DEC-032 Am.9 (a4) the executor is not started against the real declog before
 Live needs a reviewed code change with its own QP pass, and none of it exists at this pack's sha: `LIVE_BUILT` flipped behind a refusal that its own diff removes; the owner confirmation (`OWNER_CANARY_CONFIRMED: bot_id=r4bt-a1`) and the per-bot `LIVE_OK`; the live drop-in (`LoadCredential` from `/etc/mal-r4bt-c0-key/`, network on); the wallet, which Helm makes on the owner's word, a dedicated one (QP-RULING-1106-r4bt-c0 section 4). Helm acts on each live step only on the owner's word.
 
 No book has cleared the promotion gate.
+
+## 9. Daily tie-out
+
+The daily tie-out (DEC-032 section 6) reads the wallet and the chain, not the state or twin files. An aggregate it needs from the ledger goes through a root-run tool that prints aggregates only.

@@ -85,7 +85,7 @@ class UnitFile(unittest.TestCase):
         c = filled()
         self.assertEqual(c["root"], values("BindReadOnlyPaths")[0])
         self.assertEqual(c["state_dir"], values("ReadWritePaths")[0])
-        self.assertEqual(c["twin_dir"], c["state_dir"])
+        self.assertNotEqual(c["twin_dir"], c["state_dir"])
         self.assertTrue(c["stop_file"].startswith(c["state_dir"] + "/") and c["halt_file"].startswith(c["state_dir"] + "/"))
         self.assertIn("/etc/mal-r4bt-c0/r4bt-c0.dry.json", values("ExecStart")[0])
         self.assertIn("/etc/mal-r4bt-c0)", UNIT.read_text())  # the root-owned gate dir check
@@ -97,7 +97,8 @@ class TwinUnit(unittest.TestCase):
             self.assertEqual(values(k, TWIN_UNIT), [], k)
         self.assertEqual(values("PrivateNetwork", TWIN_UNIT), ["true"])
         self.assertEqual(values("CapabilityBoundingSet", TWIN_UNIT), [""])  # the empty capability set
-        self.assertEqual(values("ReadWritePaths", TWIN_UNIT), ["/var/lib/mal-r4b-c0/state"])
+        self.assertEqual(values("ReadWritePaths", TWIN_UNIT), ["/var/lib/mal-r4b-c0/twin"])  # its own root-owned dir, never the state dir
+        self.assertIn("/var/lib/mal-r4b-c0/state", values("ReadOnlyPaths", TWIN_UNIT)[0].split())
         self.assertEqual(values("BindReadOnlyPaths", TWIN_UNIT), ["/home/claude/mal-data/arena-tipfeed/tape"])
         self.assertEqual(values("ExecStart", TWIN_UNIT), ["/bin/sh /opt/mal-r4b-c0/current/scripts/mal-fast/r4bt-c0-twin.sh --loop"])
         env = dict(v.split("=", 1) for v in values("Environment", TWIN_UNIT))
@@ -114,7 +115,9 @@ class TwinUnit(unittest.TestCase):
         req = re.search(r"for v in ([A-Z0-9_ ]+); do", wrapper).group(1).split()
         for v in req:
             self.assertIn(v, env, v)
-        self.assertEqual(env["R4BT_C0_STATE_DIR"], filled()["state_dir"])
+        self.assertEqual(env["R4BT_C0_STATE_DIR"], filled()["twin_dir"])  # the wrapper writes twins here
+        self.assertEqual(filled()["twin_dir"], "/var/lib/mal-r4b-c0/twin")
+        self.assertNotEqual(filled()["twin_dir"], filled()["state_dir"])
         self.assertTrue(env["R4BT_C0_ORDERS"].startswith(filled()["state_dir"] + "/"))
         self.assertIn("r4bt-order-ledger.jsonl", env["R4BT_C0_ORDERS"])
 
@@ -190,7 +193,7 @@ class ParityAndCarry(unittest.TestCase):
         svc, tm = PACK / "mal-r4bt-c0-parity.service", PACK / "mal-r4bt-c0-parity.timer"
         self.assertEqual(values("User", svc), ["mal-r4b-c0"])  # the EXECUTOR's user
         ex = values("ExecStart", svc)[0]
-        for want in ("-m tools.r4bt_c0_parity", "--state-dir /var/lib/mal-r4b-c0/state", "--attempts /var/lib/mal-r4b-c0/state/r4bt-attempts.jsonl", "--now-ms $(( $(date +%%s) * 1000 ))"):
+        for want in ("-m tools.r4bt_c0_parity", "--state-dir /var/lib/mal-r4b-c0/state", "--twin-dir /var/lib/mal-r4b-c0/twin", "--attempts /var/lib/mal-r4b-c0/state/r4bt-attempts.jsonl", "--now-ms $(( $(date +%%s) * 1000 ))"):
             self.assertIn(want, ex)
         self.assertEqual(values("PrivateNetwork", svc), ["true"])
         self.assertEqual(values("LoadCredential", svc), [])
@@ -208,6 +211,28 @@ class ParityAndCarry(unittest.TestCase):
     def test_template_accepted_with_carry_bound(self):
         from tools import r4bt_c0_executor as E
         self.assertEqual(E.make_config(filled(post=True)).a3_carry_max_age_ms, 10_800_000)
+
+
+class StateAndTwinDirs(unittest.TestCase):
+    def test_sandbox_check_script(self):
+        sc = REPO / "scripts" / "ops" / "r4bt-c0-twin-sandbox-check.sh"
+        self.assertEqual(subprocess.run(["sh", "-n", str(sc)]).returncode, 0)
+        r = subprocess.run(["sh", str(sc), "--print"], env={"PATH": os.environ["PATH"], "R4BTC0_TWIN_UNIT_FILE": str(TWIN_UNIT)}, capture_output=True, text=True)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        for want in ("-p PrivateNetwork=true", "-p ReadWritePaths=/var/lib/mal-r4b-c0/twin", "-p User=root", "-p CapabilityBoundingSet=", "-p BindReadOnlyPaths=/home/claude/mal-data/arena-tipfeed/tape"):
+            self.assertIn(want, r.stdout.splitlines(), want)
+        self.assertFalse(any("ExecStart" in ln or "Type=" in ln for ln in r.stdout.splitlines()))
+        self.assertIn("run_as_root", subprocess.run(["sh", str(sc)], env={"PATH": os.environ["PATH"], "R4BTC0_TWIN_UNIT_FILE": str(TWIN_UNIT)}, capture_output=True, text=True).stdout
+                      if os.getuid() != 0 else "run_as_root")
+
+    def test_runbook_acls_and_stop(self):
+        t = RUNBOOK.read_text()
+        for want in ("mal-r4b-c0:mal-r4b-c0", "setfacl -R -m u:root:rX $T/tape", "setfacl -R -d -m u:root:rX $T/tape", ".writer/state.json", "sudo touch /var/lib/mal-r4b-c0/state/STOP",
+                     "/var/lib/mal-r4b-c0/twin", "r4bt-c0-twin-sandbox-check.sh", "setfacl -m u:root:rX /var/lib/mal-r4b-c0/state"):
+            self.assertIn(want, t, want)
+        self.assertNotIn("mal-r4b-c0:claude", t)
+        self.assertNotIn("sudo -u claude touch", t)
+        self.assertNotIn("3770", UNIT.read_text())
 
 
 class Runbook(unittest.TestCase):
@@ -247,6 +272,8 @@ class Checklist(unittest.TestCase):
         os.chmod(F / "key", 0o700)
         (F / "state").mkdir()
         os.chmod(F / "state", 0o750)
+        (F / "twin").mkdir()
+        os.chmod(F / "twin", 0o755)
         # a NON-EMPTY declog, as r4-b-T's is by construction: the arm dir holds a day file. The checklist must not list or read it.
         (F / "declog" / "decisions" / "r4b-exp027").mkdir(parents=True)
         (F / "declog" / "decisions" / "r4b-exp027" / "2026-11-07.jsonl").write_text("SECRET-DECISION-ROW-MARKER\n")
@@ -279,7 +306,7 @@ class Checklist(unittest.TestCase):
         F = self.F
         e = {"PATH": os.environ.get("PATH", "/usr/bin:/bin"), "R4BTC0_UNIT_TEXT": str(self.unit_text()), "R4BTC0_CONFIG": str(F / "etc" / "r4bt-c0.dry.json"),
              "R4BTC0_TREE": str(F / "opt" / "current"), "R4BTC0_VENV": str(F / "venv"), "R4BTC0_ETC": str(F / "etc"), "R4BTC0_KEY_DIR": str(F / "key"),
-             "R4BTC0_STATE_DIR": str(F / "state"), "R4BTC0_DECLOG_DIR": str(F / "declog"), "R4BTC0_LIVE_DIR": str(F / "live"), "R4BTC0_TAPE_DIR": str(F / "notape"),
+             "R4BTC0_STATE_DIR": str(F / "state"), "R4BTC0_TWIN_DIR": str(F / "twin"), "R4BTC0_DECLOG_DIR": str(F / "declog"), "R4BTC0_LIVE_DIR": str(F / "live"), "R4BTC0_TAPE_DIR": str(F / "notape"),
              "R4BTC0_NO_SYSTEMCTL": "1", "R4BTC0_STAT_OWNER": str(os.getuid()), "R4BTC0_PY3": sys.executable, "R4BTC0_SYSTEM_KEY_PATHS": ""}
         e.update(env)
         r = subprocess.run(["sh", str(CHECKLIST)], env=e, capture_output=True, text=True, timeout=300, cwd=F)
@@ -298,7 +325,7 @@ class Checklist(unittest.TestCase):
         for want in ("PASS no_credential_directives_in_unit", "PASS execstart_is_the_r4bt_executor_dry", "PASS private_network_true", "PASS declog_bind_is_the_change_id_root_read_only",
                      "PASS only_the_state_dir_is_writable", "PASS config_root_owned_0644", f"PASS tree_is_a_sha_dir ({SHA})",
                      "PASS executor_live_not_built (LIVE_BUILT = False, W pinned)", "PASS venv_imports_the_executor_closure", "PASS key_dir_root_0700",
-                     "PASS declog_has_the_arm_dir", "PASS declog_arm_dir_not_writable_by_this_user", "PASS read_record_absent_before_the_go",
+                     "PASS declog_has_the_arm_dir", "PASS twin_dir_root_0755", "PASS state_dir_owned_by_this_user", "PASS read_record_absent_before_the_go",
                      "PASS smoke_config_check_ok", "PASS smoke_live_refused", "PASS config_valid_dry_r4bt", "PASS tree_equals_manifest"):
             self.assertTrue(any(ln.startswith(want) for ln in out), (want, out))
         self.assertFalse(any(ln.startswith("FAIL declog_dir_not_empty") or "declog_dir_empty" in ln for ln in out))  # correction (b): no emptiness check
@@ -382,10 +409,19 @@ class Checklist(unittest.TestCase):
         os.chmod(d, 0o755)
         try:
             rc, out = self.run_list(R4BTC0_SKIP_SMOKE="1")
-            self.assertTrue(any(ln.startswith("FAIL declog_dir_writable_by_this_user") for ln in out), out)
-            self.assertTrue(any(ln.startswith("FAIL declog_dir_writable") for ln in out), out)
+            self.assertFalse(any("declog_dir_writable" in ln or "declog_dir_not_writable" in ln for ln in out), out)  # QP item 9: dropped
         finally:
             os.chmod(d, 0o555)
+
+    def test_state_dir_group_claude_and_twin_dir_writable_fail(self):
+        st, tw = self.F / "state", self.F / "twin"
+        os.chmod(tw, 0o777)
+        try:
+            rc, out = self.run_list(R4BTC0_SKIP_SMOKE="1")
+        finally:
+            os.chmod(tw, 0o755)
+        self.assertTrue(any(ln.startswith("FAIL twin_dir_not_root_0755") for ln in out), out)
+        self.assertTrue(any(ln.startswith("PASS state_dir_0750_or_tighter") for ln in out), out)
 
     def test_bad_mode_and_root(self):
         rc, out = self.run_list(R4BTC0_MODE="install")

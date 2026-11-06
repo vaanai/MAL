@@ -17,7 +17,7 @@
   "daily_loss_lamports": 100000000,
   "total_loss_lamports": 200000000,
   "send_fee_lamports": 505000,
-  "twin_dir": "/var/lib/mal-r4b-c0/state",
+  "twin_dir": "/var/lib/mal-r4b-c0/twin",
   "twin_interval_s": 300,
   "twin_replay_s": 300,
   "twin_heartbeat_max_ms": 900000,
