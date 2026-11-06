@@ -433,7 +433,7 @@ class LiveSet(unittest.TestCase):
         sect = rb[rb.index("## 6. Stop"):rb.index("## 7.")]
         for want in ("/var/lib/mal-r4b-c0/state/STOP", "/var/lib/mal-r4b-c0/state-live/STOP", "/var/lib/mal-r4b-c0/state/HALT", "/var/lib/mal-live/HALT", "also freezes every other live unit"):
             self.assertIn(want, sect, want)
-        # the live config sets no stop_file/halt_file, so the executor's STOP/HALT are under its state_dir
+        # the live config sets no stop_file/halt_file: live STOP is <state_dir>/STOP, but live HALT is only the bridge-pinned shared /var/lib/mal-live/HALT
         live = json.loads((PACK / "r4bt-c0.live.json.example").read_text())
         self.assertNotIn("stop_file", live)
         self.assertNotIn("halt_file", live)
@@ -462,6 +462,26 @@ class LiveSet(unittest.TestCase):
         out = r.stdout.splitlines()
         self.assertIn("-p ReadWritePaths=/var/lib/mal-r4b-c0/twin-live", out)
         self.assertNotIn("-p ReadWritePaths=/var/lib/mal-r4b-c0/twin", out)  # the DRY value was reset by the empty assignment
+
+
+    def test_sandbox_check_passes_no_credential_to_the_probe_shells(self):
+        sc = REPO / "scripts" / "ops" / "r4bt-c0-twin-sandbox-check.sh"
+        text = sc.read_text()
+        self.assertIn("NOCRED=", text)
+        self.assertEqual(text.count('grep -Ev "$NOCRED"'), 2)  # twin props and executor props
+        for k in ("LoadCredential", "SetCredential", "EnvironmentFile"):
+            self.assertIn(k, text.split("NOCRED=", 1)[1].split("\n", 1)[0])
+        self.assertNotIn('"test ! -w /var/lib/mal-live"', text)  # no in-sandbox write check
+        self.assertIn("runuser -u", text)
+        # a drop-in carrying credential properties: the printed property list must not
+        with tempfile.TemporaryDirectory() as d:
+            dr = Path(d) / "x.conf"
+            dr.write_text("[Service]\nLoadCredential=probe-wallet:/etc/x/y\nEnvironmentFile=/etc/z/h.env\nSetCredential=a:b\nProtectSystem=strict\n")
+            r = subprocess.run(["sh", str(sc), "--print"], env={"PATH": os.environ["PATH"], "R4BTC0_TWIN_UNIT_FILE": str(TWIN_UNIT),
+                               "R4BTC0_TWIN_DROPIN": str(dr)}, capture_output=True, text=True)
+        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertNotRegex(r.stdout, r"Credential|EnvironmentFile|probe-wallet|helius")
+        self.assertIn("-p ProtectSystem=strict", r.stdout.splitlines())
 
 
 class PushNames(unittest.TestCase):
