@@ -1582,10 +1582,10 @@
   {
    "id": "Q50",
    "title": "Q50 (h5v1q50-boostfloor-a1) H5 BOOST-floor",
-   "stage": "registered, clock 2026-10-25T00:00Z; gate read queued",
-   "note": "Shadow running since the clock. One gate read (job #1887) waits behind its waiter #1886 for the pre-registered boundary (still waiting at the 2026-11-01 about 03:4xZ manager summary); the 10-30T00Z boundary did not qualify. The arena-tape duplicate finding does not change the read (QP-RULING-1031-tape-dupes-reads): it runs unchanged, and on a PASS the pre-declared audit A-Q50 runs before QP's OK and before any C0 step. C0 code is on main (60 s gap hold, owner line in a root-owned file, P7 at C0). Helm's keyless dry runs passed (10-24 at 0526d5cd: 60 min, 0 halts, 0 restarts, no key, no wallet; 10-28 and 10-29 at c8fcf761: 6 of 6) but feed gaps stayed (135 redundant + 42 gap rows an hour on 10-29); the re-measure on the new code ran on 10-31 (HELM-ASK-1030-2; HELM-REPLY-1031-1: PASS on all 9 criteria, held share 0.2593 against about 1.0 on 10-28 and 10-29, 37 slot_jump feed_gap, 206 redundant reconnects that hold nothing, watchdog alerts 0, keyless so P7 parity does not apply) and was accepted. Standing owner OK for the C0 canary on a PASS plus QP; nothing is live. No book has cleared the promotion gate.",
+   "stage": "ENDED NOT_DECIDABLE (read #1887, 2026-11-06T07:21:48Z; Am.11 item 2)",
+   "note": "Read #1887 (waiter #1886) ran exit 0 at 2026-11-06T07:21:48Z: STATUS NOT_DECIDABLE, flag ENDED NOT_DECIDABLE at the end-seal (counts only, final; DEC-031 Am.11 item 2). Not a FAIL and not a PASS; no outcome was read. Notebook n_jmlUQ8nlOPrL4w. No C0 step follows. No book has cleared the promotion gate.",
    "tag": {
-    "text": "registered",
+    "text": "ended",
     "tone": "accent"
    }
   },
