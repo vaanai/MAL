@@ -38,6 +38,10 @@ WHAT THE PROFILE ADDS (each is a refusal path with a test in tools/test_r4bt_c0_
              total_loss <= 0.20 SOL (the bridge counts open exposure in the total stop), funded_lamports in [0.35, 1.00] SOL. Above = refused.
   FEE        Am.9 section 8: config send_fee_lamports defaults to the registered 505,000 per send. A lower value is refused unless an explicit reviewed `fee_override`
              {lamports, fill_fee, owner_line, qp_comment_id} names that exact value; a higher value is always refused. Reserves in the bridge stay at 505,000 (conservative).
+  PARITY GATE  every buy is refused unless `<state_dir>/r4bt-parity-state.json` (JSON object) exists, is a regular file, has schema r4bt_parity_state_v1, int `exit_code` 0, `stop_required` false, an int `at_ms` at most 60 s old (not
+             future-stamped), and `ledger_sha256` / `attempts_sha256` equal to the sha256 of the CURRENT order ledger and attempts file (any change needs a new parity run before the next buy).
+  A3 FRESHNESS the carry's `written_utc` (the carry writer's stamp) must be present and no older than config `a3_carry_max_age_ms` (default 2 h; at most 36 h), else LATCH
+             (`a3_carry_written_stale` / `a3_carry_no_written_utc`): a stalled copy cannot serve a stale clean carry, whatever the record's own run_utc says.
   PARITY     (tools/r4bt_c0_parity.py, PR #1250) <state_dir>/STOP counts as STOP (new buys stop, exits run) whatever else is set. The ledger rows also carry
              live_buy_price / live_sell_price (SOL per token, the twin's Qe/Be convention), live_net_lamports (the trip's chain wallet delta), exit_landed_ms and gap_through,
              filled from the port events of the same names (buy_landed: live_buy_price; sell_landed: live_sell_price, live_net_lamports, landed_ms, gap_through). A DRY port
@@ -104,6 +108,10 @@ LEDGER_NAME = "r4bt-order-ledger.jsonl"
 LATCH_FEE = "r4bt_fee_unreported"
 LATCH_FILL = "r4bt_fill_unreported"
 STOP_NAME = "STOP"  # <state_dir>/STOP, written by tools/r4bt_c0_parity.py (tools.arena_live_parity.write_stop); any entry at that path is a STOP
+PARITY_STATE_NAME = "r4bt-parity-state.json"  # written by the parity run (tools/r4bt_c0_parity.py)
+PARITY_SCHEMA = "r4bt_parity_state_v1"
+PARITY_MAX_AGE_MS = 60_000  # a buy needs a parity result at most this old
+A3_CARRY_MAX_AGE_DEFAULT_MS = 2 * 3_600_000  # written_utc bound: the carry copy is hourly, so 2 h; a stalled copy cannot serve a stale clean carry
 ATTEMPTS_NAME = "r4bt-attempts.jsonl"  # per buy-send attempt rows (tools.arena_live_parity attempts schema), read by the parity tool's P2 via --attempts
 FILE_MAX_BYTES = 1 << 20
 A3_MAX_AGE_MS, A3_FUTURE_SKEW_MS = HV.A3_MAX_AGE_MS, HV.A3_FUTURE_SKEW_MS
@@ -114,7 +122,7 @@ TIER_REQUIRED = "T0"
 SHA64_RE = re.compile(r"[0-9a-f]{64}")
 CHANGE_RE = re.compile(r"[A-Za-z0-9_.-]{1,64}")
 
-_PROFILE_KEYS = ("change_id", "twin_dir", "a3_carry_path", "read_record_path", "read_result_sha256", "qp_comment_id", "owner_file", "live_ok_path", "tier_path", "send_fee_lamports", "fee_override", "twin_interval_s", "twin_replay_s", "twin_heartbeat_max_ms")
+_PROFILE_KEYS = ("change_id", "twin_dir", "a3_carry_path", "read_record_path", "read_result_sha256", "qp_comment_id", "owner_file", "live_ok_path", "tier_path", "send_fee_lamports", "fee_override", "twin_interval_s", "twin_replay_s", "twin_heartbeat_max_ms", "a3_carry_max_age_ms")
 
 
 class Refused(ValueError):
@@ -159,6 +167,7 @@ class R4btConfig(X.R4bConfig):
     twin_interval_s: int = TWIN_INTERVAL_S_DEFAULT  # the twin wrapper's sleep between runs
     twin_replay_s: int = TWIN_REPLAY_S_DEFAULT  # the declared full-length replay time (measure it in the DRY smoke; owed before install)
     twin_heartbeat_max_ms: int = TWIN_HEARTBEAT_DEFAULT_MS  # run-record heartbeat bound; floor 2 x interval + replay
+    a3_carry_max_age_ms: int = A3_CARRY_MAX_AGE_DEFAULT_MS  # bound on the carry's written_utc
 
 
 def twin_heartbeat_problem(interval_s: Any, replay_s: Any, max_ms: Any) -> str | None:
@@ -223,6 +232,9 @@ def make_config(d: Mapping[str, Any]) -> R4btConfig:
         raise Refused(hb_problem)
     if isinstance(d.get("root"), str) and not HV.synthetic_root(d["root"]) and d["change_id"] not in Path(d["root"]).parts:
         raise Refused(f"config root {d['root']} is not under the change_id root (.../r4b-dry/{d['change_id']}/declog)")
+    age = d.get("a3_carry_max_age_ms", A3_CARRY_MAX_AGE_DEFAULT_MS)
+    if not _int(age) or not 0 < age <= A3_MAX_AGE_MS:
+        raise Refused(f"a3_carry_max_age_ms must be a positive int, at most {A3_MAX_AGE_MS} (36 h)")
     fee_problem = send_fee_problem(d.get("send_fee_lamports", REGISTERED_SEND_LAMPORTS), d.get("fee_override"))
     if fee_problem:
         raise Refused(fee_problem)
@@ -240,7 +252,7 @@ def make_config(d: Mapping[str, Any]) -> R4btConfig:
 # --- safe small-file reads ------------------------------------------------------------------------------------------------------------------------
 
 
-def _read_small(path: Any, root_checks: bool, max_bytes: int = FILE_MAX_BYTES) -> tuple[bytes | None, str | None, os.stat_result | None]:
+def _read_small(path: Any, root_checks: bool, max_bytes: int = FILE_MAX_BYTES, mode_mask: int = 0o022) -> tuple[bytes | None, str | None, os.stat_result | None]:
     """(bytes, problem, stat). Regular file, not a link, single link, not group/other writable, owned by root (root_checks) or by root or the running user (tests),
     opened O_NOFOLLOW, same inode as the lstat, within max_bytes."""
     try:
@@ -251,7 +263,7 @@ def _read_small(path: Any, root_checks: bool, max_bytes: int = FILE_MAX_BYTES) -
         return None, "unreadable", None
     if stat.S_ISLNK(ls.st_mode) or not stat.S_ISREG(ls.st_mode) or ls.st_nlink != 1:
         return None, "not_regular", None
-    if ls.st_mode & 0o022 or ls.st_uid != 0 and (root_checks or ls.st_uid != os.getuid()):
+    if ls.st_mode & mode_mask or ls.st_uid != 0 and (root_checks or ls.st_uid != os.getuid()):
         return None, "owner_mode", None
     try:
         fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC)
@@ -274,8 +286,8 @@ def _read_small(path: Any, root_checks: bool, max_bytes: int = FILE_MAX_BYTES) -
     return (data, None, fs) if len(data) <= max_bytes else (None, "swapped_or_large", None)
 
 
-def _json_obj(path: Any, root_checks: bool, what: str, last_line: bool = False) -> tuple[dict[str, Any] | None, str | None, os.stat_result | None]:
-    data, why, st = _read_small(path, root_checks)
+def _json_obj(path: Any, root_checks: bool, what: str, last_line: bool = False, mode_mask: int = 0o022) -> tuple[dict[str, Any] | None, str | None, os.stat_result | None]:
+    data, why, st = _read_small(path, root_checks, mode_mask=mode_mask)
     if why:
         return None, f"{what}_{why}", None
     try:
@@ -411,6 +423,13 @@ def a3_problem(cfg: R4btConfig, now_ms: int, root_checks: bool = True) -> tuple[
         return "a3_carry_future", []
     if now_ms - rec_ms > A3_MAX_AGE_MS:
         return "a3_carry_stale", []
+    w_ms = _iso_ms(car.get("written_utc"))
+    if w_ms is None:
+        return "a3_carry_no_written_utc", []
+    if w_ms - now_ms > A3_FUTURE_SKEW_MS:
+        return "a3_carry_written_future", []
+    if now_ms - w_ms > cfg.a3_carry_max_age_ms:
+        return "a3_carry_written_stale", []
     v = car.get("verdict")
     if v not in CARRY_CLEAR:
         return f"a3_carry:{v}" if isinstance(v, str) else "a3_carry_verdict_unknown", []
@@ -527,6 +546,36 @@ def ledger_rows(orders: Mapping[str, Mapping[str, Any]]) -> list[dict[str, Any]]
     return out
 
 
+def parity_state_problem(state_dir: str, now_ms: int) -> str | None:
+    """The fresh-parity gate (schema `r4bt_parity_state_v1`, written by tools/r4bt_c0_parity.py on every run; ops/reports/2026-11-06/r4bt-parity-state-schema.md). None only
+    when `<state_dir>/r4bt-parity-state.json` is a regular file, schema r4bt_parity_state_v1, int exit_code 0, stop_required false (a bool), an int at_ms (= the run instant)
+    at most PARITY_MAX_AGE_MS old and not in the future, ledger_sha256 equal to the sha256 of the CURRENT order ledger and attempts_sha256 equal to the sha256 of the CURRENT
+    attempts file (a file changed since the run makes the result stale). Fail closed otherwise."""
+    st, why, _ = _json_obj(os.path.join(state_dir, PARITY_STATE_NAME), False, "parity_state", mode_mask=0o002)  # the executor's own user writes these: group-writable (umask 002) is fine, world-writable is not
+    if why:
+        return "parity_gate:" + why
+    if st.get("schema") != PARITY_SCHEMA:
+        return "parity_gate:schema"
+    if not _int(st.get("exit_code")) or st["exit_code"] != 0:
+        return "parity_gate:exit_code"
+    if st.get("stop_required") is not False:
+        return "parity_gate:stop_required"
+    run = st.get("at_ms")
+    if not _int(run):
+        return "parity_gate:at_ms_missing"
+    if run - now_ms > TWIN_FUTURE_SKEW_MS:
+        return "parity_gate:at_ms_future"
+    if now_ms - run > PARITY_MAX_AGE_MS:
+        return "parity_gate:stale"
+    for name, key in ((LEDGER_NAME, "ledger_sha256"), (ATTEMPTS_NAME, "attempts_sha256")):
+        data, why, _ = _read_small(os.path.join(state_dir, name), False, 64 * 1024 * 1024, 0o002)
+        if why:
+            return f"parity_gate:{key[:-7]}_{why}"
+        if st.get(key) != hashlib.sha256(data).hexdigest():
+            return f"parity_gate:{key[:-7]}_sha_mismatch"
+    return None
+
+
 def attempt_rows(orders: Mapping[str, Mapping[str, Any]]) -> list[dict[str, Any]]:
     """One row per buy SEND OUTCOME, failures included (tools.arena_live_parity attempts schema; P2 reads it). A landed buy: landed true, trip_id = the order, landed_ms the
     buy event's. A failed or expired buy (buy_failed): landed false, failed_or_expired true, no trip_id. p_fail_press is 0.0: the executor does not know the pressure leg, so
@@ -594,6 +643,7 @@ class R4btBridge(X.R4bBridge):
         self.es = self._load_es()
         B.Bridge.__init__(self, cfg, port, now_ms=now_ms, live_ok_path=live_ok_path or Path(cfg.live_ok_path), tier_path=tier_path or Path(cfg.tier_path),
                           root_checks=root_checks, close_blocked=close_blocked, gap_clear_dir=gap_clear_dir)
+        self.write_ledger()  # the parity gate hashes both files: they exist from the start (empty until the first confirmed buy)
         self._log("r4bt_start", w=cfg.frozen_sha, change_id=cfg.change_id, live_gates_open=live_gate_problems(cfg, root_checks))
 
     # -- reads: nothing is read without the recorded PASS read (a4)
@@ -632,6 +682,10 @@ class R4btBridge(X.R4bBridge):
             if why.startswith("twin_gate:pin_mismatch"):
                 self._latch(LATCH_TWIN_PIN, why)
             self._count("twin_gate_refusal")
+            return why
+        why = parity_state_problem(self.cfg.state_dir, now)
+        if why:
+            self._count("parity_gate_refusal")
             return why
         return None
 
