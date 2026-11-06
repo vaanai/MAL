@@ -47,6 +47,7 @@ import argparse
 import hashlib
 import json
 import math
+import os
 import sys
 from pathlib import Path
 from typing import Any, Mapping, Sequence
@@ -59,6 +60,9 @@ from tools.r4b_arena_executor import MAX_HOLD_MS
 from tools.r4bt_c0_executor import (ENGINE_SHA256, LEDGER_NAME, REGISTERED_W, RUN_RECORD_NAME, RUN_SCHEMA, TWIN_ROW_GRACE_MS, TWIN_SCHEMA, TWINS_NAME)
 
 STOP_NAME = "STOP"
+STATE_NAME = "r4bt-parity-state.json"  # the executor's fresh-parity gate reads this (DEC-032 s3 fail closed, s5 P7)
+STATE_SCHEMA = "r4bt_parity_state_v1"
+EXIT_STATE_UNWRITABLE = 6
 RUNG = "C0"
 RULE_DEFAULT = "total"
 STOP_LOSS_REASONS = ("stop_loss", "sl_backstop")
@@ -111,8 +115,11 @@ def _jsonl(data: bytes, what: str) -> list[dict[str, Any]]:
 # --- inputs ----------------------------------------------------------------------------------------------------------------------------------------
 
 
-def load_ledger(state_dir: Path) -> list[dict[str, Any]]:
-    rows = _jsonl(_read_bytes(state_dir / LEDGER_NAME), LEDGER_NAME)
+def load_ledger(state_dir: Path, hashes: dict[str, str | None] | None = None) -> list[dict[str, Any]]:
+    data = _read_bytes(state_dir / LEDGER_NAME)
+    if hashes is not None:
+        hashes["ledger_sha256"] = hashlib.sha256(data).hexdigest()
+    rows = _jsonl(data, LEDGER_NAME)
     seen: set[str] = set()
     for r in rows:
         oid = r.get("order_id")
@@ -290,15 +297,19 @@ def p2_from_attempts(attempts: Sequence[Mapping[str, Any]]) -> dict[str, Any] | 
 def run(state_dir: str | Path, twin_dir: str | Path | None, now_ms: int, attempts_file: str | Path | None = None, rule: str = RULE_DEFAULT) -> dict[str, Any]:
     """Compute the parity result (the arena tool's dict plus `r4bt`: counts, per-id status, P2 evaluation flag). Raises Refused / AP.BadInput on unusable input."""
     sd = Path(state_dir)
-    ledger = load_ledger(sd)
+    hashes: dict[str, str | None] = {}
+    ledger = load_ledger(sd, hashes)
     twins, run_ms = load_twins(Path(twin_dir) if twin_dir else sd, now_ms)
+    hashes["twins_sha256"] = _sha_or_none((Path(twin_dir) if twin_dir else sd) / TWINS_NAME)
     trips, atwins, p5_attempts, counts = build_inputs(ledger, twins, now_ms, rule)
     sd_land = counts.pop("_sd_land")
     extra: list[dict] = []
     if attempts_file is None and (sd / ATTEMPTS_NAME).is_file():
         attempts_file = sd / ATTEMPTS_NAME  # the executor's own file (default); an explicit --attempts that is missing is refused by _read_bytes
     if attempts_file is not None:
-        extra = _jsonl(_read_bytes(Path(attempts_file)), "attempts")
+        att_bytes = _read_bytes(Path(attempts_file))
+        hashes["attempts_sha256"] = hashlib.sha256(att_bytes).hexdigest()
+        extra = _jsonl(att_bytes, "attempts")
     state = {"at_ms": {n: now_ms for n in AP.STATE_NAMES}, "unresolved_hard_halts": [], "rung": RUNG}  # twin freshness was checked in load_twins (the stamp is honest)
     res = AP.evaluate(trips, atwins, p5_attempts, state, now_ms)
     if extra:
@@ -318,7 +329,7 @@ def run(state_dir: str | Path, twin_dir: str | Path | None, now_ms: int, attempt
     lands = [m for m in (res["stats"].get("landing_p50_s"),) if m is not None]
     slot_p50 = (lands[0] - 1.9) * 1.0 if lands else None  # 1000 ms per slot unit in the shifted map: seconds minus 1.9 = slots
     res["r4bt"] = {"counts": counts, "p2_evaluated": p2_evaluated, "twin_run_ms": run_ms, "landing_p50_minus_k1p9_slots": slot_p50,
-                   "diag_sdT_p50_slots": float(np.median(sd_land)) if sd_land else None, "rule": rule}
+                   "diag_sdT_p50_slots": float(np.median(sd_land)) if sd_land else None, "rule": rule, "hashes": hashes}
     return res
 
 
@@ -344,6 +355,42 @@ def render(res: Mapping[str, Any]) -> str:
     return "\n".join(L)
 
 
+def _sha_or_none(path: Path) -> str | None:
+    try:
+        return hashlib.sha256(path.read_bytes()).hexdigest()
+    except OSError:
+        return None
+
+
+def write_state(state_dir: str | Path, now_ms: int, exit_code: int, res: Mapping[str, Any] | None, *, twin_dir: str | Path | None = None,
+                attempts_file: str | Path | None = None, note: str | None = None) -> str | None:
+    """DEC-032 section 3 / section 5 P7: the executor's fresh-parity gate reads `<state_dir>/r4bt-parity-state.json`. Written atomically (tmp, fsync, os.replace) on EVERY
+    run, fail-closed paths included. Fields: schema, at_ms (== run_ms, the run instant), exit_code, verdict, stop_required, p_status, ledger_sha256, attempts_sha256,
+    twins_sha256, twin_run_ms, counts, note. Counts and status only (SEALS-BRIEF R4BT C0 TWIN READER). On a failed run the hashes are best effort (null if unreadable),
+    the verdict is "unusable input" and stop_required is true. Returns None on success or an error label (the caller then exits non-zero)."""
+    sd = Path(state_dir)
+    if res is not None:
+        rb = res["r4bt"]
+        h = rb.get("hashes", {})
+        body = {"verdict": res["verdict"], "stop_required": bool(res["stop_required"]), "p_status": p_status(res), "ledger_sha256": h.get("ledger_sha256"),
+                "attempts_sha256": h.get("attempts_sha256"), "twins_sha256": h.get("twins_sha256"), "twin_run_ms": rb.get("twin_run_ms"), "counts": rb["counts"]}
+    else:
+        att = Path(attempts_file) if attempts_file else sd / ATTEMPTS_NAME
+        body = {"verdict": "unusable input", "stop_required": True, "p_status": None, "ledger_sha256": _sha_or_none(sd / LEDGER_NAME), "attempts_sha256": _sha_or_none(att),
+                "twins_sha256": _sha_or_none((Path(twin_dir) if twin_dir else sd) / TWINS_NAME), "twin_run_ms": None, "counts": None}
+    body.update(schema=STATE_SCHEMA, at_ms=int(now_ms), run_ms=int(now_ms), exit_code=int(exit_code), note=note)
+    try:
+        tmp = sd / (STATE_NAME + ".tmp")
+        with tmp.open("w") as fh:
+            fh.write(json.dumps(body, sort_keys=True, allow_nan=False) + "\n")
+            fh.flush()
+            os.fsync(fh.fileno())
+        os.replace(tmp, sd / STATE_NAME)
+    except (OSError, ValueError) as exc:
+        return f"{STATE_NAME}: {exc.__class__.__name__}"
+    return None
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[0], allow_abbrev=False)
     ap.add_argument("--state-dir", required=True)
@@ -362,31 +409,43 @@ def main(argv: Sequence[str] | None = None) -> int:
         stop = stop or (str(Path(sdir) / STOP_NAME) if sdir else None)
         now = AP._flag_value(argv_l, "--now-ms")
         if stop:
-            return AP._fail_closed(stop, int(now) if now and now.lstrip("-").isdigit() else 0, AP.EXIT_BAD_INPUT, "command line unusable (argparse)")
+            now_i = int(now) if now and now.lstrip("-").isdigit() else 0
+            code = AP._fail_closed(stop, now_i, AP.EXIT_BAD_INPUT, "command line unusable (argparse)")
+            if sdir and Path(sdir).is_dir():
+                write_state(sdir, now_i, code, None, note="command line unusable")
+            return code
         print("FAIL CLOSED (NO BUY): command line unusable and no state dir given")
         return AP.EXIT_BAD_INPUT
     stop_file = a.stop_file or str(Path(a.state_dir) / STOP_NAME)
+
+    def finish(code: int, res: Mapping[str, Any] | None, note: str | None = None) -> int:
+        err = write_state(a.state_dir, a.now_ms, code, res, twin_dir=a.twin_dir, attempts_file=a.attempts, note=note)
+        if err:
+            print(f"PARITY STATE NOT WRITTEN ({err}): NO BUY. The executor's fresh-parity gate will see the old state go stale.")
+            return code or EXIT_STATE_UNWRITABLE
+        return code
+
     try:
         res = run(a.state_dir, a.twin_dir, a.now_ms, a.attempts, a.rule)
     except (Refused, AP.BadInput) as exc:
-        return AP._fail_closed(stop_file, a.now_ms, AP.EXIT_BAD_INPUT, f"UNUSABLE INPUT: {exc}")
+        return finish(AP._fail_closed(stop_file, a.now_ms, AP.EXIT_BAD_INPUT, f"UNUSABLE INPUT: {exc}"), None, str(exc)[:200])
     except Exception as exc:  # noqa: BLE001 - nothing may escape as a bare traceback
-        return AP._fail_closed(stop_file, a.now_ms, AP.EXIT_INTERNAL, f"INTERNAL ERROR {type(exc).__name__}: {exc}")
+        return finish(AP._fail_closed(stop_file, a.now_ms, AP.EXIT_INTERNAL, f"INTERNAL ERROR {type(exc).__name__}: {exc}"), None, f"internal {type(exc).__name__}")
     print(render(res))
     code = AP.EXIT_HARD if res["hard_halts"] else AP.EXIT_SOFT if res["soft_halts"] else AP.EXIT_OK
     try:
         print("STOP file:", AP.write_stop(stop_file, res, a.now_ms))
     except AP.StopUnwritable as exc:
         print(f"STOP FILE NOT WRITTEN ({exc}): NO BUY. The executor must treat this exit code as no buy.")
-        return AP.EXIT_STOP_UNWRITABLE
+        return finish(AP.EXIT_STOP_UNWRITABLE, res)
     if a.json:
         out = {k: v for k, v in res.items() if k != "ineligible_log"}
         try:
             Path(a.json).write_text(json.dumps(out, indent=1, sort_keys=True, allow_nan=False))
         except (OSError, ValueError) as exc:
             print(f"JSON OUTPUT NOT WRITTEN ({exc}): the result above is the only copy")
-            return code or AP._fail_closed(stop_file, a.now_ms, AP.EXIT_JSON, f"JSON output not written ({exc})")
-    return code
+            return finish(code or AP._fail_closed(stop_file, a.now_ms, AP.EXIT_JSON, f"JSON output not written ({exc})"), res)
+    return finish(code, res)
 
 
 if __name__ == "__main__":

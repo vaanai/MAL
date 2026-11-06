@@ -274,6 +274,77 @@ class TestExecutorFollowup(Base):
         self.assertTrue(res["r4bt"]["p2_evaluated"])
 
 
+class TestParityState(Base):
+    def state(self):
+        return json.loads((Path(self.d) / RP.STATE_NAME).read_text())
+
+    def test_written_on_success(self):
+        rc = self.main([order(i) for i in range(5)], attempts=clean_attempts())
+        st = self.state()
+        self.assertEqual((rc, st["exit_code"], st["at_ms"], st["schema"]), (0, 0, NOW, "r4bt_parity_state_v1"))
+        self.assertEqual(st["ledger_sha256"], hashlib.sha256((Path(self.d) / LEDGER_NAME).read_bytes()).hexdigest())
+        self.assertEqual(st["attempts_sha256"], hashlib.sha256((Path(self.d) / "attempts.jsonl").read_bytes()).hexdigest())
+        self.assertEqual(st["twins_sha256"], hashlib.sha256((Path(self.d) / TWINS_NAME).read_bytes()).hexdigest())
+        self.assertEqual(st["p_status"]["P3"], "PASS")
+        self.assertFalse(st["stop_required"])
+        self.assertIsInstance(st["counts"], dict)
+        self.assertFalse((Path(self.d) / (RP.STATE_NAME + ".tmp")).exists())
+
+    def test_written_on_soft_halt(self):
+        rc = self.main([order(i, net=PNL - 20_000_000) for i in range(20)], attempts=clean_attempts())
+        st = self.state()
+        self.assertEqual((rc, st["exit_code"], st["p_status"]["P3"], st["stop_required"]), (10, 10, "FAIL", True))
+
+    def test_written_on_hard_halt(self):
+        rc = self.main([order(i, net=PNL - 20_000_000) for i in range(100)], attempts=clean_attempts())
+        st = self.state()
+        self.assertEqual((rc, st["exit_code"], st["p_status"]["P4"]), (11, 11, "FAIL"))
+
+    def test_written_on_unreadable_ledger(self):
+        (Path(self.d) / LEDGER_NAME).write_text("not json\n")
+        self.assertEqual(RP.main(["--state-dir", self.d, "--now-ms", str(NOW)]), 2)
+        st = self.state()
+        self.assertEqual((st["exit_code"], st["verdict"], st["stop_required"], st["p_status"]), (2, "unusable input", True, None))
+        self.assertIsNotNone(st["ledger_sha256"])
+
+    def test_written_on_missing_live_field_and_stale_run_record(self):
+        led, t = order(0)
+        del led["live_buy_price"]
+        self.assertEqual(self.main([(led, t)]), 2)
+        self.assertEqual(self.state()["exit_code"], 2)
+        write_dir(self.d, [order(0)], run_overrides={"run_ms": NOW - TWIN_ROW_GRACE_MS - 1})
+        self.assertEqual(RP.main(["--state-dir", self.d, "--now-ms", str(NOW + 5)]), 2)
+        st = self.state()
+        self.assertEqual((st["exit_code"], st["at_ms"]), (2, NOW + 5))
+
+    def test_written_on_missing_ledger_with_null_hashes(self):
+        self.assertEqual(RP.main(["--state-dir", self.d, "--now-ms", str(NOW)]), 2)
+        st = self.state()
+        self.assertEqual((st["ledger_sha256"], st["twins_sha256"], st["exit_code"]), (None, None, 2))
+
+    def test_written_on_stop_unwritable(self):
+        write_dir(self.d, [order(i, net=PNL - 20_000_000) for i in range(20)])
+        rc = RP.main(["--state-dir", self.d, "--now-ms", str(NOW), "--stop-file", os.path.join(self.d, "nodir", "STOP")])
+        self.assertEqual((rc, self.state()["exit_code"]), (3, 3))
+
+    def test_written_on_argparse_failure(self):
+        self.assertEqual(RP.main(["--state-dir", self.d, "--bogus"]), 2)
+        self.assertEqual(self.state()["exit_code"], 2)
+
+    def test_state_is_replaced_each_run_and_has_no_per_trip_data(self):
+        self.main([order(i) for i in range(3)], attempts=clean_attempts())
+        first = self.state()
+        RP.main(["--state-dir", self.d, "--now-ms", str(NOW + 30_000)])
+        self.assertEqual(self.state()["at_ms"], NOW + 30_000)
+        self.assertNotEqual(first["at_ms"], self.state()["at_ms"])
+        self.assertNotIn("o0001", (Path(self.d) / RP.STATE_NAME).read_text())
+
+    def test_state_unwritable_exits_nonzero(self):
+        write_dir(self.d, [order(0)])
+        os.mkdir(os.path.join(self.d, RP.STATE_NAME))  # a directory where the file must go
+        self.assertEqual(RP.main(["--state-dir", self.d, "--now-ms", str(NOW)]), RP.EXIT_STATE_UNWRITABLE)
+
+
 class TestStopWiringAndOutput(Base):
     def test_stop_written_in_state_dir_on_soft_fail(self):
         rc = self.main([order(i, net=PNL - 20_000_000) for i in range(20)], attempts=clean_attempts())
