@@ -57,7 +57,7 @@ GUARDED_DIRS = ("/var/lib/mal-live/h5-lane-syn", "/var/lib/mal-live/h5-lane-oc")
 HOLD_SLACK_MS = 2_000  # the hold span is the executor's hold plus this slack (the pinned hold starts a moment after the tail): conservative
 KEEP_MAX = 4096  # flagged gap rows remembered
 HEAL_FIELDS = ("heal_applied", "heal_kind", "heal_reason", "heal_n_gaps", "heal_tip_only_in_gaps_n", "heal_boost_buys_tip_only_n", "heal_through_seq",
-               "feed_gap_components")
+               "feed_gap_components", "heal_status", "heal_settled_block")
 _REASON_RE = re.compile(r"[a-z0-9_:+\-]{1,64}")
 
 
@@ -81,6 +81,8 @@ def parse_lane_heal(raw: Any) -> dict[str, Any] | None:
         "boost_buys_tip_only_n": raw["boost_buys_tip_only_n"] if _is_int(raw.get("boost_buys_tip_only_n")) else None,
         "through_seq": raw["healed_through_seq"] if _is_int(raw.get("healed_through_seq")) and raw["healed_through_seq"] >= 0 else None,
     }
+    st = raw.get("status")
+    out["status"] = st if isinstance(st, str) and _REASON_RE.fullmatch(st) else None
     out["healed"] = bool(_is_int(raw.get("v")) and raw.get("v") == 1 and raw.get("status") == "healed" and out["through_seq"] is not None)
     return out
 
@@ -291,6 +293,7 @@ class H5LaneHealExecutor(_Base):
             zero = bool(heal and heal["healed"] and _is_int(s) and s >= 1 and not self.feed_gap and not self._hold_blocks(heal, self.now_ms(), parsing=True))
             trg, bad = orig({**row, "base_breaks_unresolved_settled": 0} if zero else row, *a, **kw)  # every other pinned parser check still applies
             if trg is None:
+                self._tag_parse_refusal(row, heal, s)  # log fields only: the refusal token and the decision are what the pinned parser returned
                 return trg, bad
             ht = HealTrigger(**{f.name: getattr(trg, f.name) for f in dataclasses.fields(h.H5Trigger)})
             if zero:
@@ -310,6 +313,30 @@ class H5LaneHealExecutor(_Base):
         finally:
             h.parse_shadow_trigger = orig
             h.tail_lines = orig_tail
+
+    def _tag_parse_refusal(self, row: dict[str, Any], heal: dict[str, Any] | None, settled: Any) -> None:
+        """A trigger refused by the pinned PARSER (bad_intent:*) never reaches _hard_refusal, so it used to be ledgered with no heal fields at all. Tag its skip row
+        with what the heal said and, for a settled >= 1 refusal, which waiver condition did not hold. Log fields only; nothing here changes a refusal."""
+        mint = row.get("mint")
+        if not isinstance(mint, str) or not mint:
+            return
+        now = self.now_ms()
+        block = None
+        if _is_int(settled) and settled >= 1:
+            if not heal:
+                block = "no_lane_heal"
+            elif not heal["healed"]:
+                block = "not_healed"
+            elif self.feed_gap:
+                block = "feed_gap_current"
+            elif self._hold_blocks(heal, now, parsing=True):
+                block = "hold_uncovered"
+        h_ = heal or {}
+        self._heal_rows[mint] = {"heal_applied": False, "heal_kind": None, "heal_reason": h_.get("reason"), "heal_n_gaps": h_.get("n_gaps"),
+                                 "heal_tip_only_in_gaps_n": h_.get("tip_only_in_gaps_n"), "heal_boost_buys_tip_only_n": h_.get("boost_buys_tip_only_n"),
+                                 "heal_through_seq": h_.get("through_seq"),
+                                 "feed_gap_components": {"current": bool(self.feed_gap), "pool": row.get("gap") is True, "hold": self._hold_active(now, True)},
+                                 "heal_status": h_.get("status") if heal else "missing", "heal_settled_block": block}
 
     def _observe(self, lines: list[str]) -> None:
         """Flagged gap rows with their lane_gap_seq, by tail time. Read-only: it never changes what the pinned reader sees."""
@@ -361,7 +388,8 @@ class H5LaneHealExecutor(_Base):
             kind = "gap+break" if gk and bk else ("gap" if gk else "break")
         tag = {"heal_applied": applied, "heal_kind": kind, "heal_reason": (heal or {}).get("reason"), "heal_n_gaps": (heal or {}).get("n_gaps"),
                "heal_tip_only_in_gaps_n": (heal or {}).get("tip_only_in_gaps_n"), "heal_boost_buys_tip_only_n": (heal or {}).get("boost_buys_tip_only_n"),
-               "heal_through_seq": (heal or {}).get("through_seq"), "feed_gap_components": comp}
+               "heal_through_seq": (heal or {}).get("through_seq"), "feed_gap_components": comp,
+               "heal_status": (heal or {}).get("status") if heal else "missing", "heal_settled_block": None}
         if isinstance(trg, HealTrigger):
             trg.heal.clear()
             trg.heal.update(tag)

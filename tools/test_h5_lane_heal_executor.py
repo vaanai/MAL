@@ -523,3 +523,52 @@ class LimitTests(HCase):
         Path(e.ex.lane.cfg.stop_path).write_text("x\n")
         self.feed(e, self.trig(e, lane_heal(), gap=True))
         self.assertEqual(e.rpc.sent, [])
+
+
+class ParseRefusalTagTests(HCase):
+    """A trigger refused by the pinned parser (bad_intent:*) used to be ledgered with no heal fields. It now carries them; the refusal itself is unchanged."""
+
+    def skip_of(self, e):
+        sk = e.ledger("skip")
+        self.assertEqual(len(sk), 1)
+        return sk[0]
+
+    def test_settled_refusal_without_lane_heal_is_tagged_missing(self):
+        e = self.heal_env()
+        self.feed(e, self.trig(e, None, base_breaks_unresolved_settled=2))
+        r = self.skip_of(e)
+        self.assertEqual((r["reason"], e.rpc.sent), ("bad_intent:base_breaks_unresolved_settled", []))
+        self.assertTrue(TAG_KEYS <= set(r), r)
+        self.assertEqual((r["heal_applied"], r["heal_status"], r["heal_settled_block"], r["bot_id"]), (False, "missing", "no_lane_heal", BOT))
+
+    def test_settled_refusal_with_a_refused_heal_names_the_status_and_reason(self):
+        e = self.heal_env()
+        self.feed(e, self.trig(e, lane_heal(status="refused", reason="heal_pre_unlinked", healed_through_seq=None), base_breaks_unresolved_settled=1))
+        r = self.skip_of(e)
+        self.assertEqual(r["reason"], "bad_intent:base_breaks_unresolved_settled")
+        self.assertEqual((r["heal_status"], r["heal_reason"], r["heal_settled_block"], r["heal_applied"]), ("refused", "heal_pre_unlinked", "not_healed", False))
+
+    def test_healed_but_current_feed_gap_is_named(self):
+        e = self.heal_env()
+        e.ex.feed_gap = True
+        e.ex.feed_last_ms = e.clock()
+        self.feed(e, self.trig(e, lane_heal(), base_breaks_unresolved_settled=1))
+        r = e.ledger("skip")[-1]
+        self.assertEqual(r["reason"], "bad_intent:base_breaks_unresolved_settled")
+        self.assertEqual((r["heal_status"], r["heal_settled_block"], r["feed_gap_components"]["current"]), ("healed", "feed_gap_current", True))
+        self.assertEqual(e.rpc.sent, [])
+
+    def test_other_parser_refusals_are_tagged_but_have_no_settled_block(self):
+        e = self.heal_env()
+        self.feed(e, self.trig(e, lane_heal(), v_missing=True))
+        r = self.skip_of(e)
+        self.assertEqual((r["reason"], r["heal_status"], r["heal_settled_block"], r["heal_applied"]), ("bad_intent:v_missing", "healed", None, False))
+
+    def test_refusal_tokens_and_sends_are_unchanged_by_the_tag(self):
+        for i, kw in enumerate([dict(base_breaks_unresolved_settled=3), dict(base_breaks_unresolved_settled=None), dict(v_missing=True), dict(gap=True)]):
+            e = self.heal_env(sub=f"u{i}")
+            e2 = self.heal_env(sub=f"w{i}")
+            self.feed(e, self.trig(e, None, **kw))
+            self.feed(e2, self.trig(e2, "x", **kw))
+            self.assertEqual(self.sk(e), self.sk(e2))
+            self.assertEqual(e.rpc.sent, [])
