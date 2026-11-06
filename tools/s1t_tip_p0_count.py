@@ -7,27 +7,32 @@ WHAT IT COUNTS. It runs S*''s own, frozen engine (tag `q50-succ-tip-1` = commit 
 does at that commit: `TipRowSource` over the derived copy, `TipDriver`, `h5.Engine` with q_star_sol 50.0 and `fresh_start_ms` = H0, and `h5_shadow_tip.arm_smoke` (Item 6's pricing-off switch: the
 Look-2 seal on EVERY pool, so no outcome, ladder, strip or min_q is ever computed; a trigger record is written flagged `h5_look2_sealed`). The state is built from H0 (the first hour of the copy's continuous
 history); only the three days are COUNTED (a trigger counts on the UTC day of its trigger print, `t_recv_ms`); the hours from H0 to day 1 are state only.
-  * Structure = a POOL on which the Q50 rule fires, once per pool per day (`pools`); `records` counts the trigger records (variants pv and fv, as S*' defines them: a pool can write both), and
-    `records_pv` / `records_fv` split them. `p0_per_day` = the mean of the three `pools` counts, UNROUNDED: that value goes to `s1t_register --p0-per-day`.
+  * The P0 unit (QP ruling 1 on #1239): PV TRIGGER RECORDS per UTC day (the attempt is the pv trigger; at S*' a pool fires each variant at most once, so this is the number of distinct pools with a
+    pv trigger). `p0_per_day` = the UNROUNDED mean of the three days' `records_pv` (goes to `s1t_register --p0-per-day`); `p0_day_zero` flags a day at 0. `records_fv` is REPORT-ONLY and never enters it.
   * Class: there is no side feed offline, and the live smoke's synthetic class cannot be known here, so the engine runs with `StaticClassifier(False)`: every fired structure is written as a trigger
-    record, none is withheld as synthetic/unclassified. The P0 is therefore a count of rule structures BEFORE the class exclusion (a declared upper-side choice, the P0's purpose is the rule's frequency).
+    record, none is withheld as synthetic/unclassified. The count is an UPPER BOUND on would-be attempts (before the synthetic/unclassified exclusion), like the reused Q50 P0 (Am.5 item 1.3); the output says so in a fixed string.
   * Nothing else: no price, outcome, exit, fill or P&L exists in this pass. No pool, mint, signature, price or per-pool row is ever printed; the output has a FIXED key set (tested).
 
 WHICH ENGINE (the choice, explained in the PR). The counter does not import S*' from this checkout. `--sstar-src` names a git worktree and the counter refuses (exit 2) unless that worktree's HEAD is exactly
 afa4971d9dd8b0bca2e73a758c22f4539f675d63, `tools/h5_shadow.py` is blob 7f859b12... and `tools/h5_shadow_tip.py` is blob 05c5489a... (judged on the DISK BYTES, git-blob hashed, not on the index), and the tree
 is clean (tracked and untracked). The engine then runs in a child interpreter (`python -I -B`, so no cwd/PYTHONPATH/user site and no bytecode written into the worktree) whose sys.path puts the worktree
-first; the child checks that every `tools.*` module it loaded came from that worktree. main's `tools/h5_shadow.py` is a different blob (f23cf492), which is why a main import would be the wrong bytes.
+first; the child checks that every loaded `tools.*` module came from that worktree. main's `tools/h5_shadow.py` is a different blob (f23cf492), which is why a main import would be the wrong bytes.
 
 Refusals (each a `Refused` with a reason, exit 2; an unexpected error is exit 3, class name only):
   * `tape_dir`: the research-0 derived copy (`TIP_FEED_ROOT`) or, tests only, a directory under the system temp dir. Anything else, a `.writer` component, `sealed`, `tip-tape-archive`: refused.
-  * `--h0` (YYYY-MM-DDTHH): not before 2026-10-16T01 (the D2/D3 seal) and before day 1.
-  * days: exactly 3 contiguous ascending FULL CLOSED UTC days, each >= 2026-11-06; a non-empty `--notebook-ref`.
+  * `--h0` (YYYY-MM-DDTHH): >= 2026-11-05T00 and before day 1 (manager decision 2026-11-06). The real run uses `--h0 2026-11-05T00`: 24 h of warm-up, far more than S*''s ~430 s window (POOL_LIFE_S 400,
+    WALL_CLOSE_S 430). Hour files before H0 are skipped BY NAME (never opened) and their number is reported (`hour_files_before_h0_skipped_by_name`).
+  * days: EXACTLY 2026-11-06,2026-11-07,2026-11-08 (the S1T READERS line), all closed; a non-empty `--notebook-ref`; not before 2026-11-09T00:30:00Z (QP-RULING-1106 section 4).
+  * THE READ IS BOUNDED: hour files from 2026-11-09T00 on are never opened (filtered by name), and the source stops at the first row with t_recv_ms >= 2026-11-09T00:00:00Z (`rows_at_or_after_end`).
   * HOURS (QP-RULING-1106 section 4, the difference from hv7): "a day with incomplete derived-copy history is a declared undercount and is still counted". A missing hour file is never silent and never a
     refusal: it is listed (hour names only) and the day is in `undercount_days` (a day is an undercount if any of its 24 hour files, or the hour just before it, is missing). A copy with NO file for
     the three days at all is refused (`no_hours_in_days`): there is nothing to count.
   * `--sstar-src`: identity above. The counter writes NO file anywhere (it prints one JSON line).
   * If the engine emits any outcome-type record (`outcome`, `outcome_bx10`, `strip`) or a trigger without `h5_look2_sealed`: exit 3, no counts printed.
+  * Child timeout: `--timeout-s`, default 12 h (a timeout is exit 3 with no count). Error texts are FIXED CODES only (`CODES`), never a fragment of S*''s messages.
   * The tip input must be healthy at start (`push_problem`, fail closed as S*' does) and stay so: a problem mid-read is exit 3, never a quiet undercount.
+HARNESS DIFFERENCE from the live shadow, declared: `Engine.tick()` (the live 5 s housekeeping: purge of `seen`, `silence` gap records) is never called in harness mode, exactly as in
+`tools/h5_shadow_tip_equiv.py` (the md5 equivalence proof of #1185). It does not change which pools trigger (announcements expire on `pool_create`); memory stays bounded by `advance()`.
 """
 from __future__ import annotations
 
@@ -48,8 +53,8 @@ SSTAR_COMMIT = "afa4971d9dd8b0bca2e73a758c22f4539f675d63"       # tag q50-succ-t
 SSTAR_BLOBS = {"tools/h5_shadow.py": "7f859b12deef87573a7314e49e125b5121eaa645", "tools/h5_shadow_tip.py": "05c5489a786dac4eb0696a74279a0f789ddb1deb"}
 TIP_FEED_ROOT = "/data2/mal/arena-tip-feed/hv7"
 TIP_WRITER_DIR = ".writer"
-FIRST_DAY = "2026-11-06"                                         # Am.24 item 5: the slip P0's days are 11-06, 11-07, 11-08 (all after Q50's counted window)
-H0_FLOOR = "2026-10-16T01"                                       # D2/D3: no hour before it is ever read
+SLIP_DAYS = ("2026-11-06", "2026-11-07", "2026-11-08")           # Am.24 item 5 and the S1T READERS line: [2026-11-06T00Z, 2026-11-09T00Z) only; a later slip is a new row, a new readers line and a new pin
+H0_FLOOR = "2026-11-05T00"                                       # manager decision 2026-11-06: 24 h of warm-up before day 1 is far more than S*'s ~430 s window; hours before H0 are skipped BY NAME (never opened)
 H0_RE = re.compile(r"\d{4}-\d{2}-\d{2}T\d{2}")
 DAY_RE = re.compile(r"\d{4}-\d{2}-\d{2}")
 HOUR_FILE = re.compile(r"tape-(\d{4}-\d{2}-\d{2})T(\d{2})\.jsonl(?:\.zst)?")
@@ -57,9 +62,16 @@ N_DAYS = 3
 DAY_MS, HOUR_MS = 86_400_000, 3_600_000
 Q_STAR_SOL = 50.0
 BLOCKED_TYPES = ("outcome", "outcome_bx10", "strip")             # == h5_shadow_tip.SMOKE_BLOCKED_TYPES; re-checked in the child
+EARLIEST_AFTER_DAYS_END_MS = 30 * 60_000                 # QP-RULING-1106 section 4: earliest start 2026-11-09T00:30:00Z
+TIMEOUT_S_DEFAULT = 12 * 3600
+CODES = frozenset({"engine_not_from_sstar_src", "tools_module_outside_sstar_src", "blocked_types_changed", "outcome_record_emitted", "trigger_not_sealed", "tip_input_problem",
+                   "tip_input_unhealthy_start", "child_no_output", "child_failed"})   # the only texts an error may carry: fixed codes, never row content
+DISCLOSURE = "upper bound on would-be attempts: counted before the synthetic/unclassified exclusion (no class side feed offline); like the reused Q50 P0 (Am.5 item 1.3)"
 KEEP_COUNTERS = ("problems", "gap_rows", "gap_rows_flagging", "rows_before_start", "rows_bad", "reader_loss_events", "reader_loss_bad_lines", "reader_loss_zst_errors",
-                 "reader_loss_apply_errors", "reader_errors", "polls_unhealthy", "decode_errors")       # loss/structural counters only; no per-kind row count (pool_create, trade, complete)
+                 "reader_loss_apply_errors", "reader_errors", "polls_unhealthy", "decode_errors", "rows_at_or_after_end")       # loss/structural counters only; no per-kind row count (pool_create, trade, complete)
 TEST_TMP_ROOTS = (tempfile.gettempdir().rstrip("/") + "/",)
+UNIT = ("pv trigger records (= distinct pools with a pv Q50-rule trigger, one per pool at S*') per UTC day of the trigger print; records_fv is REPORT-ONLY and never enters p0_per_day; "
+        "upper bound: before synthetic/unclassified exclusion")
 PURPOSE = ("s1t slip P0 (DEC-031 Amendment 24 item 5): per-day count of Q50-rule structures by S*' (q50-succ-tip-1, afa4971d) under the pricing-off switch; "
            "p0_per_day goes to s1t_register --p0-per-day. Structure counts only; no outcome exists. No book has cleared the promotion gate.")
 
@@ -74,6 +86,13 @@ def day_ms(d: str) -> int:
 
 def _utc_day(ms: int) -> str:
     return datetime.fromtimestamp(ms // 1000, tz=timezone.utc).strftime("%Y-%m-%d")
+
+
+def bucket(t_ms: Any, start_ms: int, end_ms: int) -> str | None:
+    """The UTC day a trigger print counts on, or None (history before the days, or at/after their end, or not an int)."""
+    if not isinstance(t_ms, int) or isinstance(t_ms, bool) or not (start_ms <= t_ms < end_ms):
+        return None
+    return _utc_day(t_ms)
 
 
 # ------------------------------------------------------------------------------------------------------------------------------------ refusals
@@ -102,13 +121,10 @@ def parse_days(arg: str, *, now_ms: int) -> list[str]:
             datetime.strptime(d, "%Y-%m-%d")
         except ValueError:
             raise Refused("day_format") from None
-        if d < FIRST_DAY:
-            raise Refused("day_before_2026_11_06")
         if day_ms(d) + DAY_MS > now_ms:
             raise Refused("day_not_closed")
-    dts = [datetime.strptime(d, "%Y-%m-%d") for d in days]
-    if dts != sorted(dts) or any((b - a) != timedelta(days=1) for a, b in zip(dts, dts[1:])):
-        raise Refused("days_not_contiguous_ascending")
+    if tuple(days) != SLIP_DAYS:
+        raise Refused("days_not_the_slip_days")
     return days
 
 
@@ -120,7 +136,7 @@ def parse_h0(arg: Any, days: list[str]) -> tuple[str, int]:
     except ValueError:
         raise Refused("h0_format") from None
     if arg < H0_FLOOR:
-        raise Refused("h0_before_2026_10_16T01")
+        raise Refused("h0_before_2026_11_05T00")
     ms = int(t.timestamp() * 1000)
     if ms >= day_ms(days[0]):
         raise Refused("h0_not_before_first_day")
@@ -169,6 +185,7 @@ def hour_coverage(tape: Path, h0_key: str, days: list[str]) -> dict[str, Any]:
         if m:
             present.add(f"{m.group(1)}T{m.group(2)}")
     fmt = "%Y-%m-%dT%H"
+    skipped_before_h0 = sum(1 for k in present if k < h0_key)
     h0 = datetime.strptime(h0_key, fmt).replace(tzinfo=timezone.utc)
     per_day: dict[str, dict[str, Any]] = {}
     for d in days:
@@ -184,10 +201,35 @@ def hour_coverage(tape: Path, h0_key: str, days: list[str]) -> dict[str, Any]:
     while t < end:
         hist_missing += t.strftime(fmt) not in present
         t += timedelta(hours=1)
-    return {"per_day": per_day, "history_hours_missing_before_day_1": hist_missing}
+    return {"per_day": per_day, "history_hours_missing_before_day_1": hist_missing, "hour_files_before_h0_skipped_by_name": skipped_before_h0}
 
 
 # ------------------------------------------------------------------------------------------------------------------------------------ the engine (child)
+def _utc_hour_key(ms: int) -> str:
+    return datetime.fromtimestamp(ms // 1000, tz=timezone.utc).strftime("%Y-%m-%dT%H")
+
+
+class _Bounded:
+    """A source wrapper: delegates to the TipRowSource but returns rows only up to the first one with t_recv_ms >= end_ms, then nothing (`cut` counts that row and the rest of its chunk)."""
+
+    def __init__(self, inner: Any, end_ms: int) -> None:
+        self._inner, self._end, self.cut, self._done = inner, end_ms, 0, False
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._inner, name)
+
+    def poll(self, limit: int = 2000) -> list[dict]:
+        if self._done:
+            return []
+        rows = self._inner.poll(limit)
+        for i, r in enumerate(rows):
+            t = r.get("t_recv_ms")
+            if isinstance(t, int) and not isinstance(t, bool) and t >= self._end:
+                self._done, self.cut = True, len(rows) - i
+                return rows[:i]
+        return rows
+
+
 def _child(cfg: dict[str, Any]) -> dict[str, Any]:
     """Runs in `python -I -B` with the S*' worktree first on sys.path. Imports nothing from the counter's own checkout."""
     src = os.path.realpath(cfg["src"])
@@ -203,7 +245,7 @@ def _child(cfg: dict[str, Any]) -> dict[str, Any]:
     if tuple(tip.SMOKE_BLOCKED_TYPES) != BLOCKED_TYPES:
         raise RuntimeError("blocked_types_changed")
     days, start, end = cfg["days"], cfg["days_start_ms"], cfg["days_end_ms"]
-    counts = {d: {"pools": set(), "records": 0, "records_pv": 0, "records_fv": 0} for d in days}
+    counts = {d: {"records_pv": 0, "records_fv": 0} for d in days}
 
     def sink(rec: dict) -> None:
         typ = rec.get("type")
@@ -213,14 +255,11 @@ def _child(cfg: dict[str, Any]) -> dict[str, Any]:
             return
         if rec.get("h5_look2_sealed") is not True:
             raise RuntimeError("trigger_not_sealed")
-        t = rec.get("t_recv_ms")
-        if not isinstance(t, int) or isinstance(t, bool) or not (start <= t < end):
+        day = bucket(rec.get("t_recv_ms"), start, end)
+        if day is None:
             return                                  # history (state only) or malformed: not counted
-        c = counts[_utc_day(t)]
-        c["pools"].add(rec.get("pool"))
-        c["records"] += 1
         if rec.get("variant") in ("pv", "fv"):
-            c["records_" + rec["variant"]] += 1
+            counts[day]["records_" + rec["variant"]] += 1
 
     h0_ms = cfg["h0_ms"]
     eng = h5.Engine(sink, boost_mode="auto", classifier=h5.StaticClassifier(False, "p0_class_assumed"), bx10_enabled=False, fresh_start_ms=h0_ms, q_star_sol=Q_STAR_SOL,
@@ -232,7 +271,17 @@ def _child(cfg: dict[str, Any]) -> dict[str, Any]:
         src_obj.start()                              # refuses on any problem (fail closed)
     except tip.TipInputUnhealthy:
         raise RuntimeError("tip_input_unhealthy_start") from None
-    drv = tip.TipDriver(eng, src_obj, wall_offset_ms=2500)
+    for m in [m for n, m in sys.modules.items() if n == "tools" or n.startswith("tools.")]:
+        f = getattr(m, "__file__", None)
+        if f and not os.path.realpath(f).startswith(src + os.sep):
+            raise RuntimeError("tools_module_outside_sstar_src")
+    # BOUND OF THE READ (reviewer B1 on #1239): hour files from the day-3 end on are never opened (filtered by name in the reader's file list), and the source stops at the first row
+    # with t_recv_ms >= days_end. Wrapping the source here changes no byte of S*'.
+    end_key = _utc_hour_key(end)
+    orig_files = src_obj._tap._hour_files
+    src_obj._tap._hour_files = lambda: [t for t in orig_files() if t[0] < end_key]
+    bounded = _Bounded(src_obj, end)
+    drv = tip.TipDriver(eng, bounded, wall_offset_ms=2500)
     while True:
         n = drv.step(tip.ROWS_PER_STEP)
         if guard["blocked"]:
@@ -243,8 +292,9 @@ def _child(cfg: dict[str, Any]) -> dict[str, Any]:
             break
     merged = collections.Counter(drv.counters)
     merged.update(src_obj.counters())
+    merged["rows_at_or_after_end"] = bounded.cut
     merged["decode_errors"] += eng.counters["decode_errors"]
-    return {"per_day": {d: {"pools": len(c["pools"]), "records": c["records"], "records_pv": c["records_pv"], "records_fv": c["records_fv"]} for d, c in counts.items()},
+    return {"per_day": counts,
             "input_counters": {k: int(merged[k]) for k in KEEP_COUNTERS if k in merged}, "blocked": guard["blocked"]}
 
 
@@ -253,23 +303,31 @@ def _child_main() -> int:
         cfg = json.loads(sys.stdin.read())
         out = _child(cfg)
     except Exception as e:  # noqa: BLE001 - class name and a short code only, never row content
-        print(json.dumps({"error": type(e).__name__, "code": str(e)[:40] if isinstance(e, RuntimeError) else ""}))
+        print(json.dumps({"error": type(e).__name__, "code": str(e) if isinstance(e, RuntimeError) and str(e) in CODES else ""}))
         return 1
     print(json.dumps(out, sort_keys=True))
     return 0
 
 
-def run_engine(src: str, tape: Path, days: list[str], h0_ms: int, *, roots: list[str] | None) -> dict[str, Any]:
+def child_env(roots: list[str] | None) -> dict[str, str]:
+    """The child's environment. MAL_ARENA_TEST (a test-only override in other modules) is set ONLY for a test run (roots given), never for a real count."""
+    env = {"PATH": os.environ.get("PATH", "/usr/bin:/bin"), "PYTHONDONTWRITEBYTECODE": "1"}
+    if roots is not None:
+        env["MAL_ARENA_TEST"] = "1"
+    return env
+
+
+def run_engine(src: str, tape: Path, days: list[str], h0_ms: int, *, roots: list[str] | None, timeout_s: int = TIMEOUT_S_DEFAULT) -> dict[str, Any]:
     cfg = {"src": src, "tape": str(tape), "days": days, "days_start_ms": day_ms(days[0]), "days_end_ms": day_ms(days[-1]) + DAY_MS, "h0_ms": h0_ms, "roots": roots,
            "test_no_status": roots is not None}
-    r = subprocess.run([sys.executable, "-I", "-B", os.path.abspath(__file__), "--child"], input=json.dumps(cfg), capture_output=True, text=True, timeout=6 * 3600,
-                       cwd=src, env={"PATH": os.environ.get("PATH", "/usr/bin:/bin"), "PYTHONDONTWRITEBYTECODE": "1", "MAL_ARENA_TEST": "1"})
+    r = subprocess.run([sys.executable, "-I", "-B", os.path.abspath(__file__), "--child"], input=json.dumps(cfg), capture_output=True, text=True, timeout=timeout_s,
+                       cwd=src, env=child_env(roots))
     try:
         out = json.loads(r.stdout.strip().splitlines()[-1])
     except (ValueError, IndexError):
         raise RuntimeError("child_no_output") from None
     if r.returncode != 0 or "error" in out:
-        code = out.get("code") if isinstance(out, dict) else ""
+        code = out.get("code") if isinstance(out, dict) and out.get("code") in CODES else ""
         if code == "tip_input_unhealthy_start":
             raise Refused("tip_input_unhealthy")
         raise RuntimeError(code or "child_failed")
@@ -277,25 +335,26 @@ def run_engine(src: str, tape: Path, days: list[str], h0_ms: int, *, roots: list
 
 
 # ------------------------------------------------------------------------------------------------------------------------------------ the count
-def run_p0(days_arg: str, notebook_ref: str, h0: str, sstar_src: str, *, tape_dir: str | os.PathLike | None = None, now_ms: int | None = None) -> dict[str, Any]:
+def run_p0(days_arg: str, notebook_ref: str, h0: str, sstar_src: str, *, tape_dir: str | os.PathLike | None = None, now_ms: int | None = None, timeout_s: int = TIMEOUT_S_DEFAULT) -> dict[str, Any]:
     tape_dir = TIP_FEED_ROOT if tape_dir is None else tape_dir
     now = int(time.time() * 1000) if now_ms is None else now_ms
     if not (isinstance(notebook_ref, str) and notebook_ref.strip()):
         raise Refused("notebook_ref_required")
     tape = check_tape_dir(tape_dir)
     days = parse_days(days_arg, now_ms=now)
+    if now < day_ms(days[-1]) + DAY_MS + EARLIEST_AFTER_DAYS_END_MS:
+        raise Refused("before_2026_11_09T00_30Z")
     h0_key, h0_ms = parse_h0(h0, days)
     pins = check_sstar_src(sstar_src)
     cov = hour_coverage(tape, h0_key, days)
     test_dir = os.path.realpath(tape) != os.path.realpath(TIP_FEED_ROOT)
-    res = run_engine(os.path.realpath(sstar_src), tape, days, h0_ms, roots=[str(tape.parent)] if test_dir else None)
+    res = run_engine(os.path.realpath(sstar_src), tape, days, h0_ms, roots=[str(tape.parent)] if test_dir else None, timeout_s=timeout_s)
     per_day = {d: {**res["per_day"][d], **cov["per_day"][d]} for d in days}
-    pools = [per_day[d]["pools"] for d in days]
-    recs = [per_day[d]["records"] for d in days]
-    return {"s1t_tip_p0": "counts", "purpose": PURPOSE, "sstar": pins, "pricing_off": True, "outcome_free": True, "class": "assumed_non_synthetic_none_excluded", "first_day": days[0], "last_day": days[-1],
-            "h0": h0_key, "notebook_ref": notebook_ref, "unit": "pools with >= 1 Q50-rule trigger record per UTC day of the trigger print", "per_day": per_day, "p0_per_day": sum(pools) / len(pools),
-            "records_per_day_mean": sum(recs) / len(recs), "undercount_days": [d for d in days if per_day[d]["undercount"]], "history_hours_missing_before_day_1": cov["history_hours_missing_before_day_1"],
-            "input_counters": res["input_counters"]}
+    pv = [per_day[d]["records_pv"] for d in days]
+    return {"s1t_tip_p0": "counts", "purpose": PURPOSE, "sstar": pins, "pricing_off": True, "outcome_free": True, "disclosure": DISCLOSURE, "first_day": days[0], "last_day": days[-1],
+            "h0": h0_key, "notebook_ref": notebook_ref, "unit": UNIT, "per_day": per_day, "p0_per_day": sum(pv) / len(pv), "p0_day_zero": any(x == 0 for x in pv),
+            "undercount_days": [d for d in days if per_day[d]["undercount"]], "history_hours_missing_before_day_1": cov["history_hours_missing_before_day_1"],
+            "hour_files_before_h0_skipped_by_name": cov["hour_files_before_h0_skipped_by_name"], "input_counters": res["input_counters"]}
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -303,18 +362,19 @@ def main(argv: list[str] | None = None) -> int:
     if argv == ["--child"]:
         return _child_main()
     ap = argparse.ArgumentParser(description="s1t slip P0: per-day Q50-rule structure counts by S*' (pricing-off) on 3 closed days of the derived copy. Counts only; no outcome exists.")
-    ap.add_argument("--days", required=True, help="three contiguous closed UTC days >= 2026-11-06, fixed in a notebook entry first")
+    ap.add_argument("--days", required=True, help="exactly 2026-11-06,2026-11-07,2026-11-08, fixed in a notebook entry first")
     ap.add_argument("--notebook-ref", required=True)
     ap.add_argument("--h0", required=True, help="H0, the first hour of the derived copy's continuous history, YYYY-MM-DDTHH (UTC); the state is built from it")
     ap.add_argument("--sstar-src", required=True, help="a clean git worktree at afa4971d (tag q50-succ-tip-1) whose engine blobs are the pinned S*' bytes")
+    ap.add_argument("--timeout-s", type=int, default=TIMEOUT_S_DEFAULT, help="child timeout in seconds (default 12 h; a timeout is exit 3 with no count)")
     a = ap.parse_args(argv)
     try:
-        res = run_p0(a.days, a.notebook_ref, a.h0, a.sstar_src)
+        res = run_p0(a.days, a.notebook_ref, a.h0, a.sstar_src, timeout_s=a.timeout_s)
     except Refused as e:
         print(json.dumps({"s1t_tip_p0": "refused", "why": str(e)}), file=sys.stderr)
         return 2
     except Exception as e:  # noqa: BLE001 - the class name (and a short code for our own RuntimeErrors) only
-        print(json.dumps({"s1t_tip_p0": "error", "class": type(e).__name__, "code": str(e)[:40] if isinstance(e, RuntimeError) else ""}), file=sys.stderr)
+        print(json.dumps({"s1t_tip_p0": "error", "class": type(e).__name__, "code": str(e) if isinstance(e, RuntimeError) and str(e) in CODES else ""}), file=sys.stderr)
         return 3
     print(json.dumps(res, sort_keys=True, separators=(",", ":")))
     return 0
