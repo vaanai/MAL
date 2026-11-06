@@ -111,6 +111,10 @@ LEDGER_NAME = "r4bt-order-ledger.jsonl"
 LATCH_FEE = "r4bt_fee_unreported"
 LATCH_FILL = "r4bt_fill_unreported"
 STOP_NAME = "STOP"  # <state_dir>/STOP, written by tools/r4bt_c0_parity.py (tools.arena_live_parity.write_stop); any entry at that path is a STOP
+HEALTH_PATH_DEFAULT = "/var/lib/mal-r4b-c0/health.json"  # read by the watchdog (PR #1256): booleans and short enums ONLY, no order, price, mint, P&L or trade count
+HEALTH_SCHEMA = "r4bt_c0_health_v1"
+HEALTH_KEYS = ("schema", "at_ms", "latched", "latch_names", "stop_present", "live_ok_present", "tier", "dry")
+LATCH_NAME_RE = re.compile(r"[a-z0-9_]{1,48}")
 PARITY_STATE_NAME = "r4bt-parity-state.json"  # written by the parity run (tools/r4bt_c0_parity.py)
 PARITY_SCHEMA = "r4bt_parity_state_v1"
 PARITY_MAX_AGE_MS = 60_000  # a buy needs a parity result at most this old
@@ -129,7 +133,7 @@ TIER_REQUIRED = "T0"
 SHA64_RE = re.compile(r"[0-9a-f]{64}")
 CHANGE_RE = re.compile(r"[A-Za-z0-9_.-]{1,64}")
 
-_PROFILE_KEYS = ("change_id", "twin_dir", "a3_carry_path", "read_record_path", "read_result_sha256", "qp_comment_id", "owner_file", "live_ok_path", "tier_path", "send_fee_lamports", "fee_override", "twin_interval_s", "twin_replay_s", "twin_heartbeat_max_ms", "a3_carry_max_age_ms")
+_PROFILE_KEYS = ("change_id", "twin_dir", "a3_carry_path", "read_record_path", "read_result_sha256", "qp_comment_id", "owner_file", "live_ok_path", "tier_path", "send_fee_lamports", "fee_override", "twin_interval_s", "twin_replay_s", "twin_heartbeat_max_ms", "a3_carry_max_age_ms", "health_path")
 
 
 class Refused(ValueError):
@@ -175,6 +179,7 @@ class R4btConfig(X.R4bConfig):
     twin_replay_s: int = TWIN_REPLAY_S_DEFAULT  # the declared full-length replay time (measure it in the DRY smoke; owed before install)
     twin_heartbeat_max_ms: int = TWIN_HEARTBEAT_DEFAULT_MS  # run-record heartbeat bound; floor 2 x interval + replay
     a3_carry_max_age_ms: int = A3_CARRY_MAX_AGE_DEFAULT_MS  # bound on the carry's written_utc
+    health_path: str = HEALTH_PATH_DEFAULT  # the watchdog's health file
 
 
 def twin_heartbeat_problem(interval_s: Any, replay_s: Any, max_ms: Any) -> str | None:
@@ -244,6 +249,8 @@ def make_config(d: Mapping[str, Any]) -> R4btConfig:
         raise Refused(hb_problem)
     if isinstance(d.get("root"), str) and not HV.synthetic_root(d["root"]) and d["change_id"] not in Path(d["root"]).parts:
         raise Refused(f"config root {d['root']} is not under the change_id root (.../r4b-dry/{d['change_id']}/declog)")
+    if not isinstance(d.get("health_path", HEALTH_PATH_DEFAULT), str) or not os.path.isabs(d.get("health_path", HEALTH_PATH_DEFAULT)):
+        raise Refused("config health_path must be an absolute path")
     age = d.get("a3_carry_max_age_ms", A3_CARRY_MAX_AGE_DEFAULT_MS)
     if not _int(age) or not 0 < age <= A3_MAX_AGE_MS:
         raise Refused(f"a3_carry_max_age_ms must be a positive int, at most {A3_MAX_AGE_MS} (36 h)")
@@ -841,6 +848,38 @@ class R4btBridge(X.R4bBridge):
         day = self.state.days.get(B.utc_day(now), {})
         return live_buy_problem(self.cfg, now, self.state.orders, order, self.state, root_checks=self.root_checks_r4bt, open_count=len(self.open_orders(True)),
                                 day_trades=day.get("trades", 0), day_realized=day.get("realized", 0))
+
+    # -- health.json for the watchdog: written atomically every loop and on every latch; ONLY the HEALTH_KEYS (a test pins it)
+    def health_record(self) -> dict[str, Any]:
+        latches = sorted(n for n in (str(k) for k in self.state.latches) if LATCH_NAME_RE.fullmatch(n))
+        _halt, stop = self._files()
+        live_ok = os.path.lexists(self.cfg.live_ok_path)
+        data, why, _ = _read_small(self.cfg.tier_path, False)
+        tier = TIER_REQUIRED if (why is None and data.decode("utf-8", "replace").strip() == TIER_REQUIRED) else None
+        return {"schema": HEALTH_SCHEMA, "at_ms": int(self.now_ms()), "latched": bool(latches), "latch_names": latches, "stop_present": bool(stop),
+                "live_ok_present": bool(live_ok), "tier": tier, "dry": not self.effective_live()[0]}
+
+    def write_health(self) -> None:
+        try:
+            rec = self.health_record()
+            assert tuple(rec) == HEALTH_KEYS
+            path = Path(self.cfg.health_path)
+            path.parent.mkdir(parents=True, exist_ok=True)
+            tmp = path.with_name(path.name + ".tmp")
+            tmp.write_text(json.dumps(rec, sort_keys=True))
+            os.chmod(tmp, 0o644)
+            os.replace(tmp, path)
+        except Exception:  # noqa: BLE001 - a health write never stops the executor (the watchdog sees a stale at_ms)
+            pass
+
+    def _latch(self, name: str, why: str) -> None:
+        super()._latch(name, why)
+        self.write_health()
+
+    def tick(self) -> int:
+        n = super().tick()
+        self.write_health()
+        return n
 
     # -- reads: nothing is read without the recorded PASS read (a4)
     def read_new_rows(self) -> list[dict[str, Any]]:

@@ -49,6 +49,7 @@ import json
 import math
 import os
 import sys
+import time
 from pathlib import Path
 from typing import Any, Mapping, Sequence
 
@@ -396,7 +397,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     ap.add_argument("--state-dir", required=True)
     ap.add_argument("--twin-dir")
     ap.add_argument("--attempts")
-    ap.add_argument("--now-ms", type=int, required=True)
+    ap.add_argument("--now-ms", type=int, default=None, help="default: the real clock (the job passes none; tests pass one)")
     ap.add_argument("--stop-file")
     ap.add_argument("--rule", default=RULE_DEFAULT, choices=("total", "sc"))
     ap.add_argument("--json")
@@ -416,6 +417,8 @@ def main(argv: Sequence[str] | None = None) -> int:
             return code
         print("FAIL CLOSED (NO BUY): command line unusable and no state dir given")
         return AP.EXIT_BAD_INPUT
+    if a.now_ms is None:
+        a.now_ms = int(time.time() * 1000)  # the job passes the real clock (the executor refuses a parity stamp more than ~5 s ahead of its own)
     stop_file = a.stop_file or str(Path(a.state_dir) / STOP_NAME)
 
     def finish(code: int, res: Mapping[str, Any] | None, note: str | None = None) -> int:

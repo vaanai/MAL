@@ -78,7 +78,7 @@ class World:
         self.d = {"root": str(self.root), "state_dir": str(tmp / "state"), "bot_id": T.BOT_ID, "frozen_sha": W, "change_id": CID, "end_ms": (BT0 + 400 * 86400) * 1000,
                   "slot_s": 0.4, "funded_lamports": 350_000_000, "twin_dir": str(tmp / "twin"), "a3_carry_path": str(tmp / "a3" / "carry.json"),
                   "read_record_path": str(tmp / "read.json"), "read_result_sha256": SHA_READ, "qp_comment_id": QP_ID,
-                  "owner_file": str(tmp / "owner.md"), "live_ok_path": str(tmp / "LIVE_OK"), "tier_path": str(tmp / "TIER"), **T.C0_CAPS}
+                  "owner_file": str(tmp / "owner.md"), "live_ok_path": str(tmp / "LIVE_OK"), "tier_path": str(tmp / "TIER"), "health_path": str(tmp / "health" / "health.json"), **T.C0_CAPS}
         self.d.update(over)
         self.log = DecisionLog(str(self.root))
         self.fresh()
