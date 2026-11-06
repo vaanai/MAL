@@ -110,7 +110,8 @@ class Refusals(Tmp):
 
     def test_days(self):
         bad = ["2026-11-06,2026-11-07", "2026-11-06,2026-11-07,2026-11-07", "2026-11-06,2026-11-08,2026-11-07", "2026-11-06,2026-11-07,2026-11-09",
-               "2026-11-05,2026-11-06,2026-11-07", "2026-11-06,2026-11-07,2026-11-31", "2026-11-8,2026-11-09,2026-11-10", "x,y,z"]
+               "2026-11-05,2026-11-06,2026-11-07", "2026-11-06,2026-11-07,2026-11-31", "2026-11-8,2026-11-09,2026-11-10", "x,y,z", "2026-11-07,2026-11-08,2026-11-09",
+               "2026-11-08,2026-11-07,2026-11-06", "2026-11-06,2026-11-07,2026-11-08,2026-11-09"]
         for b in bad:
             with self.assertRaises(C.Refused, msg=b):
                 C.parse_days(b, now_ms=NOW + 10 * 86_400_000)
@@ -121,10 +122,16 @@ class Refusals(Tmp):
 
     def test_h0(self):
         days = DAYS.split(",")
-        for bad in ("2026-10-16T00", "2026-11-06T00", "2026-11-07T05", "2026-11-05", "x", None, "2026-13-01T00"):
+        for bad in ("2026-10-16T01", "2026-11-04T23", "2026-10-16T00", "2026-11-06T00", "2026-11-07T05", "2026-11-05", "x", None, "2026-13-01T00"):
             with self.assertRaises(C.Refused, msg=str(bad)):
                 C.parse_h0(bad, days)
-        self.assertEqual(C.parse_h0("2026-10-16T01", days)[0], "2026-10-16T01")
+        self.assertEqual(C.parse_h0("2026-11-05T00", days)[0], "2026-11-05T00")
+
+    def test_before_the_earliest_start_is_refused(self):
+        for now in (int(datetime(2026, 11, 9, 0, 10, tzinfo=timezone.utc).timestamp() * 1000), int(datetime(2026, 11, 9, 0, 29, 59, tzinfo=timezone.utc).timestamp() * 1000)):
+            with self.assertRaises(C.Refused) as cm:
+                C.run_p0(DAYS, "nb", H0, str(sstar()), tape_dir=self.tape, now_ms=now)
+            self.assertEqual(str(cm.exception), "before_2026_11_09T00_30Z")
 
     def test_notebook_ref_required(self):
         for ref in ("", "  ", None):
@@ -209,10 +216,13 @@ class Counting(Tmp):
         self.build()
         res = self.count()
         d = res["per_day"]
-        self.assertEqual([d[x]["pools"] for x in DAYS.split(",")], [0, 1, 0])
-        self.assertEqual(d["2026-11-07"]["records"], d["2026-11-07"]["records_pv"] + d["2026-11-07"]["records_fv"])
-        self.assertGreaterEqual(d["2026-11-07"]["records"], 1)
-        self.assertEqual(res["p0_per_day"], 1 / 3)                                                # unrounded mean of the pools
+        self.assertEqual([d[x]["records_pv"] for x in DAYS.split(",")], [0, 1, 0])
+        self.assertGreaterEqual(d["2026-11-07"]["records_fv"], 0)                                 # report-only
+        self.assertEqual(res["p0_per_day"], sum(d[x]["records_pv"] for x in DAYS.split(",")) / 3)  # unrounded mean of records_pv (the fixture cannot make an fv-only pool: pv and fv cross together)
+        self.assertEqual(res["p0_per_day"], 1 / 3)
+        self.assertTrue(res["p0_day_zero"])
+        self.assertIn("upper bound", res["disclosure"])
+        self.assertIn("REPORT-ONLY", res["unit"])
         self.assertEqual(res["undercount_days"], [])
         self.assertTrue(res["outcome_free"] and res["pricing_off"])
         self.assertEqual(res["sstar"]["commit"], C.SSTAR_COMMIT)
@@ -221,9 +231,9 @@ class Counting(Tmp):
     def test_output_has_a_fixed_key_set_and_no_pool_level_text(self):
         self.build()
         res = self.count()
-        self.assertEqual(set(res), {"s1t_tip_p0", "purpose", "sstar", "pricing_off", "outcome_free", "class", "first_day", "last_day", "h0", "notebook_ref", "unit", "per_day", "p0_per_day",
-                                    "records_per_day_mean", "undercount_days", "history_hours_missing_before_day_1", "input_counters"})
-        self.assertEqual(set(res["per_day"]["2026-11-07"]), {"pools", "records", "records_pv", "records_fv", "hours_present", "hours_expected", "hours_missing", "hour_before_missing", "undercount"})
+        self.assertEqual(set(res), {"s1t_tip_p0", "purpose", "sstar", "pricing_off", "outcome_free", "disclosure", "first_day", "last_day", "h0", "notebook_ref", "unit", "per_day", "p0_per_day",
+                                    "p0_day_zero", "undercount_days", "history_hours_missing_before_day_1", "hour_files_before_h0_skipped_by_name", "input_counters"})
+        self.assertEqual(set(res["per_day"]["2026-11-07"]), {"records_pv", "records_fv", "hours_present", "hours_expected", "hours_missing", "hour_before_missing", "undercount"})
         self.assertTrue(set(res["input_counters"]) <= set(C.KEEP_COUNTERS))
         text = json.dumps(res)
         for token in (POOL_A, MINT_A, POOL_B, MINT_B, "sig", "q_trigger", "exit_", "pnl"):
@@ -242,7 +252,7 @@ class Counting(Tmp):
         self.assertEqual(res["undercount_days"], ["2026-11-07"])
         self.assertEqual(res["per_day"]["2026-11-07"]["hours_missing"], ["2026-11-07T20"])
         self.assertEqual(res["per_day"]["2026-11-07"]["hours_present"], 23)
-        self.assertEqual(res["per_day"]["2026-11-07"]["pools"], 1)                                # still counted
+        self.assertEqual(res["per_day"]["2026-11-07"]["records_pv"], 1)                                # still counted
         self.assertFalse(res["per_day"]["2026-11-06"]["undercount"])
 
     def test_the_hour_before_a_day_missing_declares_that_day(self):
@@ -255,11 +265,89 @@ class Counting(Tmp):
         self.build(skip=("2026-11-05T07", "2026-11-05T08"))
         self.assertEqual(self.count()["history_hours_missing_before_day_1"], 2)
 
+    def test_hour_files_before_h0_are_skipped_by_name_and_never_opened(self):
+        self.build(start="2026-11-04T00")
+        (self.tape / "tape-2026-11-04T10.jsonl").write_text("{not json\n" * 50)           # would count as bad_lines if opened
+        res = self.count()
+        self.assertEqual(res["hour_files_before_h0_skipped_by_name"], 24)
+        self.assertEqual(res["input_counters"].get("reader_loss_bad_lines", 0), 0)
+        self.assertEqual(res["per_day"]["2026-11-07"]["records_pv"], 1)
+
+    def test_rows_at_or_after_the_end_are_never_read_or_counted(self):
+        self.build()
+        late = pool_rows(POOL_B, MINT_B, ts("2026-11-09", 5), 402_000_000)                    # fires on 11-09: outside the days
+        write_tape(self.tape, pool_rows(POOL_A, MINT_A, ts("2026-11-07", 12), 400_000_000) + late[:3], end="2026-11-09T00")
+        (self.tape / "tape-2026-11-09T05.jsonl").write_text("{not json\n" * 50)              # an 11-09 hour file: must never be opened
+        (self.tape / "tape-2026-11-10T05.jsonl").write_text("{not json\n" * 50)
+        res = self.count()
+        self.assertEqual(res["input_counters"].get("reader_loss_bad_lines", 0), 0)
+        self.assertEqual(sum(v["records_pv"] for v in res["per_day"].values()), 1)
+
+    def test_a_row_past_the_end_inside_the_last_hour_file_stops_the_read(self):
+        rows = pool_rows(POOL_A, MINT_A, ts("2026-11-07", 12), 400_000_000)
+        late = pool_rows(POOL_B, MINT_B, ts("2026-11-08", 23) + 3599, 402_000_000)              # its rows run past 11-09T00:00 yet sit in the 11-08T23 file
+        late = [dict(r, t_recv_ms=r["t_recv_ms"]) for r in late]
+        d = self.tape
+        write_tape(d, rows)
+        with open(d / "tape-2026-11-08T23.jsonl", "a") as f:
+            for r in late:
+                f.write(json.dumps(r, separators=(",", ":")) + "\n")
+        res = self.count()
+        self.assertGreater(res["input_counters"]["rows_at_or_after_end"], 0)
+        self.assertEqual(sum(v["records_pv"] for v in res["per_day"].values()), 1)
+
     def test_a_short_last_day_is_declared_not_refused(self):
         self.build(end="2026-11-08T12")
         res = self.count()
         self.assertEqual(res["undercount_days"], ["2026-11-08"])
         self.assertEqual(res["per_day"]["2026-11-08"]["hours_present"], 12)
+
+
+class Boundaries(unittest.TestCase):
+    def test_utc_day_boundaries(self):
+        s, e = C.day_ms("2026-11-06"), C.day_ms("2026-11-09")
+        D = 86_400_000
+        self.assertIsNone(C.bucket(s - 1, s, e))
+        self.assertEqual(C.bucket(s, s, e), "2026-11-06")
+        self.assertEqual(C.bucket(s + D - 1, s, e), "2026-11-06")
+        self.assertEqual(C.bucket(s + D, s, e), "2026-11-07")
+        self.assertEqual(C.bucket(s + 2 * D, s, e), "2026-11-08")
+        self.assertEqual(C.bucket(e - 1, s, e), "2026-11-08")
+        self.assertIsNone(C.bucket(e, s, e))
+        for bad in (None, "x", True, 1.5):
+            self.assertIsNone(C.bucket(bad, s, e))
+
+
+class Hygiene(Tmp):
+    def test_test_switch_only_in_test_runs(self):
+        self.assertNotIn("MAL_ARENA_TEST", C.child_env(None))
+        self.assertEqual(C.child_env([str(self.root)])["MAL_ARENA_TEST"], "1")
+
+    def test_a_production_run_has_no_test_switch(self):
+        seen = {}
+        real = subprocess.run
+
+        def spy(cmd, *a, **k):
+            if "--child" in cmd:
+                seen["env"] = k["env"]
+            return real(cmd, *a, **k)
+        with mock.patch.object(C.subprocess, "run", spy), self.assertRaises(RuntimeError):
+            C.run_engine(str(self.root), self.tape, DAYS.split(","), C.day_ms("2026-11-05"), roots=None)      # fails inside the child; the env is what is checked
+        self.assertNotIn("MAL_ARENA_TEST", seen["env"])
+
+    def test_error_texts_are_fixed_codes_only(self):
+        out, err = io.StringIO(), io.StringIO()
+        with mock.patch.object(C, "run_p0", side_effect=RuntimeError("Pool" + POOL_A[:30])), redirect_stdout(out), redirect_stderr(err):
+            rc = C.main(["--days", DAYS, "--notebook-ref", "nb", "--h0", H0, "--sstar-src", "/x"])
+        self.assertEqual(rc, 3)
+        self.assertNotIn(POOL_A[:10], err.getvalue())
+        self.assertEqual(json.loads(err.getvalue())["code"], "")
+
+    def test_timeout_is_configurable_with_a_long_default(self):
+        self.assertGreaterEqual(C.TIMEOUT_S_DEFAULT, 10 * 3600)
+        with mock.patch.object(C, "run_p0", return_value={"ok": 1}) as m, redirect_stdout(io.StringIO()):
+            C.main(["--days", DAYS, "--notebook-ref", "nb", "--h0", H0, "--sstar-src", "/x", "--timeout-s", "99"])
+        self.assertEqual(m.call_args.kwargs["timeout_s"], 99)
 
 
 class OutcomeGuard(Tmp):
@@ -296,7 +384,7 @@ class OutcomeGuard(Tmp):
         write_tape(self.tape, pool_rows(POOL_A, MINT_A, ts("2026-11-07", 12), 400_000_000))
         res = C.run_engine(str(sstar()), self.tape, DAYS.split(","), C.day_ms("2026-11-05"), roots=[str(self.root)])
         self.assertEqual(res["blocked"], 0)
-        self.assertEqual(res["per_day"]["2026-11-07"]["pools"], 1)
+        self.assertEqual(res["per_day"]["2026-11-07"]["records_pv"], 1)
 
 
 if __name__ == "__main__":
