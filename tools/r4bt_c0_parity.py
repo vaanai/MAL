@@ -28,7 +28,8 @@ WHAT IS MEASURED (Amendment 9 section 3 item 11 and section 4)
   (d_land - k_3p0) for the P5 attempts (threshold 3.0 s). The printed landing statistic is converted back: p50 of (d_land - k_1p9) in slots. The sd(T)-origin figure (landed
   slot - the mark's decision slot) is printed as `diag_sdT_p50_slots`; it never decides.
   P2 (landing-fail excess) needs every buy SEND, including failed and expired ones, which a ledger of sent-and-landed orders cannot hold: it is evaluated only from the
-  optional `--attempts` file (arena_live_parity's attempts schema); without it P2 prints UNEVALUATED, and the verdict can never be "LIVE FILLS MATCH PAPER".
+  `--attempts` file (default `<state_dir>/r4bt-attempts.jsonl`, written by the executor; arena_live_parity's attempts schema); without it P2 prints UNEVALUATED, and the verdict can never be "LIVE FILLS MATCH PAPER".
+  DRY rows (`fee_source` "dry_default", live fill fields null) are excluded and counted as `dry_no_live_fill_excluded`; a non-DRY row missing a live field is refused (STOP).
   Sell lateness (P5 second arm) needs the exit's landing instant: the ledger's optional `exit_landed_ms`; absent, that arm is unevaluated (counted).
   The state stamps the arena tool checks (loss, balance, decision_chain, control_files) belong to the executor and the watchdog, not to this tool: they are stamped `now`
   here, and the twin stamp is `now` only when the twin run record passes the gate checks below, else it is omitted (P7, STOP). Missing or unreadable input is P7: STOP.
@@ -63,6 +64,8 @@ RULE_DEFAULT = "total"
 STOP_LOSS_REASONS = ("stop_loss", "sl_backstop")
 FILE_MAX_BYTES = 64 * 1024 * 1024
 PARITY_IDS = ("P1", "P2", "P3", "P4", "P5", "P6", "P7")
+ATTEMPTS_NAME = "r4bt-attempts.jsonl"  # the executor's attempts file (PR #1252, tools/r4bt_c0_executor.py ATTEMPTS_NAME); default for --attempts
+DRY_FEE_SOURCE = "dry_default"  # PR #1252: a DRY port's rows carry fee_source dry_default and null live fill fields
 LIVE_FILL_KEYS = ("live_buy_price",)  # every landed buy
 LIVE_EXIT_KEYS = ("live_sell_price", "live_net_lamports")  # every trip whose exit landed
 
@@ -212,7 +215,7 @@ def build_inputs(ledger: Sequence[Mapping[str, Any]], twins: Mapping[str, Mappin
     attempts: list[dict] = []
     sd_land: list[float] = []
     c = {"ledger_orders": len(ledger), "excluded_restart": 0, "excluded_buy_not_landed": 0, "twin_pending": 0, "gap_hold_trips": 0, "exit_lateness_unevaluated": 0,
-         "landing_unmeasured": 0, "executed": 0}
+         "landing_unmeasured": 0, "executed": 0, "dry_no_live_fill_excluded": 0}
     for r in ledger:
         if r.get("restart") is True or r.get("exit_reason") == "restart":
             c["excluded_restart"] += 1
@@ -227,10 +230,14 @@ def build_inputs(ledger: Sequence[Mapping[str, Any]], twins: Mapping[str, Mappin
         if at is None and trow is not None and trow.get("status") in ("pending_tape", "open") and now_ms - int(r.get("exit_ms") or e_ms) <= TWIN_ROW_GRACE_MS:
             c["twin_pending"] += 1
             continue
+        need = LIVE_FILL_KEYS + (LIVE_EXIT_KEYS if exit_landed else ())
+        if r.get("fee_source") == DRY_FEE_SOURCE and not all(_isnum(r.get(k)) for k in need):
+            c["dry_no_live_fill_excluded"] += 1  # a DRY row has no live fill to compare: excluded and counted, never a STOP
+            continue
         c["executed"] += 1
         gap = bool(r.get("gap_hold"))
         c["gap_hold_trips"] += gap
-        for k in LIVE_FILL_KEYS + (LIVE_EXIT_KEYS if exit_landed else ()):
+        for k in need:
             if not _isnum(r.get(k)):
                 raise Refused(f"ledger row lacks the live fill field {k!r} (the executor must write it; see the PR text)")
         if r["live_buy_price"] <= 0 or (exit_landed and r["live_sell_price"] <= 0):
@@ -288,6 +295,8 @@ def run(state_dir: str | Path, twin_dir: str | Path | None, now_ms: int, attempt
     trips, atwins, p5_attempts, counts = build_inputs(ledger, twins, now_ms, rule)
     sd_land = counts.pop("_sd_land")
     extra: list[dict] = []
+    if attempts_file is None and (sd / ATTEMPTS_NAME).is_file():
+        attempts_file = sd / ATTEMPTS_NAME  # the executor's own file (default); an explicit --attempts that is missing is refused by _read_bytes
     if attempts_file is not None:
         extra = _jsonl(_read_bytes(Path(attempts_file)), "attempts")
     state = {"at_ms": {n: now_ms for n in AP.STATE_NAMES}, "unresolved_hard_halts": [], "rung": RUNG}  # twin freshness was checked in load_twins (the stamp is honest)

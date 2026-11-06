@@ -214,6 +214,66 @@ class TestExclusionsAndOrigin(Base):
         self.assertEqual(res["stats"]["mean_d_bps"], 0.0)
 
 
+class TestExecutorFollowup(Base):
+    """PR #1252 schema: DRY rows (fee_source dry_default, null live fields), the default attempts file, a round trip through its writers when importable."""
+
+    def test_dry_rows_without_live_fields_are_excluded_and_counted_not_refused(self):
+        pairs = []
+        for i in range(3):
+            led, t = order(i)
+            led.update(live_buy_price=None, live_sell_price=None, live_net_lamports=None, exit_landed_ms=None, gap_through=None, fee_source="dry_default")
+            pairs.append((led, t))
+        pairs.append(order(3))
+        res = self.go(pairs, attempts=clean_attempts())
+        self.assertEqual(res["r4bt"]["counts"]["dry_no_live_fill_excluded"], 3)
+        self.assertEqual(res["shares"]["trips"], 1)
+        self.assertIn("dry_no_live_fill_excluded=3", RP.render(res))
+
+    def test_non_dry_row_missing_fields_still_refused_with_stop(self):
+        led, t = order(0)
+        led.update(live_buy_price=None, fee_source="chain")
+        self.assertEqual(self.main([(led, t)]), 2)
+        self.assertTrue((Path(self.d) / "STOP").exists())
+
+    def test_default_attempts_file_in_state_dir(self):
+        write_dir(self.d, [order(i) for i in range(3)])
+        (Path(self.d) / RP.ATTEMPTS_NAME).write_text("".join(json.dumps(a) + "\n" for a in clean_attempts(30, fail=15)))
+        res = RP.run(self.d, None, NOW)
+        self.assertEqual(RP.p_status(res)["P2"], "FAIL")
+
+    def test_explicit_missing_attempts_file_is_refused(self):
+        write_dir(self.d, [order(0)])
+        with self.assertRaises(RP.Refused):
+            RP.run(self.d, None, NOW, os.path.join(self.d, "nope.jsonl"))
+
+    def test_round_trip_with_executor_writers(self):
+        from tools import r4bt_c0_executor as E
+        if not hasattr(E, "attempt_rows") or not hasattr(E, "ATTEMPTS_NAME"):
+            self.skipTest("executor PR #1252 not merged in this tree")
+        self.assertEqual(E.ATTEMPTS_NAME, RP.ATTEMPTS_NAME)
+        orders, twins = {}, []
+        for i in range(30):
+            led, t = order(i)
+            orders[led["order_id"]] = {"order_id": led["order_id"], "status": "closed", "pool": led["pool"], "mint": led["mint"], "rank": 1, "t_mark": 60,
+                "stake_lamports": STAKE_LAMPORTS, "decision_ms": led["entry_ms"], "exit_decision_ms": led["exit_ms"], "entry_fee_lamports": 505_000,
+                "exit_fee_lamports": 505_000, "decision_slot": led["decision_slot"], "buy_landed_slot": led["landed_slot_entry"], "sell_landed_slot": led["landed_slot_exit"],
+                "sell_reason": "time_stop", "live_buy_price": 1.0, "live_sell_price": 1.0, "live_net_lamports": PNL, "exit_landed_ms": None, "gap_through": False,
+                "fee_source": "chain", "buy_outcome": "landed", "buy_event_ms": NOW}
+            twins.append(t)
+        failed = {"order_id": "f1", "status": "refused", "decision_ms": NOW - 1, "buy_outcome": "failed", "stake_lamports": STAKE_LAMPORTS}
+        orders["f1"] = failed
+        d = Path(self.d)
+        (d / E.LEDGER_NAME).write_text("".join(json.dumps(r) + "\n" for r in E.ledger_rows(orders)))
+        (d / E.ATTEMPTS_NAME).write_text("".join(json.dumps(r) + "\n" for r in E.attempt_rows(orders)))
+        tw = "".join(json.dumps(t) + "\n" for t in twins)
+        (d / TWINS_NAME).write_text(tw)
+        (d / RUN_RECORD_NAME).write_text(json.dumps({"schema": RUN_SCHEMA, "status": "ok", "run_ms": NOW - 1, "heartbeat_ms": NOW - 1, "w_sha": REGISTERED_W,
+                                                     "engine_sha256": ENGINE_SHA256, "twins_sha256": hashlib.sha256(tw.encode()).hexdigest()}))
+        res = RP.run(self.d, None, NOW)
+        self.assertEqual(res["shares"]["trips"], 30)
+        self.assertTrue(res["r4bt"]["p2_evaluated"])
+
+
 class TestStopWiringAndOutput(Base):
     def test_stop_written_in_state_dir_on_soft_fail(self):
         rc = self.main([order(i, net=PNL - 20_000_000) for i in range(20)], attempts=clean_attempts())
