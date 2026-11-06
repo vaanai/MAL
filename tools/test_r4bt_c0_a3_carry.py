@@ -143,3 +143,30 @@ def test_cli_exit_codes(tmp_path, capsys):
     assert json.loads(capsys.readouterr().out)["hard_halt"] is False
     assert C.main(["--daily", d, "--verdict", v, "--change-id", CID, "--out", out, "--now-ms", str(TA.RUN_MS + 40 * 3_600_000)]) == 2
     assert C.main(["--daily", d + "x", "--verdict", v, "--change-id", CID, "--out", out]) == 2
+
+
+def test_wrapper_script_end_to_end(tmp_path):
+    """The POSIX wrapper on a synthetic daily file and pins file (record one hour old): classify -> carry; a refused run leaves the old carry."""
+    import subprocess
+    import sys
+    import time
+    from pathlib import Path
+
+    repo = Path(__file__).resolve().parent.parent
+    sh = str(repo / "scripts/ops/r4bt-c0-a3-carry.sh")
+    run = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(time.time() - 3600))
+    daily, pins, out = tmp_path / "daily.jsonl", tmp_path / "pins.json", tmp_path / "carry.json"
+    daily.write_text(json.dumps(R(run=run)) + "\n")
+    pins.write_text(json.dumps(TA.PINS))
+    env = {"PATH": os.environ["PATH"], "HOME": str(tmp_path), "R4BT_REPO": str(repo), "R4BT_PY": sys.executable, "R4BT_DAILY": str(daily), "R4BT_PINS": str(pins),
+           "R4BT_CHANGE_ID": CID, "R4BT_CARRY_OUT": str(out), "R4BT_WORK": str(tmp_path / "work")}
+    p = subprocess.run(["sh", sh], env=env, capture_output=True, text=True)
+    assert p.returncode == 0, p.stdout + p.stderr
+    c = json.loads(out.read_text())
+    assert c["run_utc"] == run and c["verdict"] == "NONE" and c["hard_halt"] is False
+    daily.write_text("{broken\n")
+    out.write_text("OLD")
+    p = subprocess.run(["sh", sh], env=env, capture_output=True, text=True)
+    assert p.returncode != 0 and out.read_text() == "OLD"
+    del env["R4BT_PINS"]
+    assert subprocess.run(["sh", sh], env=env, capture_output=True, text=True).returncode == 1
