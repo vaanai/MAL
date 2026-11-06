@@ -1,8 +1,56 @@
 {
  "schema_version": "console.v1",
- "updated_utc": "2026-11-05T12:00:00Z",
+ "updated_utc": "2026-11-06T19:10:00Z",
  "review_windows": [],
  "events": [
+  {
+   "id": "r4bt-c0-code-complete-1106",
+   "kind": "job",
+   "title": "r4-b-T C0 code complete on main fb187372 or later (adds #1259: sandbox check keeps the wallet credential/RPC key out of probe shells) (DEC-032 Am.9 #1244 through #1259); Helm keyless pre-install requested",
+   "detail": "Merged with QP OK and reviewer APPROVE: DEC-032 Am.9 #1244, twin writer #1243, executor #1246 and #1252, carry #1249, parity #1250, install pack #1251, live port #1257, install follow-up #1258, sandbox check #1259. Main C0 tests pass (separate processes). HELM-ASK-1106-1: keyless DRY pre-install requested at main fb187372 or later (adds #1259: sandbox check keeps the wallet credential/RPC key out of probe shells); no live drop-in, no LIVE_OK, no key. r4-b-T registration is due 2026-11-07 (clock 2026-11-08T00Z). Code and plumbing only; nothing is live. No book has cleared the promotion gate.",
+   "atUtc": "2026-11-06T19:08:00Z",
+   "approx": true
+  },
+  {
+   "id": "slowbot-h-1-dry-1106",
+   "kind": "job",
+   "title": "slowbot-h-1 24 h keyless dry PASS (3 fresh dry_would_send, 0 errors); LIVE pending the owner's direct yes to Helm",
+   "detail": "HELM-REPLY-1104-1h: the 24 h dry ended clean (3 fresh dry_would_send, ages 6 to 10 s, 0 errors, 0 sha_mismatch). Helm did not go live: it does not accept a relayed pre-approval and needs the owner to say yes directly in Helm chat. Nothing is live; 0 trades. A dry run, not a result. No book has cleared the promotion gate.",
+   "atUtc": "2026-11-06T18:57:00Z",
+   "approx": true
+  },
+  {
+   "id": "h5v2-bx10-f1-prereg-1106",
+   "kind": "decision",
+   "title": "h5v2-bx10-f1 pre-registered (DEC-031 Am.29, #1245); smoke #2219 started",
+   "detail": "PR #1245 merged to main (49a4df02); tag h5v2-bx10-f1-frozen at afa4971d. Paper book only; smoke #2219 started on research-0 at about 17:35Z. A plumbing smoke, not a result; its job status view is not read. QP-RULING-1106-h5v2-lane: no H5 v2 lane live now. No book has cleared the promotion gate.",
+   "atUtc": "2026-11-06T17:35:00Z",
+   "approx": true
+  },
+  {
+   "id": "s1t-withdrawn-1106",
+   "kind": "decision",
+   "title": "s1t WITHDRAWN 2026-11-06T17:16:06Z before registration (no N spent)",
+   "detail": "s1t was withdrawn before registration at 2026-11-06T17:16:06Z (PR #1241 closedAt; job #2216 cancelled just before). No N was spent. Nothing was read. No book has cleared the promotion gate.",
+   "atUtc": "2026-11-06T17:16:06Z",
+   "approx": false
+  },
+  {
+   "id": "boost-timing-shift-1106",
+   "kind": "finding",
+   "title": "BOOST timing shift: structure-monitor last-slice medians 319.0 (11-05) and 323 (11-06) against 332 to 347 on 10-08 through 11-04",
+   "detail": "Structure monitor (last_slice_after_migrate_s): median 332 to 347 s every day 10-08 through 11-04 (min at least 324); 11-05 median 319.0 (n 10, min 316); 11-06 median 323 (n 9, min 316). The A3 line at 315 was not crossed. Structure only: no outcome was read. QP-RULING-1106-boost-shift (sha256 9c22239b...): the H5 v1 exit premise is broken now, 13 of 16 sampled pools had the last slice under 330 s on 11-05 and 11-06 against 2 of 59 on 10-28 through 11-04. No book has cleared the promotion gate.",
+   "atUtc": "2026-11-06T16:50:00Z",
+   "approx": true
+  },
+  {
+   "id": "q50-ended-nd-1106",
+   "kind": "result",
+   "title": "Q50 h5v1q50-boostfloor-a1 ENDED NOT_DECIDABLE (read #1887, 2026-11-06T07:21:48Z)",
+   "detail": "Waiter #1886 ok, read #1887 ok exit 0 at 07:21:48Z: VERDICT h5v1q50-boostfloor-a1 STATUS NOT_DECIDABLE, flag ENDED NOT_DECIDABLE at the end-seal (counts only, final). A3 guard run 07:10:05Z NONE; side a2 books REFUSED_NO_RECORDED_INSTANT; LEGS and INBAND not run. Notebook n_jmlUQ8nlOPrL4w. Not a FAIL and not a PASS; no outcome was read. No book has cleared the promotion gate.",
+   "atUtc": "2026-11-06T07:21:48Z",
+   "approx": false
+  },
   {
    "id": "s1t-equal-smoke-1105",
    "kind": "job",
@@ -1534,11 +1582,11 @@
   {
    "id": "Q50",
    "title": "Q50 (h5v1q50-boostfloor-a1) H5 BOOST-floor",
-   "stage": "registered, clock 2026-10-25T00:00Z; gate read queued",
-   "note": "Shadow running since the clock. One gate read (job #1887) waits behind its waiter #1886 for the pre-registered boundary (still waiting at the 2026-11-01 about 03:4xZ manager summary); the 10-30T00Z boundary did not qualify. The arena-tape duplicate finding does not change the read (QP-RULING-1031-tape-dupes-reads): it runs unchanged, and on a PASS the pre-declared audit A-Q50 runs before QP's OK and before any C0 step. C0 code is on main (60 s gap hold, owner line in a root-owned file, P7 at C0). Helm's keyless dry runs passed (10-24 at 0526d5cd: 60 min, 0 halts, 0 restarts, no key, no wallet; 10-28 and 10-29 at c8fcf761: 6 of 6) but feed gaps stayed (135 redundant + 42 gap rows an hour on 10-29); the re-measure on the new code ran on 10-31 (HELM-ASK-1030-2; HELM-REPLY-1031-1: PASS on all 9 criteria, held share 0.2593 against about 1.0 on 10-28 and 10-29, 37 slot_jump feed_gap, 206 redundant reconnects that hold nothing, watchdog alerts 0, keyless so P7 parity does not apply) and was accepted. Standing owner OK for the C0 canary on a PASS plus QP; nothing is live. No book has cleared the promotion gate.",
+   "stage": "ENDED NOT_DECIDABLE (read #1887, 2026-11-06T07:21:48Z; Am.11 item 2)",
+   "note": "Read #1887 (waiter #1886) ran exit 0 at 2026-11-06T07:21:48Z: STATUS NOT_DECIDABLE, flag ENDED NOT_DECIDABLE at the end-seal (counts only, final; DEC-031 Am.11 item 2). Not a FAIL and not a PASS; no outcome was read. Notebook n_jmlUQ8nlOPrL4w. No C0 step follows. No book has cleared the promotion gate.",
    "tag": {
-    "text": "registered",
-    "tone": "accent"
+    "text": "not decidable",
+    "tone": "warn"
    }
   },
   {
@@ -1874,6 +1922,12 @@
   }
  ],
  "for_you": [
+  {
+   "id": "fy-20261106-helm-direct-yes",
+   "from": "claude",
+   "text": "Please approve slowbot-h-1 go-live and r4bt-c0 key create directly in Helm chat. Helm does not accept a relayed approval (HELM-REPLY-1104-1h); both approval widgets are pending. slowbot-h-1: the 24 h keyless dry ended clean (3 fresh dry_would_send, 0 errors). r4bt-c0: code is complete on main fb187372 or later (adds #1259: sandbox check keeps the wallet credential/RPC key out of probe shells); the key create waits on your yes. Nothing is live and nothing is funded until you say so. No book has cleared the promotion gate.",
+   "atUtc": "2026-11-06T18:57:00Z"
+  },
   {
    "id": "fy-20261101-canary-funding",
    "from": "claude",
