@@ -12,7 +12,7 @@ It wraps the existing pieces and adds no new accounting (pattern of tools/hv4_c0
      fees, ATA rent, closed-trip ledger P&L against the chain sum (difference above one base fee is a halt), stranded positions (a non-zero token account whose mint is not
      an open ledger position) and open mints without a token account;
   4. three cross-checks of this wrapper: (a) every order of the order ledger (`r4bt-order-ledger.jsonl`) has a buy fill row, and every landed buy fill row belongs to an
-     order; (b) the attempts file (`r4bt-attempts.jsonl`) has exactly one landed row per landed buy fill row, and each landed attempt's trip_id is an order; (c) a
+     order; (b) the attempts file (`r4bt-attempts.jsonl`) has exactly one landed row per landed buy fill ROW (a mint re-entered after its sell counts twice), and each landed attempt's trip_id is an order; (c) a
      straddling trip (one leg before the window, one inside) is listed and refuses sign-off (the day is reviewed by hand, never netted away).
 
 THE WINDOW is slot-based, from the previous signed-off tie-out (`TIEOUT-STATE.json` in --state-dir: balance and context_slot) to now; --day is a label. The first run of a
@@ -20,9 +20,9 @@ fresh wallet uses --first-baseline 0 --first-after-slot 0, or the owner's record
 fetch window runs to now; a send written ahead but not yet resolved is left out by the exporter, so run the job when no order is in flight if it can be arranged
 (the schedule in scripts/ops/r4bt-c0-tieout-job.sh), and a rerun after the order resolved is the fix for a false halt.
 
-OUTPUT in --out-dir (create-exclusive, never overwritten): `r4bt-tieout-<day>.json` (the reconcile result plus the wrapper's counts and `verdict`). The last stdout line is
+OUTPUT in --out-dir (create-exclusive, never overwritten; after a FAIL move BOTH `r4bt-tieout-<day>.json` and `fetch-<day>/` aside before a rerun): `r4bt-tieout-<day>.json` (the reconcile result plus the wrapper's counts and `verdict`). The last stdout line is
 `r4bt-c0-tieout <day> PASS|FAIL` with counts only. A PASS rewrites TIEOUT-STATE.json (atomic) with the new baseline; a FAIL never does and writes `STOP-tieout` in --state-dir
-only if --stop-on-fail is given. The RPC URL comes from the environment variable named by --rpc-env (never printed; the Helius env file is sourced by the job script, never by
+only if --stop-on-fail is given (an alert marker only: nothing in the executor reads it; the 8P watchdog entry is to). The RPC URL comes from the environment variable named by --rpc-env (never printed; the Helius env file is sourced by the job script, never by
 this tool) or a plain public URL. Nothing here signs or sends, and nothing says a book made money: it is an execution report, an unpromoted execution measurement.
 Exit codes: 0 PASS, 1 FAIL (hard halt), 2 refused input, 3 fetch failed.
 """
@@ -75,25 +75,39 @@ def read_jsonl(path: str | Path) -> list[dict[str, Any]]:
 
 def ledger_in(fills: Iterable[Mapping[str, Any]]) -> dict[str, Any]:
     """The executor's buy / sell fill rows (a row with `landed` is a resolved send) as the tie-out ledger. A resolved row precedes no `arena_send` row in the file, so one is
-    made per distinct signature; the open mints are the landed buys with tokens and no landed sell."""
+    made per distinct signature. Trips are paired by ORDER, not by mint (Am.9 A7 allows a re-entry after the sell lands): the exporter keys by mint, so each landed buy gets the
+    trip key `<mint>#<n>` (n = its 1-based landed-buy index on that mint) and a landed sell closes the latest still-open key of its mint. The open mints returned are the real
+    mints of the positions still open (a re-entered open position stays open; the stranded check compares real mints)."""
     rows: list[dict[str, Any]] = []
     seen: set[str] = set()
-    landed_buys: set[str] = set()
-    closed: set[str] = set()
+    n_buys: dict[str, int] = {}
+    cur: dict[str, str] = {}  # mint -> key of its open (landed buy, no landed sell yet) trip
+    open_keys: dict[str, str] = {}  # key -> real mint
     for r in fills:
         if r.get("kind") not in ("buy", "sell") or "landed" not in r:
             continue
+        mint, landed = r.get("mint"), r.get("landed") is True
+        key = mint
+        if r["kind"] == "buy" and landed:
+            n_buys[mint] = n_buys.get(mint, 0) + 1
+            key = f"{mint}#{n_buys[mint]}"
+            if _isint(r.get("tokens_received")) and r["tokens_received"] > 0:
+                cur[mint] = key
+                open_keys[key] = mint
+        elif r["kind"] == "sell" and mint in cur:
+            key = cur[mint]
+            if landed:
+                open_keys.pop(key, None)
+                del cur[mint]
         sig = r.get("signature")
         if isinstance(sig, str) and sig and sig not in seen:
             seen.add(sig)
-            rows.append({"kind": "arena_send", "mode": "live", "mint": r.get("mint"), "signature": sig, "side": r["kind"],
+            rows.append({"kind": "arena_send", "mode": "live", "mint": key, "signature": sig, "side": r["kind"],
                          "last_valid_block_height": r.get("last_valid_block_height", r.get("lvbh"))})
-        rows.append({**r, "mode": "live"})
-        if r["kind"] == "buy" and r.get("landed") is True and _isint(r.get("tokens_received")) and r["tokens_received"] > 0:
-            landed_buys.add(r["mint"])
-        if r["kind"] == "sell" and r.get("landed") is True:
-            closed.add(r["mint"])
-    return L.export(rows, {"open": {m: {} for m in sorted(landed_buys - closed)}})
+        rows.append({**r, "mint": key, "mode": "live"})
+    out = L.export(rows, {"open": {k: {} for k in sorted(open_keys)}})
+    out["open_mints"] = sorted(set(open_keys.values()))
+    return out
 
 
 def cross_checks(fills: Sequence[Mapping[str, Any]], orders: Sequence[Mapping[str, Any]], attempts: Sequence[Mapping[str, Any]]) -> list[dict[str, Any]]:
@@ -102,14 +116,15 @@ def cross_checks(fills: Sequence[Mapping[str, Any]], orders: Sequence[Mapping[st
     order_ids = {o.get("order_id") for o in orders}
     order_mints = {o.get("mint") for o in orders}
     buy_mints = {r.get("mint") for r in fills if r.get("kind") == "buy" and "landed" in r}
-    landed_buy_mints = {r.get("mint") for r in fills if r.get("kind") == "buy" and r.get("landed") is True}
+    landed_buy_rows = [r for r in fills if r.get("kind") == "buy" and r.get("landed") is True]  # rows, not mints: a re-entry is a second landed buy on one mint
+    landed_buy_mints = {r.get("mint") for r in landed_buy_rows}
     for m in sorted(x for x in order_mints - buy_mints if x):
         out.append({"kind": "order_without_buy_fill", "mint": m})
     for m in sorted(x for x in landed_buy_mints - order_mints if x):
         out.append({"kind": "landed_buy_without_order", "mint": m})
     landed_attempts = [a for a in attempts if a.get("landed") is True]
-    if len(landed_attempts) != len(landed_buy_mints):
-        out.append({"kind": "attempts_landed_count", "attempts": len(landed_attempts), "landed_buy_fills": len(landed_buy_mints)})
+    if len(landed_attempts) != len(landed_buy_rows):
+        out.append({"kind": "attempts_landed_count", "attempts": len(landed_attempts), "landed_buy_fills": len(landed_buy_rows)})
     for a in landed_attempts:
         if a.get("trip_id") not in order_ids:
             out.append({"kind": "attempt_trip_not_an_order", "attempt_id": a.get("attempt_id")})

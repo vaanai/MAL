@@ -5,7 +5,8 @@
 # SCHEDULE (document, not enforced here): one MiScusi scheduled job per UTC day at 00:30Z, `sh scripts/ops/r4bt-c0-tieout-job.sh $(date -u -d yesterday +%F)`,
 # resumable false, memory 1 GB, limit 30 min. Also run it by hand at every halt, at the end of the C0 and before every tier step (DEC-032 s6). Never a session cron.
 # 00:30Z, not 00:00Z, so an order whose send straddles midnight has resolved (the exporter leaves a write-ahead send with no resolution out; that is a false halt, and
-# a rerun after it resolved is the fix). A day's result file is never overwritten: move a failed one aside on purpose before a rerun.
+# a rerun after it resolved is the fix). A day's result file and its fetch-<day>/ dir are never overwritten: move BOTH aside on purpose before a rerun.
+# STOP_ON_FAIL writes STOP-tieout in the tie-out state dir: an alert marker only (nothing in the executor reads it; the 8P watchdog entry is to).
 #
 # Reads only: the executor's fill rows, order ledger and attempts file (paths below), the named-addresses file, public RPC finalized reads. No key, no wallet file, no send.
 # The RPC: a keyed URL is read from RPC_ENV_FILE (a file of KEY=VALUE lines that sets R4BT_TIEOUT_RPC; default unset = the plain public URL). The URL is never echoed.
@@ -51,6 +52,7 @@ RPCARG=""
 if [ -n "${RPC_ENV_FILE:-}" ]; then
   [ -f "$RPC_ENV_FILE" ] || REFUSED "RPC_ENV_FILE is not a file"
   set -a; . "$RPC_ENV_FILE"; set +a
+  unset HELIUS_API_KEY ANTHROPIC_API_KEY OPENROUTER_API_KEY 2>/dev/null || true
   [ -n "${R4BT_TIEOUT_RPC:-}" ] || REFUSED "RPC_ENV_FILE does not set R4BT_TIEOUT_RPC"
   RPCARG="--rpc-env R4BT_TIEOUT_RPC"
 fi

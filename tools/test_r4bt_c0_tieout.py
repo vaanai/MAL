@@ -172,3 +172,29 @@ def test_main_exit_codes_and_pass_line(tmp_path, capsys, monkeypatch):
     assert W.main(base + ["--rpc", "https://x.example/?api-key=1"]) == 2
     monkeypatch.setenv("EMPTY_RPC", "")
     assert W.main(base + ["--rpc-env", "EMPTY_RPC"]) == 2
+
+
+def reentry_rows(second_sell):
+    f = []
+    for sig, kind, extra in (("b1", "buy", {"tokens_received": 10}), ("s1", "sell", {}), ("b2", "buy", {"tokens_received": 7})) + ((("s2", "sell", {}),) if second_sell else ()):
+        f.append({"kind": kind, "mint": M1, "signature": sig, "landed": True, "last_valid_block_height": 100, "sol_spent_lamports": 100, "sell_net_lamports": 90,
+                  "buy_cost_lamports": 100, **extra})
+    return f
+
+
+def test_reentry_open_and_closed_export_by_order():
+    led = W.ledger_in(reentry_rows(False))
+    assert [t["buy_sig"] for t in led["trips"]] == ["b1", "b2"]
+    assert [t["closed"] for t in led["trips"]] == [True, False]
+    assert led["trips"][0]["sell_sig"] == "s1" and led["open_mints"] == [M1]
+    led = W.ledger_in(reentry_rows(True))
+    assert [(t["buy_sig"], t["sell_sig"], t["closed"]) for t in led["trips"]] == [("b1", "s1", True), ("b2", "s2", True)]
+    assert led["open_mints"] == []
+
+
+def test_reentry_attempts_count_rows_not_mints():
+    fills = reentry_rows(True)
+    orders = [{"order_id": "o1", "mint": M1}, {"order_id": "o2", "mint": M1}]
+    ok = [{"attempt_id": "a:o1", "trip_id": "o1", "landed": True}, {"attempt_id": "a:o2", "trip_id": "o2", "landed": True}]
+    assert W.cross_checks(fills, orders, ok) == []
+    assert "attempts_landed_count" in kinds_of(W.cross_checks(fills, orders, ok[:1]))
