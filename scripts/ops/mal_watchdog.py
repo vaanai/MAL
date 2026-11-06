@@ -492,7 +492,7 @@ def check_r4bt_c0(cfg, ctx):
     = unknown, alert after health_unknown_min) and the A3 carry's written_utc / hard_halt.
     Names and mtimes only, never opened: the declog dir, twins.run.json (reader-pinned to the
     executor gate and the parity tool), r4bt-parity-state.json (stat only if the executor's
-    0750 state dir lets this user), the tie-out sign-off marker (presence). The executor's
+    0750 state dir lets this user). The tie-out result r4bt-tieout-<day>.json (one level under tieout_dir): its `verdict` field only. The executor's
     state files are never read. Each sub-check is its own alert, so one broken input cannot
     hide the others."""
     r = r4bt_conf(cfg["r4bt_c0"])
@@ -598,10 +598,24 @@ def check_r4bt_c0(cfg, ctx):
     ydate = (nowdt - dt.timedelta(days=1)).strftime("%Y-%m-%d")
     summ["tieout_day"] = ydate
     if nowdt.hour >= r["tieout_grace_h"]:
-        try:
-            ctx["mtime"](os.path.join(r["tieout_dir"], "tieout-%s.json" % ydate))
-        except OSError:
-            alerts.append(A("r4bt:tieout_unsigned", "high", "r4bt tie-out marker for %s missing" % ydate))
+        # tools/r4bt_c0_tieout.py writes r4bt-tieout-<day>.json into each MiScusi job's own output dir:
+        # tieout_dir is the parent (or the dir itself); look one level down too. Only the `verdict` field is read.
+        name = "r4bt-tieout-%s.json" % ydate
+        hits = sorted(set(ctx["glob"](os.path.join(r["tieout_dir"], name)) + ctx["glob"](os.path.join(r["tieout_dir"], "*", name))))
+        verdicts = []
+        for h in hits:
+            res, why = _r4bt_read_json(ctx, h)
+            v = res.get("verdict") if res else None
+            verdicts.append(v if v in ("PASS", "FAIL") else "UNREADABLE")
+        summ["tieout_files"] = len(hits)
+        if "PASS" in verdicts:
+            pass
+        elif "FAIL" in verdicts:
+            alerts.append(A("r4bt_c0_tieout_fail", "high", "r4bt tie-out for %s is FAIL" % ydate))
+        elif verdicts:
+            alerts.append(A("r4bt:tieout_unsigned", "high", "r4bt tie-out result for %s has no PASS or FAIL verdict" % ydate))
+        else:
+            alerts.append(A("r4bt:tieout_unsigned", "high", "r4bt tie-out result for %s not found" % ydate))
     return alerts, infos, summ
 
 

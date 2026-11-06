@@ -670,7 +670,8 @@ def r4bt_world(tmp, now=NOW):
     health = tmp / "health.json"
     health.write_text(json.dumps({"latched": False, "stop_present": False, "live_ok_present": False, "tier": "C0", "orders": "SECRET-HEALTH-EXTRA"}))
     os.utime(health, (ts - 60, ts - 60))
-    (to / "tieout-2026-10-28.json").write_text("SECRET-TIEOUT")
+    (to / "job1").mkdir()
+    (to / "job1" / "r4bt-tieout-2026-10-28.json").write_text(json.dumps({"verdict": "PASS", "wallet": "SECRET-TIEOUT"}))
     return {"state_dir": str(sd), "declog_dir": str(dl), "a3_carry_path": str(carry), "twin_dir": str(tw), "tieout_dir": str(to), "health_path": str(health)}, sd, to
 
 
@@ -757,7 +758,7 @@ def test_r4bt_only_health_and_carry_are_ever_opened(tmp_path):
     real = ctx["read_small"]
     ctx["read_small"] = lambda p: (opened.append(p), real(p))[1]
     passn(tmp_path, c, ctx)
-    assert sorted(opened) == sorted([rc["health_path"], rc["a3_carry_path"]])
+    assert sorted(opened) == sorted([rc["health_path"], rc["a3_carry_path"], str(Path(rc["tieout_dir"]) / "job1" / "r4bt-tieout-2026-10-28.json")])
 
 
 def test_r4bt_parity_state_mtime_only(tmp_path):
@@ -781,13 +782,33 @@ def test_r4bt_parity_state_not_statable_is_info_not_alert(tmp_path):
     assert fresh == [] and line["checks"]["r4bt_c0"]["parity_age_min"] == "not_statable" and any("not statable" in i for i in line["info"])
 
 
-def test_r4bt_tieout_marker_for_yesterday(tmp_path):
-    assert r4bt_keys(tmp_path / "a", lambda rc, sd, to: (to / "tieout-2026-10-28.json").unlink())[1] == {"r4bt:tieout_unsigned"}
+def test_r4bt_tieout_result_pass_fail_missing(tmp_path):
+    def f(to):
+        return to / "job1" / "r4bt-tieout-2026-10-28.json"
+    assert r4bt_keys(tmp_path / "a", lambda rc, sd, to: f(to).unlink())[1] == {"r4bt:tieout_unsigned"}
+    line, keys, fresh = r4bt_keys(tmp_path / "b", lambda rc, sd, to: f(to).write_text(json.dumps({"verdict": "FAIL", "wallet": "SECRET-TIEOUT"})))
+    assert keys == {"r4bt_c0_tieout_fail"} and "SECRET" not in json.dumps(fresh)
+    assert r4bt_keys(tmp_path / "c", lambda rc, sd, to: f(to).write_text("{"))[1] == {"r4bt:tieout_unsigned"}
+    assert r4bt_keys(tmp_path / "d", lambda rc, sd, to: f(to).write_text(json.dumps({"verdict": "maybe"})))[1] == {"r4bt:tieout_unsigned"}
+
+    def other_day(rc, sd, to):
+        f(to).rename(f(to).with_name("r4bt-tieout-2026-10-27.json"))
+    assert r4bt_keys(tmp_path / "e", other_day)[1] == {"r4bt:tieout_unsigned"}
+
+    def top_level(rc, sd, to):  # the result may also sit directly in tieout_dir
+        f(to).rename(to / "r4bt-tieout-2026-10-28.json")
+    assert r4bt_keys(tmp_path / "g", top_level)[1] == set()
+
+    def rerun(rc, sd, to):  # a FAIL in one job dir, a PASS rerun in another: signed
+        f(to).write_text(json.dumps({"verdict": "FAIL"}))
+        (to / "job2").mkdir()
+        (to / "job2" / "r4bt-tieout-2026-10-28.json").write_text(json.dumps({"verdict": "PASS"}))
+    assert r4bt_keys(tmp_path / "h", rerun)[1] == set()
     early = dt.datetime(2026, 10, 29, 1, 23, tzinfo=dt.timezone.utc)  # inside the grace window: no alert yet
-    rc, sd, to = r4bt_world(tmp_path / "d", early)
-    (to / "tieout-2026-10-28.json").unlink()
-    c, ctx = mk(tmp_path / "d", jl(), cfg={"r4bt_c0": rc}, now=early)
-    assert passn(tmp_path / "d", c, ctx)[1] == []
+    rc, sd, to = r4bt_world(tmp_path / "i", early)
+    f(to).unlink()
+    c, ctx = mk(tmp_path / "i", jl(), cfg={"r4bt_c0": rc}, now=early)
+    assert passn(tmp_path / "i", c, ctx)[1] == []
 
 
 def test_r4bt_config_validation_and_sealed_paths(tmp_path):
