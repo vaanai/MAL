@@ -57,10 +57,9 @@ from collections import Counter
 from pathlib import Path
 from typing import Any, Mapping, Sequence
 
-from tools import arena_stack as AST
 from tools import r4bt_gate as G
 from tools import r4bt_price as P
-from tools.arena_paper import (LATS, RENT_LAMPORTS, STRAND_STATES, ArenaEngine, ArenaRefused, StackConfig, price_leg, rules_of)
+from tools.arena_paper import RENT_LAMPORTS, ArenaEngine, ArenaRefused, StackConfig, price_leg, rules_of
 
 ENGINE_PIN = "9d2fdb04a3da9bb38de9e30c91154f5a9ab2de513e6f4d7936c1eb1a54863514"  # DEC-031 Am.27 item 24 / item 29 A6
 ENGINE_FILE = "tools/arena_paper.py"
