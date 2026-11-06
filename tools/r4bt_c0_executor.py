@@ -12,35 +12,11 @@ WHAT THE PROFILE ADDS (each is a refusal path with a test in tools/test_r4bt_c0_
              imports neither tools.r4b_book nor round_trip (a test reads the source). Twins come ONLY from the twin writer's files in config `twin_dir`:
                twins.run.json   the run record   (RUN_RECORD_NAME)
                twins.jsonl      one row per sent order (TWINS_NAME)
-             and the buy is refused unless the run record is fresh (the HV4 `twin_gate` + grace pattern): see `twin_gate_problem` and TWIN INTERFACE below.
-  F2 ORIGIN  the DECIDING latency origin is the decision row's instant `ms` (landed time minus `ms`, in slots of slot_s); the sd(T) landed latency of EXP-027 is printed beside
-             it as a diagnostic (`diag_sdT`) and never decides. The ms-to-slot mapping here is the slot_s of config (seconds per slot); the amendment states the
-             conversion once (QP-RULING-1106 section 2, "Latency leg"); the twin writer's per-UTC-date value is not available to the executor.
-  A3         r4-b-T's OWN regime (DEC-031 Am.27 item 12): a root-owned CARRY file (config a3_carry_path) written from research-0's daily classifier (tools/r4bt_a3.py verdict).
-             Schema (JSON, ONE object, `r4bt_a3_carry_v1`): {"schema", "bot_id", "change_id", "run_utc" (YYYY-MM-DDTHH:MM:SSZ of the monitor run), "verdict" (one of
-             NONE | RECORD_ONLY | NEEDS_CHECK | HALT | ERROR), "halt_at_ms" (int | null), "deadline_ms" (int | null, NEEDS_CHECK only)}.
-             HALT, ERROR, an unknown verdict, a wrong bot_id/change_id, an unreadable / non-root-owned / linked / oversize / malformed carry, a run_utc older than 36 h or more
-             than 300 s in the future: LATCH `r4bt_a3` (new buys stop, exits run). NEEDS_CHECK inside its deadline: buys refused (`a3_needs_check`), no latch; past it: latch.
-             The four BOOST flags and synthetic_share_high never halt r4-b-T by item 12 and are not read here.
-             DEC-032 Am.3 pooled guard, READ SIDE: the newest line of config a3_applied_path (`a3-applied.jsonl`, written by tools/a3_halt.py apply) for the SAME run_utc as the
-             carry decides (HALT | FAIL | ERROR latch; NONE | PASS clear; behind by at most 2 h = `a3_guard_pending` refusal; missing, linked, oversize, malformed, ahead or
-             behind longer = latch) - the logic of tools.hv4_live_c0.a3_problem's guard half. OPEN POINT FOR QP: item 12 says boost / synthetic flags do not halt r4-b-T, but
-             Am.3 says a guard HALT "for any reason latches". This build fails closed (the guard's HALT latches); it can only stop more, never less.
-  READ       config read_result_sha256 and qp_comment_id must both equal the fields of the read-record file (config read_record_path, JSON, `r4bt_read_record_v1`:
-             {"schema","bot_id","change_id","status":"PASS","read_result_sha256","qp_comment_id","qp_verdict":"OK"}), else the bridge reads no decision row (latch
-             `r4bt_read_record`) and a start on a non-synthetic root is refused (`start_refusal`). A synthetic root (SYNTHETIC_FIXTURE_ROOT marker) is exempt, DRY only.
-  OWNER      the owner's confirmation file (config owner_file, default OWNER_FILE_DEFAULT): ROOT-OWNED, exactly one line `OWNER_CANARY_CONFIRMED: bot_id=r4bt-a1`
-             (tools.hv4_live_c0.owner_line_check). Per-bot LIVE_OK (content exactly `r4bt-a1`) and the shared TIER file reading `T1`. These are LIVE gates: `live_gate_problems`
-             lists them; a LIVE start is refused anyway (LIVE_BUILT False), and the DRY bridge records which gates are open at each start (`live_gates` log row).
-  CAPS       the DEC-032 section 3 C0 caps are REQUIRED in config and VALIDATED, not clipped: stake <= 0.05 SOL, max_open <= 2, max_trades_per_day <= 30, daily_loss <= 0.10 SOL,
-             total_loss <= 0.20 SOL (the bridge counts open exposure in the total stop: committed_loss_lamports), funded_lamports in [0.35, 1.00] SOL. Above = refused.
-
-TWIN INTERFACE (what the twin writer, tools/r4bt_c0_twin.py, must write; file:/data/mal/hunt-1008/ops/reports/2026-11-06/r4bt-c0-twin-interface.md)
-  twins.run.json  {"schema": "r4bt_c0_twin_run_v1", "bot_id": "r4bt-a1", "change_id": ..., "w": W (40 hex), "engine_sha256": ENGINE_SHA256 (tools/arena_paper.py),
-                   "start_ms": int, "heartbeat_ms": int (rewritten at least every TWIN_HEARTBEAT_MAX_MS / 2), "last_tape_file": str, "last_tape_sha256": 64 hex}
-  twins.jsonl     one JSON object per line, one per sent order: {"schema": "r4bt_c0_twin_v1", "order_id", "decision_ms": int, "entry": {..}, "exit": {..} | null,
-                   "nofail_lamports": int | null, "rent_charged_lamports": int | null, "gap": bool, "restart": bool, "v_band_flag": bool, "written_ms": int}
-  The executor reads only schema, bot_id, change_id, w, engine_sha256, heartbeat_ms (run record) and schema, order_id, written_ms (rows). `twin_gate_problem` is the only reader.
+             and the buy is refused unless the run record is fresh (the HV4 `twin_gate` + grace pattern): see `twin_gate_problem` and TWIN INTERFACE = the twin builder's, PR #1243: /data/mal/hunt-1008/ops/reports/2026-11-06/r4bt-c0-twin-interface.md. The executor reads only:
+  twins.run.json  schema r4bt_c0_twin_run_v1, status "ok", run_ms (fresh within TWIN_HEARTBEAT_MAX_MS), w_sha == W, engine_sha256 == ENGINE_SHA256, twins_sha256 == sha256(twins.jsonl)
+  twins.jsonl     schema r4bt_c0_twin_row_v1 rows; only `order_id` is read (a row exists for every sent order once its entry leg is observable)
+`twin_gate_problem` is the only reader. The run record carries no bot_id / change_id: the pin is w_sha and the engine sha. The executor's ORDER LEDGER for the twin (the
+twin's input) is not written by this DRY build; it belongs to the live port.
 
 Nothing here says r4-b-T makes money. r4-b-T has no read. No book has cleared the promotion gate. A C0 is an execution measurement, never gate evidence.
 """
@@ -49,6 +25,7 @@ from __future__ import annotations
 
 import argparse
 import dataclasses
+import hashlib
 import json
 import os
 import re
@@ -83,7 +60,7 @@ TWIN_HEARTBEAT_MAX_MS = 300_000  # a declared choice, not measured: a run record
 TWIN_FUTURE_SKEW_MS = 300_000
 TWIN_MAX_BYTES = 32 * 1024 * 1024
 RUN_RECORD_NAME, TWINS_NAME = "twins.run.json", "twins.jsonl"
-RUN_SCHEMA, TWIN_SCHEMA = "r4bt_c0_twin_run_v1", "r4bt_c0_twin_v1"
+RUN_SCHEMA, TWIN_SCHEMA = "r4bt_c0_twin_run_v1", "r4bt_c0_twin_row_v1"
 CARRY_SCHEMA, READ_SCHEMA = "r4bt_a3_carry_v1", "r4bt_read_record_v1"
 CARRY_VERDICTS = ("NONE", "RECORD_ONLY", "NEEDS_CHECK", "HALT", "ERROR")
 CARRY_CLEAR = ("NONE", "RECORD_ONLY")
@@ -264,37 +241,39 @@ def twin_gate_problem(twin_dir: str, now_ms: int, orders: Mapping[str, Mapping[s
         return "twin_gate:" + why
     if rec.get("schema") != RUN_SCHEMA:
         return "twin_gate:run_record_schema"
-    if rec.get("bot_id") != BOT_ID or rec.get("change_id") != cfg.change_id or rec.get("w") != cfg.frozen_sha or rec.get("engine_sha256") != ENGINE_SHA256:
+    if rec.get("w_sha") != cfg.frozen_sha or rec.get("engine_sha256") != ENGINE_SHA256:
         return "twin_gate:pin_mismatch"
-    hb = rec.get("heartbeat_ms")
+    if rec.get("status") != "ok":
+        return "twin_gate:status_not_ok"
+    hb = rec.get("run_ms")
     if not _int(hb):
         return "twin_gate:heartbeat_missing"
     if hb - now_ms > TWIN_FUTURE_SKEW_MS:
         return "twin_gate:heartbeat_future"
     if now_ms - hb > TWIN_HEARTBEAT_MAX_MS:
         return "twin_gate:stale"
+    data, why, _ = _read_small(os.path.join(twin_dir, TWINS_NAME), root_checks, TWIN_MAX_BYTES)
+    if why:
+        return "twin_gate:twins_unreadable"
+    if rec.get("twins_sha256") != hashlib.sha256(data).hexdigest():
+        return "twin_gate:twins_sha_mismatch"  # the run record is written AFTER twins.jsonl and names its sha256
     due = [oid for oid, o in (orders or {}).items() if o.get("status") == "closed" and _int(o.get("sell_landed_ms")) and now_ms - int(o["sell_landed_ms"]) > TWIN_GRACE_MS]
     if due:
-        have = twin_order_ids(twin_dir, root_checks)
-        if have is None:
-            return "twin_gate:twins_unreadable"
+        have = _order_ids(data)
         if any(oid not in have for oid in due):
             return "twin_gate:row_missing"
     return None
 
 
-def twin_order_ids(twin_dir: str, root_checks: bool = True) -> set[str] | None:
-    """The order ids that have a well-formed row in twins.jsonl (None when the file is missing, unsafe or oversize). A malformed line is skipped, never trusted."""
-    data, why, _ = _read_small(os.path.join(twin_dir, TWINS_NAME), root_checks, TWIN_MAX_BYTES)
-    if why:
-        return None
+def _order_ids(data: bytes) -> set[str]:
+    """The order ids that have a well-formed row (schema r4bt_c0_twin_row_v1) in twins.jsonl bytes. A malformed line is skipped, never trusted."""
     out: set[str] = set()
     for ln in data.decode("utf-8", "replace").splitlines():
         try:
             r = json.loads(ln)
         except ValueError:
             continue
-        if isinstance(r, dict) and r.get("schema") == TWIN_SCHEMA and isinstance(r.get("order_id"), str) and r.get("bot_id", BOT_ID) == BOT_ID:
+        if isinstance(r, dict) and r.get("schema") == TWIN_SCHEMA and isinstance(r.get("order_id"), str):
             out.add(r["order_id"])
     return out
 
