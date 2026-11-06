@@ -1,23 +1,28 @@
 """r4bt_c0_a3_carry: writes the A3 CARRY file that the r4-b-T C0 executor (`tools/r4bt_c0_executor.py`, schema `r4bt_a3_carry_v1`) reads. PAPER ONLY. No RPC, no key.
 
 DEC-032 Am.9 section 5 F4: for r4bt-a1 "any A3 halt flag" means the DEC-031 Am.27 item 12 hard halts only (account pins or fees-program deploy, follower decoder-pin failure,
-dead-man). The five boost / synthetic flags are skipped and counted. This tool never judges: it combines two inputs and refuses on any ambiguity.
+dead-man). The five boost / synthetic flags are skipped and counted. This tool never judges: it combines its inputs, and ANY failure writes a LATCHING carry.
 
-  --daily   the daily structure monitor file (JSONL, `tools/pump_structure_monitor.py`); the LAST non-empty line is the latest record. A last line that does not parse, or
-            two lines with the same run_utc and different bytes, is a refusal (never an earlier record).
-  --verdict the `tools.r4bt_a3 classify` / `tools.r4bt_a3_writes classify` output (schema `r4bt_a3_v1`) FOR THAT SAME RECORD (its run_utc must equal the record's). It holds the
-            item 12 verdict (NONE | RECORD_ONLY clear; HALT | NEEDS_CHECK | ERROR latch in the executor).
+Inputs (all required):
+  --record   the SNAPSHOT of the newest daily structure-monitor line (one JSON object) that the classifier was run on. The carry's record_sha256 is the sha256 of exactly those bytes.
+  --daily    the daily file (JSONL): only to record its sha256 and to check that --record is still its last non-empty line. If a newer line has appeared the tool exits 3 and writes
+             NOTHING (the wrapper re-snapshots and re-classifies once); with --final it is a refusal like any other (a latching carry).
+  --verdict  the `tools.r4bt_a3` / `tools.r4bt_a3_writes` classify output (schema r4bt_a3_v1) FOR THAT RECORD (same run_utc). NONE | RECORD_ONLY clear; HALT | NEEDS_CHECK | ERROR latch.
+  --follower-samples, --decoder-ref   the files given to the classifier. Both are required (the decoder-pin halt of item 12 can never pass unevaluated). The samples must hold at least
+             one sample with an integer ts_ms, and the newest must be at most 36 h older than the record's run_utc.
+  --classify-rc   the classifier's exit code (default 0); nonzero latches.
 
-Refusals (exit 2, nothing written, the previous carry is left in place and goes stale at 36 h, which the executor latches): record unparseable / no run_utc / no halt flags / a flag
-whose halt or evaluated is not a bool; record older than 36 h or more than 300 s in the future (the executor's own bounds); verdict of another schema, another run_utc, an unknown
-verdict, or a CLEAR verdict that lists hard halts or sits next to a hard flag that is set or unevaluated (the two inputs disagree).
+Failure rule (Am.3 item 1.1 raw-record checks, QP and reviewer on #1249): a classifier failure, an unparseable / flag-less / malformed newest record, a verdict that is missing, of another
+schema or run_utc, a clear verdict beside a set or unevaluated hard flag, a stale or missing follower sample, a stale / future record, or a duplicate run_utc, writes a carry with verdict
+"ERROR", hard_halt true and hard_halt_reasons "refused:<reason>" (same schema, bot_id, change_id), so the executor latches (`a3_carry:ERROR`) at once; the old carry is never left in place.
+Its run_utc is the newest record's when that parses and is within the executor's bounds, else the run instant. Exit 2 (a person must look). The one exception: a change_id the executor does
+not register has no identity to write; exit 2, nothing written.
 
 Written (atomic: tmp file in the same dir, fsync, rename; mode 0644): the executor's keys {schema, bot_id, change_id, run_utc, verdict, halt_at_ms, halt.flags, warn.flags.program_changed}
-plus {written_utc, hard_halt, hard_halt_reasons, flags_evaluated, skipped_flags (the boost / synthetic flags that are set), skipped_counts, source {record_sha256 (the line),
-daily_sha256 (the file as read), verdict_sha256}}. hard_halt is True when the executor would latch (a non-clear verdict, a hard flag set / unevaluated, or program_changed warn).
-The file is written by an ordinary user on research-0. Copying it to the root-owned `a3_carry_path` on mal-fast-0 is a Helm install step (the executor requires a root-owned file).
+plus {written_utc, hard_halt, hard_halt_reasons, flags_evaluated, skipped_flags, skipped_counts, source {record_sha256, daily_sha256, verdict_sha256, follower_samples_sha256,
+newest_sample_ts_ms}}. The file is written by an ordinary user on research-0; copying it to the root-owned `a3_carry_path` on mal-fast-0 is a Helm install step (see the PR body).
 
-    python -m tools.r4bt_c0_a3_carry --daily D --verdict V --change-id ID --out CARRY [--now-ms N]
+    python -m tools.r4bt_c0_a3_carry --record R --daily D --verdict V --follower-samples S --decoder-ref F --change-id ID --out CARRY [--classify-rc N] [--final] [--now-ms N]
 """
 from __future__ import annotations
 
@@ -44,10 +49,19 @@ SCHEMA = E.CARRY_SCHEMA
 VERDICT_SCHEMA = "r4bt_a3_v1"
 VERDICTS = ("NONE", "NEEDS_CHECK", "RECORD_ONLY", "HALT", "ERROR")
 MAX_BYTES = 8_000_000
+SAMPLE_MAX_AGE_MS = E.A3_MAX_AGE_MS
 
 
 class Refused(Exception):
     pass
+
+
+class NoIdentity(Refused):
+    """Nothing can be written (unregistered change_id)."""
+
+
+class NewerLine(Exception):
+    """The daily file has a newer line than the snapshot."""
 
 
 def _ms(v: Any, what: str) -> int:
@@ -75,30 +89,49 @@ def _read(path: str) -> bytes:
         raise Refused(f"{path} unreadable: {e.__class__.__name__}")
 
 
-def latest_record(daily: bytes) -> tuple[dict, bytes]:
-    """(record, its line bytes): the last non-empty line. Refuses a last line that is not one JSON object, or a duplicate run_utc with other bytes."""
-    lines = [ln for ln in daily.split(b"\n") if ln.strip()]
-    if not lines:
-        raise Refused("daily file has no record")
+def check_snapshot(daily: bytes, record: bytes) -> None:
+    """The snapshot must be the daily file's last non-empty line (else NewerLine); two lines with the latest run_utc and different bytes refuse."""
+    lines = [ln.strip() for ln in daily.split(b"\n") if ln.strip()]
+    snap = record.strip()
+    if not snap or not lines:
+        raise Refused("empty record snapshot or daily file")
+    if lines[-1] != snap:
+        raise NewerLine()
     try:
-        rec = json.loads(lines[-1])
+        rec = json.loads(snap)
     except ValueError:
-        raise Refused("the last line of the daily file is not JSON (an earlier record is never used)")
-    if not isinstance(rec, dict):
-        raise Refused("the last daily line is not an object")
+        return
     for ln in lines[:-1]:
         try:
             o = json.loads(ln)
         except ValueError:
             continue
-        if isinstance(o, dict) and o.get("run_utc") == rec.get("run_utc") and ln.strip() != lines[-1].strip():
+        if isinstance(o, dict) and isinstance(rec, dict) and o.get("run_utc") == rec.get("run_utc") and ln != snap:
             raise Refused("two daily lines share the latest run_utc with different bytes")
-    return rec, lines[-1].strip()
 
 
-def build_carry(rec: Mapping[str, Any], verdict: Mapping[str, Any], *, change_id: str, now_ms: int, record_sha256: str, daily_sha256: str, verdict_sha256: str) -> dict:
+def newest_sample_ts(samples: bytes) -> int:
+    ts = []
+    for ln in samples.decode("utf-8", "replace").splitlines():
+        if not ln.strip():
+            continue
+        try:
+            s = json.loads(ln)
+        except ValueError:
+            raise Refused("a follower sample line is not JSON")
+        if not isinstance(s, dict):
+            raise Refused("a follower sample is not an object")
+        t = s.get("ts_ms")
+        if isinstance(t, int) and not isinstance(t, bool):
+            ts.append(t)
+    if not ts:
+        raise Refused("no follower sample with an integer ts_ms (the decoder-pin halt would be unevaluated)")
+    return max(ts)
+
+
+def build_carry(rec: Mapping[str, Any], verdict: Mapping[str, Any], *, change_id: str, now_ms: int, source: Mapping[str, Any]) -> dict:
     if change_id not in E.REGISTERED_CHANGE_IDS:
-        raise Refused(f"change_id {change_id!r} is not registered in the executor")
+        raise NoIdentity(f"change_id {change_id!r} is not registered in the executor")
     rec_ms = _ms(rec.get("run_utc"), "record")
     if rec_ms - now_ms > E.A3_FUTURE_SKEW_MS:
         raise Refused("record run_utc is in the future")
@@ -138,8 +171,13 @@ def build_carry(rec: Mapping[str, Any], verdict: Mapping[str, Any], *, change_id
             "hard_halt": bool(reasons), "hard_halt_reasons": reasons,
             "halt": {"flags": out_flags}, "warn": {"flags": {"program_changed": {"warn": pc["warn"]}}},
             "flags_evaluated": sorted(k for k, f in out_flags.items() if f["evaluated"]),
-            "skipped_flags": skipped, "skipped_counts": {k: 1 for k in skipped},
-            "source": {"record_sha256": record_sha256, "daily_sha256": daily_sha256, "verdict_sha256": verdict_sha256}}
+            "skipped_flags": skipped, "skipped_counts": {k: 1 for k in skipped}, "source": dict(source)}
+
+
+def latch_carry(*, change_id: str, run_utc: str, now_ms: int, reason: str, source: Mapping[str, Any]) -> dict:
+    return {"schema": SCHEMA, "bot_id": E.BOT_ID, "change_id": change_id, "run_utc": run_utc, "written_utc": _iso(now_ms), "verdict": "ERROR", "halt_at_ms": None,
+            "hard_halt": True, "hard_halt_reasons": ["refused:" + reason], "halt": {"flags": {}}, "warn": {"flags": {"program_changed": {"warn": True}}},
+            "flags_evaluated": [], "skipped_flags": [], "skipped_counts": {}, "source": dict(source)}
 
 
 def atomic_write(path: str, obj: Mapping[str, Any]) -> None:
@@ -160,39 +198,88 @@ def atomic_write(path: str, obj: Mapping[str, Any]) -> None:
         raise
 
 
-def run(daily: str, verdict_path: str, change_id: str, out: str, now_ms: int) -> dict:
-    dbytes = _read(daily)
-    vbytes = _read(verdict_path)
-    rec, line = latest_record(dbytes)
+def _safe_run_utc(record: bytes | None, now_ms: int) -> str:
+    """The newest record's run_utc when it parses and is inside the executor's bounds (a stale or future one is latched by the executor anyway), else the run instant."""
     try:
-        verdict = json.loads(vbytes)
-    except ValueError:
-        raise Refused("verdict file is not JSON")
-    if not isinstance(verdict, dict):
-        raise Refused("verdict file is not an object")
-    carry = build_carry(rec, verdict, change_id=change_id, now_ms=now_ms, record_sha256=_sha(line), daily_sha256=_sha(dbytes), verdict_sha256=_sha(vbytes))
+        r = json.loads(record or b"")
+        ms = _ms(r.get("run_utc"), "record")
+        if -E.A3_FUTURE_SKEW_MS <= now_ms - ms <= E.A3_MAX_AGE_MS:
+            return r["run_utc"]
+    except (ValueError, AttributeError, TypeError, Refused):
+        pass
+    return _iso(now_ms)
+
+
+def run(*, daily: str, record: str, verdict: str, samples: str, decoder_ref: str, change_id: str, out: str, now_ms: int, classify_rc: int = 0, final: bool = False) -> tuple[dict, str | None]:
+    """(carry, refusal). refusal None = a normal carry was written. A refusal writes the latching carry. Raises NewerLine (nothing written) when not `final`, NoIdentity (nothing written)."""
+    if change_id not in E.REGISTERED_CHANGE_IDS:
+        raise NoIdentity(f"change_id {change_id!r} is not registered in the executor")
+    source: dict[str, Any] = {}
+    rbytes = None
+    try:
+        rbytes = _read(record)
+        dbytes = _read(daily)
+        source.update(record_sha256=_sha(rbytes.strip()), daily_sha256=_sha(dbytes))
+        check_snapshot(dbytes, rbytes)
+        if classify_rc != 0:
+            raise Refused(f"classifier exit {classify_rc}")
+        vbytes = _read(verdict)
+        source["verdict_sha256"] = _sha(vbytes)
+        _read(decoder_ref)
+        sbytes = _read(samples)
+        source["follower_samples_sha256"] = _sha(sbytes)
+        newest = newest_sample_ts(sbytes)
+        source["newest_sample_ts_ms"] = newest
+        try:
+            rec = json.loads(rbytes)
+            vd = json.loads(vbytes)
+        except ValueError:
+            raise Refused("record or verdict is not JSON")
+        if not isinstance(rec, dict) or not isinstance(vd, dict):
+            raise Refused("record or verdict is not an object")
+        if newest < _ms(rec.get("run_utc"), "record") - SAMPLE_MAX_AGE_MS:
+            raise Refused("newest follower sample is more than 36 h older than the record")
+        carry = build_carry(rec, vd, change_id=change_id, now_ms=now_ms, source=source)
+        reason = None
+    except NewerLine:
+        if not final:
+            raise
+        reason = "a newer daily line appeared after the snapshot"
+    except NoIdentity:
+        raise
+    except Refused as e:
+        reason = str(e)
+    if reason is not None:
+        carry = latch_carry(change_id=change_id, run_utc=_safe_run_utc(rbytes, now_ms), now_ms=now_ms, reason=reason, source=source)
     atomic_write(out, carry)
-    return carry
+    return carry, reason
 
 
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description="Write the r4bt-a1 C0 executor's A3 carry file.")
-    ap.add_argument("--daily", required=True)
-    ap.add_argument("--verdict", required=True)
-    ap.add_argument("--change-id", required=True)
-    ap.add_argument("--out", required=True)
+    for k in ("record", "daily", "verdict", "follower-samples", "decoder-ref", "change-id", "out"):
+        ap.add_argument("--" + k, required=True)
+    ap.add_argument("--classify-rc", type=int, default=0)
+    ap.add_argument("--final", action="store_true")
     ap.add_argument("--now-ms", type=int, default=None)
     a = ap.parse_args(argv)
     now = int(time.time() * 1000) if a.now_ms is None else a.now_ms
     try:
-        c = run(a.daily, a.verdict, a.change_id, a.out, now)
+        c, reason = run(daily=a.daily, record=a.record, verdict=a.verdict, samples=a.follower_samples, decoder_ref=a.decoder_ref, change_id=a.change_id, out=a.out, now_ms=now,
+                        classify_rc=a.classify_rc, final=a.final)
+    except NewerLine:
+        print("r4bt_c0_a3_carry: a newer daily line appeared; nothing written (re-snapshot)", file=sys.stderr)
+        return 3
     except Refused as e:
-        print(f"r4bt_c0_a3_carry: REFUSED: {e}", file=sys.stderr)
+        print(f"r4bt_c0_a3_carry: REFUSED, nothing written: {e}", file=sys.stderr)
         return 2
     except OSError as e:
         print(f"r4bt_c0_a3_carry: write failed: {e.__class__.__name__}", file=sys.stderr)
         return 12
     print(json.dumps({k: c[k] for k in ("run_utc", "verdict", "hard_halt", "hard_halt_reasons", "skipped_flags")}, sort_keys=True))
+    if reason is not None:
+        print(f"r4bt_c0_a3_carry: LATCHING carry written: {reason}", file=sys.stderr)
+        return 2
     return 0
 
 
