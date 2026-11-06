@@ -428,6 +428,16 @@ class LiveSet(unittest.TestCase):
         for want in ("/var/lib/mal-r4b-c0/state-live", "setfacl -m u:root:rX /var/lib/mal-r4b-c0/state-live", "twin-live", "R4BTC0_TWIN_DROPIN", "O_NOFOLLOW"):
             self.assertIn(want, rb, want)
 
+    def test_stop_table_names_both_modes(self):
+        rb = RUNBOOK.read_text()
+        sect = rb[rb.index("## 6. Stop"):rb.index("## 7.")]
+        for want in ("/var/lib/mal-r4b-c0/state/STOP", "/var/lib/mal-r4b-c0/state-live/STOP", "/var/lib/mal-r4b-c0/state/HALT", "/var/lib/mal-r4b-c0/state-live/HALT"):
+            self.assertIn(want, sect, want)
+        # the live config sets no stop_file/halt_file, so the executor's STOP/HALT are under its state_dir
+        live = json.loads((PACK / "r4bt-c0.live.json.example").read_text())
+        self.assertNotIn("stop_file", live)
+        self.assertEqual(live["state_dir"], "/var/lib/mal-r4b-c0/state-live")
+
     def test_sandbox_check_applies_the_live_dropin(self):
         sc = REPO / "scripts" / "ops" / "r4bt-c0-twin-sandbox-check.sh"
         r = subprocess.run(["sh", str(sc), "--print"], env={"PATH": os.environ["PATH"], "R4BTC0_TWIN_UNIT_FILE": str(TWIN_UNIT),

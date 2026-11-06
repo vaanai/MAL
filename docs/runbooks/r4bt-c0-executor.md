@@ -184,9 +184,9 @@ Per DEC-032 Am.9 (a4) the executor is not started against the real declog before
 
 | Want | Do |
 | --- | --- |
-| No new would-buys | `sudo touch /var/lib/mal-r4b-c0/state/STOP` (remove it to resume) |
-| Freeze | `HALT` in the same place |
-| Stop the twin | `sudo systemctl stop mal-r4bt-c0-twin` (the executor's twin gate then refuses buys when the heartbeat ages) |
+| No new would-buys | `<state_dir>/STOP`: DRY `sudo touch /var/lib/mal-r4b-c0/state/STOP`; **live** `sudo touch /var/lib/mal-r4b-c0/state-live/STOP` (remove it to resume). The live config sets no `stop_file`, so the live STOP is in `state-live`; touching the DRY dir does not stop live buys |
+| Freeze | `<state_dir>/HALT` in the same place: DRY `/var/lib/mal-r4b-c0/state/HALT`; **live** `/var/lib/mal-r4b-c0/state-live/HALT` |
+| Stop the twin | `sudo systemctl stop mal-r4bt-c0-twin` (the executor's twin gate then refuses buys when the heartbeat ages; in live mode the twin unit is the same unit with its live drop-in) |
 | Take it out | `sudo systemctl disable --now mal-r4bt-c0-executor mal-r4bt-c0-twin`; keep the state dir for the manager |
 
 ## 7. Differences from PR #1176 (r4b C0, EXP-027)
