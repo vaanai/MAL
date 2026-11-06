@@ -249,10 +249,29 @@ def run(*, daily: str, record: str, verdict: str, samples: str, decoder_ref: str
         raise
     except Refused as e:
         reason = str(e)
+    except Exception as e:  # any unexpected crash inside the checks is a refusal too: a latching carry, never the old clean one
+        reason = "unexpected " + e.__class__.__name__
     if reason is not None:
         carry = latch_carry(change_id=change_id, run_utc=_safe_run_utc(rbytes, now_ms), now_ms=now_ms, reason=reason, source=source)
     atomic_write(out, carry)
     return carry, reason
+
+
+def crash_latch(out: str, change_id: str, now_ms: int, exc: BaseException) -> int:
+    """Last resort after an unexpected crash outside run()'s checks: write a latching carry (class name only, no message text); if even that fails, remove the old carry so the
+    executor latches on a missing file. Returns the exit code (2 written, 12 neither)."""
+    reason = "crash " + exc.__class__.__name__
+    try:
+        atomic_write(out, latch_carry(change_id=change_id, run_utc=_iso(now_ms), now_ms=now_ms, reason=reason, source={}))
+        print(f"r4bt_c0_a3_carry: LATCHING carry written after a crash: {reason}", file=sys.stderr)
+        return 2
+    except Exception:
+        try:
+            os.unlink(out)
+        except OSError:
+            pass
+        print(f"r4bt_c0_a3_carry: crash ({reason}); latching carry could not be written; old carry removed", file=sys.stderr)
+        return 12
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -275,7 +294,16 @@ def main(argv: list[str] | None = None) -> int:
         return 2
     except OSError as e:
         print(f"r4bt_c0_a3_carry: write failed: {e.__class__.__name__}", file=sys.stderr)
+        try:
+            os.unlink(a.out)  # a failed write must not leave the old clean carry
+        except OSError:
+            pass
         return 12
+    except Exception as e:  # unexpected crash anywhere: still a latching carry (an unregistered change_id has no identity: exit 2, nothing written)
+        if a.change_id not in E.REGISTERED_CHANGE_IDS:
+            print("r4bt_c0_a3_carry: crash with an unregistered change_id; nothing written", file=sys.stderr)
+            return 2
+        return crash_latch(a.out, a.change_id, now, e)
     print(json.dumps({k: c[k] for k in ("run_utc", "verdict", "hard_halt", "hard_halt_reasons", "skipped_flags")}, sort_keys=True))
     if reason is not None:
         print(f"r4bt_c0_a3_carry: LATCHING carry written: {reason}", file=sys.stderr)

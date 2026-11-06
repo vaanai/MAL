@@ -269,3 +269,77 @@ def test_wrapper_end_to_end_clean_then_every_failure_latches(tp):
     os.utime(old, (time.time() - 5 * 86400,) * 2)
     daily.write_text(json.dumps(R(run=run)) + "\n")
     assert sh(env).returncode == 0 and not old.exists() and list(work.glob("record-*"))
+
+
+# --- crash paths (QP + reviewer notes on #1249): an unexpected exception must still latch ------------------------------------------------------------------------------------
+
+
+def _boom(*a, **k):
+    raise RuntimeError("secret detail")
+
+
+def _disk(*a, **k):
+    raise OSError("disk")
+
+
+def test_unexpected_exception_inside_run_checks_latches(tp, monkeypatch):
+    c = Case(tp)
+    Path(c.out).write_text("OLD CLEAN CARRY")
+    monkeypatch.setattr(C, "build_carry", _boom)
+    carry, why = c.run()
+    assert why == "unexpected RuntimeError" and carry["verdict"] == "ERROR"
+    assert reader(tp, c.out)[0] == "a3_carry:ERROR"
+
+
+def test_crash_outside_run_latches_via_main(tp, monkeypatch, capsys):
+    c = Case(tp)
+    assert C.main(c.args("--now-ms", str(NOW))) == 0 and reader(tp, c.out) == (None, [])
+    monkeypatch.setattr(C, "run", _boom)
+    assert C.main(c.args("--now-ms", str(NOW))) == 2
+    err = capsys.readouterr().err
+    assert "RuntimeError" in err and "secret detail" not in err
+    got = json.loads(Path(c.out).read_text())
+    assert got["verdict"] == "ERROR" and got["hard_halt_reasons"] == ["refused:crash RuntimeError"] and not [p for p in os.listdir(tp) if p.endswith(".tmp")]
+    assert reader(tp, c.out)[0] == "a3_carry:ERROR"
+
+
+def test_crash_with_unregistered_change_id_writes_nothing(tp, monkeypatch):
+    c = Case(tp)
+    Path(c.out).write_text("OLD")
+    monkeypatch.setattr(C, "run", _boom)
+    bad = c.args()
+    bad[bad.index("--change-id") + 1] = "nope"
+    assert C.main(bad) == 2 and Path(c.out).read_text() == "OLD"
+
+
+def test_crash_and_latch_write_failure_removes_the_old_carry(tp, monkeypatch):
+    c = Case(tp)
+    Path(c.out).write_text("OLD CLEAN CARRY")
+    monkeypatch.setattr(C, "run", _boom)
+    monkeypatch.setattr(C, "atomic_write", _disk)
+    assert C.main(c.args("--now-ms", str(NOW))) == 12 and not Path(c.out).exists()
+    assert reader(tp, c.out)[0] is not None
+
+
+def test_write_failure_in_main_removes_the_old_carry(tp, monkeypatch):
+    c = Case(tp)
+    Path(c.out).write_text("OLD CLEAN CARRY")
+    monkeypatch.setattr(C, "atomic_write", _disk)
+    assert C.main(c.args("--now-ms", str(NOW))) == 12 and not Path(c.out).exists()
+
+
+def test_wrapper_python_death_writes_the_shell_latch(tp):
+    run = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(time.time() - 3600))
+    daily, env = _env(tp, run)
+    out = tp / "carry.json"
+    daily.write_text(json.dumps(R(run=run)) + "\n")
+    assert sh(env).returncode == 0 and reader(tp, str(out), now=int(time.time() * 1000))[0] is None
+    # the tool cannot even be imported (repo path without it): classify and carry both die; the shell writes the latch itself
+    empty = tp / "emptyrepo"
+    empty.mkdir()
+    p = sh({**env, "R4BT_REPO": str(empty)})
+    assert p.returncode == 2, p.stdout + p.stderr
+    got = json.loads(out.read_text())
+    assert got["verdict"] == "ERROR" and got["hard_halt"] is True and got["change_id"] == CID and not [x for x in os.listdir(tp) if x.endswith(".tmp")]
+    assert reader(tp, str(out), now=int(time.time() * 1000))[0] == "a3_carry:ERROR"
+    assert stat.S_IMODE(os.stat(out).st_mode) == 0o644
