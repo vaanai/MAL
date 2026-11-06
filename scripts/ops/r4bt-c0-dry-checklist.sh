@@ -211,7 +211,7 @@ else
   else
     out=$(cd "$real_tree" && "$VPY" -E -s -B -u -m tools.r4bt_c0_executor --config "$scfg" 2>&1)
     rc=$?
-    if [ "$rc" -eq 0 ] && printf '%s\n' "$out" | grep -q '"ok": true'; then pass "smoke_config_check_ok (synthetic root, bot=$BOT)"; else fail "smoke_config_check_failed (rc=$rc): $(printf '%s\n' "$out" | grep -Eo '"problem": "[A-Za-z0-9_:. -]{0,60}' | head -n 1)"; fi
+    if [ "$rc" -eq 0 ] && printf '%s\n' "$out" | grep -q '"ok": true'; then pass "smoke_config_check_ok (synthetic root, bot=$BOT)"; else fail "smoke_config_check_failed (rc=$rc): $(printf '%s\n' "$out" | tail -n 1 | tr -cd 'A-Za-z0-9_:. "-' | cut -c1-120)"; fi
     out=$(cd "$real_tree" && "$VPY" -E -s -B -u -m tools.r4bt_c0_executor --config "$scfg" --live 2>&1)
     rc=$?
     if [ "$rc" -eq 2 ] && printf '%s\n' "$out" | grep -q 'live_not_built'; then pass "smoke_live_refused (live_not_built)"; else fail "smoke_live_not_refused (rc=$rc)"; fi
