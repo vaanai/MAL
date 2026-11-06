@@ -7,6 +7,7 @@ Reads ONLY: the counts log (through tools/tip_hour_health.py, imported from the 
 Prints counts and move flags only. Read-only, no network. Exit 0 PASS, 1 FAIL, 3 INCOMPLETE, 2 input error.
 
   r4bt_feed_bar.py check --counts <path> --health-glob '<dir>/tip-health-*.jsonl' --pins <file> --reg-hour <ISO whole UTC hour>
+Only `check` is the deciding line; `scan` is a forecast (always exits 0, no `why`).
   r4bt_feed_bar.py scan  --counts <path> --health-glob '<glob>' --pins <file> --from-hour <h> --to-hour <h>
 """
 from __future__ import annotations
@@ -24,6 +25,7 @@ T_MAX_S = 176460.0  # the registered `bar --t-max-s`
 PROGRAMS = ("pumpswap",)  # the registered `bar --programs`
 KEYS = ("s_gaps", "s_backlog_jumps", "s_unresolved_dropped")
 WINDOW_H = 24
+STALE_S = 300  # the last sample before R must be at or after R-300 s (QP on #1242)
 
 
 class Refused(Exception):
@@ -43,7 +45,11 @@ def load_writer(expected: str = WRITER_SHA256, path: Path = WRITER_PATH) -> type
     return mod
 
 
-TH = load_writer()  # import-time assertion
+try:
+    TH = load_writer()  # import-time assertion
+except Refused as _e:  # an input error (exit 2), never the FAIL code
+    print(f"refused: {_e}", file=sys.stderr)
+    raise SystemExit(2)
 HOUR_MS = TH.HOUR_MS
 HOUR_S = HOUR_MS // 1000
 
@@ -52,18 +58,27 @@ def _isint(v) -> bool:
     return isinstance(v, int) and not isinstance(v, bool)
 
 
+CONFLICTS: set[int] = set()  # `t` values seen twice with different values in the three keys (filled by load_health)
+
+
 def load_health(pattern: str) -> list[dict]:
     """Samples [{t, s_gaps?, ...}] sorted by t, de-duplicated by t (first file/line wins). Only `t` and the three keys are ever extracted; a key that is not an int is None."""
     by: dict[int, dict] = {}
+    CONFLICTS.clear()
     for p in sorted(globmod.glob(pattern)):
         src = TH.read_input(p)  # applies the same path guard as the pinned tool
         if src is None:
             continue
         for r in TH._iter_jsonl(src):
             t = r.get("t") if r is not None else None
-            if not _isint(t) or t in by:
+            if not _isint(t):
                 continue
-            by[t] = {"t": t, **{k: (r[k] if _isint(r.get(k)) else None) for k in KEYS}}
+            row = {"t": t, **{k: (r[k] if _isint(r.get(k)) else None) for k in KEYS}}
+            if t in by:
+                if by[t] != row:
+                    CONFLICTS.add(t)
+                continue
+            by[t] = row
     return [by[t] for t in sorted(by)]
 
 
@@ -90,16 +105,24 @@ def follower_window(samples: list[dict], mv: list[dict], r_ms: int) -> dict:
     lo, hi = base[-1], inwin[-1]
     moved = {k: False for k in KEYS}
     incomplete = False
+    why = ""
+    hours_with = {(samples[i]["t"] - start_s) // HOUR_S for i in inwin}
+    if len(hours_with) < WINDOW_H:
+        incomplete, why = True, "sampler_hour_empty"
+    elif samples[hi]["t"] < r_s - STALE_S:
+        incomplete, why = True, "sampler_stale"
+    elif any(samples[i]["t"] in CONFLICTS for i in range(lo, hi + 1)):
+        incomplete, why = True, "conflicting_duplicate_t"
     for i in range(lo, hi + 1):
-        if any(samples[i][k] is None for k in KEYS):
-            incomplete = True
         if i > lo:
             for k in KEYS:
                 if mv[i][k]:
                     moved[k] = True
     if any(moved.values()):
         return {"verdict": "FAIL", "why": "moved", "moved": moved}
-    return {"verdict": "INCOMPLETE" if incomplete else "PASS", "why": "missing_key" if incomplete else "", "moved": moved}
+    if not incomplete and any(samples[i][k] is None for i in range(lo, hi + 1) for k in KEYS):
+        incomplete, why = True, "missing_key"
+    return {"verdict": "INCOMPLETE" if incomplete else "PASS", "why": why, "moved": moved}
 
 
 def writer_hour_rows(rows: dict, h: int) -> dict[str, int] | None:

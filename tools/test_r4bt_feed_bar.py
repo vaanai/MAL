@@ -35,7 +35,7 @@ def counts_file(name, over=None, hours=range(N)):
     return str(p)
 
 
-def health_file(name, t0=H0 - 2 * HR, t1=H0 + N * HR, step=600, over=None, drop_key=None, extra=None):
+def health_file(name, t0=H0 - 2 * HR, t1=H0 + N * HR, step=60, over=None, drop_key=None, extra=None):
     """Constant sampler rows; over = {t_seconds: {key: value}} is a step that holds from that sample on."""
     over = over or {}
     rows, cur = [], {"s_gaps": 3, "s_backlog_jumps": 0, "s_unresolved_dropped": 0}
@@ -87,11 +87,9 @@ def test_other_program_row_not_counted(capsys):
 
 @pytest.mark.parametrize("key", F.KEYS)
 def test_follower_step_between_hours_fails(key, capsys):
-    # one step inside hour 30; 3 h sampler cadence, so every hour holds at most one sample and a per-hour counter range is flat
+    # one step held from a single sample in the middle of hour 30 (a per-hour counter range never sees a step that lands between two hours' samples)
     s = (H0 + 30 * HR + 17 * 60_000) // 1000
-    t0s = (H0 - 2 * HR) // 1000
-    s = t0s + ((s - t0s) // 10800 + 1) * 10800  # align to a sample instant
-    h = health_file("tip-health-step.jsonl", over={s: {key: 4}}, step=3 * 3600)
+    h = health_file("tip-health-step.jsonl", over={s: {key: 4}})
     c = counts_file("c_step.jsonl")
     base = (s * 1000) // HR * HR
     fails = [k for k in range(-2, 40) if run(c, h, base + k * HR, capsys)[0] == 1]
@@ -101,7 +99,7 @@ def test_follower_step_between_hours_fails(key, capsys):
 
 def test_follower_reset_to_lower_value_counts(capsys):
     t = (H0 + 30 * HR) // 1000
-    h = health_file("tip-health-reset.jsonl", over={t - 600 * 5: {"s_gaps": 50}, t: {"s_gaps": 2}})
+    h = health_file("tip-health-reset.jsonl", over={t - 60 * 5: {"s_gaps": 50}, t: {"s_gaps": 2}})
     rc, out = run(counts_file("c_reset.jsonl"), h, H0 + 31 * HR, capsys)
     assert rc == 1 and "moved=s_gaps" in out
     # the reset alone (value goes down once, no earlier rise inside the window)
@@ -123,11 +121,11 @@ def test_follower_boundary_samples(capsys):
     # a change AT R-24h is inside (the baseline is the last sample strictly before R-24h): move
     assert run(c, health_file("tip-health-b1.jsonl", over={start: {"s_gaps": 8}}), R, capsys)[0] == 1
     # a change at the baseline sample (last before R-24h) is outside
-    assert run(c, health_file("tip-health-b2.jsonl", over={start - 600: {"s_gaps": 8}}), R, capsys)[0] == 0
+    assert run(c, health_file("tip-health-b2.jsonl", over={start - 60: {"s_gaps": 8}}), R, capsys)[0] == 0
     # a change AT R is outside
     assert run(c, health_file("tip-health-b3.jsonl", over={R // 1000: {"s_gaps": 8}}), R, capsys)[0] == 0
     # a change at the last sample before R is inside
-    assert run(c, health_file("tip-health-b4.jsonl", over={R // 1000 - 600: {"s_gaps": 8}}), R, capsys)[0] == 1
+    assert run(c, health_file("tip-health-b4.jsonl", over={R // 1000 - 60: {"s_gaps": 8}}), R, capsys)[0] == 1
 
 
 def test_writer_boundary_hours(capsys):
@@ -229,3 +227,70 @@ def test_scan_prints_each_hour_once_and_none_in_range(capsys):
     assert rc == 0 and out[-1] == "earliest_clean_R none_in_range"
     assert sum(1 for ln in out if ln.startswith("hour ")) == 24 + 2
     assert sum(1 for ln in out if ln.startswith("R ")) == 3
+
+
+def test_dead_sampler_tail_is_incomplete(capsys):
+    R = H0 + 40 * HR
+    h = health_file("tip-health-dead.jsonl", t0=R - 25 * HR, t1=R - 23 * HR)
+    rc, out = run(counts_file("c_dead.jsonl"), h, R, capsys)
+    assert rc == 3 and "sampler_hour_empty" in out
+
+
+def test_empty_middle_hour_is_incomplete(capsys):
+    R = H0 + 40 * HR
+    p = Path(health_file("tip-health-mid.jsonl"))
+    lo, hi = (R - 12 * HR) // 1000, (R - 11 * HR) // 1000
+    rows = [json.loads(x) for x in p.read_text().splitlines()]
+    p.write_text("".join(json.dumps(r) + "\n" for r in rows if not lo <= r["t"] < hi))
+    rc, out = run(counts_file("c_mid.jsonl"), str(p), R, capsys)
+    assert rc == 3 and "sampler_hour_empty" in out
+
+
+def _ending_at(name, last, R):
+    """Full-coverage sampler whose last sample before R is exactly `last` (seconds)."""
+    p = Path(health_file(name))
+    rows = [r for r in (json.loads(x) for x in p.read_text().splitlines()) if r["t"] < last]
+    rows.append({**rows[-1], "t": last})
+    p.write_text("".join(json.dumps(r) + "\n" for r in rows))
+    return str(p)
+
+
+def test_last_sample_staleness_boundary(capsys):
+    R = H0 + 40 * HR
+    c = counts_file("c_stale.jsonl")
+    r_s = R // 1000
+    rc, out = run(c, _ending_at("tip-health-st2.jsonl", r_s - 300, R), R, capsys)
+    assert rc == 0, out
+    rc, out = run(c, _ending_at("tip-health-st3.jsonl", r_s - 301, R), R, capsys)
+    assert rc == 3 and "sampler_stale" in out
+
+
+def test_fail_dominates_stale_sampler(capsys):
+    R = H0 + 40 * HR
+    c = counts_file("c_fs.jsonl", over={30: {"gap_rows": {"data_loss|pumpswap": 1}}})
+    h = health_file("tip-health-fs.jsonl", t0=R - 25 * HR, t1=R - 23 * HR)
+    assert run(c, h, R, capsys)[0] == 1
+
+
+def test_conflicting_duplicate_t_is_incomplete(capsys):
+    R = H0 + 40 * HR
+    c = counts_file("c_dup.jsonl")
+    health_file("tip-health-dup1.jsonl")
+    health_file("tip-health-dup2.jsonl", t0=R - 5 * HR, over={(R - 5 * HR) // 1000: {"s_gaps": 9}})
+    rc, out = run(c, str(TMP / "tip-health-dup*.jsonl"), R, capsys)
+    assert rc == 3 and "conflicting_duplicate_t" in out
+    # identical duplicates are harmless
+    health_file("tip-health-same1.jsonl")
+    health_file("tip-health-same2.jsonl", t0=R - 5 * HR)
+    assert run(c, str(TMP / "tip-health-same*.jsonl"), R, capsys)[0] == 0
+
+
+def test_sha_mismatch_cli_exits_2(tmp_path):
+    import subprocess
+    shutil.copy(Path(F.__file__), tmp_path / "r4bt_feed_bar.py")
+    th = tmp_path / "tip_hour_health.py"
+    shutil.copy(F.WRITER_PATH, th)
+    th.write_bytes(th.read_bytes() + b"\n# x\n")
+    r = subprocess.run([sys.executable, "-I", str(tmp_path / "r4bt_feed_bar.py"), "check", "--counts", "x", "--health-glob", "y", "--pins", "z", "--reg-hour", "2026-11-05T10"],
+                       capture_output=True, text=True)
+    assert r.returncode == 2 and "refused" in r.stderr and "Traceback" not in r.stderr
