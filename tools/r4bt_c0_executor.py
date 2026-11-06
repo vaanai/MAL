@@ -122,6 +122,8 @@ PARITY_FUTURE_SKEW_MS = 5_000  # the parity state is written by a job on the SAM
 PRICE_UNIT = "lamports per raw base-token unit"  # the twin pins Qe/Be (quote reserve lamports / base reserve raw units); live_buy_price / live_sell_price use the same unit (see fill_facts)
 BASE_FEE_LAMPORTS = X.BASE_FEE_LAMPORTS
 LATCH_FEE_OVER = "r4bt_fee_over_registered"
+LATCH_BUY_ERROR = "r4bt_buy_error"  # an exception anywhere in the buy path: PERSISTED (the state file), so a restarted unit stays latched
+HEALTH_MIN_INTERVAL_MS = 1_000  # health.json is rewritten at most once a second, except on a latch or a STOP change
 A3_CARRY_MAX_AGE_DEFAULT_MS = 2 * 3_600_000  # written_utc bound: the carry copy is hourly, so 2 h; a stalled copy cannot serve a stale clean carry
 ATTEMPTS_NAME = "r4bt-attempts.jsonl"  # per buy-send attempt rows (tools.arena_live_parity attempts schema), read by the parity tool's P2 via --attempts
 FILE_MAX_BYTES = 1 << 20
@@ -516,7 +518,7 @@ def start_refusal(cfg: R4btConfig, *, live: bool = False, root_checks: bool = Tr
 
 
 def live_buy_problem(cfg: R4btConfig, now_ms: int, orders: Mapping[str, Mapping[str, Any]], order: Mapping[str, Any], state: Any, *, root_checks: bool = True,
-                     open_count: int = 0, day_trades: int = 0, day_realized: int = 0) -> str | None:
+                     open_count: int = 0, day_trades: int = 0, day_realized: int = 0, committed_loss: int = 0, first_send_ms: int | None = None) -> str | None:
     """EVERY gate a LIVE buy needs, evaluated afresh from the files at `now_ms`; the first problem as a label, or None. Called by R4btLivePort immediately before the send
     (and by effective_live for routing), so nothing checked earlier in handle_entry is trusted: LIVE_OK / TIER T0 / owner file (live_gate_problems), the recorded read
     (read_record_problem), the A3 carry incl. its written_utc bound (a3_problem), the twin gate, the fresh parity gate (parity_state_problem: <= 60 s, ledger and attempts
@@ -547,8 +549,16 @@ def live_buy_problem(cfg: R4btConfig, now_ms: int, orders: Mapping[str, Mapping[
         return "caps:max_trades_per_day"
     if day_realized <= -min(cfg.daily_loss_lamports, C0_CAPS["daily_loss_lamports"]):
         return "caps:daily_loss"
+    if stake != cfg.stake_lamports:
+        return "caps:stake_not_cfg"  # the executor sends cfg.stake_lamports: the order's stake must be that amount
     if getattr(state, "realized_lamports", 0) <= -min(cfg.total_loss_lamports, C0_CAPS["total_loss_lamports"]):
         return "caps:total_loss"
+    if committed_loss > min(cfg.total_loss_lamports, C0_CAPS["total_loss_lamports"]):
+        return "caps:committed_loss"  # realized loss + the worst case of every open / in-flight position INCLUDING this order (the 0.20 SOL total stop, Am.9 section 7)
+    if now_ms >= cfg.end_ms:
+        return "end_ms"
+    if first_send_ms is not None and now_ms > int(first_send_ms) + X.CANARY_MAX_MS:
+        return "canary_expired"  # the 14 days run from the first buy attempt
     return None
 
 
@@ -702,10 +712,10 @@ class R4btLivePort(B.OrderPort):
     name = "live"
     live = True
 
-    def __init__(self, inner: B.OrderPort, cfg: R4btConfig, pre_buy: Any = None) -> None:
-        if not LIVE_BUILT or cfg.mode != B.LIVE or not getattr(inner, "live", False):
-            raise SystemExit("r4bt live port refused: needs LIVE_BUILT, a live config and a live inner port")
-        self.inner, self.cfg, self.pre_buy = inner, cfg, pre_buy
+    def __init__(self, inner: B.OrderPort, cfg: R4btConfig, pre_buy: Any = None, on_error: Any = None) -> None:
+        if not LIVE_BUILT or cfg.mode != B.LIVE or not getattr(inner, "live", False) or getattr(inner, "ex", None) is None:
+            raise SystemExit("r4bt live port refused: needs LIVE_BUILT, a live config and a live inner port with an executor")
+        self.inner, self.cfg, self.pre_buy, self.on_error = inner, cfg, pre_buy, on_error
         self._rows: dict[tuple[str, str], list[dict[str, Any]]] = {}
         ex = getattr(inner, "ex", None)
         if ex is not None:
@@ -737,11 +747,26 @@ class R4btLivePort(B.OrderPort):
             return False, "gate:no_pre_buy_check"  # fail closed: a live port without its gate never buys
         try:
             why = self.pre_buy(order)
-        except Exception:  # noqa: BLE001 - deny on error
-            why = "pre_buy_error"
-        if why:
+        except Exception:  # noqa: BLE001 - deny on error, and latch (persisted) so a restarted unit does not keep buying after whatever raised
+            self._error("pre_buy raised")
+            return False, "gate:pre_buy_error"
+        if why is not None:
             return False, "gate:" + str(why)
-        return self.inner.buy(order)
+        sent = getattr(getattr(self.inner.ex, "limits", None), "size_lamports", None)
+        if sent is not None and sent != order.get("stake_lamports"):
+            return False, "gate:stake_sent_differs"  # the executor sends limits.size_lamports: it must be the order's stake
+        try:
+            return self.inner.buy(order)
+        except BaseException as exc:  # a tx may already be pending in the probe state: latch, then re-raise (the write-ahead order stays for reconcile)
+            self._error(f"inner.buy raised {type(exc).__name__}")
+            raise
+
+    def _error(self, why: str) -> None:
+        if self.on_error is not None:
+            try:
+                self.on_error(LATCH_BUY_ERROR, why)
+            except Exception:  # noqa: BLE001 - the latch is best effort here; the caller still denies / re-raises
+                pass
 
     def sell(self, order: Mapping[str, Any], reason: str) -> tuple[bool, str | None]:
         return self.inner.sell(order, reason)
@@ -812,7 +837,13 @@ class R4btBridge(X.R4bBridge):
         why = start_refusal(cfg, live=live, root_checks=root_checks)
         if why:
             raise SystemExit(f"r4bt executor start refused: {why}")
+        other = "dry" if live else "live"
+        for n in (f"bridge-state-{other}.json", f"r4b-state-{other}.json"):
+            if os.path.lexists(os.path.join(cfg.state_dir, n)):  # DRY and live never share a state dir: the ledger / attempts files carry no mode
+                raise SystemExit(f"r4bt executor start refused: other_mode_state_present ({n}): use a separate state dir per mode")
         self.root_checks_r4bt = bool(root_checks)
+        self._health_ms = 0
+        self._health_stop: bool | None = None
         self.slot_s_by_date = dict(slot_s_by_date or {})
         if any(not _num(v) or not X.SLOT_S_MIN <= v <= X.SLOT_S_MAX for v in self.slot_s_by_date.values()):
             raise SystemExit("r4bt executor start refused: slot_s_by_date out of range")
@@ -825,7 +856,8 @@ class R4btBridge(X.R4bBridge):
                           root_checks=root_checks, close_blocked=close_blocked, gap_clear_dir=gap_clear_dir)
         if live:
             port.pre_buy = self.live_buy_gate
-        self.write_ledger()  # the parity gate hashes both files: they exist from the start (empty until the first confirmed buy)
+            port.on_error = self._latch
+        self._save()  # writes the mode's state files (the other-mode marker above) and the ledger  # the parity gate hashes both files: they exist from the start (empty until the first confirmed buy)
         self._log("r4bt_start", w=cfg.frozen_sha, change_id=cfg.change_id, live_gates_open=live_gate_problems(cfg, root_checks))
 
     # -- the live route: a live-configured bridge sends only while EVERY gate holds; otherwise the entry is routed to the DRY port (logged, never sent)
@@ -847,10 +879,26 @@ class R4btBridge(X.R4bBridge):
             return "halt_file" if halt else "stop_file"
         day = self.state.days.get(B.utc_day(now), {})
         return live_buy_problem(self.cfg, now, self.state.orders, order, self.state, root_checks=self.root_checks_r4bt, open_count=len(self.open_orders(True)),
-                                day_trades=day.get("trades", 0), day_realized=day.get("realized", 0))
+                                day_trades=day.get("trades", 0), day_realized=day.get("realized", 0), committed_loss=self.committed_loss_lamports(True),
+                                first_send_ms=self.es.get("first_send_ms"))
+
+    def handle_entry(self, row: dict[str, Any]) -> None:
+        """Any exception in the buy path latches `r4bt_buy_error` (persisted) before it propagates: the loop never continues buying after an error."""
+        try:
+            super().handle_entry(row)
+        except BaseException as exc:
+            self._latch(LATCH_BUY_ERROR, f"handle_entry raised {type(exc).__name__}")
+            raise
 
     # -- health.json for the watchdog: written atomically every loop and on every latch; ONLY the HEALTH_KEYS (a test pins it)
+    def health_file(self) -> Path:
+        """The live unit writes cfg.health_path (the watchdog's file); a DRY run writes `<stem>.dry<suffix>` beside it: the two modes never share a health file."""
+        p = Path(self.cfg.health_path)
+        return p if self.cfg.mode == B.LIVE else p.with_name(p.stem + ".dry" + p.suffix)
+
     def health_record(self) -> dict[str, Any]:
+        """`dry` is true unless the LIVE gates (LIVE_OK, TIER T0, owner file) are open under a live config. It does NOT say a buy would be sent: the read record, A3,
+        twin and parity gates are not in it."""
         latches = sorted(n for n in (str(k) for k in self.state.latches) if LATCH_NAME_RE.fullmatch(n))
         _halt, stop = self._files()
         live_ok = os.path.lexists(self.cfg.live_ok_path)
@@ -859,11 +907,15 @@ class R4btBridge(X.R4bBridge):
         return {"schema": HEALTH_SCHEMA, "at_ms": int(self.now_ms()), "latched": bool(latches), "latch_names": latches, "stop_present": bool(stop),
                 "live_ok_present": bool(live_ok), "tier": tier, "dry": not self.effective_live()[0]}
 
-    def write_health(self) -> None:
+    def write_health(self, force: bool = False) -> None:
         try:
+            now = int(self.now_ms())
+            if not force and 0 <= now - self._health_ms < HEALTH_MIN_INTERVAL_MS and self._health_stop == os.path.lexists(os.path.join(self.cfg.state_dir, STOP_NAME)):
+                return
             rec = self.health_record()
             assert tuple(rec) == HEALTH_KEYS
-            path = Path(self.cfg.health_path)
+            self._health_ms, self._health_stop = now, rec["stop_present"]
+            path = self.health_file()
             path.parent.mkdir(parents=True, exist_ok=True)
             tmp = path.with_name(path.name + ".tmp")
             tmp.write_text(json.dumps(rec, sort_keys=True))
@@ -874,7 +926,7 @@ class R4btBridge(X.R4bBridge):
 
     def _latch(self, name: str, why: str) -> None:
         super()._latch(name, why)
-        self.write_health()
+        self.write_health(force=True)
 
     def tick(self) -> int:
         n = super().tick()
@@ -1030,11 +1082,16 @@ def run(raw: Mapping[str, Any], *, live_flag: bool, once: bool = False, root_che
         sleep: Any = None) -> int:
     """The run loop: tail the declog arm r4b-exp027 under the change_id root and act per Am.9 (R4btBridge.run). DRY unless the config says mode live AND `live_flag`;
     one without the other runs DRY (the live flag never upgrades a DRY config; a live config never goes live on its own). Returns the process exit code."""
-    want_live = raw.get("mode") == B.LIVE and live_flag
-    if (raw.get("mode") == B.LIVE) != live_flag:
-        print("r4bt_c0_executor: --live and config mode 'live' must both be given: running DRY", flush=True)
+    mode = raw.get("mode", B.DRY)
+    if mode not in (B.DRY, B.LIVE):
+        print(f"r4bt_c0_executor ALERT startup_refused unknown_mode", flush=True)
+        return 2
+    if (mode == B.LIVE) != live_flag:  # never half-live and never a silent DRY: a live config without --live (or --live on a DRY config) does not start
+        print("r4bt_c0_executor ALERT startup_refused live_flag_mode_mismatch", flush=True)
+        return 2
+    want_live = live_flag
     try:
-        cfg = make_config({**raw, "mode": B.LIVE if want_live else B.DRY})
+        cfg = make_config({**raw, "mode": mode})
     except (ValueError, TypeError) as exc:
         print(f"r4bt_c0_executor ALERT startup_refused {exc}", flush=True)
         return 2

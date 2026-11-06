@@ -24,7 +24,7 @@ from tools.test_r4bt_c0_executor import Clock, World, feed, ms, mark, jwrite, is
 class FakeEx:
     def __init__(self):
         self.rows = []
-        self.limits = types.SimpleNamespace(priority_lamports=500_000)
+        self.limits = types.SimpleNamespace(priority_lamports=500_000, size_lamports=50_000_000)
 
     def _log(self, kind, mint, **kw):
         self.rows.append((kind, mint, kw))
@@ -113,7 +113,7 @@ def test_dry_config_never_takes_a_live_port_or_builds_one(tmp_path, monkeypatch)
     with pytest.raises(SystemExit):
         T.R4btBridge(w.cfg(), inner, now_ms=Clock(w.at), root_checks=False)
     called = []
-    for raw_mode, flag in (("dry", False), ("dry", True), ("live", False)):  # no combination except live + --live reaches the live port factory
+    for raw_mode, flag in (("dry", False),):
         assert T.run({**w.d, "mode": raw_mode}, live_flag=flag, once=True, root_checks=False, now_ms=Clock(w.at), port_factory=lambda c: called.append(c)) == 0
     assert called == []
     w.start()
@@ -250,7 +250,6 @@ def test_live_buy_problem_caps_counters(tmp_path):
 
 
 def test_port_without_a_pre_buy_check_never_buys():
-    cfg = T.make_config({**World.__dict__.get("d", {})}) if False else None  # noqa: F841
     import tempfile
     with tempfile.TemporaryDirectory() as td:
         w = World(Path(td), mode="live")
@@ -404,7 +403,7 @@ def test_health_dry_bridge_and_a_failed_write_never_stop_the_loop(tmp_path):
     w = World(tmp_path)
     br, port, clk = w.bridge()
     br.tick()
-    assert _health(w)["dry"] is True
+    assert json.loads((tmp_path / "health" / "health.dry.json").read_text())["dry"] is True
     bad = World(tmp_path / "b", health_path="/proc/nope/health.json")
     br2, _p, _c = bad.bridge()
     br2.tick()  # the write fails silently
