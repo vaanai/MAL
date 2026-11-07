@@ -591,3 +591,12 @@ def test_a_landed_sell_with_no_rent_refund_latches_and_stops_entries(tmp_path):
     clk.t = T0 + 700_050
     feed(br, clk, clk.t)
     assert len(inner.buys) == 1 and refusals(br)[-1]["why"].startswith("latched:")
+
+
+def test_the_config_example_is_dry_and_valid_and_carries_the_real_frozen_sha():
+    raw = json.loads((Path(__file__).resolve().parent.parent / "scripts" / "mal-fast" / "floor-lane-live.json.example").read_text())
+    assert raw["mode"] == "dry" and raw["frozen_sha"] == F.FROZEN_SHA and raw["lane"]["bot_id"] == X.LANE_BOT_ID
+    cfg, lane, _ = X.make_config(raw)
+    assert cfg.mode == B.DRY and lane.fee_reserve_lamports >= X.LANE_MIN_FEE_RESERVE
+    assert X.check(raw)["ok"] is True
+    assert X.check(raw, live=True)["ok"] is False  # --live on a dry config

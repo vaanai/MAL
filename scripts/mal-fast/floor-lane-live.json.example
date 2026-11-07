@@ -1,0 +1,22 @@
+{
+  "mode": "dry",
+  "bot_id": "l1-floor-v2",
+  "frozen_sha": "5e12f8f597571d6d5191a7ba38125c67ad723b7d",
+  "root": "/data/mal/arena/rules",
+  "state_dir": "/var/lib/mal-live/floor-lane/state",
+  "end_ms": 1794787200000,
+  "funded_lamports": 500000000,
+  "wallet_floor_lamports": 250000000,
+  "live_ok_path": "/etc/mal-arena-live/floor-lane-1/LIVE_OK",
+  "lane": {
+    "bot_id": "floor-lane-1",
+    "ledger_path": "/var/lib/mal-live/h5-lane/lane-ledger.jsonl",
+    "stop_path": "/var/lib/mal-live/h5-lane/STOP",
+    "stake_lamports": 20000000,
+    "max_open": 3,
+    "budget_lamports": 300000000,
+    "daily_loss_lamports": 100000000,
+    "fee_reserve_lamports": 3860000,
+    "mark_stale_s": 60
+  }
+}
