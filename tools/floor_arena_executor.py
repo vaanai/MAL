@@ -128,13 +128,17 @@ class FloorBridge(B.Bridge):
                  close_blocked: Callable[[str], bool | None] | None = None) -> None:
         if cfg.bot_id != BOT_ID or cfg.max_hold_ms != HOLD_MS or cfg.frozen_sha != FROZEN_SHA:
             raise SystemExit("floor executor start refused: book pin")
-        if cfg.mode != B.DRY or port.live or LIVE_BUILT:
-            raise SystemExit("floor executor start refused: live_not_built")
+        self._start_guard(cfg, port)
         self.dry_replay_caps = bool(dry_replay_caps)
         sd = Path(cfg.state_dir)
         self.fs_path = sd / f"floor-state-{cfg.mode}.json"
         self.fs = self._load_fs()
         super().__init__(cfg, port, now_ms=now_ms, live_ok_path=live_ok_path, tier_path=tier_path, root_checks=root_checks, close_blocked=close_blocked)
+
+    def _start_guard(self, cfg: B.Config, port: B.OrderPort) -> None:
+        """This dry executor never takes a live config or port. The lane subclass (tools/floor_lane_executor.py) replaces this one method; nothing else here changes."""
+        if cfg.mode != B.DRY or port.live or LIVE_BUILT:
+            raise SystemExit("floor executor start refused: live_not_built")
 
     # -- sidecar state (the bridge's BridgeState has a fixed field set; FLOOR's own facts live beside it, atomic like it)
     def _load_fs(self) -> dict[str, Any]:
