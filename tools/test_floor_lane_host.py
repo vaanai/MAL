@@ -244,7 +244,7 @@ def test_hash_chain_detects_tampering_and_a_torn_line(scen):
     head, seq = DecisionLog(root).verify(L.BOT_ID)
     assert seq >= 6 and len(head) == 64
     assert H.main(["verify", "--config", str(_write_cfg(tmp_path))]) == 0
-    f = sorted((tmp_path / "rules" / "decisions" / L.BOT_ID).glob("*.jsonl"))[0]
+    f = next(x for x in sorted((tmp_path / "rules" / "decisions" / L.BOT_ID).glob("*.jsonl")) if '"stake_sol":0.25' in x.read_text())
     data = f.read_text()
     f.write_text(data.replace('"stake_sol":0.25', '"stake_sol":0.30', 1))
     with pytest.raises(LogChainError):
