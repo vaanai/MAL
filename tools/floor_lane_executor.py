@@ -357,6 +357,8 @@ class FloorLaneBridge(F.FloorBridge):
         if self._lane_orphans:
             return "lane_unresolved_intent"
         why = self.lane.check(self._lane_marks, now, stake)
+        if why == "lane_budget_stop":  # DEC-035 s2 item 1: the budget stop writes the lane STOP file (it survives restarts; only the manager removes it)
+            self.lane.write_stop(f"lane_budget_stop bot_id={LANE_BOT_ID}", now)
         return LANE_REASON.get(why, why) if why else None
 
     def entry_refusal(self, row: Mapping[str, Any], now: int, lim: dict[str, int], scope: bool = True) -> str | None:
