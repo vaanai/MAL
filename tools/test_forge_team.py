@@ -292,3 +292,14 @@ def test_island_threads_share_state_safely(tmp_path):
     assert threading.active_count() >= 1
     hs = [r["hash"] for r in rows(tmp_path / "evals.jsonl")]
     assert len(hs) == len(set(hs)) == team.counts["evaluated"]
+
+
+def test_real_evaluator_interface_alignment():
+    import numpy as np
+    from tools.forge import evaluate as E, common as C, team as T
+    assert set(T.resolve_features(type("X", (), {"FEATURES": E.FEATURES})())) == set(C.FEATURES)
+    m = E.metrics_of(np.array([0.01] * 50 + [-0.005] * 10), np.arange(60) * 86_400_000 // 6, np.zeros(60, np.int64), np.ones(60, np.int64),
+                     np.zeros(60, int), 15.0)
+    assert T.mget(m, "n") == 60 and T.mget(m, "pos_days") == m["positive_days"] and T.mget(m, "ex_top3") == m["ex_top3_total"]
+    assert T.mget(m, "ci") == m["ci90_low"] and T.mget(m, "tpd") == m["trades_per_day"]
+    assert T.Team.is_shortlist({"n": 20, "mean": 0.01, "ex_top3_total": 0.1, "positive_days": 3, "fitness": float("-inf")})

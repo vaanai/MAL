@@ -239,6 +239,12 @@ class FakeEvaluator:
 
 
 def resolve_features(ev):
+    fd = getattr(ev, "feature_dictionary", None)
+    if fd is not None:
+        try:
+            return dict(fd())
+        except Exception as e:  # event table missing -> fall back to the static dictionary
+            print(f"feature_dictionary failed ({type(e).__name__}); using static FEATURES", flush=True)
     for src in (ev, getattr(ev, "events", None)):
         if src is None:
             continue

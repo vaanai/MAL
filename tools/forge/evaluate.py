@@ -134,6 +134,7 @@ _CACHE: dict = {}
 
 
 def load_split(split: str, root: str = DEFAULT_ROOT) -> Split:
+    split = split.lower()
     key = (split, root)
     if key not in _CACHE:
         a, b = C.SPLITS[split]
@@ -318,6 +319,7 @@ def metrics_of(pnl, t, t_fill, exit_t, reason, n_days_split, extra=None) -> dict
 
 
 def evaluate(spec: dict, split: str = "train", root: str = DEFAULT_ROOT, data: Split | None = None) -> dict:
+    split = split.lower()
     spec = validate_spec(spec)
     data = data or load_split(split, root)
     r = run_trades(data, spec)
@@ -325,6 +327,60 @@ def evaluate(spec: dict, split: str = "train", root: str = DEFAULT_ROOT, data: S
     if r.get("too_broad"):
         extra["too_broad"] = True
     return metrics_of(r["pnl"], r["t"], r["t_fill"], r["exit_t"], r["reason"], data.n_days_split, extra)
+
+
+# ------------------------------------------------------------------------------------------------ team-facing helpers
+_D = {
+    "venue": "0 = pump.fun curve, 1 = PumpSwap", "age_s": "seconds since the pool's first print", "mig_age_s": "seconds since migration (PumpSwap; 0/neg for curve)",
+    "liq_sol": "liquidity in SOL (quote reserve + V; curve real SOL)", "mcap_sol": "market cap in SOL",
+    "ret_30s": "price return over 30 s", "ret_1m": "return over 1 m", "ret_5m": "return over 5 m", "ret_15m": "return over 15 m",
+    "ret_1h": "return over 1 h", "ret_6h": "return over 6 h", "dd_high": "drawdown from the pool's running high (fraction)",
+    "rise_low": "rise from the pool's running low (fraction)", "ev_is_buy": "1 if the event print is a buy else 0",
+    "ev_sol": "SOL size of the event print", "since_last_s": "seconds since the previous trade on the pool",
+    "curve_progress": "bonding-curve progress 0..1 (curve venue)", "utc_hour": "UTC hour 0..23",
+}
+_K = {"n": "trade count", "uniq": "unique traders", "buy_share": "buy share of trades 0..1", "buy_sol": "buy volume SOL", "sell_sol": "sell volume SOL",
+      "max_sell": "largest single sell SOL", "max_buy": "largest single buy SOL", "net_flow": "buy minus sell SOL"}
+for _w in ("1m", "5m", "1h"):
+    for _k, _t in _K.items():
+        _D[f"{_k}_{_w}"] = f"{_t} over the last {_w}"
+FEATURES = {f: _D.get(f, f) for f in C.FEATURES}  # name -> one-line description (the team reads this)
+ANALYST_N = 300_000
+ANALYST_H = {"1m": 60, "5m": 300, "30m": 1800, "2h": 7200, "24h": 86400}
+
+
+def feature_dictionary(root: str = DEFAULT_ROOT) -> dict:
+    """name -> description plus TRAIN p5/p50/p95 (cached in <root>/feature_ranges.json; TRAIN only)."""
+    cp = Path(root) / "feature_ranges.json"
+    if cp.exists():
+        rg = json.loads(cp.read_text())
+    else:
+        d = load_split("train", root)
+        sub = np.random.default_rng(1).choice(d.n, min(d.n, 200_000), replace=False) if d.n else np.zeros(0, int)
+        rg = {}
+        for f in C.FEATURES:
+            x = d.X[sub, C.FIDX[f]] if len(sub) else np.zeros(1)
+            x = x[np.isfinite(x)]
+            q = np.percentile(x, [5, 50, 95]) if len(x) else [0, 0, 0]
+            rg[f] = [float(v) for v in q]
+        cp.write_text(json.dumps(rg))
+    return {f: f"{FEATURES[f]} [TRAIN p5/p50/p95: {rg[f][0]:.4g} / {rg[f][1]:.4g} / {rg[f][2]:.4g}]" for f in C.FEATURES if f in rg}
+
+
+def analyst_data(root: str = DEFAULT_ROOT, n: int = ANALYST_N):
+    """TRAIN only. -> (feats {name: float array}, fwd {horizon: forward NET return fraction at 0.1 SOL, NaN where gap/migrated/censored})."""
+    d = load_split("train", root)
+    sub = np.sort(np.random.default_rng(1).choice(d.n, min(d.n, n), replace=False))
+    feats = {f: d.X[sub, C.FIDX[f]].astype(np.float64) for f in C.FEATURES}
+    stake = 0.1 * LAMPORTS
+    fwd = {}
+    P = d.gather_paths(sub)
+    for h, sec in ANALYST_H.items():
+        k = int(np.searchsorted(C.GRID_S, sec, side="left"))
+        r = C.DECODE[P[:, k]].astype(np.float64)
+        pnl = trade_pnl(r, d.Qf[sub], d.Bf[sub], d.fee_in[sub], d.venue[sub], stake) / stake
+        fwd[h] = np.where(np.isnan(r), np.nan, pnl)
+    return feats, fwd
 
 
 def main(argv=None):
