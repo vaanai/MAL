@@ -346,34 +346,35 @@ def test_f6_cpi_path_row_equals_log_path_row_on_every_key_the_engine_reads():
         assert by_cpi[0]["init_boost"] == by_log[0]["init_boost"]
 
 
-def three_mint_replay(variant: str, use_event_v: bool) -> tuple[dict, list[tuple], str]:
-    """3 mints. Per mint i: slot 100+10i complete (short log), slot 101+10i the migrate tx built as `variant`, then PumpSwap prints for 70 minutes at V0 in band.
-    Rows come from rows_from_block (legacy or event_v) for the lifecycle, and hand-written walker-schema trades; they go straight into an Engine (the follower's
-    stamps t_recv_ms/source are not read by the engine). Returns (counts, member tuples, md5 of the decision rows at the first mark with a full hour of data)."""
-    bt0 = HOUR0 - 3_000  # graduations ~50 minutes before the first mark
+def slot_at(bt: int) -> int:
+    """A monotone slot clock for the 3-mint replay (2 slots per second), so block_time and slot agree and sd(T) is consistent."""
+    return 1_000 + 2 * (bt - (HOUR0 - 4_000))
+
+
+def three_mint_replay(variant: str, use_event_v: bool) -> tuple[dict, list[tuple], str, int]:
+    """3 mints graduating ~50 minutes before the first mark T = HOUR0. Per mint i: a `complete` row (short log) and the migrate tx built as `variant`, then PumpSwap prints
+    every 30 s at V0 in band until T + 5 min. Lifecycle rows come from rows_from_block (legacy = the follower's call, or event_v); trades are hand-written walker rows;
+    all go straight into an Engine (the follower's t_recv_ms/source stamps are not read by the engine). Returns (counts, member tuples, md5 of the decision rows at T,
+    number of decision rows)."""
     pda = {mint_of(i): pool_of(i) for i in range(3)}
     eng = lv.Engine(universe_min_mbt=0, pda_fn=lambda m: pda.get(m, "P_" + m), hash_fn=lambda s: zlib.crc32(str(s).encode()), score_fn=lambda b, X: X[:, 0] if len(X) else X)
     stream: list[tuple[int, int, str, dict]] = []  # (slot, order, kind, row)
     counts = {"complete": 0, "migration": 0}
     decode = event_v if use_event_v else legacy
     for i in range(3):
-        s = 100 + 10 * i
-        cb = block(s, [tx(f"sigC{i}", [f"Program {PUMP_BONDING_PROGRAM} invoke [1]", data_line(complete_blob(i, bt0 + s)), "Program success"])], bt0 + s)
-        mb = migrate_block(variant, i, slot=s + 1, tx_pos=0)
-        mb["blockTime"] = bt0 + s + 1
+        bt_g = HOUR0 - 3_000 + 30 * i
+        cb = block(slot_at(bt_g), [tx(f"sigC{i}", [f"Program {PUMP_BONDING_PROGRAM} invoke [1]", data_line(complete_blob(i, bt_g)), "Program success"])], bt_g)
+        mb = migrate_block(variant, i, slot=slot_at(bt_g) + 2, tx_pos=0)
+        mb["blockTime"] = bt_g + 1
         for blk in (cb, mb):
             for r in decode(blk)["migrations"]:
                 counts[r["type"]] += 1
                 stream.append((r["slot"], 0, "migration", r))
-        for k in range(70):
-            slot, bt = s + 2 + k * 150, bt0 + s + 2 + k * 60
-            stream.append((slot, 1, "trade", swap_trade(i, slot, k, bt)))
+        for k, bt in enumerate(range(bt_g + 3, HOUR0 + 300, 30)):
+            stream.append((slot_at(bt), 1, "trade", swap_trade(i, slot_at(bt), k, bt)))
     stream.sort(key=lambda e: (e[0], e[1]))
     for _slot, _o, kind, row in stream:
         {"migration": eng.ingest_migration, "trade": eng.ingest_trade}[kind](row)
-    # a clock tail so decide() has a second at/after the mark and one after it
-    for j, bt in enumerate((HOUR0, HOUR0 + 1, HOUR0 + 2)):
-        eng.ingest_trade({**swap_trade(0, 90_000 + j, 900 + j, bt), "signature": f"tail{j}"})
     members = [(m.mint, m.pool, m.mslot, m.mbt, m.s0, m.v0) for m in eng.members()]
     res = eng.decide(HOUR0)
     md5 = lv.rows_md5(res.mints, res.T, res.sdv, res.X, res.score)
