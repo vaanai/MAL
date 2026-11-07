@@ -10,7 +10,7 @@ PRINTS ONLY one JSON line: md5 of the trades-, creates-, skipped-, gaps- and obs
 present byte-identical and in order in new, whether every extra line is event_source inner_event, and counts. Never a signature, mint, pool or amount.
 Reads no tip tape, derived copy or sealed path; the RPC key is taken from the environment (HELIUS_API_KEY), never printed.
 
-  set -a; . <follower env file>; set +a; nice -n 19 python3 scripts/ops/tip_follower_p2_equiv.py --old-follower-file OLD.py --slots 18500
+  set -a; . <follower env file>; set +a; nice -n 19 python3 scripts/ops/tip_follower_p2_equiv.py --old-follower-file OLD.py --slots 33500
 """
 
 from __future__ import annotations
@@ -94,10 +94,10 @@ def migration_lines(root: Path) -> list[bytes]:
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--old-follower-file", required=True)
-    ap.add_argument("--slots", type=int, default=18500, help="slots to fetch (about 0.4 s each: 18500 is about 2 h 3 min)")
+    ap.add_argument("--slots", type=int, default=33500, help="slots to fetch (about 215 ms each at the current rate: 33500 is about 2 h)")
     ap.add_argument("--end-lag-slots", type=int, default=300, help="stay this far behind the confirmed tip")
     ap.add_argument("--rps", type=float, default=5.0)
-    ap.add_argument("--max-credits", type=int, default=25000)
+    ap.add_argument("--max-credits", type=int, default=40000)
     ap.add_argument("--tmp-parent", default=os.environ.get("TMPDIR", "/tmp"))
     a = ap.parse_args(argv)
     if a.rps <= 0 or a.slots < 1:

@@ -5,13 +5,13 @@
 # prints ONE JSON line: md5 of trades/creates/skipped/gaps/observe for both and equal flags, old-migration-rows-present, extra-rows-all-inner_event, counts, credits estimate.
 # Never prints a signature, mint, pool, amount or key. Reads no tip tape / sealed path. Exit 0 only if every stream is equal, old migration rows are all present and extras are inner_event.
 #
-#   scripts/ops/tip-follower-p2-equiv.sh [--env-file /var/lib/mal/fast-listener/helius.env] [--slots 18500] [--rps 5] [--max-credits 25000] [--old-ref origin/main]
+#   scripts/ops/tip-follower-p2-equiv.sh [--env-file /var/lib/mal/fast-listener/helius.env] [--slots 33500] [--rps 5] [--max-credits 40000] [--old-ref origin/main]
 set -u
 cd "$(dirname "$0")/../.." || { echo "REFUSED: cannot cd to the repo root"; exit 2; }
 ENV_FILE=/var/lib/mal/fast-listener/helius.env
-SLOTS=18500
+SLOTS=33500
 RPS=5
-MAXC=25000
+MAXC=40000
 OLD_REF=origin/main
 while [ $# -gt 0 ]; do
   case "$1" in
