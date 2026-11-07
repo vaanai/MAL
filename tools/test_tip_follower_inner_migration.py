@@ -274,3 +274,36 @@ def test_f7_h5_tip_path_inner_pool_create_equals_log_pool_create(tmp_path):
     assert res["none"]["rejected_unannounced"] > 0 and res["none"]["triggers"] == 0  # prints without pool_create are refused
     assert res["log"]["triggers"] >= 1 and res["log"]["rejected_unannounced"] == 0
     assert res["inner"]["triggers"] == res["log"]["triggers"] and res["inner"]["md5"] == res["log"]["md5"]
+
+
+def _v2(logs: list[str]) -> list[str]:
+    return [x.replace("Instruction: Migrate", "Instruction: MigrateV2") for x in logs]
+
+
+def test_2235_shape_migrate_v2_truncated_logs_inner_event_gives_one_row_and_whole_logs_no_duplicate(tmp_path_factory):
+    """Shape seen in job #2235: logs end in "Log truncated" with no migration Program data line; the event sits in the emit_cpi inner instruction.
+    The same tx with whole logs (event in Program data AND in the CPI) gives one row from the log path."""
+    bt = HOUR0 - 100
+    blocks = {
+        200: block(200, [plain_tx("sigQ0"), tx("sigV2T", _v2(truncated_logs()), [inner_cpi(cblob(6))])], bt + 110),
+        201: block(201, [tx("sigV2W", _v2(short_logs(cblob(7))), [inner_cpi(cblob(7))])], bt + 111),
+        202: block(202, [plain_tx("sigQ2")], bt + 112),
+    }
+    po, pn = tmp_path_factory.mktemp("o2235"), tmp_path_factory.mktemp("n2235")
+    old = run_follower(base_module(), po, copy.deepcopy(blocks))
+    new = run_follower(ftf, pn, copy.deepcopy(blocks))
+    fo, fn = files(po), files(pn)
+    assert set(fo) == set(fn)
+    for name in fo:
+        if kind(name) != "migrations":
+            assert fn[name] == fo[name], name  # trades, creates, skipped, gaps, observe: byte-identical
+    name = next(k for k in fn if kind(k) == "migrations")
+    old_rows = [json.loads(x) for x in fo[name].splitlines()]
+    new_rows = [json.loads(x) for x in fn[name].splitlines()]
+    assert [r["signature"] for r in old_rows] == ["sigV2W"]  # the old follower misses the truncated tx
+    t = [r for r in new_rows if r["signature"] == "sigV2T"]
+    assert len(t) == 1 and t[0]["event_source"] == "inner_event" and t[0]["pool"] == canon_pool(6)
+    w = [r for r in new_rows if r["signature"] == "sigV2W"]
+    assert len(w) == 1 and "event_source" not in w[0]  # log path only, no duplicate from the CPI
+    assert len(new_rows) == 2
+    assert new.pool_cache == old.pool_cache  # the second pass leaves the follower's pool cache as it was
