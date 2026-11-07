@@ -174,7 +174,7 @@ class OutputTests(unittest.TestCase):
         self.assertEqual(out.getvalue().strip(), written.strip())
         data = json.loads(written)
         self.assertEqual(tuple(data), tmp.COUNT_KEYS)
-        self.assertTrue(all(isinstance(v, int) for v in data.values()))
+        self.assertTrue(all(isinstance(v, (int, dict)) for v in data.values()))
         text = out.getvalue() + written
         forbidden = [SIG_MARK, "ok0", tmp.MIGRATION_ACCOUNT, b58encode(pk(2)), b58encode(pk(4)),
                      "123456789", "987654321", "mint", "pool", "signature", "price", "reserve", "amount"]
@@ -196,6 +196,127 @@ class OutputTests(unittest.TestCase):
             with self.assertRaises(RuntimeError) as cm:
                 tmp.make_rpc("https://api.mainnet-beta.solana.com")("getTransaction", [])
         self.assertNotIn(SIG_MARK, str(cm.exception))
+
+
+def comp_blob(mint_b: bytes, ts: int = T0) -> bytes:
+    raw = bytearray(144)
+    raw[:8] = tmp._COMPLETE_DISC
+    raw[8:40] = pk(1)
+    raw[40:72] = mint_b
+    raw[72:104] = pk(3)
+    raw[104:112] = ts.to_bytes(8, "little", signed=True)
+    return bytes(raw)
+
+
+MIGRATE_IX = bytes.fromhex("9beae792ec9ea21e") + b"\0" * 8
+OTHER_IX = bytes.fromhex("1122334455667788") + b"\0" * 4
+
+
+def creation_tx(logs, ixs, signer=tmp.MIGRATION_ACCOUNT, bt=T0 + 3, sig="creationsig"):
+    keys = [signer, PUMP_BONDING_PROGRAM, tmp.PUMPSWAP_PROGRAM, b58encode(pk(9))]
+    return {
+        "slot": 1003, "blockTime": bt,
+        "transaction": {"signatures": [sig], "message": {
+            "header": {"numRequiredSignatures": 1}, "accountKeys": keys,
+            "instructions": [{"programIdIndex": i, "accounts": [], "data": b58encode(d)} for i, d in ixs]}},
+        "meta": {"err": None, "logMessages": logs, "innerInstructions": []},
+    }
+
+
+class GraduationTests(unittest.TestCase):
+    def setUp(self):
+        self.mint = b58encode(pk(2))
+        self.ctx = tx([pdata(comp_blob(pk(2)))], sig="completesig")
+        self.creation = creation_tx(
+            [pdata(mig_blob()), pdata(bytes.fromhex("aabbccddeeff0011") + b"\0" * 8)],
+            [(1, MIGRATE_IX), (1, OTHER_IX), (3, b"")])
+        self.rpc, self.calls = self._mock(self.creation)
+
+    def _mock(self, creation):
+        calls = []
+        pool = tmp.canonical_pool(self.mint)
+        block = {"blockTime": T0, "transactions": [self.ctx, TX_NEITHER]}
+
+        def rpc(method, params):
+            calls.append((method, params))
+            if method == "getSlot":
+                return 5000
+            if method == "getBlock":
+                return block if params[0] == 5000 else None
+            if method == "getSignaturesForAddress":
+                assert params[0] == pool  # canonical derivation, nothing else
+                return [{"signature": "later", "blockTime": T0 + 9, "err": None},
+                        {"signature": "creationsig", "blockTime": T0 + 3, "err": None}]
+            if method == "getTransaction":
+                return creation
+            raise AssertionError(method)
+
+        return rpc, calls
+
+    def test_completes_in_block(self):
+        got = tmp.completes_in_block({"blockTime": T0, "transactions": [self.ctx, TX_NEITHER]})
+        self.assertEqual(got, [("completesig", self.mint, T0)])
+
+    def test_counts(self):
+        r = tmp.run_graduations(self.rpc, 50, tmp.FLOOR_TS, 3)
+        self.assertEqual(tuple(r), tmp.GRAD_KEYS)
+        self.assertEqual((r["n_complete_events"], r["n_creation_tx"], r["n_no_creation_tx"]), (1, 1, 0))
+        self.assertEqual((r["n_top_pump"], r["n_top_pumpswap"], r["n_top_other"]), (1, 0, 1))
+        self.assertEqual(r["pump_ix_class_hist"], {"migrate": 1, "unknown": 1})
+        self.assertEqual((r["n_disc_in_logs"], r["n_disc_inner_only"], r["n_disc_neither"]), (1, 0, 0))
+        self.assertEqual(r["other_program_data_disc_hist"], {"aabbccddeeff0011": 1})
+        self.assertEqual(r["n_signer_is_migration_account"], 1)
+        self.assertEqual(r["n_same_tx_as_complete"], 0)
+        self.assertEqual((r["secs_complete_to_creation_p50"], r["secs_complete_to_creation_max"]), (3, 3))
+        self.assertEqual(r["legacy_migration_row_yield"], 1)
+        self.assertEqual(r["decode_migration_event_reason_hist"], {"ok": 1})
+
+    def test_reason_classes_and_same_tx(self):
+        short = bytearray(mig_blob())[:150]
+        badts = bytearray(mig_blob())
+        badts[128:136] = (5).to_bytes(8, "little", signed=True)
+        creation = creation_tx([pdata(bytes(short)), pdata(bytes(badts))], [(1, OTHER_IX)],
+                               signer=b58encode(pk(7)), sig="completesig")
+        rpc, _ = self._mock(creation)
+        r = tmp.run_graduations(rpc, 50, tmp.FLOOR_TS, 3)
+        self.assertEqual(r["decode_migration_event_reason_hist"], {"len_lt_200": 1, "ts_out_of_window": 1})
+        self.assertEqual((r["n_signer_is_migration_account"], r["n_same_tx_as_complete"]), (0, 1))
+        self.assertEqual(r["legacy_migration_row_yield"], 0)
+
+    def test_no_creation_tx(self):
+        def rpc(method, params):
+            if method == "getSlot":
+                return 5000
+            if method == "getBlock":
+                return {"blockTime": T0, "transactions": [self.ctx]}
+            return []
+        r = tmp.run_graduations(rpc, 50, tmp.FLOOR_TS, 1)
+        self.assertEqual((r["n_complete_events"], r["n_no_creation_tx"], r["n_creation_tx"]), (1, 1, 0))
+
+    def test_refusals_and_output(self):
+        with self.assertRaises(tmp.Refusal):
+            tmp.run_graduations(self.rpc, 51, tmp.FLOOR_TS, 3)
+        with self.assertRaises(tmp.Refusal):
+            tmp.run_graduations(self.rpc, 50, tmp.FLOOR_TS - 1, 3)
+        with self.assertRaises(tmp.Refusal):
+            tmp.run_graduations(self.rpc, 50, tmp.FLOOR_TS, tmp.MAX_BLOCKS_CAP + 1)
+        out = io.StringIO()
+        with redirect_stdout(out):
+            rc = tmp.main(["--mode", "graduations", "--max-blocks", "3"], rpc=self.rpc)
+        self.assertEqual(rc, 0)
+        text = out.getvalue()
+        data = json.loads(text)
+        self.assertEqual(tuple(data), tmp.GRAD_KEYS)
+        for f in ["completesig", "creationsig", self.mint, tmp.canonical_pool(self.mint), tmp.MIGRATION_ACCOUNT,
+                  b58encode(pk(4)), "123456789", "mint", "pool", "signature", "price", "reserve", "amount"]:
+            self.assertNotIn(f, text)
+        rc = tmp.main(["--mode", "graduations", "--max-blocks", "99999"], rpc=self.rpc)
+        self.assertEqual(rc, 2)
+
+    def test_neither_hist_in_migrations_mode(self):
+        t = creation_tx(["Program log: x"], [(1, OTHER_IX), (1, OTHER_IX), (1, MIGRATE_IX)])
+        c = tmp.count_txs([t, TX_LOG])
+        self.assertEqual(c["neither_pump_ix_disc_hist"], {"top:1122334455667788": 2, "top:9beae792ec9ea21e": 1})
 
 
 if __name__ == "__main__":
