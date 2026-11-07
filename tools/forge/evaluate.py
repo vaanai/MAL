@@ -114,7 +114,7 @@ class Split:
             n = len(xs[-1])
             hid.append(np.full(n, len(self.paths) - 1, np.int32)); row.append(np.arange(n, dtype=np.int64))
         self.n = sum(len(x) for x in xs)
-        self.X = np.concatenate(xs) if xs else np.zeros((0, C.NF), np.float32)
+        self.X = np.asfortranarray(np.concatenate(xs)) if xs else np.zeros((0, C.NF), np.float32)  # column-major: a condition reads one contiguous column
         for k, v in ms.items():
             setattr(self, k, np.concatenate(v) if v else np.zeros(0))
         self.hid = np.concatenate(hid) if hid else np.zeros(0, np.int32)
