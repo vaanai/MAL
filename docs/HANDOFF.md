@@ -1,122 +1,82 @@
-# MAL manager handoff: manager17 → next manager (written 2026-10-29T03:1xZ, from `date -u` 03:07Z)
+# MAL manager handoff: manager20 → manager21 (written 2026-11-07T21:3xZ, from `date -u` 21:25Z)
 
-Read this file first. Then read the last END block of the manager17 state log, at /data/mal/hunt-1008/ops/manager17/state-push-1026-manager17.md; the memory note `push-1026-manager17` points to it. After that, read the newest MiScusi notebook entries.
+Read this first. It replaces the manager17 handoff (and the never-merged manager18 PR #1199).
+Then read the tail of the manager20 state log, `/data/mal/hunt-1008/ops/manager20/state-manager20.md` (one line per event, newest last; from line ~220 covers 11-07). Then the newest MiScusi notebook entries.
 
-No book has cleared the promotion gate. Profit so far is 0, and no real SOL is being traded.
+**No book has cleared the promotion gate. No live trade has been made. Profit so far is 0.**
 
 ## 0. Owner direction (current)
-- **Goals (the owner's targets, not evidence):** reach $20/day first, then stack ("+1 SOL, then 40, then 60…"), with ~$200/day as the longer goal; the owner accepts that November is unlikely. Keep looking for ideas even after the first profit. The gate does not change.
-- **Push and pacing:** the owner (10-27) asked to expand on Q50 and hedge it, keep stacking small strategies, and look for structural edges. On 10-27 at ~22Z the owner's usage was at 83%, so they said to "chill" until the next manager on Thursday 10-29. The next push is yours.
-- **Approvals on record:**
-  - **Q50 C0 go-live (10-27, "Pre approved.", n_VDvEvazDU9jzYw):** applies only if Q50's read PASSes and the in-band restatement PASSes and QP gives an OK. Then Helm may create the canary key and write LIVE_OK/TIER=C0 at the manager's signal, and the owner funds 0.5 SOL. C0 limits only. **The owner must relay this to Helm in their own words**, because Helm acts only on Vaan's word. This approval does not cover C1/C2, s1, Q60 or any other book.
-  - **10-28 (n_8Yfl--RzLCx2Dw):** API spend past 11-11 is OK. $192 is left before 11-11, after which the cap is $200 per month; the owner wants the $192 used before the reset. HV6's extra Helius credits are OK. Goal: **"really good self-improving general trading bots"**. API spend goes to the Haiku TRADER only (its decisions and their backtests), never to research or agents.
-  - Earlier lines remain: HV6 ≤3 USD/day (K1), HV7 ≤0.30 USD/day (q_6_kzYJva9XXuYQ), and the 10-23 standing C0 OK.
-- **Hand-offs:** a MiScusi hand-off notice normally means COMPACT. This one is a real hand-off, because the owner planned the next push "with the next manager".
+- **11-06 ~16:4xZ (memory `owner-push-1106`):** "I'm pre approving everything, we need to be doing everything in our efforts to push to profit." More initiative while jobs run, deliberate work, acknowledge spend.
+- **11-06 ~17:15Z standing order (memory `owner-go-live-authority-1106`):** "Get things done WITHOUT asking for my permission, work with helm, go live whenever you're confident". Confident = evidence. Mission = start making money.
+- **11-07 ~21:2xZ:** the owner asked for this handoff now so the next manager can **start a push**.
+- **Helm will NOT act on relayed approval.** Any live step (slowbot-h-1 go-live, any key creation) needs the owner's yes directly in Helm chat. Ask the owner for that; do not tell Helm "the owner approved".
+- Hard rules, seals and the promotion gate are unchanged by any pre-approval (CLAUDE.md).
+- API: Haiku 5.5 budget for the TRADER only (resets after 11-11).
 
-## 1. Books and clocks (all paper)
-| Book | State | Next step |
-|---|---|---|
-| **Q50** `h5v1q50-boostfloor-a1` (frozen a5f41370; clock 10-25T00Z; end-seal 11-06T00Z) | Shadow #1419, then #1421; daily score #1543 at 00:20Z. | **Read:** DEC-031 Am.11 item 1, at the first 00:00Z boundary B ≤ 2026-11-06T00Z with ≥100 counted trades on ≥5 distinct UTC decision dates, **where every attempt decided before B has closed or been excluded**. The earliest B is 10-30T00Z, and the instant comes only from the count tool's write-once file. **If no such B exists by the end-seal, the book ENDS NOT_DECIDABLE** (no early read, no extension). Q50's read and legs run from **a31d9864829d1f0645fef8be095eb8df575c2d00** with the books v2 copy (sha 819c699d…), per QP on #1065. **Read report disclosure (QP-RULING-1029-q50-gate-unit, ops/manager17/, sha256 a06bf334876c2d53…; notebook n_YJFQRx-zCiXc0g):** the deciding CI90 is the trade-level bootstrap, and as far as this ruling goes the read runs unchanged; its other preconditions still apply. The report must carry this sentence verbatim: "The deciding CI90 is a trade-level bootstrap (DEC-031 §2; EXP-024 §7 item 3; arena_score.cell_verdict at a31d9864). Trades on the same UTC date are not independent, so this interval is likely narrower than a date-cluster interval. The date-cluster figure is not computed by the registered read and decides nothing." DEC-031 Am.4 item 1.6 (a) (DEC-031:281) also binds: "no read of a covered book is taken unless an applied A3 decision (a line in `a3-applied.jsonl`) has `run_utc` at or after the read's boundary, and no write in the window is pending". Then: in-band restatement (`tools/arena_h5_inband.py`, #1054; an in-band FAIL blocks C0), QP, then the DEC-033 stage-2 copy, whose merge sha is X. |
-| **Q50 successor s1** `h5v1q50-boostfloor-s1` | Committed (DEC-031 Am.17 #1058, Am.18 #1057; note EXP/EXP-024-note-s1-successor.md, blob 7015abc9). Paper code merged (#1065). | Clock 11-06T00Z (slip goes to 11-07). Register 11-04 via `scripts/ops/q50s1-register.sh`, which needs `--preclock-notebook-ref`. Shadow start 11-05 20:00–22:30Z via `scripts/ops/q50s1-shadow-start.sh` with a per-process MemoryMax. QP conditions on #1065: run the 7 test modules on the fast-0 executor venv (solders) before registration and by 11-11T00Z. Run `q50s1-shadow-start.sh --check` on fast-0 **by 11-04** (QP C2). Any allowlist for uncapped units such as miscusi-agent.service needs a QP ruling before 11-05T20Z. Today --check stops at "no s1 line" before the memory check (#1783). Live code C6/C9 stays DEFERRED until Q50's X is installed or Q50 ends with no PASS. |
-| **Q60 sibling** `h5v1q60-boostfloor-a1` | Decision merged (DEC-031 Am.19 #1064; EXP/EXP-024-RULE-Q60.md). Clock 2026-11-07T00Z, H 14. | Owed before the clock: tag `q60-base-1` (S* + Q*=60 level + the compare_frozen refuse fix, tag only); proofs (i)–(v), where Run C is a fresh s14 at DS=60 on 09-20 via parity_v2; the note PR (own QP and reviewer); P0; smoke; registration. The memory-fit check must cover every H5 shadow and the smoke. Build it as one more row in s1's tools. |
-| **HV4** (9 Haiku bots) | Runner #1561, then #1562. NOTIFICATIONS ONLY. **Never call `miscusi_job_status` on #1561/#1562** (it is a seal view). | Read under DEC-031 Am.15 (in force; merged #915 2026-10-25T19:35:24Z) by `tools/hv4_am15_read.py --record`, at the B that `tools/hv4_read_instant.py` writes once (#1591, 01:30Z daily), at an as-of of at least B + 24 h (the wrapper refuses earlier). If B = 2026-10-30T00:00Z, the earliest read is 2026-10-31T00:00Z. One recorded read per bot. The attempts-vs-trades rule is QP-RULING-1025-hv4-read-rule R1, carried by Am.15. QP-RULING-1029-hv4-read-d1d4 (ops/manager17/, sha256 d5d7f115586bb5a0…) confirms D1–D4; this replaces the earlier 'needs its own QP ruling first' line. A days-only miss is FAIL, labelled "count-only, not a loss" (Am.15 item 2). |
-| **HV6** | **SLIPPED past 10-30** (n_gRpxhSP-5yLKTg). Smoke #1806 FAILED: chunk p95 41 s; refusals 34%; parse_error about 60%, because max_tokens 400 truncates 4-card replies. | Three fixes at a new final sha: (A) HV6-only entry max_tokens of about 1200; (B) concurrent arm calls, plus fitting the board into 12 calls/h; (C) a paced prefetch subclass, which can go to 2,000/h now that the owner has OKed the credits. Then the proof chain, then a smoke that PASSes, then the next rolling clock. The producer #1748 covers until 11-11T00:15Z, so a later clock needs a successor. Diagnosis: scratchpad `hv6-smoke-diag.md` (summarised in n_gRpxhSP-5yLKTg). |
-| **HV7** (Haiku rank) | Proofs done: RESULT_UNIT 329/329; EQUIV_1D PASS (n_PwyBFGvsZH5q4A); F_3D PASS (n_5mn5ovgPxYL_Hw); E1 drill #1771 PASS. **Real-model smoke #1779 FAILED** at 10-29 ~05Z on the pinned FALLBACK line: 31/31 = 1.0 against the 5% limit (30 not_json, 1 duplicate_id), so 0 valid rankings (n_Q6eEwlUiOrx9nA). On the refusal line, the tool reported 13.0%, but that count includes hard vetoes the pin excludes. Pinned-class refusals were 3/285 = 0.0105, inside the limit (QP on #1071). | **SLIPPED past T0 11-01.** Diagnose the reply format from the cached replies, structure only (max_tokens, wrapper, permutation format). Then, in this order: (1) one new final sha that carries both the reply-format fix AND the new T0-dependent clock pins (hv7_register allows only 11-01/11-02; changing it after the proofs would void them); (2) re-run unit, equivalence, F and E1 at that sha; (3) fix the smoke tool's refusal count to the pinned class, with QP OK; (4) a new notebook pin and a fresh smoke ID for a new ~33 h smoke that PASSes; (5) the #1019 pack, then QP and reviewer; (6) registration at that clock. The runner start rule stays: [T0−1h55m, T0−1h15m], never inside [H:48, H:02). |
-| **DBC m10** | Forward window [10-25, 11-01T00:10Z). Read chain submitted (§5). | ONE read via job #1804, a confirmation only. If it PASSes, P18 B' (DEC-031 Am.20 #1066): P0 = the read's attempts_by_day, clock 11-04T00Z, expiry 11-06T00Z. P18 code is ready: #1067 and the wire md5 PASS #1805. Owed for P18: fast-0 staging (venv, worktree, gate jobs J1–J4 per `docs/research/p18-prebuild/gate_jobs.md`), probe, dry score, registration pack and guard. |
+## 1. The big result of 11-07: tip-feed migration bug found, fixed, deployed
+- Helius `getBlock` truncates the logs of pump `migrate`/`migrate_v2` txs. The fast-0 tip follower decoded migrations from logs only, so the tip tape had ~0.6% of graduations as `migration` rows (writer counts 11-06T12..11-07T17: pool_create 5 / complete 893).
+- That starved arena_tip_adapter `pool_create` and therefore **r4-b, h5v2-f1 and s1t** (QP-RULING-1107-tip-migration-crossbook.md, ops/manager20/). It very likely explains r4-b-T P0 FAIL (1 trade in 3 days) and s1t's AGE_BAR FAIL.
+- Fix: PR #1264 (inner-instruction migration rows; follower blob e3213b8c; decoder blobs unchanged) + tests #1262/#1265 + DEC-031 Am.23 Erratum 2 (#1266) + Am.29 Erratum 1 (#1267).
+- Proof: P2 #2244 (33.5k slots, 5/5 streams md5 equal, extra_rows 47 = inner_added 47); triage #2245 (88 migrate txs all inner-only; drops are non-WSOL-quoted pools, ~10% pooled 19/191, by design).
+- **Deployed 2026-11-07T18:03:21.427Z** by #2246 (tree /var/lib/mal/fast-tip-follower-src/6ab2c758…, drop-in 30-inner-migration.conf = WorkingDirectory only). Live check #2247 at +73 min: inner_added 43, errors 0, lag 0, pinned true. Writer hour 11-07T19: pool_create 39 / complete 39.
+- **Window rule:** hour 18 and earlier are pre-fix; the first usable tip hour is **2026-11-07T19**.
+- Helius credits used for this: ≈106.5k (#2235 6,001; #2236 33,501 void; #2244 33,501; #2245 ~33,501).
 
-## 2. Seals (list all of them in every tape-touching brief)
-**The binding list is /data/mal/hunt-1008/push-1016/hunt30/SEALS-BRIEF.md (sha256 prefix 823cc062).** Paste it verbatim into every tape-touching brief. It includes the HV4 no-retune rule, Q50 #817 and the canary, the Look-2 scope, D1 SPENT scope, the arena-join and in-sample rules, ledger D2/D3 (docs/HOLDOUT_LEDGER.md), and walk-2. The bullets below are a summary plus this session's additions, not a replacement.
-- **HV4:** outputs, ledgers and decision rows; the status view and log tail of #1561/#1562.
-- **Q50 and s1:** outputs, shadow dirs, score and count files, and bots.json contents. **Never call `miscusi_job_status` on #1419/#1421/#1543.** For job limits, use `miscusi_job_list`. A contact on 10-28 is disclosed in n_RKchrIJwFfAT5A for QP to rule on.
-- **EXP-024 Look-2:** H5-family pools to 2026-11-14. Declared observations: Am.10 note (Q50 live), s1 note (blob 7015abc9), and the Q60 note when it lands.
-- **DBC:** the forward window and fwdv1/. Never run any #890 test file, nor `tools.test_dbc_m10_read_hardening`. LaunchLab [10-17, 10-24) is SPENT.
-- **Other:**
-  - /data/mal/meta-capture/: never list or read it.
-  - fresh-0802 is the last unspent reserve; fresh-0828 belongs to EXP-028.
-  - Arena tape: counts only, under QP rulings.
-  - HV replay outputs: md5s and field names only.
-
-## 3. Live path (Q50 C0)
-- **Pre-stage PASS (HELM-REPLY-1028-1):** reinstall at Y=c8fcf761 plus a 1 h keyless dry run on fast-0; all 6 criteria passed. Units are stopped and disabled, and there is no key.
-- **BLOCKER (n_-pbYbpY143vu4g):** the executor holds buys for ≥600 s on EVERY feed gap row (h5_arena_executor.py:1227-1229). The pre-stage hour had 149 feed_reconnect_redundant plus 47 feed_gap rows, so a live C0 would almost never buy.
-  - Likely cause: public ws churn on fast-0's IP. I cancelled the P45 meme.fun recorder (#1667/#1668) at about 17:20Z on 10-28.
-  - **HELM-ASK-1028-1** asks for a repeat 1 h keyless dry run on 10-29 to re-measure; the reply will be HELM-REPLY-1029-1.
-  - If the gap rate stays high, the next step is a QP-reviewed restart of the Q50 shadow on other endpoints or fewer sockets. That writes a feed_restart and departs from the registered endpoints, so it is a records change. The other option is to move the fast listener and tip-tape load off that IP.
-  - The same gaps may also cut Q50's counted paper attempts, which raises the NOT_DECIDABLE risk.
-- **DEC-033 stage order (QP-PRERULING-1027-xorder):**
-  - Stage 2 is the copy PR, whose merge is X: read figures, in-band, seal statement, bare `OWNER_CANARY_CONFIRMED: bot_id=h5v1q50-boostfloor-a1`.
-  - Stage 3 is records PR R, after X: POSTX tokens.
-  - Use `scripts/ops/q50-canary-record-check.sh`.
-  - At X: manifest, md5 replay (`q50-xtime-md5-job.sh X`, which must reproduce #1481: 137/137 and 101/101), N4 re-run (#1758 is a disclosure only), Helm install plus 1 h dry run, and the webhook install confirmation.
-- **A3 guard:** #1446 is extended to 11-07T00:57Z. Dead-man #1319 runs to about 11-04T21:13Z, then #1333 takes over.
-
-## 4. Merged this session (10-27/28)
-| PR | What it is |
+## 2. Fixed steps in the next days (crons are in `ops/manager20/crons-manager20-1104.json`; re-create them with CronCreate at session start)
+| UTC | Step |
 |---|---|
-| #1054 | in-band tool |
-| #1055 | P95 structural census |
-| #1056 | Q50 C0 stage-1 records + record check |
-| #1057 | s1 design |
-| #1058 | s1 policy |
-| #1059 / #1061 / #1063 | P98 synthetic-completer counter. V1a FAILED, so no count was run and the lane is closed. |
-| #1060 | P96 Q50 forward veto prereg. Earliest run ~11-20; the scored-rows export PR is still owed. |
-| #1062 | P97: callout-follow is NOT_TESTABLE; holder rewards are real but weak |
-| #1064 | Q60 decision |
-| #1065 | s1 paper code |
-| #1066 | P18 B' |
-| #1067 | P18 prebuild |
-| #1068 | DBC REGISTRATION addendum 2c |
-| #1069 | P91 KILL |
+| hourly :17 | HELM-REPLY-* in /data/mal/hunt-1008/push-1016/hunt29/p1/; PR verdicts; miscusi_inbox; due steps |
+| daily 01:21 / 03:23 / 07:27 / 07:31 / 09:43 / 12:17 | digest + HV4 L8 / tip-tape archive / A3 record / BOOST check / housekeeping + DEC-035 §5 lane line / H5 health — full prompts in the crons json |
+| **11-08 20:41** | h5v2-bx10-f1 SMOKE 2 **#2251**: job_list ONLY (exit 0 = judge PASS, failed = slip). If PASS: 8(f) hour-health line (24 h 11-07T22..11-08T21; data_loss rows ≤ 6), submit the A3 loop job (`sh scripts/ops/h5v2f1-a3-loop.sh` at tag a3-guard-pin-v2f1), prepare the registration record. |
+| **11-08 22:07** | Read **#2252** output line `FEEDBAR_8J PASS|MISS|ASK_QP` (DEC-031 Am.29 E1 item 8(j): Σpool_create/Σcomplete ≥ 0.8 over 11-07T22..11-08T21). If all pass, **in this order**: registration record notebook (8(h)) → bots.json line → `sh scripts/research/h5v2-f1-launch.sh book1` with CLOCK_DAY=2026-11-09, REG_NOTEBOOK, SMOKE_PASS_JOB=#2251 id, FEEDBAR_NOTE (put the 8(j) line in it), A3_LOOP_JOB, **inside 22:00–22:50Z**. Any miss → slip; new smoke S ≥ 11-07T19Z, latest S 11-15T21:30Z (clock = first 00:00Z ≥ S + 26 h 30 min). Ratio > 1 over 24 h or zero denominator → see Am.29 E1 / ask QP. |
+| 11-08 ~13:05 | HV4 E4 runner seg2 #1562 ends (never status-view it). |
+| 11-09 03:05 / 03:43 | EXP-027 J6b #2053 `--check-window`, then read its file. |
+| 11-10 20:13 | feed-handover-1111: submit per docs/runbooks (research-0 arena feed #1652 successor). |
+| 11-12 10:13 | tip writer #2033 + push #2039 SUCCESSORS (due before their limits). |
 
-**Ideas closed:** P29 keeper-absorb (KILL, priced 10-26), P91 cost-gated kNN (KILL), P98 synthetic completer (V1a FAIL), callout-follow (no feed). Holder-carry is weak: the P70 drift per token held (about −24.3%/day) is about 24–28× the carry at turnover 1. The structural census found BOOST to be the only large protocol-funded payment.
+Launcher: `scripts/research/h5v2-f1-launch.sh` sha256 5e6beb9d… (modes smoke/book1/book2; book1 CLOCK_DAY ≤ 2026-11-20). Pins for smoke 2: notebook n_0BiXrSL8SVD71w.
 
-## 5. Fixed instants: host-side MiScusi jobs (they run without a session)
-- **Daily:**
-  - 00:05 HV4 reviewers; 00:10/00:15/23:50 digests; 00:20 Q50 score; 01:10 HV4 D3 table; 01:30 HV4 instant #1591;
-  - 07:10/19:10 A3 #1446; 07:40 radar #1577, then #1647; 13:10 dead-man.
-- **DBC chain** (all at 304bb9cd on research-0):
-  - Gates g2 #1797 (10-29T06Z), g3 #1799, g4 #1801.
-  - G passes #1798/#1800/#1802 are independent, each with a bounded 100 min wait.
-  - G5 FINAL #1803 runs after F #1546, then **READ #1804** (Option A, 11 GB) runs after F and #1803.
-  - G pass 1 #1796 finished rc 0 with no gaps. #1785–#1793 were cancelled and never ran.
-  - If #1803 is killed, #1804 never starts; resubmit both.
-- **Feed handover:** H' #1652 is armed and sleeps until 11-07T11:50Z (n_NglnQrS8iEMa1Q); post-check C #1585.
-- **Meta-capture:** #1814, restarted 10-28 after an RSS guard exit; cap 2500 MB. It grows slowly, so restart it or fix the leak if it nears the cap.
-- **Walk 2:** #1036, then gate #1289 (11-03), then #1290.
+## 3. Lines and where they stand (all paper unless said)
+| Line | State | Push idea / next |
+|---|---|---|
+| **h5v2-bx10-f1** | Smoke 1 #2219 slipped (starved feed). Smoke 2 #2251 on fixed feed. | §2 above: book1 clock 11-09T00Z if the smoke and 8(j) pass. |
+| **r4-b / r4bt-c0** (live executor) | C0 code complete and merged 11-06 (#1246–#1261; notebook n_N3C1MJqaW7fU4A). P0 FAIL 11-07 00:17Z (floor; starved feed). Not registered. Helm install request withdrawn (HELM-REPLY-1106-1: nothing installed). | Best live candidate now that the feed is fixed: new DEC-031 amendment for a post-deploy P0, plus a C0 real-layout twin run on closed post-deploy hours (≥ 11-07T19) **before** any C0 install (Am.23 E2 limits). Then a fresh Helm request + owner's yes in Helm chat. |
+| **slowbot-h-1** (DEC-035 lane) | 24 h keyless dry ended clean (HELM-REPLY-1104-1h). Helm waits for the owner's own yes in Helm chat. | Ask the owner to say yes to Helm directly. SLOWB-0 paper #2136 is negative so far (memory `slowbot-paper-negative`) — it is a calibration probe, not a profit claim. |
+| **s1t** | Withdrawn 2026-11-06T17:16:06Z (n_61bjmqA3xPk33g). AGE_BAR FAIL likely the starved feed. | Could be revived on the fixed feed under a new amendment. |
+| **h5 lane3 shadow (heal)** #2184 | Running; feeds h5-lane-h. QP-RULING-1106-h5v2-lane: no H5 v2 lane live now; BOOST shift (QP-RULING-1106-boost-shift) broke the H5 v1 330 s exit premise. | h5-lane-h2 PR #1240 open (no verdicts). |
+| **h5-lane-syn** | PARKED: #2110 refused (H5_SOCKETS 2 < 3 guard, right to refuse). | — |
+| **HV4** (9 Haiku bots) | 11-01 read NOT_DECIDABLE_5PCT; E4/E5/E6/L8 jobs finishing 11-08/09. | Let them finish; never status-view. |
+| **HV6 / HV7** | HV7 PARKED (no clock). HV6 fixes PR #1108 open. Haiku text-only selection evidence is poor (memory `haiku-trader-track`). | Low priority. |
+| **Q50** | ENDED NOT_DECIDABLE 11-06. | — |
+| **Walk 2** | Stopped after hour 11-07T05 (J7, 08:42Z). | — |
+| **EXP-027** | ND, route (b) J6b at 11-09T03:05Z. | read file at 03:43Z. |
 
-## 6. Session crons (recreate them if lost)
-The full JSON is at /data/mal/hunt-1008/ops/manager16-session-crons-1026.json plus recurring-crons-1011.json. The recurring ones:
-- hourly push check at :23;
-- disk guard every 2 h at :37;
-- Helm channel at :47;
-- daily: digest copy 00:23, HV4 L8 01:21, tip-tape archive 03:23, A3 monitor 06:41, housekeeping 09:13, H5 health 12:17.
+## 4. Owed (not yet done)
+- **Records batch** `claude/records-20261107` (T0, records only): LAB_STATE follower restart row (instant 18:03:21.427Z, tree, blobs, P2 #2244, triage #2245, cut-over hour 18, first usable 19); console event; walk-2 stop; r4-b-T P0 FAIL; h5v2 hold/slip; M3′ end; dry-long stop; root cause + #1262/#1264–#1267; feed hand-off 11-07; housekeeping. Note: Am.23 E2 item 2 cites P2 #2236, but the passing P2 is #2244 (#2236 void, no solders in that venv).
+- **Follow-up PR:** P2 script must refuse to run without solders; split canon exceptions from pool mismatches in follower counters; document the non-WSOL drop.
+- PR #1263 (public-RPC migrate probe): merge or close (no verdicts).
+- Retarget the 12:17Z H5 health check `--shadow-dir` (it still points at the ended Q50 shadow → h5_feed_stale false alert).
+- Check structure monitor #2214's first run 11-08T07:11Z: the 11-07 run (#2072) sampled 0/20 graduations (11-06: 20), so no BOOST median was computed. Cause not yet established (the monitor has its own sampler, separate from the tip follower).
+- Stale open PRs (#954–#1199 range): many are parked/never-merge; triage when there is time.
 
-One-shots to recreate:
-- 10-31 21:07Z: check research-0 room for DBC READ #1804, which needs about 11 GB;
-- 11-01 04:13Z: DBC read watch.
+## 5. Running jobs (35; `miscusi_job_list active_only`)
+Feeds/tape: #2033 tip writer, #2039 push → research-0, #2062 follower health, #2064 hour-health staging, #2055 pool_cache, #2169 r4-b mirror pull, #2134 venue tape, #1652 research-0 arena feed, #1814 meta-capture.
+Paper bots: #2136 SLOWB-0 (+ #2155 intents push), #2184 h5 lane3 shadow heal, #1748 HV6 producer.
+HV4: #1562 E4 runner, #1567/#1568/#1569 E5, #1559/#1560 E6, #1519/#1520 L8, #2001/#2002 gap relays, #1591 read-instant.
+h5v2: #2251 smoke 2, #2252 8(j) bar.
+Guards: #1952 watchdog, #2176 disk guard, #1898 + #1896 A3 guards, #2199 BOOST watch, #2214 (→ #2217) structure monitor, #1647 change radar, #1897 digest. Scheduled: #2053 J6b.
 
-## 7. Owed, by date
-- **10-29:**
-  - HV7 smoke #1779 FAILED (reply format). HV7 slips; fix and re-proof (see §1).
-  - Helm's repeat dry run (feed gaps).
-  - Start the HV6 fix work (A/B/C) at a new sha.
-  - Plan the use of the $192 API budget, and the self-improving Haiku trader direction (see §8).
-- **10-30T00Z onward:** the Q50 read. **HV4:** its read comes at an as-of of at least B + 24 h, so 10-31T00Z at the earliest (Am.15; QP-RULING-1029-hv4-read-d1d4).
-- **10-31:**
-  - Q60 tag and proofs (clock 11-07).
-  - s1 fast-0 tests.
-  - Memory room for DBC READ.
-- **11-01:** DBC READ #1804, then P18 B' (11-04) if it PASSes. (HV7 T0 cancelled: slipped.)
-- **11-04/05:** s1 registration and its shadow (11-05 20:00–22:30Z).
-- **Records owed:**
-  - LAB_STATE "Now" lines: HV6 slip, P91 KILL, feed hand-off re-arm, meta-capture restart.
-  - The old open lane PRs (#944–#993): triage, close or merge.
+**Never `miscusi_job_status`:** #1561 #1562 #1419 #1421 #1543 #1540 #1446 #1036 #1290, the HV4 E5/E6 loops, #2018 #2019, and every s1t / h5v2-bx10-f1 shadow, smoke, judge, A3 or score job (incl. **#2219, #2251**). Use job_list. Treat HV4 L8 jobs cautiously.
 
-## 8. Lessons (also in memory)
-- Run `date -u` before writing any timestamp. I guessed times twice this session.
-- **Smoke tools:** HV7's smoke tool was derived from HV6's. When one crashes, check its siblings.
-- **Production-path tests:** smoke and real-path tools must be tested with `MAL_ARENA_TEST` unset. Two setup crashes, #1776 and #1769, came from test-only register overrides.
-- **Parallel agents:** they clobbered a shared scratchpad comment file, so a wrong verdict body got posted on #1059. Brief agents to use `mktemp`, post with `-R vaanai/MAL`, and paste the grep check. Check that each verdict body matches its PR.
-- **Never `miscusi_job_status` sealed jobs** (feedback-no-status-sealed-jobs).
-- **Serial job chains:** in a chain, one killed link blocks every later step. Use bounded waits, and hang each daily pass off a gate instead of off the previous pass.
-- **Owner note on the Haiku direction (judgment, not evidence):** the evidence is that Haiku is weak as a raw ranker (P92 IC 0.02723 vs kNN 0.296; P93 AUC 0.4476, CI90 [0.3384, 0.5499]). A "self-improving general bot" may be more promising if it learns when to act on candidate structural signals than if it tries to pick winners. Candidates: the BOOST floor (Q50, in-sample only, unproven forward) and the avoid-bad-pools veto (P96, pre-registered, untested). Neither has cleared the gate.
+## 6. Rules you will need at once
+- Seals: paste `/data/mal/hunt-1008/push-1016/hunt30/SEALS-BRIEF.md` (sha256 9995ec7d…) verbatim into every tape-touching brief. Never open the tip tape (/var/lib/mal/sealed/*), arena tape contents, shadow/smoke dirs, /var/lib/mal-live/**, bots.json, meta-capture, the C0 state dir or derived copies — counts only via manager jobs. The writer's `.writer/counts.jsonl` and `status.json` are agent-readable.
+- Merges: `QP VERDICT <head> OK` + `REVIEWER VERDICT <head> APPROVE` at the exact head; T1 needs separate agents. Workers never merge.
+- Jobs run under `sh`; feed jobs ≥ 0.5 CPU; one heavy replay at a time on fast-0; a DEC-035 bot code change = a new bot_id.
+- Say "credential material" (hook blocks the other word); use `--body-file` for PR/comment bodies.
+- QP rulings of this manager: `/data/mal/hunt-1008/ops/manager20/QP-RULING-*.md`. Reports: `/data/mal/hunt-1008/ops/reports/2026-11-0{6,7}/`.
+
+## 7. How to verify this handoff
+- `git log --oneline -6` on main shows 1025b36f (#1267) and 6ab2c758 (#1266).
+- `miscusi_job_list active_only` shows #2251 and #2252 running.
+- Writer counts: `/home/claude/mal-data/arena-tipfeed/tape/.writer/counts.jsonl` on fast-0 (via a job) — hours ≥ 11-07T19 should show pool_create ≈ 0.9 × complete.
+- State log last lines mention this handoff (21:2xZ).
