@@ -68,6 +68,7 @@ from tools.pump_history_backfill import (
     RateLimiter,
     redact_rpc_url,
     resolve_rpc_url,
+    cpi_events_from_tx,
     resolve_unresolved,
     rows_from_block,
     rpc_call,
@@ -90,6 +91,72 @@ _FILE_RE = re.compile(r"^(trades|creates|migrations|skipped-slots)-(\d{4}-\d{2}-
 _OBS_RE = re.compile(r"^observe-(\d{4}-\d{2}-\d{2})\.jsonl$")
 
 TRADE_EVENT_V_ENV = "MAL_TIP_TRADE_EVENT_V"
+_MIGRATE_DISC = bytes.fromhex("bde95db95c94ea94")  # CompletePumpAmmMigrationEvent
+
+
+def _canonical_pool_str(mint: str) -> str:
+    """The canonical PumpSwap pool PDA of a mint (tools.pumpswap_tx.canonical_pool, the repo's derivation)."""
+    from solders.pubkey import Pubkey
+
+    from tools.pumpswap_tx import canonical_pool
+
+    return str(canonical_pool(Pubkey.from_string(mint)))
+
+
+def inner_migration_rows(
+    block: Mapping[str, Any],
+    decoded: Mapping[str, Any],
+    stats: dict[str, int] | None = None,
+    canonical_fn: Callable[[str], str] | None = None,
+) -> list[dict[str, Any]]:
+    """Migration rows that only the inner instructions (Anchor emit_cpi) carry, for one block.
+
+    `decoded` is the legacy rows_from_block result of the same block. A second rows_from_block(event_v=True)
+    pass runs on a reduced view of the block: only txs whose inner instructions hold a migrate event and
+    whose signature has no log-path migration row are kept, at their ORIGINAL positions (the others are
+    replaced by None, which the decoder skips), so tx_index is the same as in the legacy pass. The pass gets a
+    throwaway pool_mints ({}): the follower's pool cache is never touched (migration rows do not read it).
+    Only migration rows with event_source "inner_event" are returned; they carry the event-V extras
+    (`event_source`, `init_boost`) and are otherwise the rows the log path would have given.
+    Guard: decode_migration_event reads fixed offsets, so a changed event layout could give a row with a
+    shifted (wrong) pool. A row whose pool is not the canonical PumpSwap PDA of its mint is dropped and
+    counted in stats["pool_mismatch"]. (Non-canonical pools are not covered by that derivation either.)
+    """
+    have = {r.get("signature") for r in (decoded.get("migrations") or []) if r.get("type") == "migration"}
+    txs = block.get("transactions") or []
+    keep: list[Any] = []
+    any_cand = False
+    for tx in txs:
+        cand = False
+        if isinstance(tx, dict):
+            meta = tx.get("meta") if isinstance(tx.get("meta"), dict) else {}
+            if meta.get("err") is None and meta.get("innerInstructions") and tx_signature(tx) not in have:
+                cand = any(b[:8] == _MIGRATE_DISC for b in cpi_events_from_tx(tx))
+        keep.append(tx if cand else None)
+        any_cand = any_cand or cand
+    if not any_cand:
+        return []
+    view = dict(block)
+    view["transactions"] = keep
+    ev = rows_from_block(view, {}, FEED, event_v=True)
+    canon = canonical_fn or _canonical_pool_str
+    out: list[dict[str, Any]] = []
+    for r in ev.get("migrations", []):
+        if not (r.get("type") == "migration" and r.get("event_source") == "inner_event"
+                and r.get("signature") not in have):
+            continue
+        try:
+            ok = canon(str(r.get("mint"))) == r.get("pool")
+        except Exception:
+            ok = False
+        if not ok:
+            if stats is not None:
+                stats["pool_mismatch"] = stats.get("pool_mismatch", 0) + 1
+            continue
+        out.append(r)
+    return out
+
+
 # Job #433's decoder (forward-1002ev), by git blob sha, from DEC-016:397. The stamped event V equals the V
 # forward-1002ev and walk 2 hold only when the follower runs these blobs (quant-proof ruling 10-10, (a)).
 PINNED_DECODER_BLOBS = {
@@ -306,6 +373,9 @@ class TipFollower:
         self.event_v_missing_pumpswap = 0
         self.event_v_mismatch = 0
         self.event_v_errors = 0
+        self.migrations_inner_added = 0
+        self.migrations_inner_errors = 0
+        self.migrations_inner_pool_mismatch = 0
         self.decoder_blobs = decoder_blobs()
         self.creates_dir = creates_dir or (state_dir / "creates")
         self.state_dir = state_dir
@@ -546,6 +616,16 @@ class TipFollower:
                 self.unresolved_dropped += dropped
             for kind in KINDS:
                 rows[kind] = list(decoded.get(kind) or [])
+            try:  # additive: migration rows the log path missed (logs cut, or event by self-CPI only)
+                mstats: dict[str, int] = {}
+                extra = inner_migration_rows(block, decoded, mstats)
+                self.migrations_inner_pool_mismatch += mstats.get("pool_mismatch", 0)
+            except Exception as exc:  # never stop the feed over the extra rows
+                extra = []
+                self.migrations_inner_errors += 1
+                self._log_limited("inner_mig", f"inner migration pass failed in slot {slot}: {type(exc).__name__}")
+            rows["migrations"].extend(extra)
+            self.migrations_inner_added += len(extra)
             rows["trades"].extend(ready)
             self._stamp_virtual(rows["trades"])
             if self.trade_event_v:  # after `ready`: resolved rows are stamped too
@@ -756,6 +836,9 @@ class TipFollower:
             "event_v_missing_pumpswap": self.event_v_missing_pumpswap,
             "event_v_mismatch": self.event_v_mismatch,
             "event_v_errors": self.event_v_errors,
+            "migrations_inner_added": self.migrations_inner_added,
+            "migrations_inner_errors": self.migrations_inner_errors,
+            "migrations_inner_pool_mismatch": self.migrations_inner_pool_mismatch,
             "decoder_blobs": self.decoder_blobs,
             "decoder_blobs_pinned": self.decoder_blobs == PINNED_DECODER_BLOBS,
         }

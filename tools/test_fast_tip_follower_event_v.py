@@ -206,9 +206,20 @@ def _base_module(tmp: Path):
 # ---------------------------------------------------------------- flag off: byte-identical to main
 
 
+def _without_inner_migrations(streams: dict[str, bytes]) -> dict[str, bytes]:
+    """Drop the migration rows the follower now ADDS from the inner-instruction path (event_source inner_event);
+    every legacy row has no event_source key. What is left must equal the base follower's output byte for byte."""
+    out = {}
+    for name, data in streams.items():
+        if _kind(name) == "migrations":
+            data = b"".join(x + b"\n" for x in data.splitlines() if b'"event_source":"inner_event"' not in x)
+        out[name] = data
+    return out
+
+
 def test_flag_off_md5_equals_golden_base(tmp_path):
     _run(ftf, tmp_path)
-    got = _md5s(_streams(tmp_path))
+    got = _md5s(_without_inner_migrations(_streams(tmp_path)))
     assert {_kind(k) for k in got} >= {"trades", "creates", "migrations", "skipped-slots", "gaps.jsonl", "observe"}
     assert got == GOLDEN_FLAG_OFF
 
@@ -219,7 +230,7 @@ def test_flag_off_equals_base_commit_follower_live(tmp_path):
         pytest.skip(f"git cannot read {BASE_COMMIT} here; the golden md5 test still runs")
     _run(base, tmp_path / "base")
     _run(ftf, tmp_path / "new")
-    assert _streams(tmp_path / "new") == _streams(tmp_path / "base")
+    assert _without_inner_migrations(_streams(tmp_path / "new")) == _streams(tmp_path / "base")
     assert _md5s(_streams(tmp_path / "base")) == GOLDEN_FLAG_OFF
 
 
