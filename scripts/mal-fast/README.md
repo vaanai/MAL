@@ -55,6 +55,7 @@ the unit, LIVE_OK and the credential; no Claude session reads the wallet key.
 - **Limits in code (DEC-035 s2):** stake bounds `FLOOR_LANE_STAKE_BOUNDS_LAMPORTS` (default 0.02 to 0.03 SOL; the unit refuses to start outside them; raising them is one edit in that constant plus
   `test_constants_follow_dec035_s2` in `tools/test_floor_lane_executor.py`, after an owner decision), lane total -0.30 SOL, daily -0.10 SOL, at most 3 open across the lane (`lane_full`), STOP before every
   send, ledger lock and read before every send. A landed sell that refunds no token-account rent latches `ata_rent_not_refunded` (entries stop, exits run).
+- **Redeploy pause (DEC-035 s4):** with `a3_record_file` (required for `--live`) the executor reads the newest A3 daily record; a pins_changed or program_changed flag, or a stale, future or unreadable record, pauses new entries (reason `a3_pause:...`, not a latch; it clears when the record clears after the manager re-pins). Exits keep running. Confirm the record path on the host.
 - **Kill:** `touch /var/lib/mal-live/h5-lane/STOP` stops new entries at once (open positions keep the rule's exits: tp +50 %, 24 h). The budget stop writes the same file and it survives restarts.
   `systemctl stop mal-floor-lane` stops the process; open positions are persisted in the state dir and resume on the next start (the 24 h deadline is stored with each order).
 - **Not tested here:** a real send, the feed, the Helius RPC, the wallet. The first read of real fills is the lane's day-1 report (DEC-035 s5).

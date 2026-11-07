@@ -37,6 +37,7 @@ from typing import Any, Callable, Mapping, Sequence
 
 from tools import arena_live_bridge as B
 from tools import floor_arena_executor as F
+from tools import h5_arena_executor as h5a
 from tools import h5_lane_executor as H
 
 LIVE_BUILT = True  # the single constant of the live path. True removes only the `live_not_built` refusal: a send still needs mode live + --live + LIVE_OK + every lane limit.
@@ -54,6 +55,7 @@ LANE_MARK_STALE_MAX_S = 60
 LANE_MIN_FEE_RESERVE = F.RENT_RESERVE_LAMPORTS + F.SEND_FEE_LAMPORTS + F.SELL_RESERVE_LAMPORTS
 LANE_UNRESOLVED_MS = H.LANE_UNRESOLVED_MS
 LANE_RECONCILE_EVERY_MS = H.LANE_RECONCILE_EVERY_MS
+A3_POLL_MS = 60_000
 LIVE_OK_DEFAULT = "/etc/mal-arena-live/floor-lane-1/LIVE_OK"
 LATCH_NO_ATA_REFUND = "ata_rent_not_refunded"
 LATCH_BUY_ERROR = "lane_buy_error"
@@ -272,6 +274,18 @@ def _fee_parts(fee: int) -> dict[str, int]:
     return {"fee_network": min(fee, F.BASE_FEE_LAMPORTS), "fee_priority": max(0, fee - F.BASE_FEE_LAMPORTS)}
 
 
+def take_bot_lock(lane: "H.LaneLedger") -> Any:
+    """One process per lane bot_id: an exclusive flock on <ledger>.bot.floor-lane-1.lock, held for the life of the process. A second unit on the same ledger would reconcile the first
+    one's open positions as orphans. Taken before the port, the state or anything else is built."""
+    f = open(f"{lane.path}.bot.{LANE_BOT_ID}.lock", "a")
+    try:
+        fcntl.flock(f, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except OSError:
+        f.close()
+        raise SystemExit(f"floor lane start refused: another process holds bot_id {LANE_BOT_ID!r} on this ledger") from None
+    return f
+
+
 # --- the bridge --------------------------------------------------------------------------------------------------------------------------------------
 
 
@@ -279,7 +293,7 @@ class FloorLaneBridge(F.FloorBridge):
     """FloorBridge plus the lane. With a DRY config it adds nothing (no ledger is read or written). With a live config the shared lane ledger is read under its lock before every send."""
 
     def __init__(self, cfg: B.Config, port: B.OrderPort, lane_cfg: H.LaneConfig, *, now_ms: Callable[[], int] | None = None, live_ok_path: str | Path = LIVE_OK_DEFAULT,
-                 tier_path: Path = B.TIER_PATH, root_checks: bool = True, close_blocked: Callable[[str], bool | None] | None = None, dry_replay_caps: bool = False) -> None:
+                 tier_path: Path = B.TIER_PATH, root_checks: bool = True, close_blocked: Callable[[str], bool | None] | None = None, dry_replay_caps: bool = False, a3_record_file: str = "", bot_lock: Any = None) -> None:
         self.lane_cfg = lane_cfg
         self.lane: FloorLaneLedger | None = None
         self._lane_bot_lock: Any = None
@@ -289,13 +303,19 @@ class FloorLaneBridge(F.FloorBridge):
         self.lane_live_ok_path = str(live_ok_path)
         self.lane_root_checks = root_checks
         live = cfg.mode == B.LIVE
-        if live:  # the stake check lives in _start_guard, which runs first inside the parent's __init__; the lock and ledger are taken only after it passed
-            pass
-        super().__init__(cfg, port, now_ms=now_ms, live_ok_path=Path(live_ok_path), tier_path=tier_path, root_checks=root_checks, close_blocked=close_blocked, dry_replay_caps=dry_replay_caps)
+        self.a3_record_file = a3_record_file
+        self._a3_pause: str | None = None
+        self._a3_polled_ms: int | None = None
+        if live:  # the per-bot lock comes BEFORE the parent loads, reconciles or saves any state: a second process is refused before it can write
+            self.lane = FloorLaneLedger(lane_cfg)
+            self._lane_bot_lock = bot_lock if bot_lock is not None else take_bot_lock(self.lane)
+        try:
+            super().__init__(cfg, port, now_ms=now_ms, live_ok_path=Path(live_ok_path), tier_path=tier_path, root_checks=root_checks, close_blocked=close_blocked, dry_replay_caps=dry_replay_caps)
+        except BaseException:
+            self.release_lane_lock()
+            raise
         if live:
             assert isinstance(port, FloorLanePort)
-            self.lane = FloorLaneLedger(lane_cfg)
-            self._lane_bot_lock = self._take_bot_lock()
             port.pre_buy = self._lane_pre_buy
             port.on_error = self._latch
             self._lane_record("start", "", code_sha256=hashlib.sha256(Path(__file__).read_bytes()).hexdigest(), frozen_sha=FROZEN_SHA, book=BOOK_BOT_ID,
@@ -316,17 +336,6 @@ class FloorLaneBridge(F.FloorBridge):
                 raise SystemExit("floor lane start refused: the sell does not close the token ATA (rent would be stranded)")
         elif port.live:
             raise SystemExit("floor lane start refused: a DRY config never takes a live port")
-
-    def _take_bot_lock(self) -> Any:
-        """One process per lane bot_id: a second unit on the same ledger would reconcile the first one's open positions as orphans."""
-        assert self.lane is not None
-        f = open(f"{self.lane.path}.bot.{LANE_BOT_ID}.lock", "a")
-        try:
-            fcntl.flock(f, fcntl.LOCK_EX | fcntl.LOCK_NB)
-        except OSError:
-            f.close()
-            raise SystemExit(f"floor lane start refused: another process holds bot_id {LANE_BOT_ID!r} on this ledger") from None
-        return f
 
     def release_lane_lock(self) -> None:
         if self._lane_bot_lock is not None:
@@ -351,9 +360,29 @@ class FloorLaneBridge(F.FloorBridge):
         return (False, why) if why else (True, None)
 
     # -- entry gates
+    def a3_pause_tick(self, now: int) -> None:
+        """DEC-035 s4: on a pump / PumpSwap redeploy flag (A3 pins_changed or program_changed), a stale, future or unreadable record, new entries pause. Not a latch: it clears
+        when the record clears (the manager re-pins first). Exits keep running; this is read in the entry check and again before every send."""
+        if self.lane is None or not self.a3_record_file:
+            return
+        if self._a3_polled_ms is not None and 0 <= now - self._a3_polled_ms < A3_POLL_MS:
+            return
+        self._a3_polled_ms = now
+        try:
+            flags, problem = h5a.a3_record_problem(Path(self.a3_record_file), now)
+        except Exception:  # noqa: BLE001 - fail closed
+            flags, problem = [], "a3_record_error"
+        new = problem or ("a3_flags:" + ",".join(flags) if flags else None)
+        if new != self._a3_pause:
+            self._log("a3_pause" if new else "a3_resume", why=new)
+        self._a3_pause = new
+
     def _lane_check(self, now: int, stake: int) -> str | None:
         if self.lane is None:
             return None
+        self.a3_pause_tick(now)
+        if self._a3_pause:
+            return "a3_pause:" + self._a3_pause
         if self._lane_orphans:
             return "lane_unresolved_intent"
         why = self.lane.check(self._lane_marks, now, stake)
@@ -373,6 +402,10 @@ class FloorLaneBridge(F.FloorBridge):
         assert self.lane is not None
         if self.lane.stop_present():
             return "lane_stop_file"
+        self._a3_polled_ms = None  # re-read the record right now, not on the 60 s cadence
+        self.a3_pause_tick(self.now_ms())
+        if self._a3_pause:
+            return "a3_pause:" + self._a3_pause
         halt, stop = self._files()
         if halt:
             return "halt_file"
@@ -390,8 +423,8 @@ class FloorLaneBridge(F.FloorBridge):
     def handle_entry(self, row: dict[str, Any]) -> None:
         super().handle_entry(row)
         o = self.state.orders.get(str(row.get("order_id")))
-        if self.lane is not None and o is not None and o["status"] == "refused" and str(o.get("refused", "")).startswith("gate:"):
-            # the port refused after the write-ahead (a race on the shared lane, or a gate): nothing was sent. Close the intent if one was written, release the mint.
+        if self.lane is not None and o is not None and o["status"] == "refused" and o.get("send_ms") is not None:
+            # the port refused after the write-ahead (a lane race, a gate or an executor skip, whatever the label): nothing was sent. Close the intent if one was written, release the mint.
             if o["mint"] in self.state.bought:
                 self.state.bought.remove(o["mint"])
             self._lane_writeoff_unsent(o)
@@ -503,24 +536,23 @@ class FloorLaneBridge(F.FloorBridge):
             self._lane_orphans = {"?"}  # an unreadable ledger blocks entries
             return
         mine = LANE_BOT_ID + ":"
-        by_mint = {o["mint"]: o for o in self.state.orders.values() if o["status"] != "refused"}
-        refused = {o["mint"]: o for o in self.state.orders.values() if o["status"] == "refused"}
         orphans: set[str] = set()
         for key, p in view.open.items():
             if not key.startswith(mine):
                 continue
             mint = key[len(mine):]
-            o = by_mint.get(mint)
+            sig = p.get("signature")
+            o = self.state.orders.get(sig[len("intent:"):]) if isinstance(sig, str) and sig.startswith("intent:") else None  # by intent id, never by mint (a mint can be re-entered)
             full = p["stake"] + F.RENT_RESERVE_LAMPORTS + F.SEND_FEE_LAMPORTS
             if o is None:
-                if mint in refused and not p["filled"]:
-                    self._lane_record("writeoff", mint, reason="not_sent", signature=p["signature"])
-                    continue
                 if now - p["ts_ms"] >= LANE_UNRESOLVED_MS:
                     print(f"floor_lane_executor ALERT lane_intent_written_off mint={mint}", flush=True)
                     self._lane_record("writeoff", mint, reason="unresolved_intent_10min", sol_out=0 if p["filled"] else full, signature=p["signature"], estimated=True)
                 else:
                     orphans.add(mint)
+                continue
+            if o["status"] == "refused" and not p["filled"]:
+                self._lane_record("writeoff", mint, reason="not_sent", signature=p["signature"])  # the order never reached the chain
                 continue
             if not p["filled"] and o["status"] in ("open", "sell_sending", "sell_sent", "closed"):
                 self._lane_record("fill", mint, ok=True, sol_out=full, signature=p["signature"], estimated=True, reason="fill_event_lost")
@@ -574,12 +606,23 @@ def run(raw: Mapping[str, Any], *, live_flag: bool, once: bool = False, root_che
     except (ValueError, TypeError) as exc:
         print(f"floor_lane_executor ALERT startup_refused {exc}", flush=True)
         return 2
+    a3_file = str(raw.get("a3_record_file") or "")
+    if live_flag and not (a3_file and os.path.isabs(a3_file)):
+        print("floor_lane_executor ALERT startup_refused a3_record_file_missing", flush=True)
+        return 2
     why = start_refusal(cfg, live_ok, live=live_flag, root_checks=root_checks)
     if why:
         print(f"floor_lane_executor ALERT startup_refused {why}", flush=True)
         return 2
+    lock = None
+    if live_flag:  # before the port is built (a second BridgeExecutor on the same probe state) and before any state is loaded
+        try:
+            lock = take_bot_lock(FloorLaneLedger(lane))
+        except SystemExit as exc:
+            print(f"floor_lane_executor ALERT startup_refused {exc}", flush=True)
+            return 2
     port = (port_factory or build_live_port)(cfg) if live_flag else B.DryPort(cfg.dry_balance_lamports)
-    br = FloorLaneBridge(cfg, port, lane, now_ms=now_ms, live_ok_path=live_ok, root_checks=root_checks)
+    br = FloorLaneBridge(cfg, port, lane, now_ms=now_ms, live_ok_path=live_ok, root_checks=root_checks, a3_record_file=a3_file, bot_lock=lock)
     print(f"floor_lane_executor mode={cfg.mode} lane_bot={LANE_BOT_ID} book={cfg.bot_id} stake={cfg.stake_lamports}", flush=True)
     kw = {"sleep": sleep} if sleep is not None else {}
     br.run(once=once, **kw)

@@ -8,6 +8,7 @@
   "funded_lamports": 500000000,
   "wallet_floor_lamports": 250000000,
   "live_ok_path": "/etc/mal-arena-live/floor-lane-1/LIVE_OK",
+  "a3_record_file": "/var/lib/mal/a3/a3-daily.jsonl",
   "lane": {
     "bot_id": "floor-lane-1",
     "ledger_path": "/var/lib/mal-live/h5-lane/lane-ledger.jsonl",

@@ -600,3 +600,131 @@ def test_the_config_example_is_dry_and_valid_and_carries_the_real_frozen_sha():
     assert cfg.mode == B.DRY and lane.fee_reserve_lamports >= X.LANE_MIN_FEE_RESERVE
     assert X.check(raw)["ok"] is True
     assert X.check(raw, live=True)["ok"] is False  # --live on a dry config
+
+
+# ------------------------------------------------------------------------------------------------ review fixes
+def test_reentry_after_a_closed_trade_with_a_refused_buy_books_no_phantom_loss(tmp_path):
+    clk = Clock(T0)
+    br, inner = mk(tmp_path, clk)
+    lg = entry(tmp_path)
+    feed(br, clk)
+    inner.land_buy("MP")
+    br._poll_ports()
+    lg.exit(T0 + 600_000, "o1", reason="tp_1.5x")
+    clk.t = T0 + 600_050
+    feed(br, clk, clk.t)
+    inner.land_sell("MP")
+    br._poll_ports()
+    assert br.state.orders["o1"]["status"] == "closed"
+    with br.lane.locked():
+        cash0 = H.lane_fold(br.lane.read(), {}, clk.t, 60, "floor-lane-1").cash
+    inner.buy = lambda order: (False, "not_sent")  # the executor skips: a non-gate label, nothing sent
+    lg.entry(T0 + 700_000, "o2", pool="P")  # re-entry into the same mint (the rule allows it after the exit)
+    clk.t = T0 + 700_050
+    feed(br, clk, clk.t)
+    assert br.state.orders["o2"]["status"] == "refused"
+    br._lane_reconcile(clk.t + 10_000, force=True)
+    rows = ledger_rows(tmp_path)
+    assert not [r for r in rows if r.get("reason") == "closed_unrecorded" or (r["ev"] == "fill" and r.get("estimated"))]
+    with br.lane.locked():
+        view = H.lane_fold(br.lane.read(), {}, clk.t, 60, "floor-lane-1")
+    assert view.cash == cash0 and view.open == {}
+
+
+def test_reconcile_matches_intents_by_order_id_not_mint(tmp_path):
+    """An old closed order on the mint and a crash-left refused one: the refused one's intent is closed at 0, the closed one is untouched."""
+    clk = Clock(T0)
+    br, inner = mk(tmp_path, clk)
+    lg = entry(tmp_path)
+    feed(br, clk)
+    inner.land_buy("MP")
+    br._poll_ports()
+    lg.exit(T0 + 600_000, "o1", reason="tp_1.5x")
+    clk.t = T0 + 600_050
+    feed(br, clk, clk.t)
+    inner.land_sell("MP")
+    br._poll_ports()
+    # a crash left an intent for o2 that the bridge then refused as "no position" at restart
+    br.lane._write_line(br.lane.path, {"schema": H.LANE_SCHEMA, "bot_id": "floor-lane-1", "row_id": "x1", "ev": "send_intent", "ts_ms": clk.t, "mint": "MP", "signature": "intent:o2",
+                                       "stake_lamports": STAKE, "sol_in_lamports": 0, "sol_out_lamports": 0, "estimated": False})
+    br.state.orders["o2"] = {**br.state.orders["o1"], "order_id": "o2", "status": "refused", "refused": "reconcile_no_position"}
+    br._lane_reconcile(clk.t + 10_000, force=True)
+    wo = [r for r in ledger_rows(tmp_path) if r["ev"] == "writeoff"]
+    assert [(r["reason"], r["sol_out_lamports"]) for r in wo] == [("not_sent", 0)]
+
+
+def utc(ms):
+    import time
+    return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(ms / 1000))
+
+
+def a3_file(tmp, flags=None, run_utc=None):
+    run_utc = run_utc or utc(T0 - 3_600_000)
+    flags = flags if flags is not None else {"pins_changed": {"halt": False, "evaluated": True}}
+    p = tmp / "a3.jsonl"
+    p.write_text(json.dumps({"run_utc": run_utc, "halt": {"flags": flags}, "warn": {"flags": {}}}) + "\n")
+    return p
+
+
+def a3_now():
+    return T0
+
+
+def test_a3_pins_changed_pauses_entries_but_not_exits(tmp_path):
+    now = a3_now()
+    a3 = a3_file(tmp_path)
+    write_live_ok(tmp_path)
+    cfg, lane, live_ok = X.make_config(lane_raw(tmp_path))
+    clk = Clock(now)
+    inner = FakeInner()
+    br = X.FloorLaneBridge(cfg, X.FloorLanePort(inner, cfg), lane, now_ms=clk, live_ok_path=live_ok, root_checks=False, a3_record_file=str(a3))
+    lg = Log(tmp_path)
+    lg.start(now - 1000)
+    lg.entry(now, "o1")
+    feed(br, clk)
+    assert len(inner.buys) == 1  # clear record: entries go
+    inner.land_buy("MP")
+    br._poll_ports()
+    a3_file(tmp_path, {"pins_changed": {"halt": True, "evaluated": True}})  # redeploy flag
+    clk.t = now + 120_000
+    lg.entry(clk.t, "o2", pool="Q")
+    feed(br, clk, clk.t + 50)
+    assert len(inner.buys) == 1 and refusals(br)[-1]["why"] == "a3_pause:a3_flags:pins_changed"
+    lg.exit(clk.t + 1000, "o1", reason="tp_1.5x")
+    feed(br, clk, clk.t + 1100)
+    assert inner.sells == [("MP", "tp_1.5x")]  # exits keep running
+    # race: the early check saw a clear record, the flag appears before the send
+    br._a3_pause = None
+    assert br._lane_pre_buy({"order_id": "o9", "mint": "MZ", "stake_lamports": STAKE}) == "a3_pause:a3_flags:pins_changed"
+    a3_file(tmp_path, run_utc=utc(T0 + 100_000))  # re-pinned, record clear again
+    br._a3_polled_ms = None
+    assert br._lane_check(clk.t + 200_000, STAKE) is None
+
+
+def test_a3_unreadable_or_stale_record_pauses_entries(tmp_path):
+    now = a3_now()
+    write_live_ok(tmp_path)
+    cfg, lane, live_ok = X.make_config(lane_raw(tmp_path))
+    br = X.FloorLaneBridge(cfg, X.FloorLanePort(FakeInner(), cfg), lane, now_ms=Clock(now), live_ok_path=live_ok, root_checks=False, a3_record_file=str(tmp_path / "missing.jsonl"))
+    assert br._lane_check(now, STAKE) == "a3_pause:a3_record_unreadable"
+    a3_file(tmp_path, run_utc=utc(T0 - 5 * 86_400_000))
+    br.a3_record_file, br._a3_polled_ms = str(tmp_path / "a3.jsonl"), None
+    assert br._lane_check(now, STAKE) == "a3_pause:a3_record_stale"
+
+
+def test_live_run_needs_an_a3_record_path(tmp_path):
+    write_live_ok(tmp_path)
+    assert X.run(lane_raw(tmp_path), live_flag=True, root_checks=False, port_factory=lambda c: pytest.fail("port built")) == 2
+
+
+def test_the_bot_lock_is_taken_before_state_is_loaded_or_written(tmp_path):
+    br, _ = mk(tmp_path, Clock(T0))
+    sd = Path(br.cfg.state_dir)
+    before = {p.name: p.stat().st_mtime_ns for p in sd.glob("*")} if sd.exists() else {}
+    with pytest.raises(SystemExit):
+        mk(tmp_path, Clock(T0))
+    after = {p.name: p.stat().st_mtime_ns for p in sd.glob("*")} if sd.exists() else {}
+    assert before == after  # the refused process wrote nothing
+    # and run() refuses before the port factory is called
+    assert X.run(lane_raw(tmp_path, a3_record_file=str(a3_file(tmp_path))), live_flag=True, root_checks=False, port_factory=lambda c: pytest.fail("port built")) == 2
+    br.release_lane_lock()
