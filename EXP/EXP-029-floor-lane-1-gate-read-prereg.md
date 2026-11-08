@@ -1,6 +1,6 @@
 # EXP-029: floor-lane-1 real-fill gate read (DEC-035 §6 registration)
 
-**Pre-registration.** This file registers when it merges to main. The start instant S below must still be in the future at that merge. If it is not, this file does not register, and a new PR with a later S is needed. Revision 2 was written 2026-11-08 by manager21, after QP NOT OK and REVIEWER REQUEST_CHANGES at 5bc73087. Nothing has been sent live yet: at writing the lane has run dry only, with 0 entries attempted. No fill, P&L, price or exit of any lane trade existed or was read.
+**Pre-registration.** This file registers when it merges to main. The start instant S below must still be in the future at that merge. If it is not, this file does not register, and a new PR with a later S is needed. Revision 3 was written 2026-11-08 by manager21, after QP NOT OK and REVIEWER REQUEST_CHANGES at 5bc73087 and at ba9eb60a. Nothing has been sent live yet: at writing the lane has run dry only, with 0 entries attempted. No fill, P&L, price or exit of any lane trade existed or was read.
 
 Nothing in this file says or implies that FLOOR makes money. The read below is the only route by which lane trades at 0.03 SOL can count toward the promotion gate (CLAUDE.md; DEC-035 §6). A PASS is necessary for any stake above 0.03 SOL; it is never sufficient.
 
@@ -34,8 +34,8 @@ Nothing in this file says or implies that FLOOR makes money. The read below is t
   - **Trades:** every other `send_intent`, including those closed by `writeoff` `buy_expired` and buys that landed with an error. Each counts at its real cash, which may be 0 or its fees alone. The read reports how many trades had 0 cash.
   - Dry rows (`would_send`, `"mode": "dry"`) are never trades.
 - **Trade instant and day.** The instant is the `send_intent` row's `ts_ms`. The trade day is the UTC day of that instant.
-- **Trade P&L** in lamports is the sum of (`sol_in_lamports` − `sol_out_lamports`) over every lane-ledger row with `bot_id` `floor-lane-1` and that trade's `mint`. The sum runs from the trade's `send_intent` row through the row that closes it (`exit` or `writeoff`), and includes `fill` and `fee` rows (failed or superseded sells).
-  - In this ledger `sol_out_lamports` already contains the network, priority and tip fees. The fee-breakdown fields (`fee_*`, `rent_unreclaimed`) are a split of it and are not added again.
+- **Trade P&L** in lamports is the sum of (`sol_in_lamports` − `sol_out_lamports`) over every lane-ledger row with `bot_id` `floor-lane-1` and that trade's `mint`. The sum runs from the trade's `send_intent` row through the first row after it that closes the position: `exit`, `writeoff`, or a `fill` with `ok` not true (a buy that landed with an error; `lane_fold`, `tools/h5_lane_executor.py:181-185`). The sum includes `fill` rows and `fee` rows (failed or superseded sells). A later `send_intent` on the same mint starts a new trade.
+  - In this ledger `sol_out_lamports` already contains the network, priority and tip fees. The fields `fee_network_lamports`, `fee_priority_lamports`, `fee_tip_lamports`, `rent_unreclaimed_lamports` and `rent_refunded_lamports` (`tools/h5_lane_executor.py:366-367`) split it out. They are not added again.
   - A trade still open at R gets the same sum with no proceeds: all cash out counts and nothing comes back.
   - Rows with `estimated` true count as recorded, and the read lists how many there are.
   - `snap` rows carry no trade and are ignored. Later sweeps are not credited.
@@ -47,7 +47,11 @@ Nothing in this file says or implies that FLOOR makes money. The read below is t
 - **R = C + 25 h.** By then every trade has passed its 24 h + 1.9 s backstop. The read runs once, at or after R, on the full set.
 - **FAIL ends before C.** C becomes the first 00:00Z after the event, R = C + 25 h, and the result is **FAIL** whatever the four tests give, if either of these happens:
   - (a) the lane budget stop fires (`lane_budget_stop`: lane P&L ≤ −0.30 SOL, STOP file written by the executor);
-  - (b) for 24 h in a row, at least one `floor-lane-1` entry is decided and every `floor-lane-1` entry is refused with `lane_budget_presend` or `lane_budget_stop`. This is budget exhaustion without the STOP file. The event instant is the end of that 24 h.
+  - (b) budget exhaustion without the STOP file. This is judged on the lane ledger's state, never on refusal labels: the base executor's refusal reasons are logged ahead of the lane's own (`tools/floor_lane_executor.py:413-418`).
+    - Condition: for 24 h in a row, no `floor-lane-1` trade is sent, and at every instant in that window the lane ledger satisfies `cash − (open stakes of all lane bots + 30000000 + fee_reserve_lamports × (open positions of all lane bots + 1)) ≤ −300000000`.
+    - `cash` is the sum of `sol_in_lamports − sol_out_lamports` over all lane-ledger rows. Open stakes and open positions come from the `lane_fold` view (`tools/h5_lane_executor.py`). `fee_reserve_lamports` is the executor config value.
+    - When this holds, the pre-send budget check refuses any new `floor-lane-1` entry, whatever other refusal is logged.
+    - The event instant is the end of the 24 h.
 
   Both apply even when the losses come from another lane bot (see "Other lane bots").
 - **Pauses** do not end the read. Sends resume and stay in the read. The pauses are:
@@ -57,11 +61,15 @@ Nothing in this file says or implies that FLOOR makes money. The read below is t
   - gap holds;
   - restarts at the same Appendix A blobs and §1 parameters;
   - a wallet-wide STOP or HALT placed by Helm;
-  - a host or feed failure.
+  - a host or feed failure, with its start and end instants taken from the watchdog (`/data/mal/hunt-1008/ops/watchdog/`) or the unit's journal.
 
-  Each pause other than the automatic refusals is recorded with its instant in `/data/mal/hunt-1008/ops/manager21/state-manager21.md` (or a successor manager's state file) and in the MiScusi notebook before any lane P&L is quoted.
+  Each pause other than the automatic refusals is recorded with its instants in `/data/mal/hunt-1008/ops/manager21/state-manager21.md` (or a successor manager's state file) and in the MiScusi notebook before any lane P&L is quoted.
 - **Any other stop before C is a FAIL end, at the stop instant.** This covers the manager or the owner stopping the lane, or a lane STOP file written by a person, for any reason not listed under pauses.
-- **Changes before C.** A change to any §1 parameter, any Appendix A blob, or the frozen sha is allowed only through a T1 amendment PR to this file. That PR carries QP OK and REVIEWER APPROVE at its exact head and merges before the change is installed. The read then continues with the same S, and every trade since S stays in it: there is no new registration and no trade is dropped. A change installed without such an amendment is a FAIL end at its install instant. A `max_open` change counts as a §1 change.
+- **Changes before C.** Two kinds of change are allowed, and each only through a T1 amendment PR to this file. That PR carries QP OK and REVIEWER APPROVE at its exact head and merges before the change is installed. The read then continues with the same S, and every trade since S stays in it.
+  - (i) **Lane limits:** `max_open`, `budget_lamports` or `daily_loss_lamports`, each within DEC-035. These are config only, with no code change.
+  - (ii) **Execution-only code changes** to Appendix A files other than `tools/arena_rule_l1.py` and the rule pins. The amendment must carry an md5 decision-equivalence replay (CLAUDE.md operating notes): on a pinned replay window, the host decision log and the executor's dry intent and exit rows are byte-identical before and after the change.
+    - DEC-035 §3 makes a code change a new bot_id. The amendment names the successor bot_id, and its trades join this set from its first send, under the same S, C rule and tests.
+- **Rule changes are a FAIL end** at their install instant. This covers any change that alters decisions: `tools/arena_rule_l1.py`, rule pins sha `5e12f8f5…`, the exit rules, `stake_lamports`, or any change whose replay is not byte-identical. Any change installed without a merged amendment is also a FAIL end at its install instant.
 - **Deadline.** If C has not come by 2026-11-30T06:00:00Z (S + 21 d), the read is **NOT_DECIDABLE** at that instant, by counts only.
 - **No second look.** Any later registration of `floor-lane-1`, or of the `l1-floor-v2` rule under any lane bot_id, keeps S = 2026-11-09T06:00:00Z and includes every trade of this file's set. A NOT_DECIDABLE or FAIL under this file never restarts the clock.
 - **Other lane bots.** The forge DSL lane executor (`tools/forge/dsl_lane_executor.py`, PR #1282) shares the lane ledger, lock, STOP file, budget, daily stop and open cap with `floor-lane-1`.
