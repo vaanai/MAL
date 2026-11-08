@@ -127,7 +127,7 @@ def parse_hour(s: str) -> int:
         raise R.HostError(f"hour must look like 2026-11-01T00 (got {s!r})") from e
 
 
-def rebuild_table_since(table: PoolTable, tape_dir: str, to_ms: int, since_ms: int) -> int:
+def rebuild_table_since(table: PoolTable, tape_dir: str, to_ms: int, since_ms: int, tmp_parent: str | None = None) -> int:
     """PoolTable.rebuild (not edited) reads every hour file of a directory. Give it a temp directory of symlinks to only the hour files in [since hour, to_ms), so a start
     reads nothing older than the floor hour. The links are removed afterwards; nothing is written to the feed dir."""
     hours = []
@@ -140,7 +140,9 @@ def rebuild_table_since(table: PoolTable, tape_dir: str, to_ms: int, since_ms: i
                 continue
             if since_ms <= hs < to_ms:
                 hours.append(f)
-    with tempfile.TemporaryDirectory(prefix="floor-lane-seed-") as tmp:
+    if tmp_parent is not None:
+        Path(tmp_parent).mkdir(parents=True, exist_ok=True)
+    with tempfile.TemporaryDirectory(prefix="floor-lane-seed-", dir=tmp_parent) as tmp:
         for f in hours:
             os.symlink(f, Path(tmp) / f.name)
         return table.rebuild(tmp, to_ms)
@@ -318,6 +320,14 @@ class LaneHost(HostV2):
         if down is not None and int(t_from) > int(down["to_ms"]):
             down["to_ms"] = int(t_from)
 
+    def catch_up(self, t_from: int) -> None:
+        """After the warm-up replay (rules off, can take minutes) the downtime span is extended to the wall clock then + 10 s: triggers the
+        catch-up ticks could refuse as stale are inside the span, so no pool the paper book may hold opens early (reviewer 6715180249)."""
+        super().catch_up(t_from)
+        down = getattr(self, "_down_span", None)
+        if down is not None and self.cfg.live:
+            down["to_ms"] = max(int(down["to_ms"]), int(self.now_fn()) + 10_000)
+
     def run(self, t_from: int, t_to: int, sleep: Callable[[float], None] = time.sleep) -> None:
         self.begin_live(t_from)
         try:
@@ -417,10 +427,10 @@ def main(argv: list[str] | None = None) -> int:
         if live:
             warm_start = int(time.time() * 1000) - kw["warm_min"] * R.MIN_MS
             since = parse_hour(a.since_hour) if a.since_hour else None
-            n = rebuild_table_since(host.table, d["tape_dir"], warm_start, since) if since is not None else rebuild_table(host.table, d["tape_dir"], warm_start)
+            n = rebuild_table_since(host.table, d["tape_dir"], warm_start, since, str(Path(d["root"]) / "lane" / "seed-tmp")) if since is not None else rebuild_table(host.table, d["tape_dir"], warm_start)
             print(canon({"table_rebuilt_rows": n, "table_hwm_ms": host.table.hwm_ms, "since_hour": a.since_hour}), flush=True)
         elif seed_ms is not None:
-            n = rebuild_table_since(host.table, d["tape_dir"], a.from_ms - kw["warm_min"] * R.MIN_MS, seed_ms)
+            n = rebuild_table_since(host.table, d["tape_dir"], a.from_ms - kw["warm_min"] * R.MIN_MS, seed_ms, str(Path(d["root"]) / "lane" / "seed-tmp"))
             print(canon({"table_seeded_rows": n, "seed_from_hour": a.seed_from_hour}), flush=True)
         if live:
             print(canon({"lane_start": host.lane_start(int(time.time() * 1000))}), flush=True)

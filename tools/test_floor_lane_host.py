@@ -416,6 +416,24 @@ def test_downtime_lasts_until_first_live_tick(tmp_path):
     ks = kinds(tmp_path / "rules")
     assert "entry" not in ks and ks.count(H.KIND_GAP_REFUSED) == 1
 
+
+def test_downtime_span_covers_the_catch_up_warm_up(tmp_path):
+    """Reviewer 6715180249: catch_up can take minutes; the host_down span must run to the wall clock after catch_up + 10 s."""
+    rows = q_rows(H0 + 40 * HOUR)
+    eng = FakeEngine(tmp_path / "rules")
+    a = lane_host(tmp_path, rows, live=True, engine=eng)
+    Clocked(a)
+    a.resume()
+    _live_phase(a, H0, H0 + 31 * HOUR)
+    b = lane_host(tmp_path, rows, live=True, engine=eng)
+    Clocked(b)
+    b.lane_start(H0 + 33 * HOUR)
+    b.resume()
+    b.begin_live(H0 + 34 * HOUR)
+    b.clock[0] = H0 + 34 * HOUR + 7 * 60_000  # the warm-up took 7 minutes
+    b.catch_up(H0 + 34 * HOUR)
+    assert b.lane_gaps[-1]["kind"] == "host_down" and b.lane_gaps[-1]["to_ms"] == H0 + 34 * HOUR + 7 * 60_000 + 10_000
+
 def two_trigger_rows():
     """Pool Q: the rule's drained-pool sell at 30 h 15 min, normal prints from 31 h, a second drained-pool sell at 38 h."""
     rows = q_rows(H0 + 30 * HOUR + 900_000)
@@ -515,11 +533,11 @@ def test_the_table_seed_reads_only_hour_files_from_the_floor_hour(tmp_path, monk
     monkeypatch.setattr(H.os, "symlink", lambda src, dst, *a, **k: (seen.append(Path(dst).name), real(src, dst, *a, **k))[1])
     since = H0 + 10 * HOUR
     tab = PoolTable("first_print")
-    n = H.rebuild_table_since(tab, str(tmp_path / "tape"), H0 + 100 * HOUR, since)
+    n = H.rebuild_table_since(tab, str(tmp_path / "tape"), H0 + 100 * HOUR, since, str(tmp_path / "seed-tmp"))
     allh = sorted(f.name for f in (tmp_path / "tape").iterdir())
     floor = datetime.fromtimestamp(since / 1000, tz=timezone.utc).strftime("tape-%Y-%m-%dT%H")
     assert seen and all(nm[:16] >= floor[:16] for nm in seen) and len(seen) < len(allh) and n > 0
-    assert not list(Path(tempfile.gettempdir()).glob("floor-lane-seed-*"))
+    assert not list((tmp_path / "seed-tmp").glob("floor-lane-seed-*"))
 
 
 def test_checkpoint_of_another_book_or_a_shorter_log_refuses(tmp_path):
