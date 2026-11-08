@@ -391,9 +391,9 @@ def test_a_gap_blocked_pool_stays_blocked_until_the_paper_position_would_exit(tm
     ref = [r for r in log if r["kind"] == H.KIND_GAP_REFUSED]
     assert "entry" not in [r["kind"] for r in log]  # lane entries are a subset of the paper rule's: here none
     assert [r["reason"] for r in ref] == ["feed_gap", "pool_blocked_after_gap"]
-    assert ref[1]["blocked_until_ms"] == t1 + L.HOLD_MS and ref[1]["pool"] == "Q" and ref[1]["trigger_ms"] == H0 + 38 * HOUR
+    assert ref[1]["blocked_until_ms"] == t1 + H.BLOCK_MS and ref[1]["pool"] == "Q" and ref[1]["trigger_ms"] == H0 + 38 * HOUR
     ck = json.loads((tmp_path / "gap" / "rules" / "lane" / "checkpoint.json").read_text())
-    assert ck["blocked"]["Q"] == {"until_ms": t1 + L.HOLD_MS, "why": "gap"}
+    assert ck["blocked"]["Q"] == {"until_ms": H0 + 38 * HOUR + H.BLOCK_MS, "why": "gap"}  # the refused second trigger extended it
 
 
 def test_a_restart_that_loses_the_paper_view_blocks_the_open_pool_and_persists_it(tmp_path):
@@ -404,7 +404,7 @@ def test_a_restart_that_loses_the_paper_view_blocks_the_open_pool_and_persists_i
     _live_phase(a, H0, H0 + 31 * HOUR)
     ent = [r for r in DecisionLog(str(tmp_path / "rules")).rows(L.BOT_ID) if r["kind"] == "entry"]
     assert len(ent) == 1
-    until = ent[0]["ms"] + L.HOLD_MS
+    until = ent[0]["ms"] + H.BLOCK_MS
     # restart with an engine that has forgotten the position (the ArenaEngine restart limitation): resume_dropped, the book forgets Q
     b = lane_host(tmp_path, rows, live=True, engine=FakeEngine(tmp_path / "rules"))
     Clocked(b)
@@ -417,7 +417,7 @@ def test_a_restart_that_loses_the_paper_view_blocks_the_open_pool_and_persists_i
     ref = [r for r in DecisionLog(str(tmp_path / "rules")).rows(L.BOT_ID) if r["kind"] == H.KIND_GAP_REFUSED]
     assert [r["reason"] for r in ref] == ["pool_blocked_after_restart"] and ref[0]["blocked_until_ms"] == until
     c = lane_host(tmp_path, rows, live=True, engine=FakeEngine(tmp_path / "rules"))  # a second restart still knows
-    assert c.lane_start(H0 + 40 * HOUR)["blocked_pools"] == 1 and c.blocked["Q"]["until_ms"] == until
+    assert c.lane_start(H0 + 40 * HOUR)["blocked_pools"] == 1 and c.blocked["Q"]["until_ms"] == H0 + 38 * HOUR + H.BLOCK_MS
 
 
 def test_missing_checkpoint_with_an_existing_log_refuses_to_start(tmp_path):
@@ -502,3 +502,37 @@ def test_cli_register_and_replay_refuse_inside_the_arena_root(tmp_path, capsys):
     assert "not the G1" in capsys.readouterr().err
     p.write_text(json.dumps({"root": str(tmp_path / "r"), "tape_dir": str(tmp_path), "clock_start_ms": H0}))
     assert H.main(["replay", "--config", str(p)]) == 2  # needs --from-ms / --to-ms
+
+
+def test_every_refused_buy_extends_the_block_so_a_paper_reentry_after_take_profit_stays_covered(tmp_path):
+    """Paper: enters at t1, takes profit and (after the cooldown) re-enters at t2, holding to t2 + 24 h. The lane refuses t1 (gap) and t2 (pool block, which extends the block),
+    and still refuses t3, which is past t1's block end but inside the second paper position."""
+    t1, t2, t3 = H0 + 30 * HOUR + 900_000, H0 + 38 * HOUR, H0 + 55 * HOUR
+    assert t3 > t1 + H.BLOCK_MS and t3 < t2 + H.BLOCK_MS
+    rows = two_trigger_rows()
+    t = H0 + 38 * HOUR + 1_800_000
+    while t < t3 - 600_000:
+        rows.append(row(t, "Q", "buy" if (t // 1800000) % 2 else "sell"))
+        t += 1_800_000
+    rows.append(row(t3, "Q", "sell", q=600_000_000, sol=200_000_000))
+    rows += [gap_row(t1 - 2 * HOUR, t1 - 2 * HOUR + 30_000)]
+    rows.sort(key=lambda r: r["t_recv_ms"])
+    h = lane_host(tmp_path / "gap", rows)
+    h.run(H0, H0 + 57 * HOUR)
+    log = DecisionLog(str(tmp_path / "gap" / "rules")).rows(L.BOT_ID)
+    ref = [r for r in log if r["kind"] == H.KIND_GAP_REFUSED]
+    assert "entry" not in [r["kind"] for r in log]
+    assert [r["reason"] for r in ref] == ["feed_gap", "pool_blocked_after_gap", "pool_blocked_after_gap"]
+    assert ref[1]["blocked_until_ms"] == t1 + H.BLOCK_MS and ref[2]["blocked_until_ms"] == t2 + H.BLOCK_MS and ref[2]["trigger_ms"] == t3
+
+
+def test_block_covers_the_time_exit_and_the_sixty_second_cooldown(tmp_path):
+    """The paper position exits by time at decision + 24 h + 1.9 s and the rule allows a re-entry 60 s after that exit decision. The block must outlast both, a tick and the margin."""
+    assert H.BLOCK_MS == L.HOLD_MS + L.COOLDOWN_MS + 1_000 + 5_000 and L.COOLDOWN_MS == 60_000
+    h = lane_host(tmp_path, [row(H0 + 1000, "X")])
+    t1 = H0 + 30 * HOUR
+    h.blocked["Q"] = {"until_ms": t1 + H.BLOCK_MS, "why": "gap"}
+    exit_decision = t1 + L.HOLD_MS
+    for t in (exit_decision, exit_decision + 30_000, exit_decision + L.COOLDOWN_MS, exit_decision + L.COOLDOWN_MS + 5_000):
+        assert h.judge(t, "Q") is not None, t - exit_decision  # the paper rule's earliest re-entry is exit_decision + 60 s
+    assert h.judge(t1 + H.BLOCK_MS, "Q") is None and h.judge(t1 + H.BLOCK_MS - 1, "Q") is not None

@@ -20,7 +20,7 @@ WHAT IS NEW AND WHAT IS NOT
     the print 6 h back); it can be raised to 24 h (the 24 h volume) and never lowered below 6 h. The bridge ignores unknown row kinds, so the refusal is evidence, not an order.
     Exits are not gated: a take-profit missed in a gap is not guessed; the executor's own 24 h deadline clock sells.
   * SUBSET. Every lane entry is an entry of the paper rule at the same trigger; the guard only drops Buys. A dropped Buy on pool P (gap, or a restart that lost the paper view) blocks P
-    until trigger + 24 h + 1.9 s (the paper position's longest life), persisted in the checkpoint; a restart blocks every pool the log shows open; a host_down span refuses all pools
+    until trigger + BLOCK_MS = 24 h + 1.9 s + 60 s cooldown + 1 s tick + 5 s margin (extended by every later refused Buy on P), persisted in the checkpoint; a restart blocks every pool the log shows open; a host_down span refuses all pools
     for 24 h + 1.9 s. A missing checkpoint beside an existing decision log refuses to start. `run` refuses a dirty or unknown checkout and records this file's sha256 in the start row.
   * TABLE SEED. `run` on a first start requires --since-hour (the table is built from tape hours at or after it, via symlinks; nothing older is opened). `replay --seed-from-hour`
     seeds the table the same way and must be at least 201 h before --from-ms (FLOOR ages run 24 to 200 h from the pool's base time).
@@ -57,7 +57,7 @@ from tools import arena_rules as R
 from tools.arena_declog import GENESIS, DecisionLog, LogChainError
 from tools.arena_paper import ArenaEngine, canon
 from tools.arena_pool_table import PoolTable
-from tools.arena_rule_l1 import BOT_ID, HOLD_MS as L_HOLD_MS  # L_HOLD_MS: 24 h + 1.9 s, the paper position's longest life
+from tools.arena_rule_l1 import BOT_ID, COOLDOWN_MS as L_COOLDOWN_MS, HOLD_MS as L_HOLD_MS  # L_HOLD_MS: 24 h + 1.9 s, the paper position's longest life
 from tools.arena_rules import Buy, Ctx, Rule
 from tools.arena_rules_v2 import HostV2, load_rules_v2, rebuild_table
 from tools.arena_stack_v2 import stack_config_for
@@ -72,6 +72,8 @@ LOOKBACK_MAX_S = 24 * 3600  # the 24 h volume window; ArenaState keeps gap spans
 GAP_PROG = "pumpswap"
 HOUR_MS_ = 3_600_000
 SEED_MIN_H = 201  # FLOOR ages run 24 to 200 h from the pool's base time; the table needs the tape back to base time
+DECISION_MARGIN_MS = 5_000  # decision-delay margin
+BLOCK_MS = L_HOLD_MS + L_COOLDOWN_MS + 1_000 + DECISION_MARGIN_MS  # paper hold + 60 s re-entry cooldown + one tick + margin: the earliest a paper re-entry on the pool can follow
 KIND_GAP_REFUSED = "entry_refused_gap"
 
 # sha256 of the decision-relevant files. IDENTICAL_AT_FROZEN: byte-equal to the blob at FROZEN_SHA. The rest: pinned at the lane host's baseline (see module docstring).
@@ -233,8 +235,9 @@ class LaneHost(HostV2):
         except (OSError, LogChainError) as e:
             self._set_fatal(e)
             return True
-        if blk is None:
-            self.blocked[buy.pool] = {"until_ms": t + L_HOLD_MS, "why": "gap"}
+        # every refusal extends the pool's block: the paper book may have entered at THIS trigger too (after a take-profit and the cooldown), so its next re-entry is BLOCK_MS away
+        cur = self.blocked.get(buy.pool)
+        self.blocked[buy.pool] = {"until_ms": max(int(cur["until_ms"]) if cur else 0, t + BLOCK_MS), "why": cur["why"] if cur else "gap"}
         self.gap_refusals += 1
         self._count("entries_refused_gap")
         return True
@@ -252,7 +255,7 @@ class LaneHost(HostV2):
                 opened.pop(str(r.get("order_id")), None)
         n = 0
         for pool, ms in opened.values():
-            until = ms + L_HOLD_MS
+            until = ms + BLOCK_MS
             if until > int(self.blocked.get(pool, {}).get("until_ms", 0)):
                 self.blocked[pool] = {"until_ms": until, "why": "restart"}
                 n += 1
