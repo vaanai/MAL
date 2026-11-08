@@ -26,3 +26,4 @@ price impact at the stake and 160,000 lamports per send. Everything you see is T
 ## Rules of the game
 - Prefer few conditions (1 to 4) with round, non-extreme thresholds. Overfit strategies fail on VAL.
 - Output valid JSON only, in the shape the role asks for. No prose outside the JSON.
+- If the proposer input lists DEAD FAMILIES (venue plus the feature/operator set of the entry), those failed out-of-sample: do not propose them or any strategy whose entry uses all of their feature/operator pairs on the same venue. Change the signal, not the threshold.

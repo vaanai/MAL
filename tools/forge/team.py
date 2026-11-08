@@ -50,6 +50,10 @@ PLACEBO_DRAWS = 5
 FAIL_KEEP = 15
 SPECS_PER_ROUND = 6
 MAX_API_ERRORS = 5
+FAMILY_VAL_CAP = 3        # VAL reads per family_key in total
+DEAD_MIN_READS = 2        # a family is dead at >= 2 VAL reads, all failing the SHORTLIST rule
+FAMILY_TRAIN_CAP = 3      # archive members per family_key kept in island_top (parents / critic / migrants)
+DEAD_PROMPT_MAX = 40
 
 SEEDS = [  # (venue, horizon, style): island briefs, cycled when islands > 8
     ("PumpSwap (venue 1)", "scalp, hold under 10 minutes", "momentum"),
@@ -69,6 +73,18 @@ def island_brief(i: int) -> str:
 
 
 # ---------------------------------------------------------------- metrics helpers
+
+def family_key(spec: dict) -> str:
+    """Venue plus the sorted set of (feature, op) of the entry conditions. Thresholds, exits, stake and cooldown are ignored."""
+    v = spec.get("venue", "any")
+    conds = sorted({(str(c.get("f")), str(c.get("op"))) for c in spec.get("entry") or []})
+    return f"v{v}|" + ",".join(f"{f}{op}" for f, op in conds)
+
+
+def _family_parts(key: str):
+    v, _, rest = key.partition("|")
+    return v, frozenset(x for x in rest.split(",") if x)
+
 
 def jnum(x):
     """JSON-safe number: non-finite -> None."""
@@ -188,6 +204,8 @@ class FakeModel:
             self.calls += 1
             n = self.calls
             if role == "proposer":
+                self.last_user = user
+            if role == "proposer":
                 items = [{"spec": self._spec(), "rationale": "fake"} for _ in range(SPECS_PER_ROUND)]
                 if n % self.bad_every == 0:  # garbage variety, to exercise the parser
                     items[0]["spec"]["entry"][0]["f"] = "no_such_feature"
@@ -304,9 +322,11 @@ class Team:
         self.archive: dict = {}          # hash -> entry
         self.val_read: dict = {}         # hash -> val metrics (VAL read once per spec)
         self.val_placebo_reads = 0
+        self.fam_val_n: dict = {}        # family_key -> VAL reads started (incl. in flight)
+        self.fam_val_pass: dict = {}     # family_key -> list of bool (SHORTLIST verdict of each completed VAL read)
         self.shortlist_n = 0
         self.failures = [deque(maxlen=FAIL_KEEP) for _ in range(islands)]
-        self.counts = {"evaluated": 0, "dups": 0, "rejected": 0, "repaired": 0, "json_failed": 0, "eval_errors": 0, "calls": 0}
+        self.counts = {"evaluated": 0, "dups": 0, "rejected": 0, "dead_family": 0, "repaired": 0, "json_failed": 0, "eval_errors": 0, "calls": 0}
         self.fixed = (PROMPTS / "fixed.md").read_text().replace("{{FEATURES}}", "\n".join(
             f"- {k}: {v}" if v else f"- {k}" for k, v in features.items()))
         self.lessons = ""
@@ -370,6 +390,10 @@ class Team:
         for r in self._rows("val.jsonl"):
             if r.get("kind") == "val":
                 self.val_read[r["hash"]] = r.get("metrics") or {}
+                if r.get("spec") and r.get("metrics"):
+                    fk = family_key(r["spec"])
+                    self.fam_val_n[fk] = self.fam_val_n.get(fk, 0) + 1
+                    self.fam_val_pass.setdefault(fk, []).append(self.is_shortlist(r["metrics"]))
             elif r.get("kind") == "placebo":
                 self.val_placebo_reads += 1
         if self.shortlist_path.exists():
@@ -389,10 +413,31 @@ class Team:
         if self.archive:
             self.log(f"RESUME: {len(self.archive)} specs, {len(self.val_read)} VAL reads, rounds={[i.round for i in self.islands]}")
 
+    # -- dead families
+    def dead_families(self):
+        """Set of family keys with >= DEAD_MIN_READS completed VAL reads, none of which passes the SHORTLIST rule. Derived from val.jsonl on resume."""
+        with self.lock:
+            return {k for k, v in self.fam_val_pass.items() if len(v) >= DEAD_MIN_READS and not any(v)}
+
+    def is_dead(self, spec):
+        """True if the spec's family is dead, or has the same venue and a (feature, op) set that is a superset of a dead family's."""
+        v, ops = _family_parts(family_key(spec))
+        for k in self.dead_families():
+            dv, dops = _family_parts(k)
+            if dv == v and dops <= ops:
+                return True
+        return False
+
     # -- evaluation
     def evaluate_train(self, spec, island, rnd, source, rationale=""):
         """-> ('new'|'dup'|'error', entry). Dedupes by canonical hash across all islands."""
         h = S.spec_hash(spec)
+        if self.is_dead(spec):
+            with self.lock:
+                self.counts["dead_family"] += 1
+                self.failures[island].append({"spec": spec, "reason": "dead family (failed VAL), not evaluated"})
+            self.jlog("rejects.jsonl", {"island": island, "round": rnd, "reason": "dead_family", "hash": h, "family": family_key(spec)})
+            return "rejected", None
         with self.lock:
             if h in self.archive:
                 self.counts["dups"] += 1
@@ -429,7 +474,16 @@ class Team:
     def island_top(self, i, k=10):
         with self.lock:
             es = [e for e in self.archive.values() if e and i in e["owners"] and math.isfinite(e["fitness"])]
-        return sorted(es, key=lambda e: -e["fitness"])[:k]
+        out, per = [], {}
+        for e in sorted(es, key=lambda e: -e["fitness"]):
+            fk = family_key(e["spec"])
+            if per.get(fk, 0) >= FAMILY_TRAIN_CAP:
+                continue  # novelty pressure: at most FAMILY_TRAIN_CAP members per family_key
+            per[fk] = per.get(fk, 0) + 1
+            out.append(e)
+            if len(out) >= k:
+                break
+        return out
 
     def global_top_fitness(self):
         with self.lock:
@@ -479,7 +533,17 @@ class Team:
         """Evaluate the global top VAL_TOP (by TRAIN fitness) not yet VAL-read, once each. Returns number read."""
         with self.lock:
             cands = [e for e in self.archive.values() if e and math.isfinite(e["fitness"]) and e["fitness"] > 0 and e["hash"] not in self.val_read]  # VAL reads only for TRAIN-positive specs
-            cands = sorted(cands, key=lambda e: -e["fitness"])[:VAL_TOP]
+            dead = self.dead_families()
+            picked = []
+            for e in sorted(cands, key=lambda e: -e["fitness"]):
+                fk = family_key(e["spec"])
+                if fk in dead or self.fam_val_n.get(fk, 0) >= FAMILY_VAL_CAP:
+                    continue
+                self.fam_val_n[fk] = self.fam_val_n.get(fk, 0) + 1  # counted at selection, so the cap holds inside one pass
+                picked.append(e)
+                if len(picked) >= VAL_TOP:
+                    break
+            cands = picked
             self.last_val_ts = time.time()
             for e in cands:
                 self.val_read[e["hash"]] = {}  # mark before reading: never a second read, even if this pass dies midway
@@ -491,6 +555,7 @@ class Team:
                 continue
             with self.lock:
                 self.val_read[e["hash"]] = vm
+                self.fam_val_pass.setdefault(family_key(e["spec"]), []).append(self.is_shortlist(vm))
             self.jlog("val.jsonl", {"kind": "val", "hash": e["hash"], "spec": e["spec"], "metrics": vm, "train_fitness": e["fitness"],
                                     "val_reads_total": len(self.val_read)})
             if self.is_shortlist(vm):
@@ -645,7 +710,9 @@ class Island:
         with t.lock:
             fails = list(t.failures[self.id])
             lessons = t.lessons
-        user = (f"Round {r}.\nLESSONS (shared):\n{lessons or '(none yet)'}\n\nANALYST HYPOTHESES:\n{self.hypotheses or '(none yet)'}\n\n"
+        dead = sorted(t.dead_families())[:DEAD_PROMPT_MAX]
+        dead_block = ("DEAD FAMILIES (failed out-of-sample, do not propose these or supersets):\n" + "\n".join(f"- {k}" for k in dead) + "\n\n") if dead else ""
+        user = (f"Round {r}.\n{dead_block}LESSONS (shared):\n{lessons or '(none yet)'}\n\nANALYST HYPOTHESES:\n{self.hypotheses or '(none yet)'}\n\n"
                 f"ISLAND TOP {len(top)} (TRAIN):\n{json.dumps(clean_json(top))}\n\nLAST {len(fails)} FAILURES:\n{json.dumps(clean_json(fails))}\n\n"
                 f"Return {SPECS_PER_ROUND} strategies as specified.")
         res = self._ask("proposer", user, 3000)
