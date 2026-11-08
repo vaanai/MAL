@@ -65,3 +65,7 @@ PYTHONPATH=. python3 -m pytest tools/test_floor_lane_executor.py tools/test_floo
 ```
 
 Logs: `pytest.out`, `pytest-existing-floor.out`.
+
+## Follow-on: dry-to-live initialization
+
+Same sha, findings only: [INIT-CUTOVER.md](INIT-CUTOVER.md). **GO** for cursor-only seed of `bridge-state-live.json` (empty orders). **NO-GO** for empty live state (replays paper entries as real buys) and for copying dry orders (paper clock exit poisons the lane ledger / `ata_rent_not_refunded`). Do not restart the host. Paper positions are not carried onto the chain.
