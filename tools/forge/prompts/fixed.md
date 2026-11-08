@@ -14,8 +14,11 @@ price impact at the stake and 160,000 lamports per send. Everything you see is T
 - tp and sl are fractional moves: tp 0.5 = +50 %, sl 0.3 = -30 %. trail is a fractional drawdown from the running high.
 - one_per_pool: at most one open position per pool. cooldown_s: minimum seconds between entries on one pool.
 - stake_sol is always 0.1.
-- A strategy needs at least 40 trades over at least 6 days to count. Fitness = CI90-low of mean SOL per trade x sqrt(trades per day);
-  zero or negative edge after removing the top 3 trades, or more than half of the profit on one day, is penalised or rejected.
+- A strategy needs at least 40 trades over at least 6 days to count. The score is r = mean SOL per trade AFTER removing the 3 best trades
+  (rare price-data glitches and lucky outliers do not count). If r <= 0 the fitness is r itself (closer to 0 is better). If r > 0 the fitness is
+  r x sqrt(trades per day) x (positive days / days), halved if one day holds more than half the profit.
+- Costs are real and large: about 2-3% of the stake per round trip (fees, impact, 2 s entry delay). Most rules are negative; the best so far are
+  near -1% per trade. Aim for selective, robust edges (few conditions, round thresholds) that beat this cost floor.
 
 ## Feature dictionary
 {{FEATURES}}

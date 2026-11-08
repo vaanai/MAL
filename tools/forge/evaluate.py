@@ -304,13 +304,17 @@ def max_concurrent(start, end) -> int:
 
 
 def fitness(m: dict) -> float:
-    """-inf if n < 40 or n_days < 6 or ex_top3_total <= 0; else ci90_low * sqrt(trades_per_day); halved (if positive) when best_day_share > 0.5."""
+    """Outlier-robust and ordered everywhere it is finite (manager21, 2026-11-08: with the old -inf on ex_top3_total <= 0, every spec scored -inf,
+    so islands had no gradient; and a handful of glitch trades (+~100 SOL on a 0.1 SOL stake) dominated totals).
+    -inf only if n < 40 or n_days < 6. r = ex_top3_total / (n - 3), the mean SOL per trade without the 3 best trades.
+    r <= 0: fitness = r (less negative is better). r > 0: r * sqrt(trades_per_day) * positive_days / n_days, halved when best_day_share > 0.5."""
     if m["n"] < MIN_N or m["n_days"] < MIN_DAYS:
         return -math.inf
-    if m["ex_top3_total"] <= 0:
-        return -math.inf
-    f = m["ci90_low"] * math.sqrt(m["trades_per_day"])
-    if m["best_day_share"] is not None and m["best_day_share"] > 0.5 and f > 0:
+    r = m["ex_top3_total"] / max(1, m["n"] - 3)
+    if r <= 0:
+        return float(r)
+    f = r * math.sqrt(m["trades_per_day"]) * (m["positive_days"] / m["n_days"])
+    if m["best_day_share"] is not None and m["best_day_share"] > 0.5:
         f *= 0.5
     return float(f)
 

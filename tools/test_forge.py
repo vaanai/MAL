@@ -310,15 +310,20 @@ def mk(n, mean, days=8, std=0.0, top=0.0):
 
 
 def test_fitness_edge_cases():
-    base = {"n": 100, "n_days": 8, "ex_top3_total": 1.0, "ci90_low": 0.01, "trades_per_day": 4.0, "best_day_share": 0.2}
-    assert E.fitness(base) == pytest.approx(0.02)
+    # r = ex_top3_total / (n - 3) = 0.97 / 97 = 0.01; f = r * sqrt(4) * positive_days / n_days = 0.01 * 2 * 6/8 = 0.015
+    base = {"n": 100, "n_days": 8, "positive_days": 6, "ex_top3_total": 0.97, "ci90_low": 0.01, "trades_per_day": 4.0, "best_day_share": 0.2}
+    assert E.fitness(base) == pytest.approx(0.015)
     assert E.fitness({**base, "n": 39}) == -math.inf
     assert E.fitness({**base, "n_days": 5}) == -math.inf
-    assert E.fitness({**base, "ex_top3_total": 0.0}) == -math.inf
-    assert E.fitness({**base, "best_day_share": 0.6}) == pytest.approx(0.01)
-    assert E.fitness({**base, "best_day_share": 0.5}) == pytest.approx(0.02)  # exactly 50% is not over
-    neg = E.fitness({**base, "ci90_low": -0.01, "best_day_share": 0.9})
-    assert neg == pytest.approx(-0.02)  # the penalty never improves a negative fitness
+    assert E.fitness({**base, "best_day_share": 0.6}) == pytest.approx(0.0075)
+    assert E.fitness({**base, "best_day_share": 0.5}) == pytest.approx(0.015)  # exactly 50% is not over
+    # ordered (finite) when the robust mean is <= 0: less negative is better, so islands have a gradient
+    a = E.fitness({**base, "ex_top3_total": -0.97})
+    b = E.fitness({**base, "ex_top3_total": -9.7})
+    assert a == pytest.approx(-0.01) and b == pytest.approx(-0.1) and a > b
+    assert E.fitness({**base, "ex_top3_total": 0.0}) == 0.0
+    # glitch outliers in the top 3 do not move fitness
+    assert E.fitness({**base, "total": 300.0}) == E.fitness(base)
 
 
 def test_metrics_of():

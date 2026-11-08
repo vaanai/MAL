@@ -354,6 +354,11 @@ class Team:
             if h in self.archive:
                 continue
             fit = r.get("fitness")
+            if r.get("metrics") and not r.get("failure"):
+                try:
+                    fit = float(self.ev.fitness(r["metrics"]))  # re-scored on resume, so a changed fitness function applies to the whole archive
+                except Exception:
+                    pass
             self.archive[h] = {"hash": h, "spec": r["spec"], "metrics": r.get("metrics") or {}, "fitness": float("-inf") if fit is None else fit,
                                "island": r["island"], "round": r["round"], "owners": {r["island"]}}
             self.counts["evaluated"] += 1
@@ -471,7 +476,7 @@ class Team:
     def val_pass(self):
         """Evaluate the global top VAL_TOP (by TRAIN fitness) not yet VAL-read, once each. Returns number read."""
         with self.lock:
-            cands = [e for e in self.archive.values() if e and math.isfinite(e["fitness"]) and e["hash"] not in self.val_read]
+            cands = [e for e in self.archive.values() if e and math.isfinite(e["fitness"]) and e["fitness"] > 0 and e["hash"] not in self.val_read]  # VAL reads only for TRAIN-positive specs
             cands = sorted(cands, key=lambda e: -e["fitness"])[:VAL_TOP]
             self.last_val_ts = time.time()
             for e in cands:
