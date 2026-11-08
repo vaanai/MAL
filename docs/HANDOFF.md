@@ -22,14 +22,14 @@ Then read the tail of the manager20 state log, `/data/mal/hunt-1008/ops/manager2
 - **Window rule:** hour 18 and earlier are pre-fix; the first usable tip hour is **2026-11-07T19**.
 - Helius credits used for this: ≈106.5k (#2235 6,001; #2236 33,501 void; #2244 33,501; #2245 ~33,501).
 
-## 2. Fixed steps in the next days (crons are in `ops/manager20/crons-manager20-1104.json`; re-create them with CronCreate at session start)
+## 2. Fixed steps in the next days (crons are in `ops/manager20/crons-manager20-1104.json` and, for manager21, `ops/manager21/crons-manager21.json`; re-create them with CronCreate at session start)
 | UTC | Step |
 |---|---|
 | hourly :17 | HELM-REPLY-* in /data/mal/hunt-1008/push-1016/hunt29/p1/; PR verdicts; miscusi_inbox; due steps |
 | daily 01:21 / 03:23 / 07:27 / 07:31 / 09:43 / 12:17 | digest + HV4 L8 / tip-tape archive / A3 record / BOOST check / housekeeping + DEC-035 §5 lane line / H5 health — full prompts in the crons json |
 | ~~11-08 20:41 / 22:07, 11-08 ~13:05, 11-09 03:05~~ | **Void:** #2251, #2252, #2053 and #1562 were cancelled after the owner decision of 2026-11-08 ~00Z, which ended forward-paper testing (notebook n_j0z3_wYlJOMCaw). No step is due. |
 | **FLOOR live** (manager21, 11-08) | floor-lane-1 has been LIVE since 2026-11-08T14:19:43Z; first send 14:30:47.391Z. Gate read EXP-029 with Errata 1/1a/1b: S = 2026-11-09T06:00:00Z, deadline 2026-11-30T06:00Z. Daily report job #2290 runs 00:20Z (output `~/mal-data/floor-lane-daily/` on fast-0) and goes to the notebook and `data/console.json`. Health watch #2291 every 300 s: exit 3 = alert. State log `ops/manager21/state-manager21.md`; crons `ops/manager21/crons-manager21.json`. |
-| **11-16 06:13** | HELM-ASK-1108-1 window opens. Helm resets floor-lane-1 `first_send_ms` (executor stopped, one field), target by 11-21T00Z. **If it is not done before 2026-11-22T14:30:48.897Z, EXP-029 is FAIL** (Erratum 1b). |
+| **11-16 06:00** | HELM-ASK-1108-1 window opens at 2026-11-16T06:00:00Z (manager nudge cron 06:13Z). Helm resets floor-lane-1 `first_send_ms` (executor stopped, one field), target by 11-21T00Z. **If it is not done before 2026-11-22T14:30:48.897Z, EXP-029 is FAIL** (Erratum 1b). |
 | **11-21 00:05** | Read-only host check **#2294**: exit 3 = reset NOT done. Chase Helm the same hour. |
 | 11-21 18:13 | Successors of #2290 and #2291 (they end 11-21T23Z), to END 2026-11-30T07Z, chained with `after`. |
 | 11-10 20:13 | feed-handover-1111: submit per docs/runbooks (research-0 arena feed #1652 successor). |
