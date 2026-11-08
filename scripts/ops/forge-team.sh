@@ -12,9 +12,10 @@ PY=${PY:-/data/mal/venv/bin/python}
 ISLANDS=${ISLANDS:-8}
 BUDGET=${BUDGET:-20}
 HOURS=${HOURS:-24}
+MAXR=${MAX_ROUNDS:-}
 if [ "${DRY:-0}" = "1" ]; then
   unset ANTHROPIC_API_KEY
-  set -- -E -s -B -u -m tools.forge.team --dry --out "$OUT" --shortlist "$SHORTLIST" --islands "$ISLANDS" --budget-per-island "$BUDGET" --hours "$HOURS"
+  set -- -E -s -B -u -m tools.forge.team --dry --out "$OUT" --shortlist "$SHORTLIST" --islands "$ISLANDS" --budget-per-island "$BUDGET" --hours "$HOURS" ${MAXR:+--max-rounds "$MAXR"}
   exec "$PY" "$@"
 fi
 if [ "${ANTHROPIC_API_KEY:-}" = "" ] && [ -r /var/lib/mal/anthropic/anthropic.env ]; then
@@ -24,4 +25,4 @@ if [ "${ANTHROPIC_API_KEY:-}" = "" ] && [ -r /var/lib/mal/anthropic/anthropic.en
 fi
 if [ "${ANTHROPIC_API_KEY:-}" = "" ]; then echo "REFUSED: no ANTHROPIC_API_KEY"; exit 2; fi
 export ANTHROPIC_API_KEY
-exec "$PY" -E -s -B -u -m tools.forge.team --out "$OUT" --shortlist "$SHORTLIST" --islands "$ISLANDS" --budget-per-island "$BUDGET" --hours "$HOURS"
+exec "$PY" -E -s -B -u -m tools.forge.team --out "$OUT" --shortlist "$SHORTLIST" --islands "$ISLANDS" --budget-per-island "$BUDGET" --hours "$HOURS" ${MAXR:+--max-rounds "$MAXR"}

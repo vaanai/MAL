@@ -68,10 +68,13 @@ def validate_spec(raw, features) -> tuple[dict, list[str]]:
         f, op, v = c.get("f"), c.get("op"), c.get("v")
         if f not in feats:
             raise SpecRejected(f"unknown feature {str(f)[:40]!r}")
-        if op not in OPS:
-            raise SpecRejected(f"bad op {str(op)[:10]!r}")
         if not _num(v):
             raise SpecRejected("condition value not a finite number")
+        if op in ("==", "=") and v in (0, 1):  # binary feature (venue, ev_is_buy): x == 1 -> x >= 1, x == 0 -> x <= 0
+            op = ">=" if v == 1 else "<="
+            repairs.append("eq_to_ineq")
+        if op not in OPS:
+            raise SpecRejected(f"bad op {str(op)[:10]!r}")
         entry.append({"f": f, "op": op, "v": float(v) if isinstance(v, float) else v})
     venue = raw.get("venue", "any")
     if venue not in (0, 1, "any") or isinstance(venue, bool):

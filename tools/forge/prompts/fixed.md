@@ -9,7 +9,7 @@ price impact at the stake and 160,000 lamports per send. Everything you see is T
  "one_per_pool": true | false,
  "exit": {"tp": 0.0-10.0 or null, "sl": 0.0-0.99 or null, "trail": 0.0-0.99 or null, "max_hold_s": int <= 86400},
  "stake_sol": 0.1}
-- Entry conditions are ANDed. At most 6. Features must come from the dictionary below; every feature is causal.
+- Entry conditions are ANDed. At most 6. Operators are only < <= > >= (no ==; for a 0/1 feature use ">= 1" or "<= 0"). Features must come from the dictionary below; every feature is causal.
 - venue 0 = pump.fun bonding curve, 1 = PumpSwap, "any" = both.
 - tp and sl are fractional moves: tp 0.5 = +50 %, sl 0.3 = -30 %. trail is a fractional drawdown from the running high.
 - one_per_pool: at most one open position per pool. cooldown_s: minimum seconds between entries on one pool.

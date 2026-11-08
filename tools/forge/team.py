@@ -296,6 +296,7 @@ class Team:
         self.out.mkdir(parents=True, exist_ok=True)
         self.shortlist_path = Path(shortlist_path) if shortlist_path else self.out / "SHORTLIST.jsonl"
         self.lock = threading.RLock()
+        self.isl_stats = {}
         self.file_lock = threading.Lock()
         self.eval_sem = threading.Semaphore(max(1, eval_workers))
         self.stop = threading.Event()
@@ -392,8 +393,13 @@ class Team:
             self.archive[h] = None  # reserve so a concurrent island does not evaluate the same spec
         try:
             with self.eval_sem:
+                te = time.time()
                 m = clean_json(self.ev.evaluate(spec, "TRAIN"))
                 fit = float(self.ev.fitness(m))
+                with self.lock:
+                    st = self.isl_stats.setdefault(island, {"eval_n": 0, "eval_s": 0.0, "round": 0, "round_s": 0.0})
+                    st["eval_n"] += 1
+                    st["eval_s"] += time.time() - te
         except Exception as e:  # evaluator bug on one spec must not kill the run
             with self.lock:
                 self.archive.pop(h, None)
@@ -524,6 +530,10 @@ class Team:
         best = self.global_top_fitness()
         note = (f"spend ${sp:.3f}/${self.budget * self.n_islands:.2f} specs={self.counts['evaluated']} best_fit={best} "
                 f"val_reads={len(self.val_read)} shortlist={self.shortlist_n}")
+        with self.lock:
+            per = " | ".join(f"i{k}: r{v['round']} {v['round_s']:.0f}s/round eval {v['eval_s'] / max(v['eval_n'], 1):.1f}s" for k, v in sorted(self.isl_stats.items()))
+        if per:
+            note += " | " + per
         p = os.environ.get("MISCUSI_PROGRESS")
         if p:
             try:
@@ -615,7 +625,7 @@ class Island:
     def step(self):
         t, r = self.t, self.round
         if r % ANALYST_EVERY == 0:
-            res = self._ask("analyst", f"TRAIN statistics:\n{t.analyst_block()}", 1500, 0.3)
+            res = self._ask("analyst", f"TRAIN statistics:\n{t.analyst_block()}", 1500)
             if res is None and self.done:
                 return
             if res:
@@ -639,7 +649,7 @@ class Island:
             top = self.t.island_top(self.id, 10)
             u = (f"CURRENT LESSONS:\n{t.lessons or '(none)'}\n\nTOP STRATEGIES (TRAIN):\n"
                  f"{json.dumps(clean_json([{'spec': e['spec'], **brief_metrics(e['metrics'])} for e in top]))}")
-            res = self._ask("critic", u, 2000, 0.3)
+            res = self._ask("critic", u, 2000)
             if res:
                 obj = S.extract_json(res[0])
                 if isinstance(obj, dict) and isinstance(obj.get("lessons"), str):
@@ -657,7 +667,13 @@ class Island:
             if t.max_rounds is not None and self.round >= t.max_rounds:
                 self.done = "max_rounds"
                 break
+            tr = time.time()
             self.step()
+            with t.lock:
+                st = t.isl_stats.setdefault(self.id, {"eval_n": 0, "eval_s": 0.0, "round": 0, "round_s": 0.0})
+                st["round"], st["round_s"] = self.round + 1, time.time() - tr
+                ev_s = st["eval_s"] / max(st["eval_n"], 1)
+            t.jlog("rounds.jsonl", {"island": self.id, "round": self.round, "round_s": round(time.time() - tr, 2), "mean_eval_s": round(ev_s, 2)})
             if self.done in ("budget", "api_errors"):
                 break
             self.round += 1
