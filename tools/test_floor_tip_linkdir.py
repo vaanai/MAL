@@ -194,3 +194,11 @@ def test_shell_script_dry_and_refusals(env, tmp_path):
     bad = dict(base, DST=str(home / "mal-data/arena-tipfeed/tape"))
     r = subprocess.run(["sh", str(ROOT / "scripts/ops/floor-tip-linkdir.sh")], env=bad, capture_output=True, text=True)
     assert r.returncode == 2 and "REFUSED" in r.stdout
+
+
+def test_disk_reserve_is_measured_on_dst_filesystem(tmp_path):
+    """Reviewer on #1273: the reserve must be read on DST's file system, not on '/'."""
+    from tools import floor_tip_linkdir as L
+    dst = tmp_path / "a" / "b" / "tape"
+    lk = L.Linker(tmp_path / "src", dst)
+    assert lk.free_path == str(tmp_path) and lk.free_path != "/"

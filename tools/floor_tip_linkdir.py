@@ -57,19 +57,30 @@ def scan(d: Path) -> dict:
         return {}
 
 
+def _existing_parent(p: Path) -> Path:
+    while not p.exists() and p != p.parent:
+        p = p.parent
+    return p
+
+
 def free_pct(path: str) -> float:
     s = os.statvfs(path)
     return 100.0 * s.f_bavail / s.f_blocks if s.f_blocks else 0.0
 
 
 class Linker:
+    @staticmethod
+    def _fs_anchor(dst: Path) -> Path:
+        return _existing_parent(dst)
+
     def __init__(self, src, dst, *, retain_h=240, backfill_h=230, min_free_pct=20, remote_host="mal-research-0", remote_dir=DEFAULT_REMOTE,
-                 ssh_prefix=None, free_path="/", progress=None, now=time.time, dry=False):
+                 ssh_prefix=None, free_path=None, progress=None, now=time.time, dry=False):
         self.src, self.dst = Path(src), Path(dst)
         self.retain_h, self.backfill_h, self.min_free_pct = retain_h, backfill_h, min_free_pct
         self.remote_host, self.remote_dir = remote_host, remote_dir
         self.ssh = list(ssh_prefix) if ssh_prefix else ["ssh", *SSH_OPTS]
-        self.free_path, self.progress, self.now, self.dry = free_path, progress, now, dry
+        # the reserve is measured on DST's own file system (reviewer on #1273), never "/" by default
+        self.free_path, self.progress, self.now, self.dry = (free_path or str(self._fs_anchor(self.dst))), progress, now, dry
         self.errors: list = []
         self.backfilled = 0
         self.last_sync = None
