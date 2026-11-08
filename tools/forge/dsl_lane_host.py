@@ -47,6 +47,8 @@ Remaining sources of a host entry the evaluator would not have, each with its di
      differ from a batch that sorts them in.
   5. An event whose pool has an exit decided later than its exec instant: the host blocks events in (exec, decision], so the host book is smaller there, never larger.
   A fill-less entry can no longer occur; before this fix (no_fill entries) live results would have been worse than the backtest.
+Live vs backtest, forced exit: after a host restart every entry still open in the log is closed early with reason restart_close (the previous process's exit tracking is gone). The
+evaluator has no such exit, so a live position can end before its tp/sl/trail/time exit; the backtest never prices it.
 Also differs: when a time exit and a migration fall on the same grid point the evaluator labels it migrated and the host time (same exec instant).
 """
 from __future__ import annotations
@@ -154,7 +156,9 @@ class TapeFollower:
         return hs
 
     def _read_hour(self, h: int) -> list[bytes]:
-        st = self.st.setdefault(h, [0, 0])
+        st = self.st.setdefault(h, [0, 0, 0])  # lines consumed, byte offset, 1 once the compacted .zst has been read (it is final)
+        if st[2]:
+            return []
         hn = C.hour_str(h)
         plain, z = self.dir / f"tape-{hn}.jsonl", self.dir / f"tape-{hn}.jsonl.zst"
         for _ in range(2):
@@ -172,6 +176,7 @@ class TapeFollower:
                     lines = list(_lines(z))
                     new = lines[st[0]:]
                     st[0] = max(st[0], len(lines))
+                    st[2] = 1  # a .zst is the closed hour: read its remainder past our offset once, never decompress it again
                     return new
                 return []
             except (FileNotFoundError, RuntimeError):  # the .jsonl was compacted away between exists and open: try the other name

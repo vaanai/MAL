@@ -273,7 +273,7 @@ def test_gap_lookback_refuses_entries_and_holds_the_pool(world):
 
 def extra_rows():
     """The synthetic tape plus pools that make the evaluator drop events the host could otherwise enter: PoolNF prints every 15 min (no fill within 10 min);
-    PoolLQ alternates a 3 SOL and a 1 SOL real quote, so the event row passes the 2 SOL floor and the fill state does not; PoolBad's fill state has V below V_LO (dropped by the parser)."""
+    PoolLQ alternates a 3 SOL and a 1 SOL real quote, so the event row passes the 2 SOL floor and the fill state does not."""
     rows = synth_rows()
     t = HS0 + 5_000
     while t < HS0 + 3 * 3_600_000:
@@ -485,3 +485,22 @@ def test_row_ms_stays_monotone_across_utc_midnight(tmp_path):
     assert any(r["kind"] == "entry" for r in allrows)
     ms = [r["ms"] for r in allrows]
     assert ms == sorted(ms) and ms[0] < day + 3_600_000 <= ms[-1]  # crosses UTC midnight and the chain still verifies
+
+
+def test_follower_decompresses_each_hour_at_most_once(tmp_path, monkeypatch):
+    tape = tmp_path / "tape"
+    tape.mkdir()
+    hrs = [C.hour_str(HS0 + k * 3_600_000) for k in range(3)]
+    for k, h in enumerate(hrs):
+        (tape / f"tape-{h}.jsonl").write_bytes(b'{"h":%d}\n' % k)
+    fol = D.TapeFollower(tape, HS0)
+    while fol.read():
+        pass
+    calls = []
+    real = D._lines
+    monkeypatch.setattr(D, "_lines", lambda p: (calls.append(p.name), real(p))[1])
+    for h in hrs[:2]:  # the older hours are compacted after being read as .jsonl
+        subprocess.run(["zstd", "-q", "--rm", str(tape / f"tape-{h}.jsonl")], check=True)
+    for _ in range(5):
+        assert fol.read() == []
+    assert all(calls.count(c) <= 1 for c in set(calls)) and calls == [f"tape-{hrs[1]}.jsonl.zst"]  # <= 1 per hour over 5 polls; the hour two back is final and never reopened

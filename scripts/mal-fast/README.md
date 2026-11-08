@@ -90,6 +90,7 @@ per spec. It reads no key and sends nothing. A shortlisted spec still needs a DS
   row that reaches the tape after the event or grid point (host may enter or hold where the evaluator excludes; direction unknown), late rows (history only), the evaluator's split-end
   censoring (host has none), and an event inside (exec, decision] of a prior position (host takes fewer). The tests count host-only entries against the evaluator on a tape with no-fill and
   low-fill-quote pools (0). NOT tested: gap rows that arrive late, real tape, throughput on real tape (about 2,000 to 3,000 lines/s measured on the synthetic tape), a wall-clock tick.
+- Live vs backtest, forced exit: a host restart closes every open entry early with `restart_close`; the evaluator has no such exit, so a live position can end before its own exit rule fires.
 - No wall-clock tick: exits are decided when trade rows arrive. A feed stall leaves open positions without an exit row and without a stall gap; the executor's clock backstop at
   `decision_ms + max_hold_s` (see the executor gap) is the only cover then, and the host should not run without the tape writer's own health check.
 - Executor gap (nothing is changed in this PR): `tools/floor_lane_executor.py` / `floor_arena_executor.FloorBridge` are bound to bot `floor-lane-1`: `make_config` pins `bot_id` and FLOOR's frozen sha, the
