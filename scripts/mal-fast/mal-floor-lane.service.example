@@ -1,0 +1,60 @@
+# EXAMPLE ONLY. Not installed by merging this file. Only the manager starts a lane book; Helm installs the unit, LIVE_OK and the credential
+# (DEC-035 s3). This file holds no key. The DRY default below signs and sends nothing (config "mode": "dry", no --live). The live switch is the drop-in at the bottom
+# plus config "mode": "live" plus the root-created LIVE_OK. Modelled on mal-slowbot-live.service.example.
+#
+# Install sketch (Helm, from a root-owned pinned copy of the repo at the sha the PR names):
+#   /etc/systemd/system/mal-floor-lane.service
+#   /etc/systemd/system/mal-floor-lane.service.d/live.conf   (the drop-in below; creating it is the live switch)
+#   /etc/mal-arena-live/floor-lane-1/LIVE_OK                 (root-created, root-owned, content exactly: floor-lane-1; absent = the executor refuses --live)
+#   /var/lib/mal-live/floor-lane/state                       (mal-live 0700)
+[Unit]
+Description=MAL FLOOR book l1-floor-v2 as lane bot floor-lane-1, DEC-035 live-learning lane executor (example; DRY by default)
+After=network-online.target
+Wants=network-online.target
+# One wallet, one signer at a time: units that share the lane key also share the lane ledger lock (that is the DEC-035 s2 item 3 lock).
+After=mal-h5-lane-executor.service
+
+[Service]
+# Python flags -E -s -B (not -I): see mal-slowbot-live.service.example (HELM-REPLY-1104-1).
+Type=simple
+User=mal-live
+Nice=10
+WorkingDirectory=/usr/local/lib/mal-floor-lane/current
+Environment=PYTHONUNBUFFERED=1
+Environment=LC_ALL=C.UTF-8
+EnvironmentFile=/etc/mal-probe-rpc/helius.env
+ExecStart=/usr/local/lib/mal-h5-exec/venv/bin/python -E -s -B -u -m tools.floor_lane_executor run --config /usr/local/lib/mal-floor-lane/current/floor-lane-live.json
+Restart=on-failure
+RestartSec=10
+RestartPreventExitStatus=2
+NoNewPrivileges=true
+ProtectSystem=strict
+ReadWritePaths=/var/lib/mal-live/floor-lane /var/lib/mal-live/h5-lane
+ReadOnlyPaths=/usr/local/lib/mal-floor-lane /etc/mal-arena-live /data/mal/arena/rules
+ProtectHome=tmpfs
+PrivateTmp=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+LockPersonality=true
+RestrictAddressFamilies=AF_INET AF_INET6
+CapabilityBoundingSet=
+PrivateDevices=true
+ProtectProc=invisible
+SystemCallFilter=@system-service
+SystemCallArchitectures=native
+RestrictNamespaces=true
+UMask=0077
+LimitCORE=0
+MemoryMax=1G
+MemorySwapMax=0
+
+[Install]
+WantedBy=multi-user.target
+
+# ---- live drop-in: /etc/systemd/system/mal-floor-lane.service.d/live.conf (separate file; hands the process the key; the config must also say "mode": "live") ----
+# [Service]
+# LoadCredential=probe-wallet:/etc/mal-probe/probe-wallet.json
+# ExecStart=
+# ExecStart=/usr/local/lib/mal-h5-exec/venv/bin/python -E -s -B -u -m tools.floor_lane_executor run --config /usr/local/lib/mal-floor-lane/current/floor-lane-live.json --live
