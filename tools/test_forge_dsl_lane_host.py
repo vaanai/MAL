@@ -313,3 +313,16 @@ def test_restart_records_host_down_span_and_refuses_entries_in_it(tmp_path):
     span = host2.down[-1]
     assert span["kind"] == "host_down" and span["to_ms"] == down_to and span["from_ms"] == ck["hwm_ms"]
     assert host2.engine._gap_refusal(down_to - 10_000, 1) == {"prog": "all", "kind": "host_down", "from_ms": span["from_ms"], "to_ms": down_to}
+
+
+def test_cli_register_replay_verify(world, capsys):
+    tmp_path, tape, out, data = world
+    d = cfg_for(tmp_path, tape)
+    cfgp = tmp_path / "cfg.json"
+    cfgp.write_text(json.dumps(d))
+    assert D.main(["register", "--config", str(cfgp)]) == 0
+    assert D.main(["replay", "--config", str(cfgp), "--since-hour", H0, "--from-ms", str(HS0), "--to-ms", str(HS0 + 3 * 3_600_000)]) == 0
+    assert D.main(["verify", "--config", str(cfgp)]) == 0
+    assert D.main(["replay", "--config", str(cfgp)]) == 2  # --since-hour missing
+    rows = DecisionLog(d["root"]).rows("dsl-test-1")
+    assert any(r["kind"] == "entry" for r in rows)

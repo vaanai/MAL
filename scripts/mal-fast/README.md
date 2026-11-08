@@ -60,6 +60,40 @@ unit's `EnvironmentFile=`.
 - Replay (decision-equivalence job): `... replay --config <json> --from-ms A --to-ms B --seed-from-hour H`, output root outside `/data/mal/arena`; H must be at least 201 h before A; prints the
   entry/exit md5.
 
+## FORGE DSL lane decision host (FORGE-SPEC Part C, PR-A)
+
+`tools/forge/dsl_lane_host.py` is a keyless, paper-decision host that runs ONE FORGE DSL spec (`tools/forge/evaluate.validate_spec`) on an arena-layout tape dir and appends hash-chained
+`start` / `entry` / `exit` (and `entry_refused_gap` evidence) rows to `<root>/decisions/<bot_id>/<day>.jsonl`, the layout `tools/floor_arena_executor.Bridge` reads. One process per spec, one `bot_id`
+per spec. It reads no key and sends nothing. A shortlisted spec still needs a DSL-bound executor (see "Executor gap") before it can trade; this host is the decision half, built ahead of need.
+
+- Features, thinning, gap exclusion, cooldown, one_per_pool and the exit rules are the evaluator's own code paths (`events.parse_lines`, `events.compute_features`, `evaluate.simulate_paths`);
+  `tools/test_forge_dsl_lane_host.py` proves entries, exit times and exit reasons equal `evaluate.run_trades` on a synthetic tape (same pools, same event instants, same exec instants, same reasons)
+  for the base spec and five variants (tp-only, sl+trail, no one_per_pool, venue 1, venue 0 with a curve completion).
+- Price convention: PumpSwap rows PRE-trade with Q = quote_reserve + V, curve rows POST-trade; the path spot is the post-trade spot of the pool's last print at or before each grid time after the
+  fill print (first print >= 2.0 s after the event). tp/sl/trail trigger at grid point k and execute at k+1 (>= 5 s of exit lag); `exit` rows carry `grid_ms` (trigger point) and `exec_ms` (the
+  evaluator's exit instant); row `ms` is the host clock when the decision was made.
+- Steps, once per spec, as the manager: (1) write the spec JSON and a config (`dsl-lane-host.json.example`, `dsl-lane-spec.json.example`); `root` must be new and outside `/data/mal/arena`.
+  (2) `python tools/forge/dsl_lane_host.py register --config <json>`: pins the spec sha256 and the sha256 of the forge files, `arena_stack.py` and `arena_pool_table.py` in `<root>/registry.json`.
+  (3) Keyless dry of a few hours: `python tools/forge/dsl_lane_host.py run --config <json> --since-hour <H>` as a MiScusi job on mal-fast-0, `Nice=19`, from a clean checkout. `--since-hour` is
+  required and should be at least 7 h before the start (feature history is 6 h; nothing older is opened). Entries decided before the process start are SHADOW (state only, no rows).
+  (4) Check the chain: `... verify --config <json>`. Closed-slice replay for a decision md5: `... replay --config <json> --since-hour H --from-ms A --to-ms B` (writes into `root`; use a scratch root).
+- Tape: `tape_dir` is the arena-layout dir, for floor-lane-1 `$HOME/mal-data/floor-tip/tape` (SEALS-BRIEF FLOOR LANE READERS (a)-(e)). A new bot reading it, or any other dir, needs its own READERS line
+  from the manager before the first start.
+- Safety: `run` refuses a dirty or unknown checkout (the start row's `frozen_sha` is the full HEAD sha and its binding holds the file sha256s); refuses a registry or pin mismatch; refuses a
+  decision log without its checkpoint; refuses a restart while any entry in the log has no exit row (the exit tracking would be lost; wait for it to close). Downtime is recorded as a `host_down` span.
+  An entry is dropped (row `entry_refused_gap`) when a data-loss gap on its venue (or `all`), or a host_down span, overlaps `[t - gap_lookback_s, t]`; the default lookback is the longest feature
+  window the spec uses (min 60 s). A dropped entry is tracked as a shadow position, so the lane book is always a subset of the evaluator's book.
+- Not the same as the evaluator, by construction (look-ahead filters a live host cannot apply): an event with no fill print within 10 min is dropped by the evaluator and exits here as reason `no_fill`;
+  the real-quote floor is tested on the event row, not the fill state; a gap row that reaches the tape after a grid point was decided cannot change that decision; an event at exactly an exit
+  instant is the one tie the host cannot see ahead. The tests do not cover these, nor a live (still-growing, `.jsonl` -> `.jsonl.zst`) file beyond the follower unit test.
+- Executor gap (nothing is changed in this PR): `tools/floor_lane_executor.py` / `floor_arena_executor.FloorBridge` are bound to bot `floor-lane-1`: `make_config` pins `bot_id` and FLOOR's frozen sha, the
+  entry pin requires `stake_sol == 0.25` and `meta` to carry `rule == l1-floor-v2`, `cell`, `hold_s`, `tp`; `FOLLOWED_EXIT_REASONS` is only `tp_1.5x` and `time_24h` (every other exit reason is
+  counted `exit_not_followed`); `backstops()` sells at `decision_ms + 24 h + 1.9 s`; `FLOOR_LANE_STAKE_BOUNDS_LAMPORTS` allows 0.02 to 0.03 SOL. A DSL executor needs a sibling subclass of the base
+  `arena_live_bridge.Bridge` (whose `handle_exit` already follows any reason string): pin `bot_id` and the start row's `frozen_sha` (= host HEAD) and `spec_sha256`; replace the meta pin by
+  `meta.rule == "dsl"`; follow `tp, sl, trail, time, migrated, no_fill`; take the stake from the row (`stake_sol`) inside the lane bounds; set the clock backstop to
+  `decision_ms + max_hold_s` plus a margin (from `meta.max_hold_s`) instead of 24 h; and own a lane bot_id in the shared lane ledger. The sl/trail/tp sells then come from the host's exit rows
+  (the executor does no price tracking of its own), so a live sell lags the trigger by the host's detection time (the next tape row after the grid point) plus the sell build.
+
 ## FLOOR lane executor (DEC-035, bot_id `floor-lane-1`)
 
 Runbook for `tools/floor_lane_executor.py`, the FLOOR book `l1-floor-v2` (frozen sha 5e12f8f5, rule `tools/arena_rule_l1.py`, decisions unchanged) sending real orders at micro size
