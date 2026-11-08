@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import io
 import json
 import os
 import shutil
@@ -486,6 +487,45 @@ def _fs_span(out):
     return hs[0], hs[-1]
 
 
+SNAP_SCHEMA = "forge_first_seen_snapshot_v1"
+
+
+def write_first_seen_snapshot(out: str, path: str) -> dict:
+    """Pin the batch's own first-seen tables (first_seen over the SAME span the builder uses, _fs_span) in one npz: mint_k/mint_t, pool_k/pool_t (int64 ms), the covered hour span
+    (span_from, span_to inclusive hours) and a schema tag. Returns {path, sha256, span_from, span_to, n_mint, n_pool}. The file bytes are what the host pins by sha256."""
+    lo, hi = _fs_span(out)
+    fs = first_seen(out, C.hour_range(lo, hi))
+    p = Path(path)
+    tmp = p.with_name(p.name + ".tmp")
+    with open(tmp, "wb") as f:
+        np.savez(f, schema=np.array(SNAP_SCHEMA), span_from=np.array(lo), span_to=np.array(hi), mint_k=fs["mint"][0], mint_t=fs["mint"][1], pool_k=fs["pool"][0], pool_t=fs["pool"][1])
+    os.replace(tmp, p)
+    return {"path": str(p), "sha256": hashlib.sha256(p.read_bytes()).hexdigest(), "span_from": lo, "span_to": hi, "n_mint": int(len(fs["mint"][0])), "n_pool": int(len(fs["pool"][0]))}
+
+
+def load_first_seen_snapshot(path: str, want_sha256: str | None = None) -> dict:
+    """Loads a snapshot, parsing the same bytes it hashes. Raises ValueError on a sha256 mismatch (want_sha256) or a malformed file. end_ms = exclusive end of the covered span."""
+    raw = Path(path).read_bytes()
+    sha = hashlib.sha256(raw).hexdigest()
+    if want_sha256 is not None and sha != want_sha256:
+        raise ValueError(f"first-seen snapshot sha256 mismatch: {sha[:12]} != {str(want_sha256)[:12]}")
+    try:
+        z = np.load(io.BytesIO(raw), allow_pickle=False)
+        if str(z["schema"]) != SNAP_SCHEMA:
+            raise ValueError("wrong schema")
+        snap = {"sha256": sha, "span_from": str(z["span_from"]), "span_to": str(z["span_to"])}
+        for nm in ("mint", "pool"):
+            k, t = z[f"{nm}_k"].astype(np.int64), z[f"{nm}_t"].astype(np.int64)
+            if len(k) != len(t) or (len(k) > 1 and not np.all(k[1:] > k[:-1])):
+                raise ValueError(f"{nm} table is not sorted unique")
+            snap[nm] = (k, t)
+    except (KeyError, OSError, ValueError) as e:
+        raise ValueError(f"bad first-seen snapshot: {e}") from e
+    snap["start_ms"] = C.hour_ms(snap["span_from"])
+    snap["end_ms"] = C.hour_ms(snap["span_to"]) + 3_600_000
+    return snap
+
+
 def build(from_hour: str, to_hour: str, out: str, workers: int, tape_dir: str = TAPE_DIR, frac: float = 1.0) -> None:
     hours = C.hour_range(from_hour, to_hour)
     pre = C.hour_range(C.hour_str(C.hour_ms(from_hour) - 6 * 3_600_000), C.hour_str(C.hour_ms(from_hour) - 3_600_000))
@@ -510,7 +550,13 @@ def main(argv=None):
     b.add_argument("--workers", type=int, default=8)
     b.add_argument("--tape-dir", default=TAPE_DIR)
     b.add_argument("--pool-frac", type=float, default=1.0, help="deterministic pool-level sampling fraction (default all pools)")
+    f = sp.add_parser("first-seen-snapshot", help="write the batch's first-seen tables as a pinned npz for the DSL lane host")
+    f.add_argument("--root", required=True, help="forge root (the builder's --out)")
+    f.add_argument("--out", required=True)
     a = ap.parse_args(argv)
+    if a.cmd == "first-seen-snapshot":
+        print(json.dumps(write_first_seen_snapshot(a.root, a.out), sort_keys=True))
+        return
     build(a.from_hour, a.to_hour, a.out, a.workers, a.tape_dir, a.pool_frac)
 
 
