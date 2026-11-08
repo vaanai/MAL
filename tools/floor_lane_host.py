@@ -214,7 +214,7 @@ class LaneHost(HostV2):
         if blk and t < int(blk["until_ms"]):
             return f"pool_blocked_after_{blk['why']}", [], blk
         hit = [s for s in self.spans(t - self.rules[0].lookback_ms, t) if s.get("kind") != "host_down"]
-        hit += [s for s in self.lane_gaps if s.get("kind") == "host_down" and s["to_ms"] >= t - L_HOLD_MS and s["from_ms"] <= t]
+        hit += [s for s in self.lane_gaps if s.get("kind") == "host_down" and s["to_ms"] >= t - BLOCK_MS and s["from_ms"] <= t]
         return ("feed_gap", sorted(hit, key=lambda s: (s["from_ms"], s["to_ms"])), None) if hit else None
 
     def refuse(self, ctx: Ctx, row: Mapping[str, Any], buy: Buy) -> bool:
@@ -273,7 +273,7 @@ class LaneHost(HostV2):
         head, seq = self.log.head(self.rules[0].bot_id)
         keep_from = T - LOOKBACK_MAX_S * 1000
         persisted = [s for s in self.spans(keep_from, T) if s.get("kind") != "host_down"]
-        persisted += [s for s in self.lane_gaps if s["to_ms"] >= keep_from or (s.get("kind") == "host_down" and s["to_ms"] + L_HOLD_MS >= T)]
+        persisted += [s for s in self.lane_gaps if s["to_ms"] >= keep_from or (s.get("kind") == "host_down" and s["to_ms"] + BLOCK_MS >= T)]
         uniq = {canon(s): s for s in persisted}
         blocked = {p: b for p, b in self.blocked.items() if int(b["until_ms"]) > T}
         _atomic_write(self.ckpt_path, {"schema": CKPT_SCHEMA, "hwm_ms": int(T), "bot_id": self.rules[0].bot_id, "frozen_sha": FROZEN_SHA, "log_head": head, "log_seq": seq,
@@ -300,7 +300,8 @@ class LaneHost(HostV2):
         hwm = int(ck["hwm_ms"])
         self._last_T = hwm
         if now_ms > hwm:
-            self.lane_gaps.append({"prog": "all", "kind": "host_down", "from_ms": hwm, "to_ms": int(now_ms), "data_loss": True})
+            self._down_span = {"prog": "all", "kind": "host_down", "from_ms": hwm, "to_ms": int(now_ms), "data_loss": True}
+            self.lane_gaps.append(self._down_span)
         info.update({"checkpoint": True, "hwm_ms": hwm, "down_ms": max(0, int(now_ms) - hwm), "carried_gaps": len(self.lane_gaps), "blocked_pools": len(self.blocked)})
         return info
 
@@ -311,7 +312,14 @@ class LaneHost(HostV2):
             self._last_lane_ckpt = T
             self.checkpoint(T)
 
+    def begin_live(self, t_from: int) -> None:
+        """The downtime lasts until the first tick the host can see triggers again, not until lane_start (reviewer 6715031678 item 2)."""
+        down = getattr(self, "_down_span", None)
+        if down is not None and int(t_from) > int(down["to_ms"]):
+            down["to_ms"] = int(t_from)
+
     def run(self, t_from: int, t_to: int, sleep: Callable[[float], None] = time.sleep) -> None:
+        self.begin_live(t_from)
         try:
             super().run(t_from, t_to, sleep)
         finally:

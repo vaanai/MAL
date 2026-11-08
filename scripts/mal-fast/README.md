@@ -46,6 +46,7 @@ unit's `EnvironmentFile=`.
 (`tools/floor_arena_executor.py`, claude/floor-lane-executor) reads that root as its `root`. It is not the G1 arena book: its own root, ledger and `bots.json` (config refuses any path inside
 `/data/mal/arena`).
 
+- **Any restart blocks all new FLOOR entries for about 24 h** (24 h hold + 1.9 s + 60 s cooldown + 1 s tick + 5 s margin, counted from the first live tick after the restart). Exits are not affected. Do not restart the host casually: plan restarts, and record each one with its instant.
 - Unit (Helm installs; no worker starts it): one long-running process, `python tools/floor_lane_host.py run --config <json>`, from a clean checkout at the lane-host commit, `Nice=19`, about
   1.5 GB (ArenaState over a 365-minute warm-up plus the pool table). First, once: `... register --config <json>` (clock must be in the future).
 - Feed path: `tape_dir` is the live arena tape directory on mal-fast-0, the byte mirror `/home/claude/mal-data/arena-mirror/tape` written by `tools/tape_mirror.py pull`; this host tails it,

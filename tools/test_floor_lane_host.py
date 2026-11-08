@@ -368,6 +368,54 @@ def test_downtime_refuses_entries_for_the_paper_positions_longest_life(tmp_path)
     assert "entry" not in ks and ks.count(H.KIND_GAP_REFUSED) == 1
 
 
+
+def test_downtime_block_covers_paper_cooldown_window(tmp_path):
+    """QP 6714966199: a trigger 30 s after downtime end + 24 h + 1.9 s (inside the paper rule's 60 s cooldown after a time exit) is still refused."""
+    drop = H0 + 33 * HOUR + H.L_HOLD_MS + 30_000
+    rows = q_rows(drop)
+    t = H0 + 40 * HOUR
+    while t < drop - 600_000:
+        rows.append(row(t, "Q", "buy" if (t // 1800000) % 2 else "sell"))
+        t += 1_800_000
+    rows.sort(key=lambda r: r["t_recv_ms"])
+    eng = FakeEngine(tmp_path / "rules")
+    a = lane_host(tmp_path, rows, live=True, engine=eng)
+    Clocked(a)
+    a.resume()
+    _live_phase(a, H0, H0 + 31 * HOUR)
+    b = lane_host(tmp_path, rows, live=True, engine=eng)
+    Clocked(b)
+    b.lane_start(H0 + 33 * HOUR)
+    b.resume()
+    _live_phase(b, H0 + 33 * HOUR, H0 + 58 * HOUR)
+    ks = kinds(tmp_path / "rules")
+    assert "entry" not in ks and ks.count(H.KIND_GAP_REFUSED) == 1
+
+
+def test_downtime_lasts_until_first_live_tick(tmp_path):
+    """Reviewer 6715031678 item 2: lane_start at 33 h but the first live tick at 34 h; a trigger 30 s after 34 h + 24 h + 1.9 s is still refused."""
+    drop = H0 + 34 * HOUR + H.L_HOLD_MS + 30_000
+    rows = q_rows(drop)
+    t = H0 + 40 * HOUR
+    while t < drop - 600_000:
+        rows.append(row(t, "Q", "buy" if (t // 1800000) % 2 else "sell"))
+        t += 1_800_000
+    rows.sort(key=lambda r: r["t_recv_ms"])
+    eng = FakeEngine(tmp_path / "rules")
+    a = lane_host(tmp_path, rows, live=True, engine=eng)
+    Clocked(a)
+    a.resume()
+    _live_phase(a, H0, H0 + 31 * HOUR)
+    b = lane_host(tmp_path, rows, live=True, engine=eng)
+    Clocked(b)
+    b.lane_start(H0 + 33 * HOUR)
+    b.resume()
+    b.begin_live(H0 + 34 * HOUR)
+    assert b.lane_gaps[-1]["kind"] == "host_down" and b.lane_gaps[-1]["to_ms"] == H0 + 34 * HOUR
+    _live_phase(b, H0 + 34 * HOUR, H0 + 59 * HOUR)
+    ks = kinds(tmp_path / "rules")
+    assert "entry" not in ks and ks.count(H.KIND_GAP_REFUSED) == 1
+
 def two_trigger_rows():
     """Pool Q: the rule's drained-pool sell at 30 h 15 min, normal prints from 31 h, a second drained-pool sell at 38 h."""
     rows = q_rows(H0 + 30 * HOUR + 900_000)
