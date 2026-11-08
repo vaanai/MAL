@@ -55,8 +55,9 @@ Remaining sources of a host entry the evaluator would not have, each with its di
      before --since-hour is impossible by construction of (a). Remaining divergence, each with its direction: (i) a host that missed rows of a new key (tape hole, late start inside the overlap), or a
      row filed late whose t is earlier, sees a LATER first print: age too small (extra entries for a `<` condition, missed ones for `>`); (ii) a new key whose first row has t < span
      end but is filed in the next hour file is absent from the snapshot with host_t < end: events_age_unknown for the whole run (fail closed, smaller book; read the counter);
-     (iii) a key outside the snapshot quiet for AGE_KEEP_H (14 days) is dropped from the host's first-seen state (bounded memory, counter age_keys_dropped) and, if it trades again,
-     gets its new first print: age too small; (iv) every (re)start replays all tape from --since-hour <= span end, so warm-up grows by the day since the build ended. Features the
+     (iii) first-seen of keys OUTSIDE the snapshot is never dropped (a dropped key would re-print with a fresh, too-small age): it lives for the process (rebuilt on
+     restart), about 125 bytes per key (int to int dict entry, measured on a synthetic dict; keys per day NOT measured on real tape, so size it from the tape before a long run);
+     counter age_first_moved_back counts a late-filed earlier row that lowered such a first print (decided events before it used a too-small age); (iv) every (re)start replays all tape from --since-hour <= span end, so warm-up grows by the day since the build ended. Features the
      spec does not read (age_s for a mig_age_s-only spec and the reverse) are logged NaN/null.
   4. Rows that arrive late (t < the newest time seen, e.g. the previous hour's tail) update pool history only: they are never an event, fill or grid step. Entries and exits can
      differ from a batch that sorts them in.
@@ -102,7 +103,6 @@ CKPT_SCHEMA = "dsl_lane_host_ckpt_v1"
 REG_SCHEMA = "dsl_lane_host_registry_v1"
 KIND_GAP_REFUSED = "entry_refused_gap"
 HOUR_MS = 3_600_000
-AGE_KEEP_H = 24 * 14  # out-of-snapshot first-seen keys are retained while seen within this many hours
 HIST_H = 6  # events.hour_events loads [H - 6 h, H + 1 h]: the feature history starts 6 h before the event's hour
 PIN_FILES = ("tools/forge/events.py", "tools/forge/evaluate.py", "tools/forge/common.py", "tools/arena_stack.py", "tools/arena_pool_table.py", "tools/arena_declog.py", "tools/arena_rules.py",
              "tools/arena_paper.py", "tools/forge/dsl_lane_host.py")
@@ -280,8 +280,6 @@ class Engine:
                 raise R.HostError("specs that use age_s / mig_age_s are refused: the host tape starts after the first-seen snapshot span ends (blind gap); use an earlier --since-hour")
             if int(tape_start_ms) < int(snapshot["start_ms"]):
                 raise R.HostError("specs that use age_s / mig_age_s are refused: the host tape starts before the first-seen snapshot span starts (host prints the batch never saw); use a later --since-hour")
-        self.age_last_m: dict[int, int] = {}  # last print of a key OUTSIDE the snapshot (age specs only): bounds the retained first-seen state
-        self.age_last_p: dict[int, int] = {}
         self.sink = sink
         self.live_from_ms = int(live_from_ms)
         self.lookback_ms = 1000 * max(60, int(gap_lookback_s if gap_lookback_s is not None else default_lookback_s(self.spec)))
@@ -346,13 +344,12 @@ class Engine:
         self.first_pool.setdefault(pool_h, t)
         if t < self.first_mint[mint_h]:
             self.first_mint[mint_h] = t
+            if self.uses_age and not self._in_snap("mint", mint_h):
+                self._c("age_first_moved_back")  # a late-filed earlier row lowered the first print of a new key: earlier decided events used a too-small age
         if t < self.first_pool[pool_h]:
             self.first_pool[pool_h] = t
-        if self.uses_age:
-            if not self._in_snap("mint", mint_h):
-                self.age_last_m[mint_h] = max(t, self.age_last_m.get(mint_h, 0))
-            if not self._in_snap("pool", pool_h):
-                self.age_last_p[pool_h] = max(t, self.age_last_p.get(pool_h, 0))
+            if self.uses_age and not self._in_snap("pool", pool_h):
+                self._c("age_first_moved_back")
         ph = self.hist.setdefault(pool_h, PoolHist())
         times = ph.cols["t"]
         ix = bisect.bisect_right(times, t)
@@ -394,13 +391,7 @@ class Engine:
         live_m = {int(h.cols["mint"][-1]) for h in self.hist.values() if h.cols["mint"]}
         for k in [k for k in self.first_mint if k not in live_m and not (self.uses_age and not self._in_snap("mint", k))]:
             del self.first_mint[k]
-        if self.uses_age:  # keys outside the snapshot: kept while seen within AGE_KEEP_H, then dropped (documented divergence iii)
-            keep_cut = self.clock - AGE_KEEP_H * HOUR_MS
-            for last, first in ((self.age_last_m, self.first_mint), (self.age_last_p, self.first_pool)):
-                for k in [k for k, v in last.items() if v < keep_cut]:
-                    del last[k]
-                    first.pop(k, None)
-                    self._c("age_keys_dropped")
+
 
     # -- candidate events
     def _event(self, r: dict, ln: bytes, pool_h: int, mint_h: int, ph: PoolHist, ix: int) -> None:

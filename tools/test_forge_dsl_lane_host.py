@@ -732,25 +732,29 @@ def _row_line(t, pool, mint):
     return json.dumps(ps_row(t, "buy", pool=pool, mint=mint), separators=(",", ":")).encode()
 
 
-def test_age_first_seen_state_is_bounded_and_prune_runs(age_world):
+def test_out_of_snapshot_first_seen_is_never_dropped_reprint_keeps_true_age(age_world):
+    """QP probe (prune_reprint): a key dropped after a long quiet spell re-printed with age 0.0 against the batch's 1227660.0 and nothing was counted. Nothing is dropped now."""
     tmp_path, tape, out, data, snap_p, info = age_world
     snap = D.load_snapshot(str(snap_p))
     eng = D.Engine(AGE_SPEC, D.ListSink(), snapshot=snap, tape_start_ms=HS0)
-    h_pool = int(snap["pool"][0][0])
-    new_t = snap["end_ms"] + 1000
-    eng.feed_line(_row_line(new_t, "PoolFresh", "MintFresh"))
-    fresh_p = [k for k in eng.age_last_p]
-    fresh_m = [k for k in eng.age_last_m]
-    assert len(fresh_p) == 1 and len(fresh_m) == 1 and fresh_p[0] in eng.first_pool and fresh_m[0] in eng.first_mint
-    assert h_pool not in eng.age_last_p  # keys in the snapshot are not tracked: they are recoverable
-    eng.feed_line(_row_line(new_t + 20 * 60_000, "PoolOther", "MintOther"))  # lets the pending candidate expire (a pending pool is never pruned)
-    eng.feed_line(_row_line(new_t + 30 * 3_600_000, "PoolOther", "MintOther"))  # the clock moves 30 h: the quiet pool's history is pruned, its out-of-snapshot first-seen is NOT
-    assert fresh_p[0] not in eng.hist and fresh_p[0] in eng.first_pool and fresh_m[0] in eng.first_mint
-    eng.feed_line(_row_line(new_t + (D.AGE_KEEP_H + 5) * 3_600_000, "PoolLater", "MintLater"))  # past AGE_KEEP_H: dropped and counted
-    assert fresh_p[0] not in eng.first_pool and fresh_m[0] not in eng.first_mint and fresh_p[0] not in eng.age_last_p
-    assert eng.counters["age_keys_dropped"] >= 2
-    assert len(eng.first_pool) <= 3 and len(eng.age_last_p) <= 3
-
+    seen = {}
+    eng.feat_hook = lambda ph, t, x: seen.__setitem__((ph, t), x)
+    t0 = snap["end_ms"] + 1000
+    eng.feed_line(_row_line(t0, "PoolFresh", "MintFresh"))
+    eng.feed_line(_row_line(t0 + 20 * 60_000, "PoolOther", "MintOther"))  # lets the pending candidate expire (a pending pool is never pruned)
+    eng.feed_line(_row_line(t0 + 30 * 3_600_000, "PoolOther", "MintOther"))  # 30 h on: the quiet pool's history is pruned, its first-seen is not
+    pk = next(p for (p, t) in seen if t == t0)
+    mk = next(m for m, v in eng.first_mint.items() if v == t0)
+    assert pk not in eng.hist and eng.first_pool[pk] == t0 and eng.first_mint[mk] == t0
+    t3 = t0 + 20 * 24 * 3_600_000  # 20 days later (past the old 14-day drop)
+    eng.feed_line(_row_line(t3 - 60_000, "PoolLater", "MintLater"))
+    eng.feed_line(_row_line(t3, "PoolFresh", "MintFresh"))
+    x = seen[(pk, t3)]
+    assert x[C.FIDX["age_s"]] == np.float32((t3 - t0) / 1000.0) and x[C.FIDX["mig_age_s"]] == np.float32((t3 - t0) / 1000.0)
+    assert eng.counters.get("events_age_unknown", 0) == 0 and "age_keys_dropped" not in eng.counters
+    assert eng.counters.get("age_first_moved_back", 0) == 0
+    eng.feed_line(_row_line(t0 - 500, "PoolFresh", "MintFresh"))  # a late-filed EARLIER row lowers the first print of a new key: counted
+    assert eng.first_pool[pk] == t0 - 500 and eng.counters["age_first_moved_back"] == 2
 
 def test_restart_with_age_spec_replays_and_continues(age_world):
     tmp_path, tape, out, data, snap_p, info = age_world
