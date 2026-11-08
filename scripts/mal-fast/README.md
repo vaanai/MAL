@@ -100,6 +100,29 @@ per spec. It reads no key and sends nothing. A shortlisted spec still needs a DS
   `decision_ms + max_hold_s` plus a margin (from `meta.max_hold_s`) instead of 24 h; and own a lane bot_id in the shared lane ledger. The sl/trail/tp sells then come from the host's exit rows
   (the executor does no price tracking of its own), so a live sell lags the trigger by the host's detection time (the next tape row after the grid point) plus the sell build.
 
+## FORGE DSL lane executor (FORGE-SPEC Part C, PR-B; DEC-035, one lane bot_id per spec)
+
+`tools/forge/dsl_lane_executor.py` follows the decision rows of one `tools/forge/dsl_lane_host.py` spec and trades them in the DEC-035 lane. It closes the "Executor gap" above. A sibling of
+`floor_lane_executor` (same `Bridge`, `LaneLedger`, `FloorLanePort`, ATA close, A3 pause, STOP/HALT); nothing is re-decided. Files: `dsl-lane-executor.json.example` (dry; fill in the pins).
+Neither merging nor this runbook installs a unit, LIVE_OK or a credential. Only the manager starts a lane book; Helm installs the unit, LIVE_OK and the credential; no Claude session reads the wallet key.
+It needs a SEALS-BRIEF READERS line from the manager before any start (it reads the host's decision log, the same as the FLOOR executor reads FLOOR's).
+
+- **One executor per spec.** The host config `bot_id` = executor config `bot_id` = `lane.bot_id` = the decision-log arm = the LIVE_OK content (`/etc/mal-arena-live/<bot_id>/LIVE_OK`, root-owned, content exactly
+  the bot_id). `floor-lane-1`, `h5-lane`, `l1-floor-v2`, `hv4-*` and ids with `:` or `/` are refused. Unit: `python -m tools.forge.dsl_lane_executor run --config <json> [--live]`, user `mal-live`.
+  Give each bot its own `state_dir`; all bots share the lane ledger and STOP of the h5-lane, so lane_full, the -0.30 SOL budget and the -0.10 SOL daily stop are lane-wide.
+- **Pins (a mismatch refuses, nothing is sent):** `frozen_sha` = the host's checkout HEAD (40 hex, from the host's start row); `spec_sha256` (64 hex, as printed by `dsl_lane_host.py register`); `max_hold_s` = the
+  spec's `exit.max_hold_s`. The start row's `frozen_sha` / `spec_sha256` must equal them (a mismatch latches `frozen_sha_mismatch` / `spec_sha_mismatch`, also on a later start row). Every entry row needs
+  `meta.rule == "dsl"` and `meta.max_hold_s` equal to the config, `arm` equal to the bot_id, and `meta.spec_sha256` (if present) equal to the config.
+- **Exits:** every host reason is followed: `tp, sl, trail, time, migrated, no_fill` (an exit row for an order whose buy has not landed waits for the landing and then sells). Any other reason is counted
+  `exit_not_followed`. Backstop: `decision_ms + meta.max_hold_s + DSL_BACKSTOP_MARGIN_MS` (fill wait 602 s + one 300 s grid step + 60 s = 962 s), reason `time_backstop`, so the host's own time exit normally wins.
+  No stop loss of the executor's own: the base bridge's `sl_backstop` is not used. A live sell lags the host's trigger by the host's detection time plus the sell build.
+- **Stake:** `lane.stake_lamports` in `DSL_LANE_STAKE_BOUNDS_LAMPORTS` (0.02 to 0.03 SOL, one constant, pinned by `test_constants_follow_dec035_s2_and_the_host`). The row's `stake_sol` is not used for sizing; it is logged as `paper_stake_sol`.
+- **Same limits as FLOOR:** STOP before every send, ledger lock and read before every send, ATA close checked at start, `ata_rent_not_refunded` latch, A3 redeploy pause (`a3_record_file` required for `--live`), per-bot-id process lock.
+  Limits come from `floor_lane_executor`'s ledger class and constants at call time, so a lane-wide change (cap, daily presend) applies here too.
+- **Host restart (a second start row, e.g. host_down):** new entries are held 10 min (`gap_hold`, persisted in `dsl-state-<mode>.json`); open positions are untouched and keep the host's later exit rows and the backstop. Exit rows are followed whatever their `ms` (no ordering assumed).
+- **Check:** `python -m tools.forge.dsl_lane_executor check --config <json> [--live]`.
+- **Not tested here:** a real send, the real feed or RPC, the wallet, a real host run feeding this executor end to end, and the real behaviour of a restarted host for a position open across the restart (tested only with synthetic start/exit rows). The first read of real fills is the lane's day-1 report (DEC-035 s5). Nothing here says any spec makes money.
+
 ## FLOOR lane executor (DEC-035, bot_id `floor-lane-1`)
 
 Runbook for `tools/floor_lane_executor.py`, the FLOOR book `l1-floor-v2` (frozen sha 5e12f8f5, rule `tools/arena_rule_l1.py`, decisions unchanged) sending real orders at micro size
