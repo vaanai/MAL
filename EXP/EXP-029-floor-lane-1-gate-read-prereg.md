@@ -1,6 +1,6 @@
 # EXP-029: floor-lane-1 real-fill gate read (DEC-035 §6 registration)
 
-**Pre-registration.** This file registers when it merges to main. The start instant S below must still be in the future at that merge. If it is not, this file does not register, and a new PR with a later S is needed. Revision 3 was written 2026-11-08 by manager21, after QP NOT OK and REVIEWER REQUEST_CHANGES at 5bc73087 and at ba9eb60a. Nothing has been sent live yet: at writing the lane has run dry only, with 0 entries attempted. No fill, P&L, price or exit of any lane trade existed or was read.
+**Pre-registration.** This file registers when it merges to main. The start instant S below must still be in the future at that merge. If it is not, this file does not register, and a new PR with a later S is needed. Revision 3 was written 2026-11-08 by manager21, after QP NOT OK and REVIEWER REQUEST_CHANGES at 5bc73087 and at ba9eb60a. Nothing has been sent live yet (true at Revision 3 only; see Erratum 1): at writing the lane has run dry only, with 0 entries attempted. No fill, P&L, price or exit of any lane trade existed or was read.
 
 Nothing in this file says or implies that FLOOR makes money. The read below is the only route by which lane trades at 0.03 SOL can count toward the promotion gate (CLAUDE.md; DEC-035 §6). A PASS is necessary for any stake above 0.03 SOL; it is never sufficient.
 
@@ -128,6 +128,19 @@ All four tests run on the full trade set. Real-fill failures are observed, not m
 2. **Open slots.** floor-lane-1 positions opened before S and still open at S hold lane slots, like another bot's positions. `lane_full` refusals of floor-lane-1 entries in [S, C) are reported in three groups: (i) another lane bot holding slots, (ii) only pre-S floor-lane-1 positions holding slots, (iii) neither.
 3. **Pauses and stops before S** are judged by the same §3 rules from the live start. A stop not on the pause list, made by a person between the live start and S, is a FAIL end.
 4. **Reporting** (§6). The read lists the pre-S floor-lane-1 sends separately: count, UTC days, and total P&L by the §2 sum, with positions still open at R scored as §2 says. They are disclosure only and are not in any test.
+
+## Erratum 1a (written 2026-11-08T14:39:07Z by `date -u`, before S; QP MINOR 1–6 on PR #1289)
+
+This section tightens Erratum 1. It changes no test or threshold, and it does not change S, C, R or the trade definition.
+1. **(b) before S.** Between the live start and S, condition (b)'s clause "no `floor-lane-1` trade is sent" reads "no `floor-lane-1` `send_intent` row is written". From S onward, the §3 text applies as written.
+2. **Every §3 end applies from the live start (2026-11-08T14:19:43Z)**, not only the stops. This includes "Rule changes are a FAIL end" and "Any change installed without a merged amendment is also a FAIL end".
+3. **Successor bot_ids.** Erratum 1 items 1–4 and this section apply equally to any successor bot_id named under §3 (ii).
+4. **`lane_full` groups** (this replaces Erratum 1 item 2's split; disclosure only). Each `lane_full` refusal of a floor-lane-1 entry in [S, C) falls in one group:
+   - (i) at least one slot is held by another lane bot;
+   - (ii) no other lane bot holds a slot, and at least one slot is held by a pre-S floor-lane-1 (or successor) position;
+   - (iii) only in-read floor-lane-1 positions hold slots.
+5. **What was read before Erratum 1.** The figure 0.031673840 SOL in Erratum 1 is the first buy's **cost basis**, which is entry side. Erratum 1 was exit-blind, not fully outcome-blind: one entry cost and the lane headroom were read, and no exit, proceeds or mark.
+6. **Daily reports.** `lane_daily_report` books a position on its close day. From 2026-11-09, its daily figures mix pre-S and in-read floor-lane-1 positions. No daily figure is quoted as read-trade P&L. The read alone computes in-read P&L, by the §2 sum over trades with `ts_ms` ≥ S.
 
 ## Appendix A. Frozen files (git blob ids at 3710e1af)
 
