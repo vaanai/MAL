@@ -10,8 +10,8 @@ LIMITS (DEC-035 s2; the shared ledger is the h5-lane ledger, tools/h5_lane_execu
   1 BUDGET      lane P&L <= -0.30 SOL: the budget stop writes the lane STOP file and no entry goes. An entry goes only if lane P&L - (open stakes + new stake + fee reserve per position) > -0.30 SOL.
                 Open positions are marked at the last fresh quote; a mark older than mark_stale_s (<= 60) is worth 0.
   2 STAKE       FLOOR_LANE_STAKE_BOUNDS_LAMPORTS, one named constant (default 0.02 to 0.03 SOL). The configured stake outside it: the executor refuses to start. One entry per position.
-  3 OPEN        at most LANE_MAX_OPEN (3) across the lane, counted in the shared ledger. A full lane refuses the entry with reason `lane_full` (first come, first served).
-  4 DAILY       lane P&L now minus lane P&L at the last 00:00Z <= -0.10 SOL: no new entries until the next 00:00Z.
+  3 OPEN        at most LANE_MAX_OPEN (8; DEC-035 Amendment 1, 2026-11-08) across the lane, counted in the shared ledger. A full lane refuses the entry with reason `lane_full` (first come, first served).
+  4 DAILY       lane P&L now minus lane P&L at the last 00:00Z <= -0.10 SOL: no new entries until the next 00:00Z. Applied as written (marked P&L); no worst-case daily pre-send (Amendment 1).
   6 STOP        the lane STOP file (and the wallet-wide /var/lib/mal-live/STOP and HALT, which the bridge honours) is checked before every send. New entries only: open positions keep the rule's exits.
   ATA           every sell closes the token account (probe_live._start_sell builds close_token_account, checked at start); a landed sell that refunded no rent latches `ata_rent_not_refunded`.
 
@@ -47,7 +47,7 @@ FROZEN_SHA = F.FROZEN_SHA
 
 # THE stake bounds of this book in the lane (DEC-035 s2 item 2). A later owner decision raises them here and in DEC-035, plus the test that pins them. Nothing else holds a copy.
 FLOOR_LANE_STAKE_BOUNDS_LAMPORTS = (20_000_000, 30_000_000)
-LANE_MAX_OPEN = 3
+LANE_MAX_OPEN = 8
 LANE_BUDGET_MAX_LAMPORTS = 300_000_000
 LANE_DAILY_MAX_LAMPORTS = 100_000_000
 LANE_MARK_STALE_MAX_S = 60
@@ -149,8 +149,7 @@ class FloorLaneLedger(H.LaneLedger):
         reserve = c.fee_reserve_lamports * (len(view.open) + 1)
         if view.pnl - (view.open_stakes + stake + reserve) <= -c.budget_lamports:
             return "lane_budget_presend"
-        if base is not None and view.cost - base[1] - (view.open_stakes + stake + reserve) <= -c.daily_loss_lamports:
-            return "lane_daily_presend"
+        # DEC-035 Amendment 1: no worst-case daily pre-send for floor-lane-1 (h5_lane_executor.LaneLedger.evaluate has one; that file is byte-pinned and unchanged). The marked daily stop above and the item 1 budget pre-send stay.
         return None
 
 
