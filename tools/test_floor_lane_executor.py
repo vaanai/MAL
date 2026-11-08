@@ -836,3 +836,12 @@ def test_full_wipe_after_any_accepted_entry_stays_inside_the_budget(tmp_path):
             worst = cash - unfilled - stake  # filled stakes are already in cash; every other open position and the new one lost in full
             assert worst > -lc.budget_lamports + lc.fee_reserve_lamports * (n + 1)
     assert accepted > 200
+
+
+def test_fee_reserve_sell_sends_cover_probe_sell_max_attempts():
+    """Guard: the reserve must cover every sell send the probe sell path may make; raising SELL_MAX_ATTEMPTS must fail here."""
+    from tools import probe_live as pl
+    assert F.SELL_RESERVE_SENDS >= pl.SELL_MAX_ATTEMPTS
+    assert F.SELL_RESERVE_LAMPORTS == F.SELL_RESERVE_SENDS * F.SEND_FEE_LAMPORTS
+    assert X.LANE_MIN_FEE_RESERVE == F.RENT_RESERVE_LAMPORTS + F.SEND_FEE_LAMPORTS + F.SELL_RESERVE_SENDS * F.SEND_FEE_LAMPORTS
+    assert X.LANE_MIN_FEE_RESERVE == 3_860_000
