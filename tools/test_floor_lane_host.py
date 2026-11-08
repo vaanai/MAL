@@ -8,11 +8,15 @@ import hashlib
 import json
 import shutil
 import subprocess
+import tempfile
+from datetime import datetime, timezone
 from pathlib import Path
 
 import pytest
 
 from tools import arena_live_bridge as B
+from tools import arena_rules as R_
+from tools.arena_pool_table import PoolTable
 from tools import arena_rule_l1 as L
 from tools import floor_arena_executor as F
 from tools import floor_lane_host as H
@@ -320,8 +324,12 @@ def test_restart_resumes_from_the_checkpoint_and_the_downtime_is_a_gap(tmp_path)
 
 
 def test_a_clean_restart_far_from_the_trigger_still_enters(tmp_path):
-    drop = H0 + 41 * HOUR  # the downtime [31 h, 33 h] is 8 h before the trigger: outside the 6 h lookback
-    rows = q_rows(drop) + [row(H0 + 40 * HOUR, "Q", "buy"), row(H0 + 40 * HOUR + 600_000, "Q", "sell")]
+    drop = H0 + 58 * HOUR  # the downtime ends at 33 h; the trigger is more than 24 h + 1.9 s later, and no pool is blocked
+    rows = q_rows(drop)
+    t = H0 + 40 * HOUR
+    while t < drop - 600_000:
+        rows.append(row(t, "Q", "buy" if (t // 1800000) % 2 else "sell"))
+        t += 1_800_000
     rows.sort(key=lambda r: r["t_recv_ms"])
     eng = FakeEngine(tmp_path / "rules")
     a = lane_host(tmp_path, rows, live=True, engine=eng)
@@ -332,9 +340,138 @@ def test_a_clean_restart_far_from_the_trigger_still_enters(tmp_path):
     Clocked(b)
     b.lane_start(H0 + 33 * HOUR)
     b.resume()
-    _live_phase(b, H0 + 33 * HOUR, H0 + 42 * HOUR)
+    _live_phase(b, H0 + 33 * HOUR, H0 + 59 * HOUR)
     ks = kinds(tmp_path / "rules")
     assert ks.count("entry") == 1 and H.KIND_GAP_REFUSED not in ks
+
+
+def test_downtime_refuses_entries_for_the_paper_positions_longest_life(tmp_path):
+    """A paper entry on any pool during the downtime is unseen: the host_down span refuses every pool until 24 h + 1.9 s after it ends."""
+    drop = H0 + 56 * HOUR  # 23 h after the downtime ended at 33 h
+    rows = q_rows(drop)
+    t = H0 + 40 * HOUR
+    while t < drop - 600_000:
+        rows.append(row(t, "Q", "buy" if (t // 1800000) % 2 else "sell"))
+        t += 1_800_000
+    rows.sort(key=lambda r: r["t_recv_ms"])
+    eng = FakeEngine(tmp_path / "rules")
+    a = lane_host(tmp_path, rows, live=True, engine=eng)
+    Clocked(a)
+    a.resume()
+    _live_phase(a, H0, H0 + 31 * HOUR)
+    b = lane_host(tmp_path, rows, live=True, engine=eng)
+    Clocked(b)
+    b.lane_start(H0 + 33 * HOUR)
+    b.resume()
+    _live_phase(b, H0 + 33 * HOUR, H0 + 57 * HOUR)
+    ks = kinds(tmp_path / "rules")
+    assert "entry" not in ks and ks.count(H.KIND_GAP_REFUSED) == 1
+
+
+def two_trigger_rows():
+    """Pool Q: the rule's drained-pool sell at 30 h 15 min, normal prints from 31 h, a second drained-pool sell at 38 h."""
+    rows = q_rows(H0 + 30 * HOUR + 900_000)
+    t = H0 + 31 * HOUR
+    while t < H0 + 38 * HOUR - 600_000:
+        rows.append(row(t, "Q", "buy" if (t // 1800000) % 2 else "sell"))
+        t += 1_800_000
+    rows.append(row(H0 + 38 * HOUR, "Q", "sell", q=600_000_000, sol=200_000_000))
+    return sorted(rows, key=lambda r: r["t_recv_ms"])
+
+
+def test_a_gap_blocked_pool_stays_blocked_until_the_paper_position_would_exit(tmp_path):
+    t1 = H0 + 30 * HOUR + 900_000
+    ctl = lane_host(tmp_path / "ctl", two_trigger_rows())  # no gap: the paper rule enters on the first trigger and holds the pool through the second
+    ctl.run(H0, H0 + 40 * HOUR)
+    assert kinds(tmp_path / "ctl" / "rules").count("entry") == 1 and ctl.gap_refusals == 0
+    rows = sorted(two_trigger_rows() + [gap_row(t1 - 2 * HOUR, t1 - 2 * HOUR + 30_000)], key=lambda r: r["t_recv_ms"])
+    h = lane_host(tmp_path / "gap", rows)  # the gap is 10 h before the second trigger, outside the 6 h lookback: only the pool block can refuse it
+    h.run(H0, H0 + 40 * HOUR)
+    log = DecisionLog(str(tmp_path / "gap" / "rules")).rows(L.BOT_ID)
+    ref = [r for r in log if r["kind"] == H.KIND_GAP_REFUSED]
+    assert "entry" not in [r["kind"] for r in log]  # lane entries are a subset of the paper rule's: here none
+    assert [r["reason"] for r in ref] == ["feed_gap", "pool_blocked_after_gap"]
+    assert ref[1]["blocked_until_ms"] == t1 + L.HOLD_MS and ref[1]["pool"] == "Q" and ref[1]["trigger_ms"] == H0 + 38 * HOUR
+    ck = json.loads((tmp_path / "gap" / "rules" / "lane" / "checkpoint.json").read_text())
+    assert ck["blocked"]["Q"] == {"until_ms": t1 + L.HOLD_MS, "why": "gap"}
+
+
+def test_a_restart_that_loses_the_paper_view_blocks_the_open_pool_and_persists_it(tmp_path):
+    rows = two_trigger_rows()
+    a = lane_host(tmp_path, rows, live=True, engine=FakeEngine(tmp_path / "rules"))
+    Clocked(a)
+    a.resume()
+    _live_phase(a, H0, H0 + 31 * HOUR)
+    ent = [r for r in DecisionLog(str(tmp_path / "rules")).rows(L.BOT_ID) if r["kind"] == "entry"]
+    assert len(ent) == 1
+    until = ent[0]["ms"] + L.HOLD_MS
+    # restart with an engine that has forgotten the position (the ArenaEngine restart limitation): resume_dropped, the book forgets Q
+    b = lane_host(tmp_path, rows, live=True, engine=FakeEngine(tmp_path / "rules"))
+    Clocked(b)
+    b.lane_start(H0 + 33 * HOUR)
+    res = b.resume()
+    assert res["dropped"] == 1 and not b.books[L.BOT_ID].open and b.blocked["Q"] == {"until_ms": until, "why": "restart"}
+    ck = json.loads((tmp_path / "rules" / "lane" / "checkpoint.json").read_text())
+    assert ck["blocked"]["Q"]["until_ms"] == until  # persisted at once, before the next restart
+    _live_phase(b, H0 + 33 * HOUR, H0 + 39 * HOUR)
+    ref = [r for r in DecisionLog(str(tmp_path / "rules")).rows(L.BOT_ID) if r["kind"] == H.KIND_GAP_REFUSED]
+    assert [r["reason"] for r in ref] == ["pool_blocked_after_restart"] and ref[0]["blocked_until_ms"] == until
+    c = lane_host(tmp_path, rows, live=True, engine=FakeEngine(tmp_path / "rules"))  # a second restart still knows
+    assert c.lane_start(H0 + 40 * HOUR)["blocked_pools"] == 1 and c.blocked["Q"]["until_ms"] == until
+
+
+def test_missing_checkpoint_with_an_existing_log_refuses_to_start(tmp_path):
+    a = lane_host(tmp_path, q_rows(H0 + 33 * HOUR), live=True)
+    Clocked(a)
+    a.resume()  # writes the start row: the log exists
+    (tmp_path / "rules" / "lane").mkdir(parents=True, exist_ok=True)
+    assert not (tmp_path / "rules" / "lane" / "checkpoint.json").exists()
+    with pytest.raises(HostError, match="checkpoint is missing"):
+        lane_host(tmp_path, [], live=True).lane_start(H0 + 3 * HOUR)
+
+
+def test_lane_binding_refuses_a_dirty_or_unknown_checkout_and_records_the_host_sha(tmp_path):
+    pins = H.verify_pins()
+    for hb in ({"git_sha": "a" * 40, "dirty": True}, {"git_sha": "a" * 40, "dirty": None}, {"git_sha": None, "dirty": False}):
+        with pytest.raises(HostError, match="dirty or its state is unknown"):
+            H.lane_binding(pins, hb=hb)
+    b = H.lane_binding(pins, hb={"git_sha": "a" * 40, "dirty": False})
+    assert b["host_dirty"] is False and b["host_head"] == "a" * 40 and b["git_sha"] == SHA40
+    assert b["host_sha256"] == hashlib.sha256((REPO / "tools" / "floor_lane_host.py").read_bytes()).hexdigest()
+    h = lane_host(tmp_path, [row(H0 + 1000, "X")], live=True)
+    h.binding = b
+    h.resume()
+    start = DecisionLog(str(tmp_path / "rules")).rows(L.BOT_ID)[0]
+    assert start["kind"] == "start" and start["binding"]["host_sha256"] == b["host_sha256"]
+
+
+def test_run_needs_since_hour_on_a_first_start_and_replay_seed_must_reach_back_201_h(tmp_path, monkeypatch, capsys):
+    monkeypatch.setattr(R_, "head_binding", lambda repo=None: {"git_sha": "a" * 40, "dirty": False})
+    p = tmp_path / "c.json"
+    p.write_text(json.dumps({"root": str(tmp_path / "r"), "tape_dir": str(tmp_path / "t"), "clock_start_ms": H0}))
+    assert H.main(["run", "--config", str(p)]) == 2
+    assert "--since-hour is required" in capsys.readouterr().err
+    frm = H0 + 300 * HOUR
+    ok_hour = datetime.fromtimestamp((frm - 200 * HOUR) / 1000, tz=timezone.utc).strftime("%Y-%m-%dT%H")
+    assert H.main(["replay", "--config", str(p), "--from-ms", str(frm), "--to-ms", str(frm + HOUR), "--seed-from-hour", ok_hour]) == 2
+    assert "at least 201 h before" in capsys.readouterr().err
+    with pytest.raises(HostError):
+        H.parse_hour("nonsense")
+
+
+def test_the_table_seed_reads_only_hour_files_from_the_floor_hour(tmp_path, monkeypatch):
+    rows = pool_rows()
+    write_tape(tmp_path / "tape", rows)
+    seen = []
+    real = H.os.symlink
+    monkeypatch.setattr(H.os, "symlink", lambda src, dst, *a, **k: (seen.append(Path(dst).name), real(src, dst, *a, **k))[1])
+    since = H0 + 10 * HOUR
+    tab = PoolTable("first_print")
+    n = H.rebuild_table_since(tab, str(tmp_path / "tape"), H0 + 100 * HOUR, since)
+    allh = sorted(f.name for f in (tmp_path / "tape").iterdir())
+    floor = datetime.fromtimestamp(since / 1000, tz=timezone.utc).strftime("tape-%Y-%m-%dT%H")
+    assert seen and all(nm[:16] >= floor[:16] for nm in seen) and len(seen) < len(allh) and n > 0
+    assert not list(Path(tempfile.gettempdir()).glob("floor-lane-seed-*"))
 
 
 def test_checkpoint_of_another_book_or_a_shorter_log_refuses(tmp_path):

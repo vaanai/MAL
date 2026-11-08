@@ -19,6 +19,11 @@ WHAT IS NEW AND WHAT IS NOT
     logged (rule sha, pool, mint, trigger slot / ms, reason, the span). The lookback default is 6 h = the rule's own dependence window (previous print within 6 h, spot ratio against
     the print 6 h back); it can be raised to 24 h (the 24 h volume) and never lowered below 6 h. The bridge ignores unknown row kinds, so the refusal is evidence, not an order.
     Exits are not gated: a take-profit missed in a gap is not guessed; the executor's own 24 h deadline clock sells.
+  * SUBSET. Every lane entry is an entry of the paper rule at the same trigger; the guard only drops Buys. A dropped Buy on pool P (gap, or a restart that lost the paper view) blocks P
+    until trigger + 24 h + 1.9 s (the paper position's longest life), persisted in the checkpoint; a restart blocks every pool the log shows open; a host_down span refuses all pools
+    for 24 h + 1.9 s. A missing checkpoint beside an existing decision log refuses to start. `run` refuses a dirty or unknown checkout and records this file's sha256 in the start row.
+  * TABLE SEED. `run` on a first start requires --since-hour (the table is built from tape hours at or after it, via symlinks; nothing older is opened). `replay --seed-from-hour`
+    seeds the table the same way and must be at least 201 h before --from-ms (FLOOR ages run 24 to 200 h from the pool's base time).
   * RESTART. HostV2's pool table checkpoint + the decision log resume the book; ArenaState itself is rebuilt by the live warm-up replay of the last `warm_min` minutes of feed (a few
     seconds), with dispatch off. This host adds `<root>/lane/checkpoint.json` (atomic): last tick instant, the log head, the pins and the gap spans seen (so a gap older than the
     warm-up stays known for lookback). On start the downtime [checkpoint tick, now] is itself recorded as a `host_down` span. Open positions CANNOT resume as normal engine positions
@@ -42,7 +47,9 @@ import hashlib
 import json
 import os
 import sys
+import tempfile
 import time
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable, Mapping, Sequence
 
@@ -50,7 +57,7 @@ from tools import arena_rules as R
 from tools.arena_declog import GENESIS, DecisionLog, LogChainError
 from tools.arena_paper import ArenaEngine, canon
 from tools.arena_pool_table import PoolTable
-from tools.arena_rule_l1 import BOT_ID
+from tools.arena_rule_l1 import BOT_ID, HOLD_MS as L_HOLD_MS  # L_HOLD_MS: 24 h + 1.9 s, the paper position's longest life
 from tools.arena_rules import Buy, Ctx, Rule
 from tools.arena_rules_v2 import HostV2, load_rules_v2, rebuild_table
 from tools.arena_stack_v2 import stack_config_for
@@ -63,6 +70,8 @@ CKPT_EVERY_MS = 60_000  # tick time
 LOOKBACK_MIN_S = 6 * 3600  # the rule's own dependence window (l1_rule.py:133 previous print within 6 h; :139-143 spot vs the print 6 h back)
 LOOKBACK_MAX_S = 24 * 3600  # the 24 h volume window; ArenaState keeps gap spans for 24 h
 GAP_PROG = "pumpswap"
+HOUR_MS_ = 3_600_000
+SEED_MIN_H = 201  # FLOOR ages run 24 to 200 h from the pool's base time; the table needs the tape back to base time
 KIND_GAP_REFUSED = "entry_refused_gap"
 
 # sha256 of the decision-relevant files. IDENTICAL_AT_FROZEN: byte-equal to the blob at FROZEN_SHA. The rest: pinned at the lane host's baseline (see module docstring).
@@ -98,9 +107,41 @@ def verify_pins(repo: Path = REPO, pins: Mapping[str, str] = PINS) -> dict[str, 
     return out
 
 
-def lane_binding(pins: Mapping[str, str], repo: Path = REPO) -> dict[str, Any]:
-    hb = R.head_binding(repo)
-    return {"git_sha": FROZEN_SHA, "dirty": False, "pins": dict(pins), "host_head": hb["git_sha"], "host_dirty": hb["dirty"], "kind": "floor_lane_pinned_files"}
+def lane_binding(pins: Mapping[str, str], repo: Path = REPO, hb: Mapping[str, Any] | None = None) -> dict[str, Any]:
+    """The start row's binding for `run`. Refuses unless the checkout is genuinely clean (git says dirty False; unknown counts as dirty). `git_sha` states that the pinned files equal
+    the frozen content (verify_pins), NOT that HEAD is the frozen commit; the lane host is a later file, so its own sha256 and HEAD are recorded instead."""
+    hb = dict(hb) if hb is not None else dict(R.head_binding(repo))
+    if hb.get("dirty") is not False or not hb.get("git_sha"):
+        raise R.HostError("the checkout is dirty or its state is unknown: run mode needs a clean checkout")
+    return {"git_sha": FROZEN_SHA, "dirty": False, "pins": dict(pins), "host_head": hb["git_sha"], "host_dirty": False, "host_sha256": _sha256_file(Path(__file__).resolve()),
+            "kind": "floor_lane_pinned_files"}
+
+
+def parse_hour(s: str) -> int:
+    """'2026-11-01T00' -> epoch ms (UTC)."""
+    try:
+        return int(datetime.strptime(s, "%Y-%m-%dT%H").replace(tzinfo=timezone.utc).timestamp() * 1000)
+    except (ValueError, TypeError) as e:
+        raise R.HostError(f"hour must look like 2026-11-01T00 (got {s!r})") from e
+
+
+def rebuild_table_since(table: PoolTable, tape_dir: str, to_ms: int, since_ms: int) -> int:
+    """PoolTable.rebuild (not edited) reads every hour file of a directory. Give it a temp directory of symlinks to only the hour files in [since hour, to_ms), so a start
+    reads nothing older than the floor hour. The links are removed afterwards; nothing is written to the feed dir."""
+    hours = []
+    for f in Path(tape_dir).iterdir():
+        nm = f.name
+        if nm.startswith("tape-") and (nm.endswith(".jsonl") or nm.endswith(".jsonl.zst")):
+            try:
+                hs = parse_hour(nm.split(".")[0][5:])
+            except R.HostError:
+                continue
+            if since_ms <= hs < to_ms:
+                hours.append(f)
+    with tempfile.TemporaryDirectory(prefix="floor-lane-seed-") as tmp:
+        for f in hours:
+            os.symlink(f, Path(tmp) / f.name)
+        return table.rebuild(tmp, to_ms)
 
 
 def _atomic_write(path: Path, obj: Any) -> None:
@@ -116,14 +157,17 @@ def _atomic_write(path: Path, obj: Any) -> None:
 
 
 class GapGuardRule(Rule):
-    """The frozen rule, unedited, behind a gap guard. Everything but the Buy it returns is passed through unchanged."""
+    """The frozen rule, unedited, behind the lane guard. Everything but the Buy it returns is passed through unchanged. `refuse(ctx, row, buy)` returns True to drop that Buy
+    (it has logged why); a Buy without a trigger instant is dropped, since no window can be tested."""
 
-    def __init__(self, inner: Rule, lookback_ms: int, spans: Callable[[int, int], list[dict]], on_refuse: Callable[[Ctx, Mapping[str, Any], Buy, list[dict]], None]) -> None:
+    lookback_ms = LOOKBACK_MIN_S * 1000
+
+    def __init__(self, inner: Rule, refuse: Callable[[Ctx, Mapping[str, Any], Buy], bool]) -> None:
         self.inner = inner
         self.bot_id, self.deciding_stake, self.model_ids = inner.bot_id, inner.deciding_stake, inner.model_ids
         self.uses_ticks, self.universe = inner.uses_ticks, inner.universe
         self.table_mode = getattr(inner, "table_mode", None)
-        self.lookback_ms, self._spans, self._on_refuse = int(lookback_ms), spans, on_refuse
+        self._refuse = refuse
 
     def on_row(self, ctx: Ctx, row: Mapping[str, Any]) -> list:
         orders = self.inner.on_row(ctx, row)
@@ -131,29 +175,27 @@ class GapGuardRule(Rule):
             return orders
         t = row.get("t_recv_ms")
         if not isinstance(t, int) or isinstance(t, bool):
-            return [o for o in orders if not isinstance(o, Buy)]  # no trigger instant: cannot test the window, so no entry
-        hit = self._spans(t - self.lookback_ms, t)
-        if not hit:
-            return orders
-        keep = []
-        for o in orders:
-            if isinstance(o, Buy):
-                self._on_refuse(ctx, row, o, hit)
-            else:
-                keep.append(o)
-        return keep
+            return [o for o in orders if not isinstance(o, Buy)]
+        return [o for o in orders if not (isinstance(o, Buy) and self._refuse(ctx, row, o))]
 
     def on_tick(self, ctx: Ctx, T: int) -> list:
         return self.inner.on_tick(ctx, T)
 
 
 class LaneHost(HostV2):
-    """HostV2 + lane checkpoint, host-down spans and gap-refusal rows. `lane_gaps` are spans this host knows beyond the ArenaState's own."""
+    """HostV2 + lane checkpoint, host-down spans, per-pool blocks and refusal rows.
+
+    SUBSET RULE. Every lane entry is an entry of the paper rule at the same trigger (the guard only drops Buys). A dropped Buy on pool P (a gap, or a restart that lost the
+    paper host's view) would have left the paper book holding P for up to HOLD_MS, during which the paper rule makes no entry on P. So P is BLOCKED until trigger + HOLD_MS
+    (the paper position's longest life; a take-profit may free it earlier, and then the lane skips an entry the paper rule would take: a subset, never a superset). Blocks are
+    persisted in the checkpoint. A restart blocks every pool the log shows open (the engine restart sells them as resume_reopen and the book forgets them). Downtime is
+    a pool-agnostic uncertainty: a paper entry on ANY pool during it is unseen, so entries are refused for HOLD_MS after a host_down span."""
 
     def __init__(self, *a: Any, lane_root: str | os.PathLike, **kw: Any) -> None:
         super().__init__(*a, **kw)
         self.ckpt_path = Path(lane_root) / "lane" / "checkpoint.json"
         self.lane_gaps: list[dict[str, Any]] = []
+        self.blocked: dict[str, dict[str, Any]] = {}
         self.gap_refusals = 0
         self._last_lane_ckpt = 0
         self._last_T = 0
@@ -164,32 +206,84 @@ class LaneHost(HostV2):
         out += [dict(s) for s in self.lane_gaps if s["to_ms"] >= t0 and s["from_ms"] <= t1]
         return sorted(out, key=lambda s: (s["from_ms"], s["to_ms"], str(s.get("kind"))))
 
-    def refuse_gap(self, ctx: Ctx, row: Mapping[str, Any], buy: Buy, hit: list[dict]) -> None:
-        """Log the refusal (evidence, not an order). A write failure here is fatal like any decision-log failure: nothing after it is logged or sent."""
-        s = hit[0]
-        body = {"kind": KIND_GAP_REFUSED, "reason": "feed_gap", "rule_sha": FROZEN_SHA, "pool": buy.pool, "mint": (buy.meta or {}).get("mint"), "trigger_slot": row.get("slot"),
-                "trigger_ms": row.get("t_recv_ms"), "gap": {k: s.get(k) for k in ("prog", "kind", "from_ms", "to_ms")}, "n_gaps": len(hit)}
+    def judge(self, t: int, pool: str) -> tuple[str, list[dict], dict | None] | None:
+        """(reason, gap spans, block) when the lane must not enter pool `pool` on a trigger at `t`, else None."""
+        blk = self.blocked.get(pool)
+        if blk and t < int(blk["until_ms"]):
+            return f"pool_blocked_after_{blk['why']}", [], blk
+        hit = [s for s in self.spans(t - self.rules[0].lookback_ms, t) if s.get("kind") != "host_down"]
+        hit += [s for s in self.lane_gaps if s.get("kind") == "host_down" and s["to_ms"] >= t - L_HOLD_MS and s["from_ms"] <= t]
+        return ("feed_gap", sorted(hit, key=lambda s: (s["from_ms"], s["to_ms"])), None) if hit else None
+
+    def refuse(self, ctx: Ctx, row: Mapping[str, Any], buy: Buy) -> bool:
+        """True = drop the Buy. Logs the refusal row (evidence, not an order). A write failure is fatal like any decision-log failure."""
+        t = int(row["t_recv_ms"])
+        j = self.judge(t, buy.pool)
+        if j is None:
+            return False
+        reason, hit, blk = j
+        body = {"kind": KIND_GAP_REFUSED, "reason": reason, "rule_sha": FROZEN_SHA, "pool": buy.pool, "mint": (buy.meta or {}).get("mint"), "trigger_slot": row.get("slot"),
+                "trigger_ms": t, "n_gaps": len(hit)}
+        if hit:
+            body["gap"] = {k: hit[0].get(k) for k in ("prog", "kind", "from_ms", "to_ms")}
+        if blk:
+            body["blocked_until_ms"] = int(blk["until_ms"])
         try:
             self.log.append(self.rules[0].bot_id, int(ctx.now_ms), body)
         except (OSError, LogChainError) as e:
             self._set_fatal(e)
-            return
+            return True
+        if blk is None:
+            self.blocked[buy.pool] = {"until_ms": t + L_HOLD_MS, "why": "gap"}
         self.gap_refusals += 1
         self._count("entries_refused_gap")
+        return True
+
+    # -- restart: pools the log shows open are held by the paper book until their own deadline
+    def _block_open_pools(self) -> int:
+        opened: dict[str, tuple[str, int]] = {}
+        for r in self.log.rows(self.rules[0].bot_id):
+            k = r.get("kind")
+            if k == "entry":
+                opened[str(r["order_id"])] = (str(r["pool"]), int(r["ms"]))
+            elif k == "exit" and r.get("reason") != "resume_reopen":
+                opened.pop(str(r.get("order_id")), None)
+            elif k == "order_refused" and r.get("side") == "buy":
+                opened.pop(str(r.get("order_id")), None)
+        n = 0
+        for pool, ms in opened.values():
+            until = ms + L_HOLD_MS
+            if until > int(self.blocked.get(pool, {}).get("until_ms", 0)):
+                self.blocked[pool] = {"until_ms": until, "why": "restart"}
+                n += 1
+        return n
+
+    def resume(self) -> dict[str, int]:
+        n = self._block_open_pools()
+        res = super().resume()
+        if n or self.blocked:
+            self.checkpoint(self._last_T or int(self.now_fn()))  # persist now: the resume_reopen / resume_dropped rows written next hide these positions from a second restart
+        return {**res, "blocked_pools": len(self.blocked)}
 
     # -- checkpoint
     def checkpoint(self, T: int) -> None:
         head, seq = self.log.head(self.rules[0].bot_id)
         keep_from = T - LOOKBACK_MAX_S * 1000
-        persisted = [s for s in self.spans(keep_from, T) if s.get("kind") != "host_down"] + [s for s in self.lane_gaps if s["to_ms"] >= keep_from]
+        persisted = [s for s in self.spans(keep_from, T) if s.get("kind") != "host_down"]
+        persisted += [s for s in self.lane_gaps if s["to_ms"] >= keep_from or (s.get("kind") == "host_down" and s["to_ms"] + L_HOLD_MS >= T)]
         uniq = {canon(s): s for s in persisted}
+        blocked = {p: b for p, b in self.blocked.items() if int(b["until_ms"]) > T}
         _atomic_write(self.ckpt_path, {"schema": CKPT_SCHEMA, "hwm_ms": int(T), "bot_id": self.rules[0].bot_id, "frozen_sha": FROZEN_SHA, "log_head": head, "log_seq": seq,
-                                       "gaps": sorted(uniq.values(), key=lambda s: (s["from_ms"], s["to_ms"], str(s.get("kind")))), "gap_refusals": self.gap_refusals})
+                                       "gaps": sorted(uniq.values(), key=lambda s: (s["from_ms"], s["to_ms"], str(s.get("kind")))), "gap_refusals": self.gap_refusals,
+                                       "blocked": blocked})
 
     def lane_start(self, now_ms: int) -> dict[str, Any]:
         """Load the checkpoint, add the downtime as a host_down span, refuse a checkpoint that does not belong to this book or whose log is shorter than it says."""
         info: dict[str, Any] = {"checkpoint": False}
         if not self.ckpt_path.exists():
+            if self.log.files(self.rules[0].bot_id):
+                raise R.HostError("a decision log exists but the lane checkpoint is missing: downtime and blocked pools are unknown; refusing to start (restore the checkpoint or "
+                                  "use a new root)")
             return info
         ck = json.loads(self.ckpt_path.read_text())
         if ck.get("schema") != CKPT_SCHEMA or ck.get("bot_id") != self.rules[0].bot_id or ck.get("frozen_sha") != FROZEN_SHA:
@@ -198,11 +292,13 @@ class LaneHost(HostV2):
         if seq < int(ck["log_seq"]):
             raise R.HostError(f"decision log is behind its checkpoint (seq {seq} < {ck['log_seq']}): rows were lost")
         self.lane_gaps = [s for s in ck.get("gaps", []) if isinstance(s, dict)]
+        self.blocked = {str(p): dict(b) for p, b in (ck.get("blocked") or {}).items()}
         self.gap_refusals = int(ck.get("gap_refusals", 0))
         hwm = int(ck["hwm_ms"])
+        self._last_T = hwm
         if now_ms > hwm:
             self.lane_gaps.append({"prog": "all", "kind": "host_down", "from_ms": hwm, "to_ms": int(now_ms), "data_loss": True})
-        info.update({"checkpoint": True, "hwm_ms": hwm, "down_ms": max(0, int(now_ms) - hwm), "carried_gaps": len(self.lane_gaps)})
+        info.update({"checkpoint": True, "hwm_ms": hwm, "down_ms": max(0, int(now_ms) - hwm), "carried_gaps": len(self.lane_gaps), "blocked_pools": len(self.blocked)})
         return info
 
     def step(self, T: int) -> None:
@@ -221,13 +317,15 @@ class LaneHost(HostV2):
 
 
 def build_rules(table_mode: str | None, lookback_s: int, host_ref: list) -> list[Rule]:
-    """The frozen rule behind the gap guard. `host_ref` is filled with the LaneHost once built (the guard calls back into it)."""
+    """The frozen rule behind the lane guard. `host_ref` is filled with the LaneHost once built (the guard calls back into it)."""
     if not LOOKBACK_MIN_S <= int(lookback_s) <= LOOKBACK_MAX_S:
         raise R.HostError(f"gap_lookback_s must be in [{LOOKBACK_MIN_S}, {LOOKBACK_MAX_S}]")
     inner = load_rules_v2([BOT_ID])[0]
     if table_mode is not None:
         inner.table_mode = table_mode  # tests only: synthetic tapes have no create / complete rows
-    return [GapGuardRule(inner, int(lookback_s) * 1000, lambda t0, t1: host_ref[0].spans(t0, t1), lambda c, r, b, h: host_ref[0].refuse_gap(c, r, b, h))]
+    g = GapGuardRule(inner, lambda c, r, b: host_ref[0].refuse(c, r, b))
+    g.lookback_ms = int(lookback_s) * 1000
+    return [g]
 
 
 def make_lane_host(*, root: str, ledger_root: str, registry: str, tape_dir: str, clock_start_ms: int, live: bool, binding: Mapping[str, Any] | None, stack_version: int = 2,
@@ -272,6 +370,9 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--config", required=True)
     ap.add_argument("--from-ms", type=int, default=None)
     ap.add_argument("--to-ms", type=int, default=None)
+    ap.add_argument("--since-hour", default=None, help="run, first start (no checkpoint): REQUIRED floor hour, e.g. 2026-11-01T00; the table is built from tape hours at or after it only")
+    ap.add_argument("--seed-from-hour", default=None, help=f"replay: seed the pool table from tape hours at or after this hour up to the warm-up start; must be at least {SEED_MIN_H} h "
+                                                           "before --from-ms (FLOOR ages are 24 to 200 h)")
     a = ap.parse_args(argv)
     try:
         d = _load_cfg(a.config)
@@ -292,10 +393,25 @@ def main(argv: list[str] | None = None) -> int:
         kw = dict(root=d["root"], ledger_root=d["ledger_root"], registry=d["registry"], tape_dir=d["tape_dir"], clock_start_ms=int(d["clock_start_ms"]), live=live,
                   stack_version=int(d.get("stack_version", 2)), feed_delay_slots=int(d.get("feed_delay_slots", R.DEFAULT_FEED_DELAY_SLOTS)),
                   warm_min=int(d.get("warm_min", WARM_MIN_DEFAULT)), lookback_s=int(d.get("gap_lookback_s", LOOKBACK_MIN_S)), verbose=True)
-        host = make_lane_host(binding=lane_binding(pins) if live else None, start_ms=None if live else a.from_ms - kw["warm_min"] * R.MIN_MS, **kw)
+        binding = lane_binding(pins) if live else None
+        has_ckpt = (Path(d["root"]) / "lane" / "checkpoint.json").exists() and (Path(d["root"]) / "pooltable" / "pooltable.pkl").exists()
+        if live and not has_ckpt and not a.since_hour:
+            raise R.HostError("first start (no checkpoint): --since-hour is required")
+        seed_ms = None
+        if not live and a.seed_from_hour:
+            seed_ms = parse_hour(a.seed_from_hour)
+            if seed_ms > a.from_ms - SEED_MIN_H * HOUR_MS_:
+                raise R.HostError(f"--seed-from-hour must be at least {SEED_MIN_H} h before --from-ms")
+        host = make_lane_host(binding=binding, start_ms=None if live else a.from_ms - kw["warm_min"] * R.MIN_MS, **kw)
         if live:
             warm_start = int(time.time() * 1000) - kw["warm_min"] * R.MIN_MS
-            print(canon({"table_rebuilt_rows": rebuild_table(host.table, d["tape_dir"], warm_start), "table_hwm_ms": host.table.hwm_ms}), flush=True)
+            since = parse_hour(a.since_hour) if a.since_hour else None
+            n = rebuild_table_since(host.table, d["tape_dir"], warm_start, since) if since is not None else rebuild_table(host.table, d["tape_dir"], warm_start)
+            print(canon({"table_rebuilt_rows": n, "table_hwm_ms": host.table.hwm_ms, "since_hour": a.since_hour}), flush=True)
+        elif seed_ms is not None:
+            n = rebuild_table_since(host.table, d["tape_dir"], a.from_ms - kw["warm_min"] * R.MIN_MS, seed_ms)
+            print(canon({"table_seeded_rows": n, "seed_from_hour": a.seed_from_hour}), flush=True)
+        if live:
             print(canon({"lane_start": host.lane_start(int(time.time() * 1000))}), flush=True)
         print(canon({"resumed": host.resume()}), flush=True)
         if live:

@@ -53,4 +53,7 @@ unit's `EnvironmentFile=`.
 - Output: `root` (example `/var/lib/mal-live/floor-lane/decisions-root`), checkpoint `root/lane/checkpoint.json`, pool table `root/pooltable/`. Check the chain with `... verify --config <json>`.
 - Gaps: a data-loss gap on the pumpswap feed (or on `all`), or this host's own downtime, inside the trigger's `gap_lookback_s` (default 6 h, range 6 to 24 h) refuses the entry and logs
   `entry_refused_gap`. A restart marks every open position `resume_reopen`, which the executor does not follow: no planned restarts while a position is open.
-- Replay (decision-equivalence job): `... replay --config <json> --from-ms A --to-ms B`, output root outside `/data/mal/arena`; prints the entry/exit md5.
+- First start (no checkpoint or no pool table) needs `run --since-hour 2026-11-01T00`: the pool table is built only from tape hours at or after it (FLOOR ages are 24 to 200 h, so set it at
+  least 201 h before the first intended entry). A missing checkpoint beside an existing decision log refuses to start. `run` refuses a dirty checkout.
+- Replay (decision-equivalence job): `... replay --config <json> --from-ms A --to-ms B --seed-from-hour H`, output root outside `/data/mal/arena`; H must be at least 201 h before A; prints the
+  entry/exit md5.
