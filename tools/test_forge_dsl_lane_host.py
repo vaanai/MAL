@@ -504,3 +504,149 @@ def test_follower_decompresses_each_hour_at_most_once(tmp_path, monkeypatch):
     for _ in range(5):
         assert fol.read() == []
     assert all(calls.count(c) <= 1 for c in set(calls)) and calls == [f"tape-{hrs[1]}.jsonl.zst"]  # <= 1 per hour over 5 polls; the hour two back is final and never reopened
+
+
+# ---------------------------------------------------------------------------------------------- age_s / mig_age_s via a pinned first-seen snapshot
+AGE_SPEC = {**SPEC, "entry": [{"f": "age_s", "op": ">=", "v": 0}, {"f": "mig_age_s", "op": ">=", "v": 0}]}
+SNAP_HOURS = C.hour_range("2026-11-04T04", "2026-11-04T10")  # snapshot span [T04, T11): pools first printed from T11 on are NOT in it
+NEW_T = C.hour_ms("2026-11-04T11") + 30 * 60_000
+
+
+@pytest.fixture()
+def age_world(tmp_path):
+    rows = synth_rows()
+    for h in range(5, 9):  # Pool0 / Mint0 are older than the host's warm-up (the host reads from T10)
+        rows.append(ps_row(C.hour_ms(f"2026-11-04T0{h}") + 60_000 * h, "buy", b=1e15, q=10e9, pool="Pool0", mint="Mint0"))
+    for i in range(1500):  # a pool and mint that first print at T11:30, after the snapshot span
+        rows.append(ps_row(NEW_T + i * 1700, "buy" if i % 2 else "sell", b=1e15 - i * 2e10, q=15e9, sol=3_000_000, pool="PoolNew", mint="MintNew", trader=f"T{i % 4}"))
+    tape = tmp_path / "tape"
+    write_tapes(tape, rows)
+    out, data = batch(tmp_path, tape)
+    out2 = str(tmp_path / "out_snap")
+    for h in SNAP_HOURS:
+        EV.ingest_hour(h, str(tape), out2)
+    snap_p = tmp_path / "fs.npz"
+    info = EV.write_first_seen_snapshot(out2, str(snap_p))
+    return tmp_path, tape, out, data, snap_p, info
+
+
+def run_age(tape, snap, spec=AGE_SPEC, since_ms=HS0):
+    got = {}
+    eng = D.Engine(spec, D.ListSink(), snapshot=snap, tape_start_ms=since_ms, gap_lookback_s=60)
+    eng.feat_hook = lambda ph, t, x: got.__setitem__((ph, t), x)
+    fol = D.TapeFollower(tape, since_ms)
+    while True:
+        lines = fol.read()
+        if not lines:
+            break
+        for ln in lines:
+            eng.feed_line(ln)
+    return eng, got
+
+
+def test_snapshot_round_trip_and_sha_pin(age_world, capsys):
+    tmp_path, tape, out, data, snap_p, info = age_world
+    snap = EV.load_first_seen_snapshot(str(snap_p), info["sha256"])
+    want = EV.first_seen(str(tmp_path / "out_snap"), SNAP_HOURS)  # the batch's own function over the same span
+    for nm in ("mint", "pool"):
+        np.testing.assert_array_equal(snap[nm][0], want[nm][0])
+        np.testing.assert_array_equal(snap[nm][1], want[nm][1])
+    assert (snap["span_from"], snap["span_to"]) == (SNAP_HOURS[0], SNAP_HOURS[-1]) and snap["end_ms"] == C.hour_ms("2026-11-04T11")
+    with pytest.raises(ValueError):
+        EV.load_first_seen_snapshot(str(snap_p), "0" * 64)
+    with pytest.raises(R.HostError):
+        D.load_snapshot(str(snap_p), "0" * 64)
+    bad = tmp_path / "bad.npz"
+    bad.write_bytes(b"not an npz")
+    with pytest.raises(R.HostError):
+        D.load_snapshot(str(bad))
+    cli = tmp_path / "cli.npz"
+    EV.main(["first-seen-snapshot", "--root", str(tmp_path / "out_snap"), "--out", str(cli)])
+    assert json.loads(capsys.readouterr().out)["sha256"] == info["sha256"] == D.sha256_file(cli)  # deterministic bytes
+
+
+def test_age_equals_batch_for_old_pool_and_new_pool_from_host_tape(age_world):
+    tmp_path, tape, out, data, snap_p, info = age_world
+    snap = D.load_snapshot(str(snap_p))
+    eng, got = run_age(tape, snap)
+    fi = C.FIDX
+    n = old = new = 0
+    for i in range(data.n):
+        k = (int(data.pool[i]), int(data.t[i]))
+        if k not in got:
+            continue
+        n += 1
+        for f in ("age_s", "mig_age_s"):
+            a, b = data.X[i][fi[f]], got[k][fi[f]]
+            assert (np.isnan(a) and np.isnan(b)) or a == b, (f, a, b)
+        old += data.X[i][fi["age_s"]] > 6 * 3600  # older than the host's warm-up: only the snapshot can know it
+        new += data.t[i] >= NEW_T and data.pool[i] not in snap["pool"][0]  # absent from the snapshot: first print from the host tape
+    assert n > 200 and old > 20 and new > 20
+    assert eng.counters.get("events_age_unknown", 0) == 0
+
+
+def test_unknown_key_is_refused_and_counted(age_world):
+    tmp_path, tape, out, data, snap_p, info = age_world
+    snap = dict(D.load_snapshot(str(snap_p)))
+    fi = C.FIDX
+    old_pool = {int(data.pool[i]) for i in range(data.n) if data.X[i][fi["age_s"]] > 6 * 3600}
+    assert old_pool
+    k, t = snap["pool"]
+    keep = ~np.isin(k, list(old_pool))
+    snap["pool"] = (k[keep], t[keep])  # inconsistent snapshot: the pool printed on the host tape INSIDE the span but is absent from it
+    eng, got = run_age(tape, snap)
+    assert eng.counters["events_age_unknown"] > 0
+    assert not any(p in old_pool for p, _t in got) and got  # never decided, never approximated; the other pools still are
+
+
+def test_gap_configuration_refuses_at_start_and_no_snapshot_keeps_old_refusal(age_world):
+    tmp_path, tape, out, data, snap_p, info = age_world
+    snap = D.load_snapshot(str(snap_p))
+    D.Engine(AGE_SPEC, D.ListSink(), snapshot=snap, tape_start_ms=snap["end_ms"])  # starting exactly at the span end: overlap, accepted
+    with pytest.raises(R.HostError, match="blind gap"):
+        D.Engine(AGE_SPEC, D.ListSink(), snapshot=snap, tape_start_ms=snap["end_ms"] + 1)
+    with pytest.raises(R.HostError, match="blind gap"):
+        D.Engine(AGE_SPEC, D.ListSink(), snapshot=snap)  # no start instant: cannot show the overlap
+    with pytest.raises(R.HostError, match="no first-seen snapshot"):
+        D.Engine(AGE_SPEC, D.ListSink(), tape_start_ms=HS0)
+    D.Engine(SPEC, D.ListSink())  # specs without age are untouched by all of this
+    spec_p = tmp_path / "age_spec.json"
+    spec_p.write_text(json.dumps(AGE_SPEC))
+    d = {**cfg_for(tmp_path, tape), "spec": str(spec_p), "first_seen_snapshot": str(snap_p)}
+    hb = {"git_sha": "c" * 40, "dirty": False}
+    with pytest.raises(R.HostError, match="blind gap"):
+        D.Host(d, binding=D.run_binding(hb=hb), live=True, since_ms=snap["end_ms"] + 3_600_000, live_from_ms=HS0, now_fn=lambda: HS0)
+    d0 = {k: v for k, v in d.items() if k != "first_seen_snapshot"}
+    with pytest.raises(R.HostError, match="no first-seen snapshot"):
+        D.Host(d0, binding=D.run_binding(hb=hb), live=True, since_ms=HS0, live_from_ms=HS0, now_fn=lambda: HS0)
+    assert not (Path(d["root"]) / "dsl_host").exists() and not DecisionLog(d["root"]).files("dsl-test-1")  # refused before anything was written
+
+
+def test_register_pins_snapshot_sha_and_run_refuses_mismatch(age_world):
+    tmp_path, tape, out, data, snap_p, info = age_world
+    spec_p = tmp_path / "age_spec.json"
+    spec_p.write_text(json.dumps(AGE_SPEC))
+    d = {**cfg_for(tmp_path, tape), "spec": str(spec_p), "first_seen_snapshot": str(snap_p)}
+    reg = D.register(d)
+    assert reg["first_seen_sha256"] == info["sha256"] and reg["first_seen_span"] == [SNAP_HOURS[0], SNAP_HOURS[-1]]
+    assert D.check_registry(d)["first_seen_sha256"] == info["sha256"]
+    with pytest.raises(R.HostError, match="first-seen"):
+        D.check_registry({k: v for k, v in d.items() if k != "first_seen_snapshot"})  # registered with a snapshot, run without
+    other = tmp_path / "other.npz"
+    other.write_bytes(snap_p.read_bytes() + b"\0")
+    with pytest.raises(R.HostError, match="first-seen"):
+        D.check_registry({**d, "first_seen_snapshot": str(other)})
+    hb = {"git_sha": "c" * 40, "dirty": False}
+    with pytest.raises(R.HostError, match="sha256 mismatch"):
+        D.Host(d, binding=D.run_binding(hb=hb), live=True, since_ms=HS0, live_from_ms=HS0, now_fn=lambda: HS0, snapshot_sha256="1" * 64)
+    host = D.Host(d, binding=D.run_binding(hb=hb), live=True, since_ms=HS0, live_from_ms=HS0, now_fn=lambda: HS0, snapshot_sha256=reg["first_seen_sha256"])
+    assert DecisionLog(d["root"]).rows("dsl-test-1")[0]["first_seen_sha256"] == info["sha256"]
+    while host.step(HS0 + 3_600_000):
+        pass
+    assert host.engine.counters["candidates"] > 0 and host.engine.counters.get("events_age_unknown", 0) == 0
+    # a snapshot-less registration pins no snapshot, and configuring one afterwards is a mismatch
+    (tmp_path / "x").mkdir()
+    d2 = {**cfg_for(tmp_path / "x", tape), "root": str(tmp_path / "root2")}
+    D.register(d2)
+    with pytest.raises(R.HostError, match="first-seen"):
+        D.check_registry({**d2, "first_seen_snapshot": str(snap_p)})
