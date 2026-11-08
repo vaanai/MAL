@@ -544,7 +544,7 @@ class Team:
             picked = []
             for e in sorted(cands, key=lambda e: -e["fitness"]):
                 fk = family_key(e["spec"])
-                if fk in dead or self.fam_val_n.get(fk, 0) >= FAMILY_VAL_CAP:
+                if fk in dead or self.is_dead(e["spec"]) or self.fam_val_n.get(fk, 0) >= FAMILY_VAL_CAP:  # supersets of a dead family too (archive entries from before it died)
                     continue
                 self.fam_val_n[fk] = self.fam_val_n.get(fk, 0) + 1  # counted at selection, so the cap holds inside one pass
                 picked.append(e)
