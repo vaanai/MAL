@@ -142,6 +142,38 @@ This section tightens Erratum 1. It changes no test or threshold, and it does no
 5. **What was read before Erratum 1.** The figure 0.031673840 SOL in Erratum 1 is the first buy's **cost basis**, which is entry side. Erratum 1 was exit-blind, not fully outcome-blind: one entry cost and the lane headroom were read, and no exit, proceeds or mark.
 6. **Daily reports.** `lane_daily_report` books a position on its close day. From 2026-11-09, its daily figures mix pre-S and in-read floor-lane-1 positions. No daily figure is quoted as read-trade P&L. The read alone computes in-read P&L, by the §2 sum over trades with `ts_ms` ≥ S.
 
+## Erratum 1b (Revision 2 written 2026-11-08T15:37:18Z by `date -u`, before S; the frozen 14-day entry window)
+
+**Found.** The frozen executor refuses every new entry with `canary_expired` once `now > first_send_ms + CANARY_MAX_MS`. `CANARY_MAX_MS` = 14 × 86,400,000 (`tools/floor_arena_executor.py:65` and `:205-207`, Appendix A blob `b05d4c92`). `floor_lane_executor.entry_refusal` calls it unchanged (`tools/floor_lane_executor.py:414-419`).
+- `first_send_ms` is the only use of that field. It is written once, on the first buy attempt, when it is null (`:211-214`). It lives in the executor's sidecar state file `floor-state-live.json` (`:134`).
+- floor-lane-1's `first_send_ms` is 1794148248897 = 2026-11-08T14:30:48.897Z (HELM-REPLY-1107-2f). So entries end after **2026-11-22T14:30:48.897Z**, which is S + 13 d 8 h 30 m 48.897 s. The deadline is S + 21 d. Exits are not affected.
+- Neither DEC-035 nor this file sets a 14-day limit.
+
+**Rule, fixed now, before S, and blind to every exit, proceeds and mark.** The manager has read only entry-side facts of the two pre-S buys.
+1. **Pre-committed window reset (no code change, no new bot_id).** Helm performs the following, whatever the read's interim results. The only exceptions are that C has already come or a §3 FAIL end has already occurred.
+   - **When:** no earlier than **2026-11-16T06:00:00Z** and before **2026-11-22T14:30:48.897Z**. The planning target is no later than 2026-11-21T00:00:00Z, to leave margin.
+   - **What:**
+     - (i) Stop `mal-floor-lane.service` (executor only, never the host).
+     - (ii) In `/var/lib/mal-live/floor-lane/state/floor-state-live.json`, set `first_send_ms` to `null` and change nothing else. Record the file's sha256 before and after, and the one-field diff.
+     - (iii) Start the same unit again, at the same Appendix A blobs, §1 parameters, config, bot_id and LIVE_OK.
+   - The next buy attempt then writes a new `first_send_ms` at or after the reset. The window then runs to at least 2026-11-30T06:00:00Z, the deadline.
+   - **Allowed state edit.** This one-field state edit is registered here. It is not an unamended change (Erratum 1a item 2), and it changes no code.
+   - **Pause.** The stop-to-start interval is a §3 restart pause: same blobs and parameters. Its instants are recorded as §3 requires.
+   - **Positions.** The bridge state, the open positions and their exits stay with floor-lane-1 unchanged. No position is handed to another bot_id.
+2. **Classification.** The reset is a capacity-limit change of the same kind as `max_open`, the budget and the daily stop. It is not a change to the l1 rule, its pins, the exits or the stake. It alters decisions only by turning `canary_expired` refusals after 2026-11-22T14:30:48.897Z into ordinary entry checks. No code-change route (successor bot_id, edit of `CANARY_MAX_MS`) is used for this window.
+3. **"Done in time" is defined on state, not on sends.** The reset counts as done if both of these hold:
+   - the executor's journal shows a live-mode start after step (ii), before 2026-11-22T14:30:48.897Z, with `first_send_ms` null or ≥ the reset instant;
+   - at 2026-11-22T14:30:48.897Z the executor is running or in a §3 pause.
+
+   After a done reset, later executor outages are judged by the existing §3 rules.
+4. **Not done in time.** If C has not come and no §3 FAIL end has occurred, the read is **FAIL at 2026-11-22T14:30:48.897Z**. This is a new FAIL end, registered before S, of the same kind as §3 "Any other stop before C". Letting the window lapse cannot turn the read into NOT_DECIDABLE. If C comes first, the window has no effect on the read.
+5. **`canary_expired` and (b).** `canary_expired` refusals never start or extend a §3 (b) 24 h window. (b) is judged on ledger state only.
+6. **No throttling after S.** From S, a §3 (i) amendment may not lower `max_open` or `daily_loss_lamports`. If one is installed and C has not come by the deadline, the result is FAIL, not NOT_DECIDABLE.
+7. **Reporting.** The read reports:
+   - the reset's stop and start instants, the sha256 values and the field diff;
+   - the number of floor-lane-1 positions open at the stop;
+   - the `canary_expired` refusal counts.
+
 ## Appendix A. Frozen files (git blob ids at 3710e1af)
 
 This is the transitive closure of `tools.*` imports, including imports inside functions, from `tools/floor_lane_executor.py` and `tools/floor_lane_host.py`, computed with `ast` over `git show 3710e1af:<file>`. Every blob is the same on main 5a1c2300.
