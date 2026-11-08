@@ -46,6 +46,7 @@ import argparse
 import hashlib
 import json
 import os
+import shutil
 import sys
 import tempfile
 import time
@@ -144,8 +145,17 @@ def rebuild_table_since(table: PoolTable, tape_dir: str, to_ms: int, since_ms: i
         Path(tmp_parent).mkdir(parents=True, exist_ok=True)
     with tempfile.TemporaryDirectory(prefix="floor-lane-seed-", dir=tmp_parent) as tmp:
         for f in hours:
-            os.symlink(f, Path(tmp) / f.name)
+            _link_or_copy(f, Path(tmp) / f.name)
         return table.rebuild(tmp, to_ms)
+
+
+def _link_or_copy(src: Path, dst: Path) -> None:
+    """A hard link (same file system) or else a copy. Not a symlink: zstd 1.5.5 (research-0 and mal-fast-0) refuses to read a symlinked input,
+    so a symlinked seed dir fails the first start (replay-proof finding, 2026-11-08). The source file is never written."""
+    try:
+        os.link(src, dst)
+    except OSError:
+        shutil.copy2(src, dst)
 
 
 def _atomic_write(path: Path, obj: Any) -> None:

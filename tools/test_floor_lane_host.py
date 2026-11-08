@@ -6,6 +6,7 @@ from __future__ import annotations
 import collections
 import hashlib
 import json
+import os
 import shutil
 import subprocess
 import tempfile
@@ -529,8 +530,8 @@ def test_the_table_seed_reads_only_hour_files_from_the_floor_hour(tmp_path, monk
     rows = pool_rows()
     write_tape(tmp_path / "tape", rows)
     seen = []
-    real = H.os.symlink
-    monkeypatch.setattr(H.os, "symlink", lambda src, dst, *a, **k: (seen.append(Path(dst).name), real(src, dst, *a, **k))[1])
+    real = H._link_or_copy
+    monkeypatch.setattr(H, "_link_or_copy", lambda src, dst: (seen.append(Path(dst).name), real(src, dst))[1])
     since = H0 + 10 * HOUR
     tab = PoolTable("first_print")
     n = H.rebuild_table_since(tab, str(tmp_path / "tape"), H0 + 100 * HOUR, since, str(tmp_path / "seed-tmp"))
@@ -539,6 +540,19 @@ def test_the_table_seed_reads_only_hour_files_from_the_floor_hour(tmp_path, monk
     assert seen and all(nm[:16] >= floor[:16] for nm in seen) and len(seen) < len(allh) and n > 0
     assert not list((tmp_path / "seed-tmp").glob("floor-lane-seed-*"))
 
+
+
+def test_the_table_seed_uses_no_symlinks(tmp_path, monkeypatch):
+    """zstd 1.5.5 refuses symlinked inputs: the seed dir must hold hard links or copies, never symlinks."""
+    write_tape(tmp_path / "tape", pool_rows())
+    kinds_seen = []
+    real_rebuild = PoolTable.rebuild
+    def spy(self, d, to_ms):
+        kinds_seen.extend(Path(d, n).is_symlink() for n in os.listdir(d))
+        return real_rebuild(self, d, to_ms)
+    monkeypatch.setattr(PoolTable, "rebuild", spy)
+    n = H.rebuild_table_since(PoolTable("first_print"), str(tmp_path / "tape"), H0 + 100 * HOUR, H0, str(tmp_path / "seed-tmp"))
+    assert n > 0 and kinds_seen and not any(kinds_seen)
 
 def test_checkpoint_of_another_book_or_a_shorter_log_refuses(tmp_path):
     a = lane_host(tmp_path, q_rows(H0 + 33 * HOUR), live=True)
