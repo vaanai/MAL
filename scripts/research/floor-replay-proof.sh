@@ -6,7 +6,7 @@
 #   e.g. sh scripts/research/floor-replay-proof.sh 1793872800000 1793959200000 2026-10-28T01
 #
 # Outputs under ${FLOOR_REPLAY_OUT:-/data2/mal/floor-replay}/<stamp>/{lane,paper}; <stamp> is fresh (an existing one is refused). Prints counts, md5s, refusal counts.
-# Writes RESULT {"ok":..,"verdict":"PASS"|"FAIL","metrics":{..}} to $MISCUSI_RESULT when set. Runs under sh (MiScusi jobs): no bash-isms.
+# Prints RESULT {"ok":..,"verdict":"PASS"|"FAIL","metrics":{..}} and writes that JSON (without the word RESULT) to $MISCUSI_RESULT when set. Runs under sh (MiScusi jobs): no bash-isms.
 set -u
 
 if [ "$#" -lt 3 ]; then
@@ -37,7 +37,7 @@ fail() {
   # $1 = reason; write a FAIL result and stop
   echo "FAIL: $1" >&2
   if [ -n "${MISCUSI_RESULT:-}" ]; then
-    printf 'RESULT {"ok":false,"verdict":"FAIL","metrics":{"error":"%s","out":"%s"}}\n' "$1" "$OUT" > "$MISCUSI_RESULT"
+    printf '{"ok":false,"verdict":"FAIL","metrics":{"error":"%s","out":"%s"}}\n' "$1" "$OUT" > "$MISCUSI_RESULT"
   fi
   exit 1
 }
@@ -71,6 +71,6 @@ if [ ! -s "$OUT/compare.json" ]; then
 fi
 echo "RESULT $(cat "$OUT/compare.json")"
 if [ -n "${MISCUSI_RESULT:-}" ]; then
-  printf 'RESULT %s\n' "$(cat "$OUT/compare.json")" > "$MISCUSI_RESULT"
+  cp "$OUT/compare.json" "$MISCUSI_RESULT"
 fi
 exit "$RC"
