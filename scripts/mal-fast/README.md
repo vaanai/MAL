@@ -80,17 +80,23 @@ per spec. It reads no key and sends nothing. A shortlisted spec still needs a DS
 - Tape: `tape_dir` is the arena-layout dir, for floor-lane-1 `$HOME/mal-data/floor-tip/tape` (SEALS-BRIEF FLOOR LANE READERS (a)-(e)). A new bot reading it, or any other dir, needs its own READERS line
   from the manager before the first start.
 - Safety: `run` refuses a dirty or unknown checkout (the start row's `frozen_sha` is the full HEAD sha and its binding holds the file sha256s); refuses a registry or pin mismatch; refuses a
-  decision log without its checkpoint; refuses a restart while any entry in the log has no exit row (the exit tracking would be lost; wait for it to close). Downtime is recorded as a `host_down` span.
-  An entry is dropped (row `entry_refused_gap`) when a data-loss gap on its venue (or `all`), or a host_down span, overlaps `[t - gap_lookback_s, t]`; the default lookback is the longest feature
-  window the spec uses (min 60 s). A dropped entry is tracked as a shadow position, so the lane book is always a subset of the evaluator's book.
-- Not the same as the evaluator, by construction (look-ahead filters a live host cannot apply): an event with no fill print within 10 min is dropped by the evaluator and exits here as reason `no_fill`;
-  the real-quote floor is tested on the event row, not the fill state; a gap row that reaches the tape after a grid point was decided cannot change that decision; an event at exactly an exit
-  instant is the one tie the host cannot see ahead. The tests do not cover these, nor a live (still-growing, `.jsonl` -> `.jsonl.zst`) file beyond the follower unit test.
+  decision log without its checkpoint (the start also writes one at once). Downtime is a `host_down` span. A restart closes every entry still open in the log with an `exit` row, reason
+  `restart_close` (the executor must sell on it); the replay then holds those pools with shadow positions. An entry is dropped (row `entry_refused_gap`) when a data-loss gap on its venue
+  (or `all`), or a host_down span, overlaps `[t_event - gap_lookback_s, fill]`; the default lookback is the longest feature window the spec uses (min 60 s). The entry row is written when the
+  fill print is seen (>= 2 s after the event). Row `ms` is monotone in the chain; event and fill instants are in `meta`. Specs that use `age_s` or `mig_age_s` are refused.
+- Follower: the two newest tape hours are re-read on every poll (the tip writer keeps an hour open ~120 s after the next one starts); older hours are read once, one hour at a time; a missing
+  hour is injected as a data-loss gap on both venues; a `.jsonl` compacted away mid-read is retried as `.jsonl.zst`. A row that arrives after later rows is history only.
+- Not a subset of the evaluator's book. Filters applied before entry like the evaluator (a fill exists, valid fill state, fill-state real quote >= 2 SOL). What can still differ, by source: a gap
+  row that reaches the tape after the event or grid point (host may enter or hold where the evaluator excludes; direction unknown), late rows (history only), the evaluator's split-end
+  censoring (host has none), and an event inside (exec, decision] of a prior position (host takes fewer). The tests count host-only entries against the evaluator on a tape with no-fill and
+  low-fill-quote pools (0). NOT tested: gap rows that arrive late, real tape, throughput on real tape (about 2,000 to 3,000 lines/s measured on the synthetic tape), a wall-clock tick.
+- No wall-clock tick: exits are decided when trade rows arrive. A feed stall leaves open positions without an exit row and without a stall gap; the executor's clock backstop at
+  `decision_ms + max_hold_s` (see the executor gap) is the only cover then, and the host should not run without the tape writer's own health check.
 - Executor gap (nothing is changed in this PR): `tools/floor_lane_executor.py` / `floor_arena_executor.FloorBridge` are bound to bot `floor-lane-1`: `make_config` pins `bot_id` and FLOOR's frozen sha, the
   entry pin requires `stake_sol == 0.25` and `meta` to carry `rule == l1-floor-v2`, `cell`, `hold_s`, `tp`; `FOLLOWED_EXIT_REASONS` is only `tp_1.5x` and `time_24h` (every other exit reason is
   counted `exit_not_followed`); `backstops()` sells at `decision_ms + 24 h + 1.9 s`; `FLOOR_LANE_STAKE_BOUNDS_LAMPORTS` allows 0.02 to 0.03 SOL. A DSL executor needs a sibling subclass of the base
   `arena_live_bridge.Bridge` (whose `handle_exit` already follows any reason string): pin `bot_id` and the start row's `frozen_sha` (= host HEAD) and `spec_sha256`; replace the meta pin by
-  `meta.rule == "dsl"`; follow `tp, sl, trail, time, migrated, no_fill`; take the stake from the row (`stake_sol`) inside the lane bounds; set the clock backstop to
+  `meta.rule == "dsl"`; follow `tp, sl, trail, time, migrated, restart_close`; treat a curve-venue `pool` as the mint string (`mint_for_pool` must handle it); take the stake from the row (`stake_sol`) inside the lane bounds; set the clock backstop to
   `decision_ms + max_hold_s` plus a margin (from `meta.max_hold_s`) instead of 24 h; and own a lane bot_id in the shared lane ledger. The sl/trail/tp sells then come from the host's exit rows
   (the executor does no price tracking of its own), so a live sell lags the trigger by the host's detection time (the next tape row after the grid point) plus the sell build.
 

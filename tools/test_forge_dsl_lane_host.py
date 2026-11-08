@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import os
 import random
 import subprocess
 from pathlib import Path
@@ -69,8 +70,13 @@ def run_engine(tape: Path, spec, since=EVENT_HOURS[0], hook=None, live_from=0, l
     eng = D.Engine(spec, sink, live_from_ms=live_from, gap_lookback_s=lookback)
     if hook:
         eng.feat_hook = hook
-    for ln in D.TapeFollower(tape, C.hour_ms(since)).read():
-        eng.feed_line(ln)
+    fol = D.TapeFollower(tape, C.hour_ms(since))
+    while True:
+        lines = fol.read()
+        if not lines:
+            break
+        for ln in lines:
+            eng.feed_line(ln)
     return eng, sink
 
 
@@ -170,17 +176,6 @@ def test_curve_migration_reason_is_exercised(world):
     assert got == want
 
 
-def test_gap_lookback_refuses_and_keeps_subset(world):
-    tmp_path, tape, out, data = world
-    want, got60, _, _ = compare(tape, data, SPEC, 1_000_000)
-    eng, sink = run_engine(tape, SPEC, lookback=3600)
-    refused = [b for k, _, b in sink.rows if k == "refused"]
-    got = [g for g in host_trades(sink) if g[1] < CUT]
-    assert eng.counters.get("entries_refused_gap", 0) > 0 and refused and refused[0]["kind"] == "entry_refused_gap"
-    assert set(got) < set(got60)  # a strict subset of the evaluator-equal book
-    assert all(g in want for g in got)
-
-
 def test_before_live_from_is_shadow_no_rows(world):
     tmp_path, tape, out, data = world
     lf = HS0 + 2 * 3_600_000
@@ -189,15 +184,6 @@ def test_before_live_from_is_shadow_no_rows(world):
     assert all(b["meta"]["t_event_ms"] >= lf for k, _, b in sink.rows if k == "entry")
     want = [x for x in evaluator_trades(data, SPEC) if lf <= x[1] < CUT]  # the shadow state before lf is rebuilt from the tape
     assert [x for x in host_trades(sink) if x[1] < CUT] == want
-
-
-def test_no_fill_exit_row(tmp_path):
-    tape = tmp_path / "tape"
-    rows = [ps_row(HS0, "buy", b=1e15, q=10e9, sol=1_000_000)]
-    rows.append(ps_row(HS0 + 20 * 60_000, "buy", b=1e15, q=10e9))  # the next print comes after 10 min: the earlier events have no fill
-    write_tapes(tape, rows)
-    eng, sink = run_engine(tape, {**SPEC, "entry": [], "cooldown_s": 0}, lookback=60)
-    assert "no_fill" in {b["reason"] for k, _, b in sink.rows if k == "exit"}
 
 
 # ---------------------------------------------------------------------------------------------- follower, log, safety
@@ -215,16 +201,6 @@ def test_follower_incremental_and_zst_switch(tmp_path):
     assert fol.read() == []  # the same three lines, none new
     (tape / f"tape-{C.hour_str(HS0 + 3_600_000)}.jsonl").write_bytes(b'{"b":1}\n')
     assert fol.read() == [b'{"b":1}\n']
-
-
-def test_follower_missing_hour_is_a_gap_line(tmp_path):
-    tape = tmp_path / "tape"
-    tape.mkdir()
-    (tape / f"tape-{H0}.jsonl").write_bytes(b'{"a":1}\n')
-    (tape / f"tape-{C.hour_str(HS0 + 2 * 3_600_000)}.jsonl").write_bytes(b'{"b":1}\n')
-    lines = D.TapeFollower(tape, HS0).read()
-    g = json.loads(lines[1])
-    assert len(lines) == 3 and g["data_loss"] is True and g["prog"] == "all" and g["from_ms"] == HS0 + 3_600_000
 
 
 def cfg_for(tmp_path, tape):
@@ -270,51 +246,6 @@ def test_arena_output_root_refused(tmp_path):
         D.load_cfg(str(cfg))
 
 
-def test_host_writes_chain_start_row_and_restart_guards(world):
-    tmp_path, tape, out, data = world
-    d = cfg_for(tmp_path, tape)
-    hb = {"git_sha": "b" * 40, "dirty": False}
-    host = D.Host(d, binding=D.run_binding(hb=hb), live=True, since_ms=HS0, live_from_ms=HS0, now_fn=lambda: HS0)
-    while host.step():
-        pass
-    host.checkpoint()
-    log = DecisionLog(d["root"])
-    rows = log.rows("dsl-test-1")
-    assert rows[0]["kind"] == "start" and rows[0]["frozen_sha"] == "b" * 40 and rows[0]["spec_sha256"] == D.spec_hash(E.validate_spec(SPEC))
-    assert {"entry", "exit"} <= {r["kind"] for r in rows}
-    ent = next(r for r in rows if r["kind"] == "entry")
-    assert {"order_id", "pool", "meta", "decision_slot", "stake_sol", "attempt_key"} <= set(ent) and ent["stake_sol"] == 0.03 and ent["meta"]["rule"] == "dsl"
-    _, seq = log.verify("dsl-test-1")
-    assert seq == len(rows) - 1
-    if D.open_in_log(log, "dsl-test-1"):  # a restart with a position still open is refused
-        with pytest.raises(R.HostError):
-            D.Host(d, binding=D.run_binding(hb=hb), live=True, since_ms=HS0, now_fn=lambda: HS0 + 10 ** 9)
-    (Path(d["root"]) / "dsl_host" / "checkpoint.json").unlink()  # a log without its checkpoint is refused
-    with pytest.raises(R.HostError):
-        D.Host(d, binding=D.run_binding(hb=hb), live=True, since_ms=HS0, now_fn=lambda: HS0 + 10 ** 9)
-
-
-def test_restart_records_host_down_span_and_refuses_entries_in_it(tmp_path):
-    tape = tmp_path / "tape"
-    write_tapes(tape, synth_rows(gap=False))
-    d = cfg_for(tmp_path, tape)
-    hb = {"git_sha": "c" * 40, "dirty": False}
-    t_end = HS0 + 3_600_000
-    host = D.Host(d, binding=D.run_binding(hb=hb), live=True, since_ms=HS0, live_from_ms=HS0, now_fn=lambda: HS0)
-    while host.step(t_end):
-        pass
-    host.checkpoint()
-    log = DecisionLog(d["root"])
-    for oid, row in D.open_in_log(log, "dsl-test-1").items():  # the operator waits for open positions to close before a restart
-        log.append("dsl-test-1", t_end, {"kind": "exit", "order_id": oid, "pool": row["pool"], "reason": "time", "decision_slot": 0, "attempt": 1})
-    ck = json.loads((Path(d["root"]) / "dsl_host" / "checkpoint.json").read_text())
-    down_to = t_end + 30 * 60_000
-    host2 = D.Host(d, binding=D.run_binding(hb=hb), live=True, since_ms=HS0, now_fn=lambda: down_to)
-    span = host2.down[-1]
-    assert span["kind"] == "host_down" and span["to_ms"] == down_to and span["from_ms"] == ck["hwm_ms"]
-    assert host2.engine._gap_refusal(down_to - 10_000, 1) == {"prog": "all", "kind": "host_down", "from_ms": span["from_ms"], "to_ms": down_to}
-
-
 def test_cli_register_replay_verify(world, capsys):
     tmp_path, tape, out, data = world
     d = cfg_for(tmp_path, tape)
@@ -326,3 +257,231 @@ def test_cli_register_replay_verify(world, capsys):
     assert D.main(["replay", "--config", str(cfgp)]) == 2  # --since-hour missing
     rows = DecisionLog(d["root"]).rows("dsl-test-1")
     assert any(r["kind"] == "entry" for r in rows)
+
+
+
+def test_gap_lookback_refuses_entries_and_holds_the_pool(world):
+    tmp_path, tape, out, data = world
+    want, got60, _, _ = compare(tape, data, SPEC, 1_000_000)
+    eng, sink = run_engine(tape, SPEC, lookback=3600)
+    refused = [b for k, _, b in sink.rows if k == "refused"]
+    got = [g for g in host_trades(sink) if g[1] < CUT]
+    assert eng.counters.get("entries_refused_gap", 0) > 0 and refused and refused[0]["kind"] == "entry_refused_gap"
+    assert set(got) < set(got60)  # fewer entries than the 60 s book; a refused entry is still tracked as a shadow position
+    assert all(g in want for g in got)  # on this tape (gap row announced at its start) no entry appears that the evaluator lacks
+
+
+def extra_rows():
+    """The synthetic tape plus pools that make the evaluator drop events the host could otherwise enter: PoolNF prints every 15 min (no fill within 10 min);
+    PoolLQ alternates a 3 SOL and a 1 SOL real quote, so the event row passes the 2 SOL floor and the fill state does not; PoolBad's fill state has V below V_LO (dropped by the parser)."""
+    rows = synth_rows()
+    t = HS0 + 5_000
+    while t < HS0 + 3 * 3_600_000:
+        rows.append(ps_row(t, "buy", b=1e15, q=10e9, sol=1_000_000, pool="PoolNF", mint="MintNF"))
+        t += 900_000
+    t = HS0 + 7_000
+    k = 0
+    while t < HS0 + 3 * 3_600_000:
+        rows.append(ps_row(t, "buy", b=1e15, q=3e9 if k % 2 == 0 else 1e9, sol=1_000_000, pool="PoolLQ", mint="MintLQ"))
+        t += 3_100
+        k += 1
+    LAST_T[0] = max(r["t_recv_ms"] for r in rows)
+    return rows
+
+
+def test_host_only_entries_are_zero_with_nofill_and_floor_cases(tmp_path):
+    tape = tmp_path / "tape"
+    write_tapes(tape, extra_rows())
+    out, data = batch(tmp_path, tape)
+    spec = {**SPEC, "entry": [], "cooldown_s": 0, "exit": {"tp": 0.05, "sl": 0.05, "trail": None, "max_hold_s": 120}}
+    want = {(w[0], w[1]) for w in evaluator_trades(data, spec) if w[1] < CUT}
+    eng, sink = run_engine(tape, spec, lookback=60)
+    ents = {}
+    for k, _, b in sink.rows:
+        if k == "entry" and b["meta"]["t_event_ms"] < CUT:
+            ents[(EV._h64("p:" + b["pool"]) if b["meta"]["venue"] == 1 else EV._h64(b["meta"]["mint"]), b["meta"]["t_event_ms"])] = b
+    host_only = set(ents) - want
+    assert not host_only, sorted(host_only)[:5]
+    assert set(ents) == want and len(want) > 100
+    assert eng.counters["events_no_usable_fill"] > 0  # the NF / LQ events were dropped before entry, as the evaluator does
+    assert not any(b["pool"] in ("PoolNF",) for b in ents.values())
+
+
+def test_age_features_refused_and_other_features_equal_with_rows_before_start(tmp_path):
+    for f in ("age_s", "mig_age_s"):
+        with pytest.raises(R.HostError):
+            D.Engine({**SPEC, "entry": [{"f": f, "op": "<", "v": 100}]}, D.ListSink())
+    rows = synth_rows()
+    for h in range(1, 9):  # rows of Pool0 / Mint0 long before the warm-up start: the host's first-seen would be wrong for age_s, which is why age specs are refused
+        rows.append(ps_row(C.hour_ms("2026-11-04T01") + h * 60_000 + 3_600_000 * (h - 1), "buy", b=1e15, q=10e9, pool="Pool0", mint="Mint0"))
+    tape = tmp_path / "tape"
+    write_tapes(tape, rows)
+    out, data = batch(tmp_path, tape)
+    got = {}
+    run_engine(tape, SPEC, since="2026-11-04T04", hook=lambda ph, t, x: got.__setitem__((ph, t), x))  # warm-up from T04: nothing older is read
+    keep = np.array([f not in ("age_s", "mig_age_s", "dd_high", "rise_low") for f in C.FEATURES])
+    n = 0
+    for i in range(data.n):
+        k = (int(data.pool[i]), int(data.t[i]))
+        if k in got:
+            n += 1
+            np.testing.assert_array_equal(np.nan_to_num(data.X[i][keep], nan=-7), np.nan_to_num(got[k][keep], nan=-7))
+    assert n > 100
+
+
+# ---------------------------------------------------------------------------------------------- follower
+def test_follower_missing_hour_is_a_gap_on_both_venues(tmp_path):
+    tape = tmp_path / "tape"
+    tape.mkdir()
+    (tape / f"tape-{H0}.jsonl").write_bytes(b'{"a":1}\n')
+    (tape / f"tape-{C.hour_str(HS0 + 2 * 3_600_000)}.jsonl").write_bytes(b'{"b":1}\n')
+    lines = []
+    fol = D.TapeFollower(tape, HS0)
+    while True:
+        x = fol.read()
+        if not x:
+            break
+        lines += x
+    gaps = [json.loads(ln) for ln in lines if b"missing_hour" in ln]
+    assert {g["prog"] for g in gaps} == {"pumpswap", "pump_bonding"} and all(g["from_ms"] == HS0 + 3_600_000 for g in gaps) and len(lines) == 4
+
+
+def test_follower_rereads_previous_hour_after_next_exists(tmp_path):
+    tape = tmp_path / "tape"
+    tape.mkdir()
+    h0, h1 = tape / f"tape-{H0}.jsonl", tape / f"tape-{C.hour_str(HS0 + 3_600_000)}.jsonl"
+    h0.write_bytes(b'{"a":1}\n')
+    fol = D.TapeFollower(tape, HS0)
+    assert fol.read() == [b'{"a":1}\n']
+    h1.write_bytes(b'{"b":1}\n')
+    assert fol.read() == [b'{"b":1}\n']
+    with open(h0, "ab") as fh:  # the writer keeps the old hour open for its grace window
+        fh.write(b'{"a":2}\n')
+    with open(h1, "ab") as fh:
+        fh.write(b'{"b":2}\n')
+    got = fol.read()
+    assert sorted(got) == [b'{"a":2}\n', b'{"b":2}\n']
+    (tape / f"tape-{C.hour_str(HS0 + 2 * 3_600_000)}.jsonl").write_bytes(b'{"c":1}\n')
+    with open(h1, "ab") as fh:  # the hour before the newest is still read; the one before that is final
+        fh.write(b'{"b":3}\n')
+    assert sorted(fol.read()) == [b'{"b":3}\n', b'{"c":1}\n']
+
+
+def test_follower_survives_file_deleted_between_exists_and_open(tmp_path, monkeypatch):
+    tape = tmp_path / "tape"
+    tape.mkdir()
+    f = tape / f"tape-{H0}.jsonl"
+    f.write_bytes(b'{"a":1}\n')
+    subprocess.run(["zstd", "-q", str(f), "-o", str(tape / f"tape-{H0}.jsonl.zst")], check=True)
+    f.unlink()
+    fol = D.TapeFollower(tape, HS0)
+    real = D.Path.exists
+    monkeypatch.setattr(D.Path, "exists", lambda self: True if self.name.endswith(".jsonl") else real(self))  # exists() lies: the .jsonl is already gone
+    assert fol.read() == []  # no exception; retried, nothing read this poll
+    monkeypatch.setattr(D.Path, "exists", real)
+    assert fol.read() == [b'{"a":1}\n']
+
+
+def test_late_row_updates_history_only(world):
+    tmp_path, tape, out, data = world
+    eng = D.Engine({**SPEC, "entry": []}, D.ListSink(), gap_lookback_s=60)
+    eng.feed_line(json.dumps(ps_row(HS0 + 50_000, "buy", b=1e15, q=10e9), separators=(",", ":")).encode() + b"\n")
+    n_events = eng.counters["events"]
+    eng.feed_line(json.dumps(ps_row(HS0 + 10_000, "buy", b=1e15, q=10e9), separators=(",", ":")).encode() + b"\n")
+    assert eng.counters["late_rows"] == 1 and eng.counters["events"] == n_events and eng.clock == HS0 + 50_000
+
+
+# ---------------------------------------------------------------------------------------------- host: chain, restart, monotone ms
+def run_host(d, hb, t_to, live_from=HS0, now=HS0):
+    host = D.Host(d, binding=D.run_binding(hb=hb), live=True, since_ms=HS0, live_from_ms=live_from, now_fn=lambda: now)
+    while host.step(t_to):
+        pass
+    host.checkpoint()
+    return host
+
+
+def test_host_writes_chain_start_row_and_checkpoint_at_start(world):
+    tmp_path, tape, out, data = world
+    d = cfg_for(tmp_path, tape)
+    hb = {"git_sha": "b" * 40, "dirty": False}
+    host = D.Host(d, binding=D.run_binding(hb=hb), live=True, since_ms=HS0, live_from_ms=HS0, now_fn=lambda: HS0)
+    assert (Path(d["root"]) / "dsl_host" / "checkpoint.json").exists()  # a kill during the catch-up leaves a restartable root
+    while host.step():
+        pass
+    host.checkpoint()
+    log = DecisionLog(d["root"])
+    rows = log.rows("dsl-test-1")
+    assert rows[0]["kind"] == "start" and rows[0]["frozen_sha"] == "b" * 40 and rows[0]["spec_sha256"] == D.spec_hash(E.validate_spec(SPEC))
+    assert {"entry", "exit"} <= {r["kind"] for r in rows}
+    ent = next(r for r in rows if r["kind"] == "entry")
+    assert {"order_id", "pool", "meta", "decision_slot", "stake_sol", "attempt_key"} <= set(ent) and ent["stake_sol"] == 0.03 and ent["meta"]["rule"] == "dsl"
+    assert ent["ms"] >= ent["meta"]["t_fill_ms"] > ent["meta"]["t_event_ms"]
+    _, seq = log.verify("dsl-test-1")
+    assert seq == len(rows) - 1
+    ms = [r["ms"] for r in rows]
+    assert ms == sorted(ms)  # row ms is monotone in the chain
+    (Path(d["root"]) / "dsl_host" / "checkpoint.json").unlink()  # a log without its checkpoint is refused
+    with pytest.raises(R.HostError):
+        D.Host(d, binding=D.run_binding(hb=hb), live=True, since_ms=HS0, now_fn=lambda: HS0 + 10 ** 9)
+
+
+def test_restart_with_open_position_closes_it_and_starts(tmp_path):
+    tape = tmp_path / "tape"
+    write_tapes(tape, synth_rows(gap=False))
+    d = cfg_for(tmp_path, tape)
+    hb = {"git_sha": "c" * 40, "dirty": False}
+    t_stop = HS0 + 3_600_000 + 15 * 60_000
+    run_host(d, hb, t_stop)  # the "crash": the process stops with whatever is open
+    log = DecisionLog(d["root"])
+    open_before = D.open_in_log(log, "dsl-test-1")
+    assert open_before, "the scenario needs an open position"
+    ck = json.loads((Path(d["root"]) / "dsl_host" / "checkpoint.json").read_text())
+    down_to = t_stop + 20 * 60_000
+    host2 = D.Host(d, binding=D.run_binding(hb=hb), live=True, since_ms=HS0, now_fn=lambda: down_to)  # the real path: no hand-written rows
+    rows = DecisionLog(d["root"]).rows("dsl-test-1")
+    closes = [r for r in rows if r["kind"] == "exit" and r["reason"] == "restart_close"]
+    assert {r["order_id"] for r in closes} == set(open_before) and D.open_in_log(DecisionLog(d["root"]), "dsl-test-1") == {}
+    assert sum(1 for r in rows if r["kind"] == "start") == 2
+    span = host2.down[-1]
+    assert span["kind"] == "host_down" and span["to_ms"] == down_to and span["from_ms"] == ck["hwm_ms"]
+    assert host2.engine._gap_refusal(down_to - 10_000 - host2.engine.lookback_ms, down_to - 10_000, 1)["kind"] == "host_down"
+    DecisionLog(d["root"]).verify("dsl-test-1")
+    ms = [r["ms"] for r in rows]
+    assert ms == sorted(ms)
+    while host2.step():  # and it runs on: entries before the restart instant are shadow, none is opened inside the down span
+        pass
+    after = [r for r in DecisionLog(d["root"]).rows("dsl-test-1") if r["kind"] == "entry" and r["seq"] > rows[-1]["seq"]]
+    assert all(r["meta"]["t_event_ms"] >= HS0 for r in after)
+
+
+def test_row_ms_stays_monotone_across_utc_midnight(tmp_path):
+    day = C.hour_ms("2026-11-04T23")
+    rows = []
+    t = day + 3_500_000
+    for k in range(400):
+        rows.append(ps_row(t, "buy" if k % 2 else "sell", b=1e15 * (1 + 0.01 * ((k // 20) % 2)), q=10e9, sol=1_000_000))
+        t += 2_000
+    # an out-of-order row (late_to_current style) does not move the clock backwards
+    rows.append(ps_row(day + 3_590_000, "buy", b=1e15, q=10e9))
+    tape = tmp_path / "tape"
+    tape.mkdir()
+    byh = {}
+    for r in rows:
+        byh.setdefault(C.hour_str(r["t_recv_ms"]), []).append(r)
+    for h, rr in byh.items():
+        with open(tape / f"tape-{h}.jsonl", "w") as fh:
+            for r in rr:
+                fh.write(json.dumps(r, separators=(",", ":")) + "\n")  # file order, not sorted: the late row stays late
+    d = cfg_for(tmp_path, tape)
+    d["spec"] = str(tmp_path / "spec2.json")
+    (tmp_path / "spec2.json").write_text(json.dumps({**SPEC, "entry": [], "cooldown_s": 0, "one_per_pool": False, "exit": {"tp": 0.005, "sl": 0.005, "trail": None, "max_hold_s": 60}}))
+    hb = {"git_sha": "d" * 40, "dirty": False}
+    host = D.Host(d, binding=D.run_binding(hb=hb), live=True, since_ms=day, live_from_ms=day, now_fn=lambda: day)
+    while host.step():
+        pass
+    log = DecisionLog(d["root"])
+    log.verify("dsl-test-1")
+    allrows = log.rows("dsl-test-1")
+    assert any(r["kind"] == "entry" for r in allrows)
+    ms = [r["ms"] for r in allrows]
+    assert ms == sorted(ms) and ms[0] < day + 3_600_000 <= ms[-1]  # crosses UTC midnight and the chain still verifies

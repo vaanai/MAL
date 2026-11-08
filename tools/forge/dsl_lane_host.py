@@ -18,26 +18,36 @@ print's post state).
 
 ROWS (the format tools/floor_arena_executor.Bridge reads; arena_declog.DecisionLog hash chain at <root>/decisions/<bot_id>/<day>.jsonl):
   start  {binding, frozen_sha = host HEAD sha, spec_sha256, spec, rules}      one per process start
-  entry  {order_id, pool, meta{rule, mint, venue, t_event_ms, features, tp, sl, trail, max_hold_s, spec_sha256}, decision_slot, stake_sol, attempt_key}
-  exit   {order_id, pool, reason in (tp, sl, trail, time, migrated, no_fill), decision_slot, attempt, grid_ms, exec_ms}     exec_ms = the evaluator's exit time
+  entry  {order_id, pool, meta{rule, mint, venue, t_event_ms, t_fill_ms, features, tp, sl, trail, max_hold_s, spec_sha256}, decision_slot, stake_sol, attempt_key}
+  exit   {order_id, pool, reason in (tp, sl, trail, time, migrated, restart_close), decision_slot, attempt, grid_ms, exec_ms}     exec_ms = the evaluator's exit time
   entry_refused_gap  evidence, not an order (the executor ignores unknown kinds)
 Row `ms` is the host clock (the arrival time of the tape row that made the decision), so the chain is time-ordered; exit rows carry grid_ms (the trigger grid point) and exec_ms.
 
 SAFETY (as tools/floor_lane_host.py)
-  * GAPS fail closed. An entry is dropped (and `entry_refused_gap` logged) when a data-loss gap on its venue, or a host_down span of this host, overlaps [t - gap_lookback_s, t].
-    The default lookback is the longest feature window the spec uses (min 60 s, the evaluator's own exclusion, which is applied silently first). A dropped entry is still tracked as
-    a SHADOW position (no rows) so cooldown / one_per_pool state stays the evaluator's: the lane entries are a subset of the evaluator's, never a superset.
+  * GAPS fail closed. An entry is dropped (and `entry_refused_gap` logged) when a data-loss gap on its venue, or a host_down span of this host, overlaps [t_event - gap_lookback_s,
+    host clock at the fill]. The default lookback is the longest feature window the spec uses (min 60 s, the evaluator's own exclusion, which is applied silently first). A dropped
+    entry is still tracked as a SHADOW position (no rows), so cooldown / one_per_pool state stays what the evaluator's would be.
   * `run` refuses a dirty or unknown checkout and records the code's identity (HEAD sha as frozen_sha, host file sha256, forge file sha256s, spec sha256) in the start row. The
     registry written by `register` pins the spec and file hashes; `run` refuses on any mismatch.
-  * A restart with a position open in the log is refused (the exit tracking would be lost); a decision log without its checkpoint is refused; downtime is recorded as a host_down span.
-  * Nothing is written inside /data/mal/arena.
+  * Restart: a decision log without its checkpoint is refused; downtime is recorded as a host_down span; every entry still open in the log is closed with an explicit `exit` row,
+    reason restart_close (the previous process's exit tracking is gone), which the executor must follow by selling. A checkpoint is written right after the start row.
+  * Row `ms` is monotone within the chain (max of the host clock and the previous row), so the per-UTC-day files keep the hash chain through midnight; the event / fill instants
+    are in meta (t_event_ms, t_fill_ms). The entry row is written when the FILL print is seen (>= 2.0 s after the event), not at the event.
+  * Nothing is written inside /data/mal/arena. No state grows without bound: pool history, thinning and first-seen state are pruned once per UTC hour for quiet pools; gap,
+    completion and cooldown records are pruned by age.
 
-KNOWN DIFFERENCES FROM evaluate.py (look-ahead filters a live host cannot apply; stated, not hidden)
-  * An event whose fill print never comes (none within 10 min) or whose fill state is invalid is DROPPED by the evaluator before cooldown; the host has already decided and logs an
-    `exit` with reason no_fill. The real-quote floor is tested on the event row's own real quote, not on the fill state's.
-  * The evaluator drops a trade whose latest possible exit lies past the split end (decided from the entry alone, main's evaluate.py); the host has no split end and decides every entry.
-  * A gap row that reaches the tape AFTER a grid point was decided cannot change that decision (the evaluator would have marked the point a gap).
-  * An event at exactly an exit instant (event t == exec time) is the one tie the host cannot see ahead (the evaluator frees the pool, the host has not yet decided).
+ENTRIES vs THE EVALUATOR. This is NOT a subset relation (QP #1277). The host applies the evaluator's own filters before cooldown / one_per_pool where the evaluator does: an event
+with no fill print within 10 min, an invalid fill state, or a fill-state real quote below 2 SOL is dropped (counter events_no_usable_fill), because the entry is decided at the fill.
+Remaining sources of a host entry the evaluator would not have, each with its direction:
+  1. A gap row that reaches the tape AFTER the event (or after a grid point): the 60 s exclusion and the lookback refusal see only gaps already read. Extra entries; the evaluator
+     would have excluded the event, so live results can differ from the backtest on those trades (direction unknown, stale data). Lookback > 60 s narrows it.
+  2. The evaluator drops a trade whose latest possible exit lies past the split end; the host has no split end. Not an extra entry in live use.
+  3. Pools older than the warm-up: age_s / mig_age_s differ from the batch (the host's first-seen is its own tape), so specs using them are REFUSED, not approximated.
+  4. Rows that arrive late (t < the newest time seen, e.g. the previous hour's tail) update pool history only: they are never an event, fill or grid step. Entries and exits can
+     differ from a batch that sorts them in.
+  5. An event whose pool has an exit decided later than its exec instant: the host blocks events in (exec, decision], so the host book is smaller there, never larger.
+  A fill-less entry can no longer occur; before this fix (no_fill entries) live results would have been worse than the backtest.
+Also differs: when a time exit and a migration fall on the same grid point the evaluator labels it migrated and the host time (same exec instant).
 """
 from __future__ import annotations
 
@@ -49,6 +59,7 @@ if __package__ in (None, ""):
 
 import argparse
 import bisect
+import collections
 import hashlib
 import json
 import os
@@ -75,7 +86,8 @@ REG_SCHEMA = "dsl_lane_host_registry_v1"
 KIND_GAP_REFUSED = "entry_refused_gap"
 HOUR_MS = 3_600_000
 HIST_H = 6  # events.hour_events loads [H - 6 h, H + 1 h]: the feature history starts 6 h before the event's hour
-PIN_FILES = ("tools/forge/events.py", "tools/forge/evaluate.py", "tools/forge/common.py", "tools/arena_stack.py", "tools/arena_pool_table.py", "tools/forge/dsl_lane_host.py")
+PIN_FILES = ("tools/forge/events.py", "tools/forge/evaluate.py", "tools/forge/common.py", "tools/arena_stack.py", "tools/arena_pool_table.py", "tools/arena_declog.py", "tools/arena_rules.py",
+             "tools/arena_paper.py", "tools/forge/dsl_lane_host.py")
 NO_FILL_MS = C.FILL_DELAY_MS + C.FILL_MAX_WAIT_MS
 CKPT_EVERY_MS = 60_000
 LOOKBACK_FEATURE_S = {"ret_30s": 30, "ret_1m": 60, "ret_5m": 300, "ret_15m": 900, "ret_1h": 3600, "ret_6h": 21600, "dd_high": 21600, "rise_low": 21600, "age_s": 21600, "mig_age_s": 21600}
@@ -113,61 +125,108 @@ def parse_hour(s: str) -> int:
 
 # ------------------------------------------------------------------------------------------------------------------------------ tape follow
 class TapeFollower:
-    """Reads tape-<hour>.jsonl[.zst] files of an arena-layout dir from a start hour on, in order, returning only complete new lines. The cursor is (hour, lines consumed), valid
-    across the writer's .jsonl -> .jsonl.zst switch. Advances to the next hour only when that hour's file exists; one missing hour followed by an existing one is injected as an
-    `all`-program data-loss gap line."""
+    """Reads tape-<hour>.jsonl[.zst] files of an arena-layout dir from a start hour on, in order, returning only complete new lines.
+
+    Like tools/arena_state.py's follower it keeps the TWO NEWEST hours active on every poll (the tip writer keeps hour H open for ~120 s after H+1 exists, so rows of H still
+    arrive), and reads older hours once, one hour per refill (bounded memory). Per hour it keeps (lines consumed, byte offset), valid across the writer's .jsonl -> .jsonl.zst
+    switch. A file deleted between the exists check and the open (compaction) is retried with the other name and never raises. An hour with no file while a later one exists is
+    injected once as a data-loss gap on BOTH venues (a `pumpswap` line and a `pump_bonding` line)."""
 
     def __init__(self, tape_dir: str | os.PathLike, start_hour_ms: int) -> None:
         self.dir = Path(tape_dir)
-        self.hour_ms = int(start_hour_ms)
-        self.nlines = 0
-        self.off = 0
+        self.cursor = int(start_hour_ms)
+        self.st: dict[int, list[int]] = {}
+        self.missing: set[int] = set()
+        self.pending: collections.deque = collections.deque()
 
-    def _path(self, hms: int) -> tuple[Path | None, bool]:
-        h = EV.C.hour_str(hms)
-        p = self.dir / f"tape-{h}.jsonl"
-        if p.exists():
-            return p, False
-        z = self.dir / f"tape-{h}.jsonl.zst"
-        return (z, True) if z.exists() else (None, False)
+    def _hours(self) -> set[int]:
+        hs: set[int] = set()
+        try:
+            names = os.listdir(self.dir)
+        except OSError:
+            return hs
+        for nm in names:
+            if nm.startswith("tape-") and (nm.endswith(".jsonl") or nm.endswith(".jsonl.zst")):
+                try:
+                    hs.add(parse_hour(nm.split(".")[0][5:]))
+                except R.HostError:
+                    pass
+        return hs
 
-    def _exists(self, hms: int) -> bool:
-        return self._path(hms)[0] is not None
-
-    def read(self) -> list[bytes]:
-        out: list[bytes] = []
-        while True:
-            p, zst = self._path(self.hour_ms)
-            if p is not None:
-                if zst:
-                    lines = list(_lines(p))
-                    new = lines[self.nlines:]
-                    self.nlines = max(self.nlines, len(lines))
-                    out.extend(new)
-                else:
-                    with open(p, "rb") as fh:
-                        fh.seek(self.off)
+    def _read_hour(self, h: int) -> list[bytes]:
+        st = self.st.setdefault(h, [0, 0])
+        hn = C.hour_str(h)
+        plain, z = self.dir / f"tape-{hn}.jsonl", self.dir / f"tape-{hn}.jsonl.zst"
+        for _ in range(2):
+            try:
+                if plain.exists():
+                    with open(plain, "rb") as fh:
+                        fh.seek(st[1])
                         data = fh.read()
                     cut = data.rfind(b"\n") + 1
-                    chunk = data[:cut]
-                    self.off += cut
-                    new = chunk.splitlines(keepends=True)
-                    self.nlines += len(new)
-                    out.extend(new)
-            nxt = self.hour_ms + HOUR_MS
-            if self._exists(nxt):
-                self.hour_ms, self.nlines, self.off = nxt, 0, 0
+                    new = data[:cut].splitlines(keepends=True)
+                    st[1] += cut
+                    st[0] += len(new)
+                    return new
+                if z.exists():
+                    lines = list(_lines(z))
+                    new = lines[st[0]:]
+                    st[0] = max(st[0], len(lines))
+                    return new
+                return []
+            except (FileNotFoundError, RuntimeError):  # the .jsonl was compacted away between exists and open: try the other name
                 continue
-            if p is not None and self._exists(nxt + HOUR_MS):  # one hour file missing between two present ones
-                out.append(canon({"type": "gap", "prog": "all", "data_loss": True, "kind": "missing_hour", "from_ms": nxt, "to_ms": nxt + HOUR_MS}).encode() + b"\n")
-                self.hour_ms, self.nlines, self.off = nxt + HOUR_MS, 0, 0
-                continue
-            return out
+        return []
+
+    def _refill(self) -> bool:
+        avail = self._hours()
+        later = [h for h in avail if h >= self.cursor]
+        if not later:
+            return False
+        latest = max(later)
+        n0 = len(self.pending)
+        if self.cursor < latest - HOUR_MS:  # catch-up: this hour is final (two newer hours exist); one hour per refill
+            hrs, final = [self.cursor], True
+        else:
+            hrs, final = [h for h in (latest - HOUR_MS, latest) if h >= self.cursor], False
+        for h in hrs:
+            if h in avail:
+                self.pending.extend(self._read_hour(h))
+            elif h < latest and h not in self.missing:
+                self.missing.add(h)
+                for prog in ("pumpswap", "pump_bonding"):
+                    self.pending.append(canon({"type": "gap", "prog": prog, "data_loss": True, "kind": "missing_hour", "from_ms": h, "to_ms": h + HOUR_MS}).encode() + b"\n")
+        if final:
+            self.st.pop(self.cursor, None)
+            self.cursor += HOUR_MS
+            return True
+        self.cursor = max(self.cursor, latest - HOUR_MS)
+        for h in [h for h in self.st if h < self.cursor]:
+            del self.st[h]
+        return len(self.pending) > n0
+
+    def read(self, limit: int = 50_000) -> list[bytes]:
+        while not self.pending:
+            if not self._refill():
+                break
+        out = []
+        while self.pending and len(out) < limit:
+            out.append(self.pending.popleft())
+        return out
 
 
 # ------------------------------------------------------------------------------------------------------------------------------ the engine
 class Pos:
     __slots__ = ("pid", "pool", "mint", "pool_h", "venue", "mint_h", "t_ev", "hs_ev", "slot", "shadow", "stage", "t_fill", "spot_fill", "P", "j", "carry", "exec_ms", "reason", "meta")
+
+    def __init__(self, **kw: Any) -> None:
+        for k in self.__slots__:
+            setattr(self, k, kw.get(k))
+
+
+class Cand:
+    """A condition-passing event waiting for its fill print (the evaluator's table only holds events that have a usable fill)."""
+    __slots__ = ("pool", "mint", "pool_h", "mint_h", "venue", "t_ev", "hs_ev", "slot", "feats")
 
     def __init__(self, **kw: Any) -> None:
         for k in self.__slots__:
@@ -186,6 +245,10 @@ class Engine:
 
     def __init__(self, spec: Mapping[str, Any], sink: Any, *, live_from_ms: int = 0, gap_lookback_s: int | None = None, host_down: list[dict] | None = None) -> None:
         self.spec = E.validate_spec(dict(spec))
+        if any(c["f"] in ("age_s", "mig_age_s") for c in self.spec["entry"]):
+            # the batch computes these from the first print over the WHOLE build tape; a live host has only the tape it read, so for a pool older than its warm-up they differ
+            # (the host's age is smaller). Refused rather than approximated (QP #1277 B1).
+            raise R.HostError("specs that use age_s / mig_age_s are refused: first-seen instants of pools older than the warm-up are unknown to the host")
         self.sink = sink
         self.live_from_ms = int(live_from_ms)
         self.lookback_ms = 1000 * max(60, int(gap_lookback_s if gap_lookback_s is not None else default_lookback_s(self.spec)))
@@ -199,6 +262,8 @@ class Engine:
         self.thin: dict[int, list[int]] = {}  # pool -> [hour index, bucket of the last row seen, hour index of the greedy, last kept t]
         self.cool_last: dict[int, int] = {}
         self.pos: list[Pos] = []
+        self.cands: list[Cand] = []
+        self._prune_h = -1
         self.next_due = 1 << 62
         self.counters: dict[str, int] = {}
         self.feat_hook: Callable[[int, int, np.ndarray], None] | None = None  # tests: the feature row of every event that passes the venue and real-quote tests
@@ -235,10 +300,15 @@ class Engine:
     # -- one parsed trade row
     def _row(self, r: dict, ln: bytes) -> None:
         t = int(r["t"])
+        late = t < self.clock  # a row that arrives after later ones (the previous hour's tail): history only, never an event, fill or clock step
         self.clock = max(self.clock, t)
         pool_h, mint_h = int(r["pool"]), int(r["mint"])
-        self._sweep()
-        self._fills(r, pool_h)
+        if not late:
+            self._prune()
+            self._sweep()
+            self._fills(r, pool_h)
+        else:
+            self._c("late_rows")
         self.first_mint.setdefault(mint_h, t)
         self.first_pool.setdefault(pool_h, t)
         if t < self.first_mint[mint_h]:
@@ -256,7 +326,35 @@ class Engine:
             for k in EV.ING_COLS:
                 del ph.cols[k][:n]
             ix -= n
-        self._event(r, ln, pool_h, mint_h, ph, ix)
+        if not late:
+            self._event(r, ln, pool_h, mint_h, ph, ix)
+
+    def _prune(self) -> None:
+        """Once per UTC hour: drop state of pools quiet for more than the feature history and with nothing pending, and old gap / completion / cooldown records."""
+        hidx = self.clock // HOUR_MS
+        if hidx == self._prune_h:
+            return
+        self._prune_h = hidx
+        cut = hidx * HOUR_MS - HIST_H * HOUR_MS
+        busy = {p.pool_h for p in self.pos} | {c.pool_h for c in self.cands}
+        for ph_, h in list(self.hist.items()):
+            if ph_ in busy or (h.cols["t"] and h.cols["t"][-1] >= cut):
+                continue
+            del self.hist[ph_]
+            self.thin.pop(ph_, None)
+            self.first_pool.pop(ph_, None)
+        cd = self.spec["cooldown_s"] * 1000
+        for k in [k for k, v in self.cool_last.items() if self.clock - v >= cd + NO_FILL_MS]:
+            del self.cool_last[k]
+        old = self.clock - 50 * HOUR_MS
+        for k in [k for k, v in self.comp.items() if v[-1] < old]:
+            del self.comp[k]
+        for v in (0, 1):
+            self.gaps_v[v] = [g for g in self.gaps_v[v] if g[1] >= old]
+        self.gaps_all = [g for g in self.gaps_all if g["to_ms"] >= old]
+        live_m = {int(h.cols["mint"][-1]) for h in self.hist.values() if h.cols["mint"]}
+        for k in [k for k in self.first_mint if k not in live_m]:
+            del self.first_mint[k]
 
     # -- candidate events
     def _event(self, r: dict, ln: bytes, pool_h: int, mint_h: int, ph: PoolHist, ix: int) -> None:
@@ -283,8 +381,6 @@ class Engine:
         self._c("events")
         if self.spec["venue"] != "any" and venue != self.spec["venue"]:
             return
-        if not (float(r["rq"]) >= C.MIN_REAL_QUOTE):
-            return
         X = self._features(ph, ix, hs, pool_h, mint_h, venue)
         if self.feat_hook is not None:
             self.feat_hook(pool_h, t, X[0].copy())
@@ -292,16 +388,16 @@ class Engine:
             if not bool(E.OPS[c["op"]](X[0, C.FIDX[c["f"]]], np.float32(c["v"]))):
                 return
         self._c("candidates")
-        cd = self.spec["cooldown_s"] * 1000
-        if cd > 0:
-            last = self.cool_last.get(pool_h)
-            if last is not None and t - last < cd:
-                return
-            self.cool_last[pool_h] = t
-        if self.spec["one_per_pool"] and any(p.pool_h == pool_h and (p.stage != "done" or p.exec_ms > t) for p in self.pos):
-            self._c("one_per_pool_blocked")
+        try:
+            raw = json.loads(ln)
+        except ValueError:
             return
-        self._open(r, ln, X, t, hs, venue)
+        slot = raw.get("slot")
+        slot = int(slot) if isinstance(slot, int) and not isinstance(slot, bool) else 0
+        feats = {f: (None if not np.isfinite(X[0, i]) else float(X[0, i])) for f, i in C.FIDX.items()}
+        self.cands.append(Cand(pool=str(raw.get("pool") if venue == 1 else raw.get("mint")), mint=str(raw.get("mint")), pool_h=pool_h, mint_h=mint_h, venue=venue, t_ev=t, hs_ev=hs,
+                               slot=slot, feats=feats))
+        self.next_due = min(self.next_due, t + NO_FILL_MS)
 
     def _features(self, ph: PoolHist, ix: int, hs: int, pool_h: int, mint_h: int, venue: int) -> np.ndarray:
         times = ph.cols["t"]
@@ -313,37 +409,8 @@ class Engine:
         fs = {"mint": (np.array([mint_h], np.int64), np.array([self.first_mint[mint_h]], np.int64)), "pool": (np.array([pool_h], np.int64), np.array([self.first_pool[pool_h]], np.int64))}
         return EV.compute_features(S, key, rank, np.zeros(n, np.int64), np.array([ix - lo], np.int64), np.array([venue], np.int8), fs)
 
-    # -- entries
-    def _open(self, r: dict, ln: bytes, X: np.ndarray, t: int, hs: int, venue: int) -> None:
-        try:
-            raw = json.loads(ln)
-        except ValueError:
-            return
-        pool_s = str(raw.get("pool") if venue == 1 else raw.get("mint"))
-        mint_s = str(raw.get("mint"))
-        slot = raw.get("slot")
-        slot = int(slot) if isinstance(slot, int) and not isinstance(slot, bool) else 0
-        ex = self.spec["exit"]
-        feats = {f: (None if not np.isfinite(X[0, i]) else float(X[0, i])) for f, i in C.FIDX.items()}
-        meta = {"rule": "dsl", "mint": mint_s, "venue": venue, "t_event_ms": t, "features": feats, "tp": ex["tp"], "sl": ex["sl"], "trail": ex["trail"], "max_hold_s": ex["max_hold_s"]}
-        shadow = t < self.live_from_ms
-        refuse = None if shadow else self._gap_refusal(t, venue)
-        p = Pos(pid=position_id("dsl", pool_s, t, slot), pool=pool_s, mint=mint_s, pool_h=int(r["pool"]), venue=venue, mint_h=int(r["mint"]), t_ev=t, hs_ev=hs, slot=slot,
-                shadow=shadow or refuse is not None, stage="pending", P=np.full(C.NG, C.C_CENS, np.uint16), j=0, meta=meta)
-        self.pos.append(p)
-        self.next_due = min(self.next_due, t + NO_FILL_MS)
-        if shadow:
-            self._c("shadow_entries")
-        elif refuse is not None:
-            self._c("entries_refused_gap")
-            self.sink.refused(t, {"kind": KIND_GAP_REFUSED, "reason": "feed_gap", "pool": pool_s, "mint": mint_s, "trigger_slot": slot, "trigger_ms": t, "gap": refuse})
-        else:
-            self._c("entries")
-            self.sink.entry(t, {"kind": "entry", "order_id": p.pid, "pool": pool_s, "meta": meta, "decision_slot": slot, "stake_sol": self.spec["stake_sol"],
-                                "attempt_key": f"dsl:{pool_s}:{t}"})
-
-    def _gap_refusal(self, t: int, venue: int) -> dict | None:
-        lo = t - self.lookback_ms
+    # -- entries: decided when the fill print is seen, so the evaluator's own look-ahead filters (a fill exists, fill-state real quote) are applied BEFORE cooldown / one_per_pool
+    def _gap_refusal(self, lo: int, t: int, venue: int) -> dict | None:
         for g in self.gaps_all:
             if g["to_ms"] < lo or g["from_ms"] > t:
                 continue
@@ -353,35 +420,58 @@ class Engine:
                 return {k: g.get(k) for k in ("prog", "kind", "from_ms", "to_ms")}
         return None
 
-    # -- fills
+    def _resolve(self, c: Cand, t_fill: int, Qf: float, Bf: float, spot_row: float) -> None:
+        t = c.t_ev
+        cd = self.spec["cooldown_s"] * 1000
+        if cd > 0:
+            last = self.cool_last.get(c.pool_h)
+            if last is not None and t - last < cd:
+                return
+            self.cool_last[c.pool_h] = t
+        if self.spec["one_per_pool"] and any(p.pool_h == c.pool_h and (p.stage != "done" or p.exec_ms > t) for p in self.pos):
+            self._c("one_per_pool_blocked")
+            return
+        ex = self.spec["exit"]
+        meta = {"rule": "dsl", "mint": c.mint, "venue": c.venue, "t_event_ms": t, "t_fill_ms": t_fill, "features": c.feats, "tp": ex["tp"], "sl": ex["sl"], "trail": ex["trail"],
+                "max_hold_s": ex["max_hold_s"]}
+        shadow = t < self.live_from_ms
+        refuse = None if shadow else self._gap_refusal(t - self.lookback_ms, self.clock, c.venue)
+        p = Pos(pid=position_id("dsl", c.pool, t, c.slot), pool=c.pool, mint=c.mint, pool_h=c.pool_h, venue=c.venue, mint_h=c.mint_h, t_ev=t, hs_ev=c.hs_ev, slot=c.slot,
+                shadow=shadow or refuse is not None, stage="run", t_fill=t_fill, spot_fill=Qf / Bf, carry=spot_row, P=np.full(C.NG, C.C_CENS, np.uint16), j=0, meta=meta)
+        self.pos.append(p)
+        self.next_due = min(self.next_due, t_fill + int(C.GRID_S[0]) * 1000)
+        if shadow:
+            self._c("shadow_entries")
+        elif refuse is not None:
+            self._c("entries_refused_gap")
+            self.sink.refused(self.clock, {"kind": KIND_GAP_REFUSED, "reason": "feed_gap", "pool": c.pool, "mint": c.mint, "trigger_slot": c.slot, "trigger_ms": t, "gap": refuse})
+        else:
+            self._c("entries")
+            self.sink.entry(self.clock, {"kind": "entry", "order_id": p.pid, "pool": c.pool, "meta": meta, "decision_slot": c.slot, "stake_sol": self.spec["stake_sol"],
+                                         "attempt_key": f"dsl:{c.pool}:{t}"})
+
     def _fills(self, r: dict, pool_h: int) -> None:
         t = int(r["t"])
-        for p in self.pos:
-            if p.stage != "pending" or p.pool_h != pool_h or t < p.t_ev + C.FILL_DELAY_MS:
+        keep = []
+        for c in self.cands:
+            if c.pool_h != pool_h or t < c.t_ev + C.FILL_DELAY_MS:
+                keep.append(c)
                 continue
-            if t - p.t_ev > NO_FILL_MS:
-                self._no_fill(p, "no_fill")
-                continue
-            ph = self.hist.get(pool_h)
-            if int(r["venue"]) == 1:
-                Qf, Bf = float(r["q"]), float(r["b"])
-                ok = Qf >= C.V_LO and Bf > 0
-            else:
-                if ph is None or not ph.cols["t"]:
-                    self._no_fill(p, "no_fill")
+            if t - c.t_ev <= NO_FILL_MS:
+                ph = self.hist.get(pool_h)
+                if c.venue == 1:
+                    Qf, Bf, rq = float(r["q"]), float(r["b"]), float(r["rq"])
+                    ok = Qf >= C.V_LO and Bf > 0
+                elif ph is not None and ph.cols["t"]:
+                    Qf, Bf, rq = float(ph.cols["q"][-1]), float(ph.cols["b"][-1]), float(ph.cols["rq"][-1])  # the previous print's post state
+                    ok = Qf > 0 and Bf > 0
+                else:
+                    ok = False
+                if ok and rq >= C.MIN_REAL_QUOTE:
+                    self._resolve(c, t, Qf, Bf, float(r["spot"]))
                     continue
-                Qf, Bf = float(ph.cols["q"][-1]), float(ph.cols["b"][-1])  # the previous print's post state
-                ok = Qf > 0 and Bf > 0
-            if not ok:
-                self._no_fill(p, "no_fill")
-                continue
-            p.stage, p.t_fill, p.spot_fill, p.carry = "run", t, Qf / Bf, float(r["spot"])
-            self.next_due = min(self.next_due, t + int(C.GRID_S[0]) * 1000)
-
-    def _no_fill(self, p: Pos, reason: str) -> None:
-        p.stage, p.exec_ms, p.reason = "done", self.clock, reason
-        if not p.shadow:
-            self.sink.exit(self.clock, {"kind": "exit", "order_id": p.pid, "pool": p.pool, "reason": reason, "decision_slot": p.slot, "attempt": 1, "grid_ms": None, "exec_ms": self.clock})
+            self._c("events_no_usable_fill")  # no fill within 10 min, invalid fill state, or fill-state real quote below the floor: the evaluator never has this event
+        self.cands = keep
 
     # -- exits: grid points are finalized once the stream clock has passed them
     def _sweep(self) -> None:
@@ -389,18 +479,19 @@ class Engine:
             return
         nd = 1 << 62
         for p in self.pos:
-            if p.stage == "pending":
-                if self.clock - p.t_ev > NO_FILL_MS:
-                    self._no_fill(p, "no_fill")
-                else:
-                    nd = min(nd, p.t_ev + NO_FILL_MS)
-            elif p.stage == "run":
+            if p.stage == "run":
                 while p.stage == "run" and p.j < C.NG and p.t_fill + int(C.GRID_S[p.j]) * 1000 < self.clock:
                     self._point(p)
                 if p.stage == "run":
                     nd = min(nd, p.t_fill + int(C.GRID_S[p.j]) * 1000)
+        for c in list(self.cands):
+            if self.clock - c.t_ev > NO_FILL_MS:
+                self.cands.remove(c)
+                self._c("events_no_usable_fill")
+            else:
+                nd = min(nd, c.t_ev + NO_FILL_MS)
         self.next_due = nd
-        self.pos = [p for p in self.pos if not (p.stage == "done" and p.exec_ms <= self.clock)]
+        self.pos = [p for p in self.pos if not (p.stage == "done" and p.exec_ms <= self.clock - NO_FILL_MS)]  # a pending candidate (t_ev >= clock - 10 min) may still need to see it
 
     def _point(self, p: Pos) -> None:
         j = p.j
@@ -456,10 +547,14 @@ class LogSink:
 
     def __init__(self, log: DecisionLog, bot_id: str) -> None:
         self.log, self.bot_id = log, bot_id
+        rows = log.rows(bot_id)
+        self.last_ms = int(rows[-1]["ms"]) if rows else 0
 
     def _w(self, ms: int, body: dict) -> None:
+        """Row `ms` is monotone within the chain (DecisionLog files rows by UTC day of ms, so a backwards ms at midnight would break verify): max(ms, previous row's ms)."""
+        self.last_ms = max(self.last_ms, int(ms))
         try:
-            self.log.append(self.bot_id, int(ms), body)
+            self.log.append(self.bot_id, self.last_ms, body)
         except (OSError, LogChainError) as e:
             raise R.HostFatal(f"decision log write failed: {type(e).__name__}") from e
 
@@ -572,8 +667,6 @@ class Host:
             _, seq = self.log.verify(self.bot_id)
             if seq < int(ck["log_seq"]):
                 raise R.HostError(f"decision log is behind its checkpoint (seq {seq} < {ck['log_seq']}): rows were lost")
-            if open_in_log(self.log, self.bot_id):
-                raise R.HostError("a position is open in the decision log: a restart would lose its exit tracking; refusing to start (wait for it to close, or use a new root)")
             self.down = [dict(s) for s in ck.get("down", []) if isinstance(s, dict)]
             hwm = int(ck["hwm_ms"])
             if self.live_from_ms > hwm:
@@ -582,12 +675,19 @@ class Host:
             raise R.HostError("a decision log exists but the checkpoint is missing: downtime is unknown; refusing to start (restore the checkpoint or use a new root)")
         if self.binding is not None:
             spec_sha = spec_hash(self.spec)
-            self.log.append(self.bot_id, self.live_from_ms, {"kind": "start", "binding": dict(self.binding), "frozen_sha": self.binding["git_sha"], "spec_sha256": spec_sha,
-                                                            "spec": self.spec, "rules": [self.bot_id]})
+            self.sink._w(self.live_from_ms, {"kind": "start", "binding": dict(self.binding), "frozen_sha": self.binding["git_sha"], "spec_sha256": spec_sha,
+                                             "spec": self.spec, "rules": [self.bot_id]})
+            # RESTART RECOVERY. A position open in the log lost its exit tracking with the previous process (the replay rebuilds it only as a shadow position, which writes no rows).
+            # Like FLOOR's resume rows, each is closed explicitly: an `exit` with reason restart_close, which the executor must follow by selling. Its pool stays held by the
+            # shadow position the replay rebuilds, so no second entry opens there before the evaluator's own exit.
+            for oid, row in open_in_log(self.log, self.bot_id).items():
+                self.sink._w(self.live_from_ms, {"kind": "exit", "order_id": oid, "pool": row["pool"], "reason": "restart_close", "decision_slot": row.get("decision_slot", 0),
+                                                 "attempt": 1, "grid_ms": None, "exec_ms": self.live_from_ms})
+            self.checkpoint()
 
     def checkpoint(self) -> None:
         head, seq = self.log.head(self.bot_id)
-        _atomic_write(self.ckpt_path, {"schema": CKPT_SCHEMA, "bot_id": self.bot_id, "spec_sha256": spec_hash(self.spec), "hwm_ms": int(self.engine.clock or self.live_from_ms),
+        _atomic_write(self.ckpt_path, {"schema": CKPT_SCHEMA, "bot_id": self.bot_id, "spec_sha256": spec_hash(self.spec), "hwm_ms": int(max(getattr(getattr(self, "engine", None), "clock", 0), self.live_from_ms)),
                                        "log_head": head, "log_seq": seq, "down": self.down[-50:]})
 
     def step(self, to_ms: int | None = None) -> int:
@@ -597,7 +697,7 @@ class Host:
                 break
             self.engine.feed_line(ln)
             n += 1
-            if self.engine.clock - self._last_ckpt >= CKPT_EVERY_MS and self.engine.clock >= self.live_from_ms:
+            if self.engine.clock - self._last_ckpt >= CKPT_EVERY_MS:
                 self._last_ckpt = self.engine.clock
                 self.checkpoint()
         return n
