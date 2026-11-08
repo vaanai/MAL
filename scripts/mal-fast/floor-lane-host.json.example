@@ -1,0 +1,13 @@
+{
+  "root": "/var/lib/mal-live/floor-lane/decisions-root",
+  "ledger_root": "/var/lib/mal-live/floor-lane/ledger",
+  "registry": "/var/lib/mal-live/floor-lane/bots.json",
+  "tape_dir": "/home/claude/mal-data/arena-mirror/tape",
+  "frozen_sha": "5e12f8f597571d6d5191a7ba38125c67ad723b7d",
+  "clock_start_ms": 1794787200000,
+  "end_ms": 1797379200000,
+  "stack_version": 2,
+  "feed_delay_slots": 7,
+  "warm_min": 365,
+  "gap_lookback_s": 21600
+}

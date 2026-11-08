@@ -39,6 +39,26 @@ blocks with a fresh `t_recv_ms`.
 The installer installs the unit but never enables or starts it. The key is read only through the
 unit's `EnvironmentFile=`.
 
+## FLOOR lane decision host (floor-lane-1, DEC-035; PR-A)
+
+`tools/floor_lane_host.py` is a keyless, paper-decision host that runs the frozen `l1-floor-v2` rule (`tools/arena_rule_l1.py`, FLOOR frozen sha `5e12f8f5`) and appends hash-chained `entry` /
+`exit` rows (plus a `start` row with the full frozen sha, and `entry_refused_gap` evidence rows) to `<root>/decisions/l1-floor-v2/<day>.jsonl`. The separate executor
+(`tools/floor_arena_executor.py`, claude/floor-lane-executor) reads that root as its `root`. It is not the G1 arena book: its own root, ledger and `bots.json` (config refuses any path inside
+`/data/mal/arena`).
+
+- **Any restart blocks all new FLOOR entries for about 24 h** (24 h hold + 1.9 s + 60 s cooldown + 1 s tick + 5 s margin, counted from the first live tick after the restart). Exits are not affected. Do not restart the host casually: plan restarts, and record each one with its instant.
+- Unit (Helm installs; no worker starts it): one long-running process, `python tools/floor_lane_host.py run --config <json>`, from a clean checkout at the lane-host commit, `Nice=19`, about
+  1.5 GB (ArenaState over a 365-minute warm-up plus the pool table). First, once: `... register --config <json>` (clock must be in the future).
+- Feed path: `tape_dir` is the live arena tape directory on mal-fast-0, the byte mirror `/home/claude/mal-data/arena-mirror/tape` written by `tools/tape_mirror.py pull`; this host tails it,
+  read-only. It is an added reader of the sealed mirror: a SEALS-BRIEF READERS line (manager) must exist before the first start. No sealed tip tape, no `bots.json` of the arena.
+- Output: `root` (example `/var/lib/mal-live/floor-lane/decisions-root`), checkpoint `root/lane/checkpoint.json`, pool table `root/pooltable/`. Check the chain with `... verify --config <json>`.
+- Gaps: a data-loss gap on the pumpswap feed (or on `all`), or this host's own downtime, inside the trigger's `gap_lookback_s` (default 6 h, range 6 to 24 h) refuses the entry and logs
+  `entry_refused_gap`. A restart marks every open position `resume_reopen`, which the executor does not follow: no planned restarts while a position is open.
+- First start (no checkpoint or no pool table) needs `run --since-hour 2026-11-01T00`: the pool table is built only from tape hours at or after it (FLOOR ages are 24 to 200 h, so set it at
+  least 201 h before the first intended entry). A missing checkpoint beside an existing decision log refuses to start. `run` refuses a dirty checkout.
+- Replay (decision-equivalence job): `... replay --config <json> --from-ms A --to-ms B --seed-from-hour H`, output root outside `/data/mal/arena`; H must be at least 201 h before A; prints the
+  entry/exit md5.
+
 ## FLOOR lane executor (DEC-035, bot_id `floor-lane-1`)
 
 Runbook for `tools/floor_lane_executor.py`, the FLOOR book `l1-floor-v2` (frozen sha 5e12f8f5, rule `tools/arena_rule_l1.py`, decisions unchanged) sending real orders at micro size
