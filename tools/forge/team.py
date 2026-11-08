@@ -54,16 +54,17 @@ FAMILY_VAL_CAP = 3        # VAL reads per family_key in total
 DEAD_MIN_READS = 2        # a family is dead at >= 2 VAL reads, all failing the SHORTLIST rule
 FAMILY_TRAIN_CAP = 3      # archive members per family_key kept in island_top (parents / critic / migrants)
 DEAD_PROMPT_MAX = 40
+LIVE_VENUES = (1,)       # the live DSL lane executor buys PumpSwap only (PR #1280): other venues are not evaluated or VAL-read
 
 SEEDS = [  # (venue, horizon, style): island briefs, cycled when islands > 8
     ("PumpSwap (venue 1)", "scalp, hold under 10 minutes", "momentum"),
-    ("pump.fun curve (venue 0)", "scalp, hold under 10 minutes", "dip / mean reversion"),
-    ("any venue", "swing, hold 1 to 6 hours", "momentum"),
+    ("PumpSwap (venue 1)", "scalp, hold under 10 minutes", "dip / mean reversion"),
+    ("PumpSwap (venue 1)", "swing, hold 1 to 6 hours", "momentum"),
     ("PumpSwap (venue 1)", "swing, hold 1 to 6 hours", "dip / mean reversion"),
-    ("any venue", "scalp, hold under 10 minutes", "flow (buy share, net flow, large prints)"),
-    ("pump.fun curve (venue 0)", "swing, hold 1 to 6 hours", "flow (buy share, net flow, large prints)"),
+    ("PumpSwap (venue 1)", "scalp, hold under 10 minutes", "flow (buy share, net flow, large prints)"),
+    ("PumpSwap (venue 1)", "swing, hold 1 to 6 hours", "flow (buy share, net flow, large prints)"),
     ("PumpSwap (venue 1)", "24 hour hold", "momentum"),
-    ("any venue", "24 hour hold", "dip / mean reversion"),
+    ("PumpSwap (venue 1)", "24 hour hold", "dip / mean reversion"),
 ]
 
 
@@ -192,7 +193,7 @@ class FakeModel:
         r = self.rng
         k = r.randint(1, 4)
         return {"entry": [{"f": r.choice(self.features), "op": r.choice(S.OPS), "v": round(r.uniform(-1, 3), 2)} for _ in range(k)],
-                "venue": r.choice([0, 1, "any"]), "cooldown_s": r.choice([0, 30, 300]), "one_per_pool": r.random() < 0.7,
+                "venue": 1, "cooldown_s": r.choice([0, 30, 300]), "one_per_pool": r.random() < 0.7,
                 "exit": {"tp": r.choice([None, 0.3, 1.0]), "sl": r.choice([None, 0.2, 0.5]), "trail": r.choice([None, 0.3]),
                          "max_hold_s": r.choice([300, 3600, 86400])}, "stake_sol": 0.1}
 
@@ -432,6 +433,12 @@ class Team:
     def evaluate_train(self, spec, island, rnd, source, rationale=""):
         """-> ('new'|'dup'|'error', entry). Dedupes by canonical hash across all islands."""
         h = S.spec_hash(spec)
+        if spec.get("venue") not in LIVE_VENUES:
+            with self.lock:
+                self.counts["venue_not_live"] = self.counts.get("venue_not_live", 0) + 1
+                self.failures[island].append({"spec": spec, "reason": "venue must be 1 (PumpSwap): only PumpSwap trades live; not evaluated"})
+            self.jlog("rejects.jsonl", {"island": island, "round": rnd, "reason": "venue_not_live", "hash": h})
+            return "rejected", None
         if self.is_dead(spec):
             with self.lock:
                 self.counts["dead_family"] += 1
@@ -532,7 +539,7 @@ class Team:
     def val_pass(self):
         """Evaluate the global top VAL_TOP (by TRAIN fitness) not yet VAL-read, once each. Returns number read."""
         with self.lock:
-            cands = [e for e in self.archive.values() if e and math.isfinite(e["fitness"]) and e["fitness"] > 0 and e["hash"] not in self.val_read]  # VAL reads only for TRAIN-positive specs
+            cands = [e for e in self.archive.values() if e and math.isfinite(e["fitness"]) and e["fitness"] > 0 and e["hash"] not in self.val_read and e["spec"].get("venue") in LIVE_VENUES]  # VAL reads only for TRAIN-positive specs
             dead = self.dead_families()
             picked = []
             for e in sorted(cands, key=lambda e: -e["fitness"]):
