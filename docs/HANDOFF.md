@@ -27,10 +27,11 @@ Then read the tail of the manager20 state log, `/data/mal/hunt-1008/ops/manager2
 |---|---|
 | hourly :17 | HELM-REPLY-* in /data/mal/hunt-1008/push-1016/hunt29/p1/; PR verdicts; miscusi_inbox; due steps |
 | daily 01:21 / 03:23 / 07:27 / 07:31 / 09:43 / 12:17 | digest + HV4 L8 / tip-tape archive / A3 record / BOOST check / housekeeping + DEC-035 §5 lane line / H5 health — full prompts in the crons json |
-| **11-08 20:41** | h5v2-bx10-f1 SMOKE 2 **#2251**: job_list ONLY (exit 0 = judge PASS, failed = slip). If PASS: 8(f) hour-health line (24 h 11-07T22..11-08T21; data_loss rows ≤ 6), submit the A3 loop job (`sh scripts/ops/h5v2f1-a3-loop.sh` at tag a3-guard-pin-v2f1), prepare the registration record. |
-| **11-08 22:07** | Read **#2252** output line `FEEDBAR_8J PASS|MISS|ASK_QP` (DEC-031 Am.29 E1 item 8(j): Σpool_create/Σcomplete ≥ 0.8 over 11-07T22..11-08T21). If all pass, **in this order**: registration record notebook (8(h)) → bots.json line → `sh scripts/research/h5v2-f1-launch.sh book1` with CLOCK_DAY=2026-11-09, REG_NOTEBOOK, SMOKE_PASS_JOB=#2251 id, FEEDBAR_NOTE (put the 8(j) line in it), A3_LOOP_JOB, **inside 22:00–22:50Z**. Any miss → slip; new smoke S ≥ 11-07T19Z, latest S 11-15T21:30Z (clock = first 00:00Z ≥ S + 26 h 30 min). Ratio > 1 over 24 h or zero denominator → see Am.29 E1 / ask QP. |
-| 11-08 ~13:05 | HV4 E4 runner seg2 #1562 ends (never status-view it). |
-| 11-09 03:05 / 03:43 | EXP-027 J6b #2053 `--check-window`, then read its file. |
+| ~~11-08 20:41 / 22:07, 11-08 ~13:05, 11-09 03:05~~ | **Void:** #2251, #2252, #2053 and #1562 were cancelled after the owner decision of 2026-11-08 ~00Z, which ended forward-paper testing (notebook n_j0z3_wYlJOMCaw). No step is due. |
+| **FLOOR live** (manager21, 11-08) | floor-lane-1 has been LIVE since 2026-11-08T14:19:43Z; first send 14:30:47.391Z. Gate read EXP-029 with Errata 1/1a/1b: S = 2026-11-09T06:00:00Z, deadline 2026-11-30T06:00Z. Daily report job #2290 runs 00:20Z (output `~/mal-data/floor-lane-daily/` on fast-0) and goes to the notebook and `data/console.json`. Health watch #2291 every 300 s: exit 3 = alert. State log `ops/manager21/state-manager21.md`; crons `ops/manager21/crons-manager21.json`. |
+| **11-16 06:13** | HELM-ASK-1108-1 window opens. Helm resets floor-lane-1 `first_send_ms` (executor stopped, one field), target by 11-21T00Z. **If it is not done before 2026-11-22T14:30:48.897Z, EXP-029 is FAIL** (Erratum 1b). |
+| **11-21 00:05** | Read-only host check **#2294**: exit 3 = reset NOT done. Chase Helm the same hour. |
+| 11-21 18:13 | Successors of #2290 and #2291 (they end 11-21T23Z), to END 2026-11-30T07Z, chained with `after`. |
 | 11-10 20:13 | feed-handover-1111: submit per docs/runbooks (research-0 arena feed #1652 successor). |
 | 11-12 10:13 | tip writer #2033 + push #2039 SUCCESSORS (due before their limits). |
 
