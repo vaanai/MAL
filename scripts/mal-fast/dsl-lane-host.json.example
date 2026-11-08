@@ -1,0 +1,8 @@
+{
+  "root": "/var/lib/mal-live/dsl-lane/dsl-example-1/decisions-root",
+  "tape_dir": "/home/claude/mal-data/floor-tip/tape",
+  "bot_id": "dsl-example-1",
+  "spec": "/var/lib/mal-live/dsl-lane/dsl-example-1/spec.json",
+  "clock_start_ms": 1794000000000,
+  "gap_lookback_s": 3600
+}

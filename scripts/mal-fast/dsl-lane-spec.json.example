@@ -1,0 +1,8 @@
+{
+  "entry": [{"f": "n_1m", "op": ">=", "v": 4}, {"f": "ret_1m", "op": "<", "v": 0.02}],
+  "venue": "any",
+  "cooldown_s": 90,
+  "one_per_pool": true,
+  "exit": {"tp": 0.06, "sl": 0.05, "trail": 0.04, "max_hold_s": 900},
+  "stake_sol": 0.03
+}
