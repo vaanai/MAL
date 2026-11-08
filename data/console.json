@@ -1642,10 +1642,10 @@
    "id": "FLOOR",
    "title": "FLOOR",
    "stage": "LIVE in DEC-035 lane as floor-lane-1 (since 2026-11-08T14:19:43Z); gate read EXP-029 from 2026-11-09T06:00:00Z",
-   "note": "floor-lane-1 is live on mal-fast-0 at main 3710e1af: stake 0.03 SOL, max_open 8, lane budget -0.30 SOL, daily pre-entry stop -0.10 SOL. Helm started the executor at 2026-11-08T14:19:43Z. The first real send_intent was at 14:30:47.391Z (HOLDOUT_LEDGER #1288). Sends before S = 2026-11-09T06:00:00Z are real but are not in the gate read (EXP-029, Errata 1/1a #1289/#1290). Daily lane report job #2290 runs at 00:20Z; health watch #2291. No profit claim: no exit yet at writing.",
+   "note": "floor-lane-1 is live on mal-fast-0 at main 3710e1af: stake 0.03 SOL, max_open 8, lane budget -0.30 SOL, daily pre-entry stop -0.10 SOL. Helm started the executor at 2026-11-08T14:19:43Z. The first real send_intent was at 14:30:47.391Z (HOLDOUT_LEDGER #1288). Sends before S = 2026-11-09T06:00:00Z are real and are not trades of the gate read, but their losses count toward the read's FAIL ends (lane budget stop, budget exhaustion) from the live start 14:19:43Z (EXP-029 Erratum 1 item 1, Erratum 1a; #1289/#1290). Daily lane report job #2290 runs at 00:20Z; health watch #2291. No profit claim: no exit yet at writing.",
    "tag": {
-    "text": "not registered",
-    "tone": "muted"
+    "text": "LIVE (lane)",
+    "tone": "accent"
    }
   },
   {
