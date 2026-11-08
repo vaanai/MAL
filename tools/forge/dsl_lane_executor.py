@@ -10,7 +10,7 @@ PINS (a mismatch refuses; nothing is sent)
   spec_sha256   config spec_sha256 (64 hex) must equal the start row's spec_sha256; a mismatch latches `spec_sha_mismatch` (no entry after it). An entry's meta.spec_sha256, if present, must match too.
   meta.rule     every entry row must carry meta.rule == "dsl" and meta.max_hold_s == the config max_hold_s (the spec's exit.max_hold_s).
 
-EXITS. Every reason the host emits is followed: tp, sl, trail, time, migrated, no_fill (an exit row for an order whose buy has not landed waits for the landing, then sells). An unknown reason
+EXITS. Every reason the host emits is followed: tp, sl, trail, time, migrated, restart_close (the host's close of an entry left open across its own restart; an exit row for an order whose buy has not landed waits for the landing, then sells). An unknown reason
 is not followed (counted `exit_not_followed`). BACKSTOP: if the host is silent, an open position is sold at decision_ms + meta.max_hold_s + DSL_BACKSTOP_MARGIN_MS as reason `time_backstop`.
 The executor does no price tracking of its own (no stop loss besides the host's), so a live sell lags the host's trigger by the host's detection time plus the sell build.
 
@@ -43,11 +43,12 @@ LIVE_BUILT = True  # as floor_lane_executor: removes only the `live_not_built` r
 RESERVED_BOT_IDS = ("floor-lane-1", "h5-lane", "l1-floor-v2")
 DSL_LANE_STAKE_BOUNDS_LAMPORTS = (20_000_000, 30_000_000)  # DEC-035 s2 item 2, this book's one named constant. A later owner decision raises it here, in DEC-035 and in the test that pins it.
 DSL_RULE = "dsl"
-FOLLOWED_EXIT_REASONS = ("tp", "sl", "trail", "time", "migrated", "no_fill")  # tools/forge/dsl_lane_host.py: the evaluator's REASONS plus no_fill
+FOLLOWED_EXIT_REASONS = ("tp", "sl", "trail", "time", "migrated", "restart_close")  # tools/forge/dsl_lane_host.py: the evaluator's REASONS plus no_fill
 REASON_BACKSTOP = "time_backstop"
-# The host's time exit executes at the first grid point >= max_hold_s AFTER the fill; the fill is >= 2 s and <= 602 s after the event (forge common FILL_DELAY_MS + FILL_MAX_WAIT_MS), a grid
-# step is at most 300 s. The backstop must sit after all of that so the host's own exit normally wins (tested against forge common).
-DSL_BACKSTOP_MARGIN_MS = 2_000 + 600_000 + 300_000 + 60_000
+# The entry row is written at the host's fill (its ms = the fill instant); the host's time exit executes at the first grid point >= max_hold_s after it, a grid step is at most 300 s.
+# The backstop sits after that (plus 60 s) so the host's own exit normally wins (tested against forge common).
+DSL_BACKSTOP_MARGIN_MS = 300_000 + 60_000
+PUMPSWAP_VENUE = 1  # meta.venue of the host: 1 = PumpSwap, 0 = bonding curve. The live port buys PumpSwap pools only (mint_for_pool reads a PumpSwap pool account)
 LANE_KEYS = X.LANE_KEYS
 SHA40 = re.compile(r"^[0-9a-f]{40}$")
 SHA64 = re.compile(r"^[0-9a-f]{64}$")
@@ -325,6 +326,8 @@ class DslLaneBridge(B.Bridge):
         mh = meta.get("max_hold_s")
         if isinstance(mh, bool) or not isinstance(mh, (int, float)) or mh != self.pins["max_hold_s"]:
             return "meta_pin"
+        if meta.get("venue") != PUMPSWAP_VENUE:
+            return "venue_not_pumpswap"  # explicit, counted refusal: the lane port cannot trade a bonding-curve pool (its `pool` is the mint string)
         if "spec_sha256" in meta and meta["spec_sha256"] != self.pins["spec_sha256"]:
             return "spec_pin"
         if self.now_ms() < self._hold_until():

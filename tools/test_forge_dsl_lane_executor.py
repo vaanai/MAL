@@ -49,7 +49,7 @@ class Log:
         self.d.append(self.bot, ms, {"kind": "start", "binding": {"git_sha": sha}, "frozen_sha": sha, "spec_sha256": spec, "spec": {}, "rules": ["dsl"]})
 
     def entry(self, ms, oid, pool="P", stake_sol=0.03, **meta_kw):
-        meta = {"rule": "dsl", "mint": "M" + pool, "venue": 1, "t_event_ms": ms, "features": {}, "tp": 0.06, "sl": 0.05, "trail": 0.04, "max_hold_s": HOLD_S}
+        meta = {"rule": "dsl", "mint": "M" + pool, "venue": 1, "t_event_ms": ms - 2000, "t_fill_ms": ms, "features": {}, "tp": 0.06, "sl": 0.05, "trail": 0.04, "max_hold_s": HOLD_S, "spec_sha256": SSHA}
         meta.update(meta_kw)
         meta = {k: v for k, v in meta.items() if v is not None}
         self.d.append(self.bot, ms, {"kind": "entry", "order_id": oid, "pool": pool, "meta": meta, "decision_slot": 1, "stake_sol": stake_sol, "attempt_key": f"dsl:{pool}:{ms}"})
@@ -89,9 +89,9 @@ def started(tmp, bot=BOT):
 # ------------------------------------------------------------------------------------------------ constants and config
 def test_constants_follow_dec035_s2_and_the_host():
     assert D.DSL_LANE_STAKE_BOUNDS_LAMPORTS == X.FLOOR_LANE_STAKE_BOUNDS_LAMPORTS == (H.LANE_STAKE_MIN_LAMPORTS, H.LANE_STAKE_MAX_LAMPORTS) == (20_000_000, 30_000_000)
-    assert D.DSL_BACKSTOP_MARGIN_MS == C.FILL_DELAY_MS + C.FILL_MAX_WAIT_MS + int(max(C.GRID_S[1:] - C.GRID_S[:-1])) * 1000 + 60_000
+    assert D.DSL_BACKSTOP_MARGIN_MS == int(max(C.GRID_S[1:] - C.GRID_S[:-1])) * 1000 + 60_000
     from tools.forge import dsl_lane_host as host
-    assert set(D.FOLLOWED_EXIT_REASONS) == set(host.REASON) | {"no_fill"}
+    assert set(D.FOLLOWED_EXIT_REASONS) == set(host.REASON) | {"restart_close"}
 
 
 @pytest.mark.parametrize("k,v", [("bot_id", "floor-lane-1"), ("bot_id", "h5-lane"), ("bot_id", "hv4-x"), ("bot_id", "a/b"), ("bot_id", "a:b"), ("bot_id", None), ("frozen_sha", "abc"),
@@ -285,20 +285,44 @@ def test_each_host_exit_reason_is_followed_and_booked(tmp_path, reason):
     assert br.state.orders["o1"]["status"] == "closed" and "MP" not in br.state.bought and not br.state.latches
 
 
-def test_no_fill_exit_waits_for_the_buy_to_land_then_sells(tmp_path):
+def test_restart_close_is_followed_like_any_exit_reason(tmp_path):
     clk = Clock(T0)
     br, inner = mk(tmp_path, clk)
     lg = started(tmp_path)
     lg.entry(T0, "o1")
     feed(br, clk)
-    lg.exit(T0 + 600_000, "o1", reason="no_fill")
-    clk.t = T0 + 600_050
-    feed(br, clk, clk.t)
-    assert inner.sells == [] and br.state.orders["o1"]["want_exit"] == "no_fill"  # buy not landed yet: never a sell before the buy exists
+    inner.land_buy("MP")
+    br._poll_ports()
+    lg.start(T0 + 30_000)  # the restarted host: a start row, then restart_close for the entry it found open
+    lg.exit(T0 + 30_000, "o1", reason="restart_close")
+    feed(br, clk, T0 + 30_100)
+    assert inner.sells == [("MP", "restart_close")]
+    inner.land_sell("MP")
+    br._poll_ports()
+    assert br.state.orders["o1"]["status"] == "closed" and not br.state.latches
+
+
+def test_restart_close_before_the_buy_lands_waits_for_it_then_sells(tmp_path):
+    clk = Clock(T0)
+    br, inner = mk(tmp_path, clk)
+    lg = started(tmp_path)
+    lg.entry(T0, "o1")
+    feed(br, clk)
+    lg.exit(T0 + 30_000, "o1", reason="restart_close")
+    feed(br, clk, T0 + 30_100)
+    assert inner.sells == [] and br.state.orders["o1"]["want_exit"] == "restart_close"
     inner.land_buy("MP")
     clk.t += 100
     br._poll_ports()
-    assert inner.sells == [("MP", "no_fill")]
+    assert inner.sells == [("MP", "restart_close")]
+
+
+def test_bonding_curve_entries_are_refused_explicitly(tmp_path):
+    clk = Clock(T0)
+    br, inner = mk(tmp_path, clk)
+    started(tmp_path).entry(T0, "o1", venue=0)
+    feed(br, clk)
+    assert inner.buys == [] and refusals(br)[-1]["why"] == "venue_not_pumpswap"
 
 
 def test_exit_row_for_an_unknown_or_refused_order_sends_nothing(tmp_path):
