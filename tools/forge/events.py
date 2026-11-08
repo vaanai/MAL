@@ -490,17 +490,17 @@ def _fs_span(out):
 SNAP_SCHEMA = "forge_first_seen_snapshot_v1"
 
 
-def write_first_seen_snapshot(out: str, path: str) -> dict:
+def write_first_seen_snapshot(out: str, path: str, tape_dir: str = "") -> dict:
     """Pin the batch's own first-seen tables (first_seen over the SAME span the builder uses, _fs_span) in one npz: mint_k/mint_t, pool_k/pool_t (int64 ms), the covered hour span
-    (span_from, span_to inclusive hours) and a schema tag. Returns {path, sha256, span_from, span_to, n_mint, n_pool}. The file bytes are what the host pins by sha256."""
+    (span_from, span_to inclusive hours), the SOURCE TAPE identity (tape_dir: the real path of the tape the build ingested; "" = undeclared, which the host refuses) and a schema tag. Returns {path, sha256, span_from, span_to, n_mint, n_pool}. The file bytes are what the host pins by sha256."""
     lo, hi = _fs_span(out)
     fs = first_seen(out, C.hour_range(lo, hi))
     p = Path(path)
     tmp = p.with_name(p.name + ".tmp")
     with open(tmp, "wb") as f:
-        np.savez(f, schema=np.array(SNAP_SCHEMA), span_from=np.array(lo), span_to=np.array(hi), mint_k=fs["mint"][0], mint_t=fs["mint"][1], pool_k=fs["pool"][0], pool_t=fs["pool"][1])
+        np.savez(f, schema=np.array(SNAP_SCHEMA), span_from=np.array(lo), span_to=np.array(hi), tape_dir=np.array(os.path.realpath(tape_dir) if tape_dir else ""), mint_k=fs["mint"][0], mint_t=fs["mint"][1], pool_k=fs["pool"][0], pool_t=fs["pool"][1])
     os.replace(tmp, p)
-    return {"path": str(p), "sha256": hashlib.sha256(p.read_bytes()).hexdigest(), "span_from": lo, "span_to": hi, "n_mint": int(len(fs["mint"][0])), "n_pool": int(len(fs["pool"][0]))}
+    return {"path": str(p), "sha256": hashlib.sha256(p.read_bytes()).hexdigest(), "span_from": lo, "span_to": hi, "tape_dir": os.path.realpath(tape_dir) if tape_dir else "", "n_mint": int(len(fs["mint"][0])), "n_pool": int(len(fs["pool"][0]))}
 
 
 def load_first_seen_snapshot(path: str, want_sha256: str | None = None) -> dict:
@@ -513,7 +513,7 @@ def load_first_seen_snapshot(path: str, want_sha256: str | None = None) -> dict:
         z = np.load(io.BytesIO(raw), allow_pickle=False)
         if str(z["schema"]) != SNAP_SCHEMA:
             raise ValueError("wrong schema")
-        snap = {"sha256": sha, "span_from": str(z["span_from"]), "span_to": str(z["span_to"])}
+        snap = {"sha256": sha, "span_from": str(z["span_from"]), "span_to": str(z["span_to"]), "tape_dir": str(z["tape_dir"]) if "tape_dir" in z.files else ""}
         for nm in ("mint", "pool"):
             k, t = z[f"{nm}_k"].astype(np.int64), z[f"{nm}_t"].astype(np.int64)
             if len(k) != len(t) or (len(k) > 1 and not np.all(k[1:] > k[:-1])):
@@ -553,9 +553,10 @@ def main(argv=None):
     f = sp.add_parser("first-seen-snapshot", help="write the batch's first-seen tables as a pinned npz for the DSL lane host")
     f.add_argument("--root", required=True, help="forge root (the builder's --out)")
     f.add_argument("--out", required=True)
+    f.add_argument("--tape-dir", default=TAPE_DIR, help="the tape the build ingested (recorded in the snapshot; the host must read the same tape)")
     a = ap.parse_args(argv)
     if a.cmd == "first-seen-snapshot":
-        print(json.dumps(write_first_seen_snapshot(a.root, a.out), sort_keys=True))
+        print(json.dumps(write_first_seen_snapshot(a.root, a.out, a.tape_dir), sort_keys=True))
         return
     build(a.from_hour, a.to_hour, a.out, a.workers, a.tape_dir, a.pool_frac)
 

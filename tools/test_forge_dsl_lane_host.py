@@ -526,7 +526,7 @@ def age_world(tmp_path):
     for h in SNAP_HOURS:
         EV.ingest_hour(h, str(tape), out2)
     snap_p = tmp_path / "fs.npz"
-    info = EV.write_first_seen_snapshot(out2, str(snap_p))
+    info = EV.write_first_seen_snapshot(out2, str(snap_p), str(tape))
     return tmp_path, tape, out, data, snap_p, info
 
 
@@ -561,7 +561,7 @@ def test_snapshot_round_trip_and_sha_pin(age_world, capsys):
     with pytest.raises(R.HostError):
         D.load_snapshot(str(bad))
     cli = tmp_path / "cli.npz"
-    EV.main(["first-seen-snapshot", "--root", str(tmp_path / "out_snap"), "--out", str(cli)])
+    EV.main(["first-seen-snapshot", "--root", str(tmp_path / "out_snap"), "--out", str(cli), "--tape-dir", str(tape)])
     assert json.loads(capsys.readouterr().out)["sha256"] == info["sha256"] == D.sha256_file(cli)  # deterministic bytes
 
 
@@ -650,3 +650,131 @@ def test_register_pins_snapshot_sha_and_run_refuses_mismatch(age_world):
     D.register(d2)
     with pytest.raises(R.HostError, match="first-seen"):
         D.check_registry({**d2, "first_seen_snapshot": str(snap_p)})
+
+
+# ---------------------------------------------------------------------------------------------- QP/reviewer fixes on #1286
+def test_since_before_span_start_is_refused(age_world):
+    """QP probe: a snapshot over T06..T10 and a host starting at T05 made min() take prints the batch never saw (1489 of 1809 mig_age_s differed). Now refused at start."""
+    tmp_path, tape, out, data, snap_p, info = age_world
+    hrs = C.hour_range("2026-11-04T06", "2026-11-04T10")
+    out3 = str(tmp_path / "out_snap3")
+    for h in hrs:
+        EV.ingest_hour(h, str(tape), out3)
+    p3 = tmp_path / "fs3.npz"
+    EV.write_first_seen_snapshot(out3, str(p3), str(tape))
+    snap = D.load_snapshot(str(p3))
+    with pytest.raises(R.HostError, match="before the first-seen snapshot span starts"):
+        run_age(tape, snap, since_ms=C.hour_ms("2026-11-04T05"))
+    batch_fs = EV.first_seen(out3, hrs)
+    eng, got = run_age(tape, snap, since_ms=snap["start_ms"])  # starting exactly at the span start is exact
+    fi = C.FIDX
+    pk, pt = batch_fs["pool"]
+    n = 0
+    for (ph, t), x in got.items():
+        i = np.searchsorted(pk, ph)
+        if t >= snap["start_ms"] and i < len(pk) and pk[i] == ph and np.isfinite(x[fi["mig_age_s"]]):
+            n += 1
+            assert x[fi["mig_age_s"]] == np.float32((t - pt[i]) / 1000.0)
+    assert n > 100
+
+
+def test_host_print_earlier_than_snapshot_is_unknown_not_min(age_world):
+    tmp_path, tape, out, data, snap_p, info = age_world
+    snap = dict(D.load_snapshot(str(snap_p)))
+    k, t = snap["pool"]
+    snap["pool"] = (k, t + 100 * 3_600_000)  # every snapshot pool "first printed" later than the host's own print: impossible on the build's bytes
+    eng, got = run_age(tape, snap)
+    assert eng.counters["events_age_unknown"] > 0
+    assert got and not any(p in set(k.tolist()) and x[C.FIDX["venue"]] == 1 for (p, _t), x in got.items())  # on PumpSwap only pools outside the snapshot are decided; none is approximated with min()
+
+
+def test_tape_identity_is_checked(age_world):
+    tmp_path, tape, out, data, snap_p, info = age_world
+    spec_p = tmp_path / "age_spec.json"
+    spec_p.write_text(json.dumps(AGE_SPEC))
+    hb = {"git_sha": "c" * 40, "dirty": False}
+    d = {**cfg_for(tmp_path, tape), "spec": str(spec_p), "first_seen_snapshot": str(snap_p)}
+    other = tmp_path / "other_tape"
+    other.mkdir()
+    d_other = {**d, "tape_dir": str(other)}
+    with pytest.raises(R.HostError, match="not the build tape"):
+        D.register(d_other)
+    with pytest.raises(R.HostError, match="not the build tape"):
+        D.Host(d_other, binding=D.run_binding(hb=hb), live=True, since_ms=HS0, live_from_ms=HS0, now_fn=lambda: HS0)
+    undeclared = tmp_path / "undeclared.npz"
+    EV.write_first_seen_snapshot(str(tmp_path / "out_snap"), str(undeclared))
+    with pytest.raises(R.HostError, match="does not declare its source tape"):
+        D.Host({**d, "first_seen_snapshot": str(undeclared)}, binding=D.run_binding(hb=hb), live=True, since_ms=HS0, live_from_ms=HS0, now_fn=lambda: HS0)
+    assert not DecisionLog(d["root"]).files("dsl-test-1")
+
+
+@pytest.mark.parametrize("f,other", [("age_s", "mig_age_s"), ("mig_age_s", "age_s")])
+def test_single_table_spec_equals_batch_and_logs_nan_for_unread_feature(age_world, f, other):
+    tmp_path, tape, out, data, snap_p, info = age_world
+    snap = D.load_snapshot(str(snap_p))
+    eng, got = run_age(tape, snap, spec={**SPEC, "entry": [{"f": f, "op": ">=", "v": 0}]})
+    fi = C.FIDX
+    n = 0
+    for i in range(data.n):
+        k = (int(data.pool[i]), int(data.t[i]))
+        if k in got:
+            n += 1
+            a, b = data.X[i][fi[f]], got[k][fi[f]]
+            assert (np.isnan(a) and np.isnan(b)) or a == b
+            assert np.isnan(got[k][fi[other]])  # a placeholder first-seen is never logged as a feature value
+    assert n > 200
+    sink = eng.sink
+    feats = [b["meta"]["features"] for kind, _ms, b in sink.rows if kind == "entry"]
+    assert feats and all(x[other] is None for x in feats)
+
+
+def _row_line(t, pool, mint):
+    return json.dumps(ps_row(t, "buy", pool=pool, mint=mint), separators=(",", ":")).encode()
+
+
+def test_age_first_seen_state_is_bounded_and_prune_runs(age_world):
+    tmp_path, tape, out, data, snap_p, info = age_world
+    snap = D.load_snapshot(str(snap_p))
+    eng = D.Engine(AGE_SPEC, D.ListSink(), snapshot=snap, tape_start_ms=HS0)
+    h_pool = int(snap["pool"][0][0])
+    new_t = snap["end_ms"] + 1000
+    eng.feed_line(_row_line(new_t, "PoolFresh", "MintFresh"))
+    fresh_p = [k for k in eng.age_last_p]
+    fresh_m = [k for k in eng.age_last_m]
+    assert len(fresh_p) == 1 and len(fresh_m) == 1 and fresh_p[0] in eng.first_pool and fresh_m[0] in eng.first_mint
+    assert h_pool not in eng.age_last_p  # keys in the snapshot are not tracked: they are recoverable
+    eng.feed_line(_row_line(new_t + 20 * 60_000, "PoolOther", "MintOther"))  # lets the pending candidate expire (a pending pool is never pruned)
+    eng.feed_line(_row_line(new_t + 30 * 3_600_000, "PoolOther", "MintOther"))  # the clock moves 30 h: the quiet pool's history is pruned, its out-of-snapshot first-seen is NOT
+    assert fresh_p[0] not in eng.hist and fresh_p[0] in eng.first_pool and fresh_m[0] in eng.first_mint
+    eng.feed_line(_row_line(new_t + (D.AGE_KEEP_H + 5) * 3_600_000, "PoolLater", "MintLater"))  # past AGE_KEEP_H: dropped and counted
+    assert fresh_p[0] not in eng.first_pool and fresh_m[0] not in eng.first_mint and fresh_p[0] not in eng.age_last_p
+    assert eng.counters["age_keys_dropped"] >= 2
+    assert len(eng.first_pool) <= 3 and len(eng.age_last_p) <= 3
+
+
+def test_restart_with_age_spec_replays_and_continues(age_world):
+    tmp_path, tape, out, data, snap_p, info = age_world
+    spec_p = tmp_path / "age_spec.json"
+    spec_p.write_text(json.dumps({**AGE_SPEC, "entry": [{"f": "age_s", "op": ">=", "v": 0}, {"f": "n_1m", "op": ">=", "v": 4}, {"f": "ret_1m", "op": "<", "v": 0.02}]}))
+    d = {**cfg_for(tmp_path, tape), "spec": str(spec_p), "first_seen_snapshot": str(snap_p)}
+    hb = {"git_sha": "c" * 40, "dirty": False}
+    reg = D.register(d)
+    t_stop = HS0 + 3_600_000 + 15 * 60_000
+    h1 = D.Host(d, binding=D.run_binding(hb=hb), live=True, since_ms=HS0, live_from_ms=HS0, now_fn=lambda: HS0, snapshot_sha256=reg["first_seen_sha256"])
+    while h1.step(t_stop):
+        pass
+    h1.checkpoint()
+    assert D.open_in_log(DecisionLog(d["root"]), "dsl-test-1")
+    h2 = D.Host(d, binding=D.run_binding(hb=hb), live=True, since_ms=HS0, now_fn=lambda: t_stop + 600_000, snapshot_sha256=reg["first_seen_sha256"])  # replays from the snapshot overlap
+    rows = DecisionLog(d["root"]).rows("dsl-test-1")
+    assert sum(1 for r in rows if r["kind"] == "start") == 2 and all(r.get("first_seen_sha256") == info["sha256"] for r in rows if r["kind"] == "start")
+    while h2.step():
+        pass
+    assert h2.engine.counters.get("events_age_unknown", 0) == 0 and h2.engine.counters["candidates"] > 0
+    DecisionLog(d["root"]).verify("dsl-test-1")
+    with pytest.raises(R.HostError, match="blind gap"):  # a restart whose --since-hour moved past the snapshot span end is refused, nothing is written
+        D.Host(d, binding=D.run_binding(hb=hb), live=True, since_ms=info_end(info) + 3_600_000, now_fn=lambda: t_stop + 900_000, snapshot_sha256=reg["first_seen_sha256"])
+
+
+def info_end(info):
+    return C.hour_ms(info["span_to"]) + 3_600_000

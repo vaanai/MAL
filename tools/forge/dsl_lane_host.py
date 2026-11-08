@@ -44,13 +44,20 @@ Remaining sources of a host entry the evaluator would not have, each with its di
   2. The evaluator drops a trade whose latest possible exit lies past the split end; the host has no split end. Not an extra entry in live use.
   3. age_s / mig_age_s. The batch takes first-seen over the WHOLE build tape; the host knows only its own tape. WITHOUT a pinned snapshot a spec using either is REFUSED at start,
      not approximated. WITH one (`python -m tools.forge.events first-seen-snapshot --root <forge root> --out <npz>`, config `first_seen_snapshot`, its sha256 pinned by `register` and
-     re-checked by `run`), first-seen = min(snapshot tmin, host-tape first print), the batch's own values from events.first_seen, so age_s / mig_age_s are EXACTLY the batch's
-     provided (a) the host's --since-hour is at or before the snapshot span's exclusive end (the tapes overlap: otherwise every age spec is refused at start) and (b) the snapshot is
-     the first-seen of the SAME build the spec was found on. A key absent from the snapshot is new after the span, so its first print is on the host tape; one absent whose host first
+     re-checked by `run`), first-seen = min(snapshot tmin, host-tape first print), the batch's own values from events.first_seen, so age_s / mig_age_s equal the batch's
+     SPAN-CENSORED first-seen (the first print within the build's ingest span, not the pool's true age) provided ALL of: (a) the host's --since-hour lies inside [span start, span
+     exclusive end] (a start before the span start, or after its end, is refused at start); (b) the snapshot is the first-seen of the SAME build the spec was found on (operator
+     discipline; the registry pins the snapshot bytes and span, not the build); (c) the host reads the SAME TAPE as the build: the snapshot records the build's tape real path and the
+     host refuses a different tape_dir or an undeclared one. That is a PATH check, not a content check: the bytes under that path are assumed unchanged (an hour backfilled after the
+     build gives an earlier host print; for a key in the snapshot that is then caught below). For a key IN the snapshot a host print earlier than the snapshot's is impossible on the
+     same bytes, so it is counted events_age_unknown and not decided (never min()). A key absent from the snapshot is new after the span, so its first print is on the host tape; one absent whose host first
      print lies INSIDE the span (inconsistent snapshot) is never guessed: the event is counted events_age_unknown and not decided. A pool first printed after the snapshot span but
-     before --since-hour is impossible by construction of (a). Remaining divergence: a host that missed rows of a new key (tape hole, late start inside the overlap) sees a LATER
-     first print: age too small (extra entries for a `<` condition, missed ones for `>`); a missing tape hour is already a gap on both venues. State for keys outside the snapshot
-     is kept (not pruned) while an age spec runs.
+     before --since-hour is impossible by construction of (a). Remaining divergence, each with its direction: (i) a host that missed rows of a new key (tape hole, late start inside the overlap), or a
+     row filed late whose t is earlier, sees a LATER first print: age too small (extra entries for a `<` condition, missed ones for `>`); (ii) a new key whose first row has t < span
+     end but is filed in the next hour file is absent from the snapshot with host_t < end: events_age_unknown for the whole run (fail closed, smaller book; read the counter);
+     (iii) a key outside the snapshot quiet for AGE_KEEP_H (14 days) is dropped from the host's first-seen state (bounded memory, counter age_keys_dropped) and, if it trades again,
+     gets its new first print: age too small; (iv) every (re)start replays all tape from --since-hour <= span end, so warm-up grows by the day since the build ended. Features the
+     spec does not read (age_s for a mig_age_s-only spec and the reverse) are logged NaN/null.
   4. Rows that arrive late (t < the newest time seen, e.g. the previous hour's tail) update pool history only: they are never an event, fill or grid step. Entries and exits can
      differ from a batch that sorts them in.
   5. An event whose pool has an exit decided later than its exec instant: the host blocks events in (exec, decision], so the host book is smaller there, never larger.
@@ -95,6 +102,7 @@ CKPT_SCHEMA = "dsl_lane_host_ckpt_v1"
 REG_SCHEMA = "dsl_lane_host_registry_v1"
 KIND_GAP_REFUSED = "entry_refused_gap"
 HOUR_MS = 3_600_000
+AGE_KEEP_H = 24 * 14  # out-of-snapshot first-seen keys are retained while seen within this many hours
 HIST_H = 6  # events.hour_events loads [H - 6 h, H + 1 h]: the feature history starts 6 h before the event's hour
 PIN_FILES = ("tools/forge/events.py", "tools/forge/evaluate.py", "tools/forge/common.py", "tools/arena_stack.py", "tools/arena_pool_table.py", "tools/arena_declog.py", "tools/arena_rules.py",
              "tools/arena_paper.py", "tools/forge/dsl_lane_host.py")
@@ -270,6 +278,10 @@ class Engine:
                 raise R.HostError("specs that use age_s / mig_age_s are refused: no first-seen snapshot is configured (first_seen_snapshot)")
             if tape_start_ms is None or int(tape_start_ms) > int(snapshot["end_ms"]):
                 raise R.HostError("specs that use age_s / mig_age_s are refused: the host tape starts after the first-seen snapshot span ends (blind gap); use an earlier --since-hour")
+            if int(tape_start_ms) < int(snapshot["start_ms"]):
+                raise R.HostError("specs that use age_s / mig_age_s are refused: the host tape starts before the first-seen snapshot span starts (host prints the batch never saw); use a later --since-hour")
+        self.age_last_m: dict[int, int] = {}  # last print of a key OUTSIDE the snapshot (age specs only): bounds the retained first-seen state
+        self.age_last_p: dict[int, int] = {}
         self.sink = sink
         self.live_from_ms = int(live_from_ms)
         self.lookback_ms = 1000 * max(60, int(gap_lookback_s if gap_lookback_s is not None else default_lookback_s(self.spec)))
@@ -336,6 +348,11 @@ class Engine:
             self.first_mint[mint_h] = t
         if t < self.first_pool[pool_h]:
             self.first_pool[pool_h] = t
+        if self.uses_age:
+            if not self._in_snap("mint", mint_h):
+                self.age_last_m[mint_h] = max(t, self.age_last_m.get(mint_h, 0))
+            if not self._in_snap("pool", pool_h):
+                self.age_last_p[pool_h] = max(t, self.age_last_p.get(pool_h, 0))
         ph = self.hist.setdefault(pool_h, PoolHist())
         times = ph.cols["t"]
         ix = bisect.bisect_right(times, t)
@@ -377,6 +394,13 @@ class Engine:
         live_m = {int(h.cols["mint"][-1]) for h in self.hist.values() if h.cols["mint"]}
         for k in [k for k in self.first_mint if k not in live_m and not (self.uses_age and not self._in_snap("mint", k))]:
             del self.first_mint[k]
+        if self.uses_age:  # keys outside the snapshot: kept while seen within AGE_KEEP_H, then dropped (documented divergence iii)
+            keep_cut = self.clock - AGE_KEEP_H * HOUR_MS
+            for last, first in ((self.age_last_m, self.first_mint), (self.age_last_p, self.first_pool)):
+                for k in [k for k, v in last.items() if v < keep_cut]:
+                    del last[k]
+                    first.pop(k, None)
+                    self._c("age_keys_dropped")
 
     # -- candidate events
     def _event(self, r: dict, ln: bytes, pool_h: int, mint_h: int, ph: PoolHist, ix: int) -> None:
@@ -436,7 +460,7 @@ class Engine:
         k, t = self.snap[nm]
         i = int(np.searchsorted(k, key))
         if i < len(k) and int(k[i]) == key:
-            return min(int(t[i]), host_t)
+            return None if host_t < int(t[i]) else int(t[i])  # on the build's tape bytes the host cannot print earlier than the snapshot: divergence, never min()
         return None if host_t < int(self.snap["end_ms"]) else host_t
 
     def _features(self, ph: PoolHist, ix: int, hs: int, pool_h: int, mint_h: int, venue: int) -> np.ndarray | None:
@@ -453,7 +477,13 @@ class Engine:
                 return None
             fm, fp = (0 if fm is None else fm), (0 if fp is None else fp)  # a table the spec does not read (or mig_age_s off venue 1) is not used by the conditions
         fs = {"mint": (np.array([mint_h], np.int64), np.array([fm], np.int64)), "pool": (np.array([pool_h], np.int64), np.array([fp], np.int64))}
-        return EV.compute_features(S, key, rank, np.zeros(n, np.int64), np.array([ix - lo], np.int64), np.array([venue], np.int8), fs)
+        X = EV.compute_features(S, key, rank, np.zeros(n, np.int64), np.array([ix - lo], np.int64), np.array([venue], np.int8), fs)
+        if self.snap is not None and self.uses_age:  # a first-seen the spec does not read is a placeholder: never log it as a feature value
+            if not self.need_mint:
+                X[:, C.FIDX["age_s"]] = np.nan
+            if not self.need_pool:
+                X[:, C.FIDX["mig_age_s"]] = np.nan
+        return X
 
     # -- entries: decided when the fill print is seen, so the evaluator's own look-ahead filters (a fill exists, fill-state real quote) are applied BEFORE cooldown / one_per_pool
     def _gap_refusal(self, lo: int, t: int, venue: int) -> dict | None:
@@ -659,11 +689,21 @@ def load_snapshot(path: str, want_sha256: str | None = None) -> dict:
         raise R.HostError(str(e)[:300]) from e
 
 
+def check_snapshot_tape(snap: Mapping[str, Any], d: Mapping[str, Any]) -> None:
+    """The snapshot records the real path of the tape the build ingested; the host must read that tape (a PATH check: the bytes are assumed unchanged)."""
+    want = snap.get("tape_dir") or ""
+    if not want:
+        raise R.HostError("the first-seen snapshot does not declare its source tape (rebuild it with first-seen-snapshot --tape-dir)")
+    if os.path.realpath(str(d["tape_dir"])) != want:
+        raise R.HostError(f"the host tape_dir is not the build tape the first-seen snapshot was made from ({want})")
+
+
 def register(d: Mapping[str, Any], repo: Path = REPO) -> dict:
     spec = load_spec(d)
     reg = {"schema": REG_SCHEMA, "bot_id": d["bot_id"], "spec": spec, "spec_sha256": spec_hash(spec), "pins": file_pins(repo), "clock_start_ms": int(d["clock_start_ms"])}
     if d.get("first_seen_snapshot"):
         snap = load_snapshot(d["first_seen_snapshot"])
+        check_snapshot_tape(snap, d)
         reg["first_seen_sha256"], reg["first_seen_span"] = snap["sha256"], [snap["span_from"], snap["span_to"]]
     p = Path(d["root"]) / "registry.json"
     if p.exists():
@@ -713,6 +753,8 @@ class Host:
         self.live_from_ms = int(live_from_ms) if live_from_ms is not None else self.now_fn()
         self.sink = LogSink(self.log, self.bot_id)
         self.snap = load_snapshot(d["first_seen_snapshot"], snapshot_sha256) if d.get("first_seen_snapshot") else None
+        if self.snap is not None:
+            check_snapshot_tape(self.snap, d)
         if snapshot_sha256 is not None and self.snap is None:
             raise R.HostError("the registry pins a first-seen snapshot but none is configured")
         self.down: list[dict] = []
