@@ -23,6 +23,7 @@ read at call time, so the lane rules move together. Only the stake-bounds consta
 from __future__ import annotations
 
 import argparse
+import dataclasses
 import fcntl
 import hashlib
 import json
@@ -161,13 +162,44 @@ def make_config(raw: Mapping[str, Any]) -> tuple[B.Config, H.LaneConfig, str, di
 
 
 class DslLaneLedger(X.FloorLaneLedger):
-    """The shared lane ledger. FloorLaneLedger.evaluate (budget, daily, max_open, presend; whatever the base carries) with this book's stake bounds in front."""
+    """The shared lane ledger. FloorLaneLedger.evaluate (budget, daily, max_open, presend; whatever the base carries) with this book's stake bounds in front, and a COST-CAPPED pre-send:
+    each of this bot's open positions counts min(mark, stake) in the pre-send P&L, so an unrealised gain never adds headroom (a full wipe of positions that were up must still end inside
+    the lane budget). The stop labels (`lane_budget_stop`, `lane_daily_stop`, and the STOP file) are judged on the real P&L as before. tools/h5_lane_executor.py is untouched."""
+
+    _marks: dict[str, tuple[int, int]] = {}
+
+    def check(self, marks: dict[str, tuple[int, int]], now_ms: int, stake: int) -> str | None:
+        self._marks = marks
+        return super().check(marks, now_ms, stake)
+
+    def reserve(self, mint: str, signature: str, marks: dict[str, tuple[int, int]], now_ms: int, stake: int, pool_gap_waived: bool = False) -> str | None:
+        self._marks = marks
+        return super().reserve(mint, signature, marks, now_ms, stake, pool_gap_waived)
+
+    def unrealised_gain(self, view: H.LaneView, now_ms: int) -> int:
+        """Sum of max(0, mark - stake) over this bot's filled open positions with a fresh mark (what lane_fold added to pnl above cost)."""
+        gain, mine = 0, self.cfg.bot_id + ":"
+        for key, p in view.open.items():
+            if not key.startswith(mine) or not p["filled"]:
+                continue
+            mk = self._marks.get(key[len(mine):])
+            if mk is not None and 0 <= now_ms - mk[1] <= self.cfg.mark_stale_s * 1000:
+                gain += max(0, int(mk[0]) - int(p["stake"]))
+        return gain
 
     def evaluate(self, view: H.LaneView, now_ms: int, stake: int, n_pending_extra: int = 0) -> str | None:
         lo, hi = DSL_LANE_STAKE_BOUNDS_LAMPORTS
         if not lo <= stake <= hi:
             return "lane_stake_out_of_bounds"
-        return super().evaluate(view, now_ms, stake, n_pending_extra)
+        why = super().evaluate(view, now_ms, stake, n_pending_extra)
+        if why is not None:
+            return why
+        gain = self.unrealised_gain(view, now_ms)
+        if gain <= 0:
+            return None
+        capped = dataclasses.replace(view, pnl=view.pnl - gain)
+        why = super().evaluate(capped, now_ms, stake, n_pending_extra)
+        return {"lane_budget_stop": "lane_budget_presend", "lane_daily_stop": "lane_daily_presend"}.get(why, why) if why else None
 
 
 def take_bot_lock(lane: H.LaneLedger) -> Any:

@@ -726,3 +726,46 @@ def test_an_exit_row_with_an_earlier_ms_than_earlier_rows_is_still_followed(tmp_
     lg.exit(T0 + 4000, "o2", pool="Q", reason="sl")  # appended after a row at T0+5000
     feed(br, clk, T0 + 6000)
     assert inner.sells == [("MQ", "sl")]
+
+
+# ------------------------------------------------------------------------------------------------ cost-capped budget presend (QP scenario)
+def _wipe_ledger(tmp, n_open, mark, stake=30_000_000, prior_loss=20_000_000, max_open=8):
+    lc = H.LaneConfig(tmp / "lane" / "ledger.jsonl", tmp / "lane" / "STOP", BOT, stake, max_open, 300_000_000, 10**9, X.LANE_MIN_FEE_RESERVE, 60.0)
+    led = D.DslLaneLedger(lc)
+    marks = {f"W{i}": (mark, T0) for i in range(n_open)}
+    for i in range(n_open):
+        assert led.reserve(f"W{i}", f"intent:w{i}", marks, T0, stake) is None
+        led.record("fill", f"W{i}", marks, T0, ok=True, sol_out=stake + 2_100_000 + 160_000, signature=f"s{i}")
+    if prior_loss:
+        with led.locked():
+            led.append({"ev": "fee", "ts_ms": T0, "mint": "OMX", "bot_id": "other-1", "signature": None, "sol_in_lamports": 0, "sol_out_lamports": prior_loss})
+    return led, marks
+
+
+def test_seven_positions_up_100pct_and_an_eighth_entry_is_refused(tmp_path):
+    led, marks = _wipe_ledger(tmp_path, 7, mark=60_000_000)  # 7 x 0.03 SOL stake, each marked +100 %, 0.02 SOL lost earlier
+    with led.locked():
+        view = H.lane_fold(led.read(), marks, T0, 60.0, BOT)
+    assert view.pnl > 0 and led.unrealised_gain(view, T0) == 7 * 30_000_000
+    # the uncapped base rule (FLOOR's ledger today) lets the 8th in on the strength of the unrealised gain ...
+    assert X.FloorLaneLedger.evaluate(led, view, T0, 30_000_000) is None
+    # ... the cost-capped rule does not: a full wipe of all eight would break -0.30 SOL
+    assert led.check(marks, T0, 30_000_000) == "lane_budget_presend"
+    assert led.reserve("W7", "intent:w7", marks, T0, 30_000_000) == "lane_budget_presend"
+    assert not (tmp_path / "lane" / "STOP").exists()  # a presend refusal is not the budget stop
+
+
+def test_cost_capping_changes_nothing_when_marks_are_below_cost_or_stale(tmp_path):
+    led, marks = _wipe_ledger(tmp_path, 4, mark=20_000_000, prior_loss=0)  # marked down: the real pnl is already the lower one
+    with led.locked():
+        view = H.lane_fold(led.read(), marks, T0, 60.0, BOT)
+    assert led.unrealised_gain(view, T0) == 0 and led.check(marks, T0, 30_000_000) == X.FloorLaneLedger.check(led, marks, T0, 30_000_000)
+    stale = {k: (60_000_000, T0 - 120_000) for k in marks}  # a stale mark is worth 0 in lane_fold and gives no headroom here either
+    with led.locked():
+        view = H.lane_fold(led.read(), stale, T0, 60.0, BOT)
+    assert led.unrealised_gain(view, T0) == 0
+
+
+def test_the_bridge_path_uses_the_capped_ledger(tmp_path):
+    br, _ = mk(tmp_path, Clock(T0))
+    assert isinstance(br.lane, D.DslLaneLedger)

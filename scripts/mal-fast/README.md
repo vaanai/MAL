@@ -121,6 +121,7 @@ It needs a SEALS-BRIEF READERS line from the manager before any start (it reads 
 - **Same limits as FLOOR:** STOP before every send, ledger lock and read before every send, ATA close checked at start, `ata_rent_not_refunded` latch, A3 redeploy pause (`a3_record_file` required for `--live`), per-bot-id process lock.
   Limits come from `floor_lane_executor`'s ledger class and constants at call time, so a lane-wide change (cap, daily presend) applies here too.
 - **Host restart (a second start row, e.g. host_down):** new entries are held 10 min (`gap_hold`, persisted in `dsl-state-<mode>.json`); open positions are untouched and keep the host's later exit rows and the backstop. Exit rows are followed whatever their `ms` (no ordering assumed).
+- **Cost-capped pre-send:** the total-budget (and daily) pre-send counts each of this bot's open positions at min(mark, stake), so unrealised gains never add headroom; the stop labels and the STOP file use the real P&L. Done in `DslLaneLedger` (tools/h5_lane_executor.py untouched). Test: 7 positions at +100 % and an 8th entry is `lane_budget_presend`.
 - **Check:** `python -m tools.forge.dsl_lane_executor check --config <json> [--live]`.
 - **Not tested here:** a real send, the real feed or RPC, the wallet, a real host run feeding this executor end to end, and the real behaviour of a restarted host for a position open across the restart (tested only with synthetic start/exit rows). The first read of real fills is the lane's day-1 report (DEC-035 s5). Nothing here says any spec makes money.
 
