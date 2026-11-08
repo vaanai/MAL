@@ -134,6 +134,28 @@ def make_config(raw: Mapping[str, Any]) -> tuple[B.Config, H.LaneConfig, str]:
 class FloorLaneLedger(H.LaneLedger):
     """The shared lane ledger with this book's stake bounds (the one constant above) in place of the H5 lane's copy."""
 
+    _marks: dict[str, tuple[int, int]] = {}
+
+    def check(self, marks: dict[str, tuple[int, int]], now_ms: int, stake: int) -> str | None:
+        self._marks = marks  # evaluate() needs the marks per position for the cost-capped pre-send (the view only has the sum)
+        return super().check(marks, now_ms, stake)
+
+    def reserve(self, mint: str, signature: str, marks: dict[str, tuple[int, int]], now_ms: int, stake: int, pool_gap_waived: bool = False) -> str | None:
+        self._marks = marks
+        return super().reserve(mint, signature, marks, now_ms, stake, pool_gap_waived)
+
+    def capped_pnl(self, view: H.LaneView, now_ms: int) -> int:
+        """Lane P&L with every open filled position of this bot counted at min(fresh mark, stake): unrealised gains never add headroom, losses still count; a stale or missing mark counts 0
+        (as in lane_fold). Amendment 1: the item 1 pre-send runs on this, so a full wipe of all open positions plus the new one ends above -budget (less fees beyond the reserve)."""
+        c = self.cfg
+        value = 0
+        for key, p in view.open.items():
+            owner, mint = key.split(":", 1)
+            mk = self._marks.get(mint) if owner == c.bot_id else None
+            if p["filled"] and mk is not None and 0 <= now_ms - mk[1] <= c.mark_stale_s * 1000:
+                value += min(int(mk[0]), int(p["stake"]))
+        return view.cash + value
+
     def evaluate(self, view: H.LaneView, now_ms: int, stake: int, n_pending_extra: int = 0) -> str | None:
         c = self.cfg
         lo, hi = FLOOR_LANE_STAKE_BOUNDS_LAMPORTS
@@ -147,7 +169,7 @@ class FloorLaneLedger(H.LaneLedger):
         if len(view.open) >= c.max_open:
             return "lane_max_open"
         reserve = c.fee_reserve_lamports * (len(view.open) + 1)
-        if view.pnl - (view.open_stakes + stake + reserve) <= -c.budget_lamports:
+        if self.capped_pnl(view, now_ms) - (view.open_stakes + stake + reserve) <= -c.budget_lamports:  # cost-capped (Amendment 1): marked gains are not headroom
             return "lane_budget_presend"
         # DEC-035 Amendment 1: no worst-case daily pre-send for floor-lane-1 (h5_lane_executor.LaneLedger.evaluate has one; that file is byte-pinned and unchanged). The marked daily stop above and the item 1 budget pre-send stay.
         return None
