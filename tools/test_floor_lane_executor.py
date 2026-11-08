@@ -156,7 +156,7 @@ def refusals(br):
 # ------------------------------------------------------------------------------------------------ constants and config
 def test_constants_follow_dec035_s2():
     assert X.FLOOR_LANE_STAKE_BOUNDS_LAMPORTS == (20_000_000, 30_000_000) == (H.LANE_STAKE_MIN_LAMPORTS, H.LANE_STAKE_MAX_LAMPORTS)
-    assert (X.LANE_MAX_OPEN, X.LANE_BUDGET_MAX_LAMPORTS, X.LANE_DAILY_MAX_LAMPORTS, X.LANE_MARK_STALE_MAX_S) == (3, 300_000_000, 100_000_000, 60)
+    assert (X.LANE_MAX_OPEN, X.LANE_BUDGET_MAX_LAMPORTS, X.LANE_DAILY_MAX_LAMPORTS, X.LANE_MARK_STALE_MAX_S) == (8, 300_000_000, 100_000_000, 60)
     assert X.LANE_BOT_ID == "floor-lane-1" and X.BOOK_BOT_ID == "l1-floor-v2" and X.FROZEN_SHA == F.FROZEN_SHA
     assert X.LANE_MIN_FEE_RESERVE == 2_100_000 + 160_000 + 1_600_000
 
@@ -205,10 +205,10 @@ def test_bridge_refuses_stake_mismatch_and_bad_max_open(tmp_path):
     with pytest.raises(SystemExit):
         X.FloorLaneBridge(dataclasses.replace(cfg, stake_lamports=50_000_000), B.DryPort(1), lane, now_ms=Clock(T0))
     with pytest.raises(SystemExit):
-        X.FloorLaneBridge(dataclasses.replace(cfg, max_open=4), B.DryPort(1), lane, now_ms=Clock(T0))
+        X.FloorLaneBridge(dataclasses.replace(cfg, max_open=9), B.DryPort(1), lane, now_ms=Clock(T0))
 
 
-@pytest.mark.parametrize("k,v", [("max_open", 4), ("budget_lamports", 300_000_001), ("daily_loss_lamports", 100_000_001), ("mark_stale_s", 61), ("fee_reserve_lamports", 1),
+@pytest.mark.parametrize("k,v", [("max_open", 9), ("budget_lamports", 300_000_001), ("daily_loss_lamports", 100_000_001), ("mark_stale_s", 61), ("fee_reserve_lamports", 1),
                                  ("bot_id", "h5-lane"), ("surprise", 1)])
 def test_lane_config_only_lowers(tmp_path, k, v):
     raw = lane_raw(tmp_path)
@@ -295,17 +295,17 @@ def test_full_trip_is_booked_in_the_shared_ledger(tmp_path):
 def test_lane_full_refuses_the_entry_with_lane_full(tmp_path):
     clk = Clock(T0)
     br, inner = mk(tmp_path, clk)
-    other_bot_rows(tmp_path, 3)
+    other_bot_rows(tmp_path, 8)
     entry(tmp_path)
     feed(br, clk)
     assert inner.buys == [] and [r["why"] for r in refusals(br)] == ["lane_full"]
     assert br.state.counts["refused_lane_full"] == 1 and "o1" not in br.state.orders
 
 
-def test_two_open_elsewhere_leave_room_for_one_and_the_third_is_full(tmp_path):
+def test_seven_open_elsewhere_leave_room_for_one_and_the_ninth_is_full(tmp_path):
     clk = Clock(T0)
     br, inner = mk(tmp_path, clk)
-    other_bot_rows(tmp_path, 2)
+    other_bot_rows(tmp_path, 7)
     lg = entry(tmp_path)
     feed(br, clk)
     assert len(inner.buys) == 1
@@ -318,13 +318,33 @@ def test_two_open_elsewhere_leave_room_for_one_and_the_third_is_full(tmp_path):
 def test_lane_full_race_is_caught_at_the_send_and_releases_the_mint(tmp_path, monkeypatch):
     clk = Clock(T0)
     br, inner = mk(tmp_path, clk)
-    other_bot_rows(tmp_path, 3)
+    other_bot_rows(tmp_path, 8)
     monkeypatch.setattr(br, "_lane_check", lambda now, stake: None)  # the early check saw room; another executor took it before our send
     entry(tmp_path)
     feed(br, clk)
     assert inner.buys == [] and br.state.orders["o1"]["status"] == "refused" and br.state.orders["o1"]["refused"] == "gate:lane_full"
     assert "MP" not in br.state.bought
     assert not [r for r in ledger_rows(tmp_path) if r["ev"] == "send_intent" and r["bot_id"] == "floor-lane-1"]
+
+
+def test_max_open_8_accepted_and_9_refused(tmp_path):
+    raw = lane_raw(tmp_path)
+    raw["lane"]["max_open"] = 8
+    cfg, lane, _ = X.make_config(raw)
+    assert lane.max_open == 8 and cfg.max_open == 8
+    raw["lane"]["max_open"] = 9
+    with pytest.raises(ValueError):
+        X.make_config(raw)
+
+
+def test_presend_budget_still_refuses_with_fewer_than_8_open(tmp_path):
+    clk = Clock(T0)
+    other_bot_rows(tmp_path, 4)  # 4 open of 8: the cap has room
+    other_cash(tmp_path, 180_000_000)  # pnl -0.18 - (4 + 1 stakes + reserves) <= -0.30
+    br, inner = mk(tmp_path, clk)
+    entry(tmp_path)
+    feed(br, clk)
+    assert inner.buys == [] and refusals(br)[-1]["why"] == "lane_budget_presend"
 
 
 def test_lane_max_open_config_can_lower_it(tmp_path):
@@ -728,3 +748,91 @@ def test_the_bot_lock_is_taken_before_state_is_loaded_or_written(tmp_path):
     # and run() refuses before the port factory is called
     assert X.run(lane_raw(tmp_path, a3_record_file=str(a3_file(tmp_path))), live_flag=True, root_checks=False, port_factory=lambda c: pytest.fail("port built")) == 2
     br.release_lane_lock()
+
+
+# ------------------------------------------------------------------------------------------------ Amendment 1: daily stop as written
+def test_floor_ledger_has_no_daily_presend_but_h5_ledger_keeps_it(tmp_path):
+    lc = H.LaneConfig(tmp_path / "l.jsonl", tmp_path / "STOP", X.LANE_BOT_ID, STAKE, 8, 300_000_000, 100_000_000, X.LANE_MIN_FEE_RESERVE, 60.0)
+    view = H.LaneView(cash=0, pnl=0, cost=0, open={f"b:m{i}": {"stake": STAKE, "filled": True} for i in range(5)}, snaps={H.day_of(T0): (0, 0)})
+    assert X.FloorLaneLedger(lc).evaluate(view, T0, STAKE) is None
+    assert H.LaneLedger(lc).evaluate(view, T0, STAKE) == "lane_daily_presend"
+
+
+def test_realised_daily_stop_still_blocks_after_minus_010(tmp_path):
+    clk = Clock(T0)
+    other_cash(tmp_path, 110_000_000, snap_day=H.day_of(T0), now=T0 - 10)
+    br, inner = mk(tmp_path, clk)
+    entry(tmp_path)
+    feed(br, clk)
+    assert inner.buys == [] and refusals(br)[-1]["why"] == "lane_daily_stop"
+
+
+# ------------------------------------------------------------------------------------------------ Amendment 1: cost-capped total-budget pre-send
+def _floor_ledger(tmp_path):
+    lc = H.LaneConfig(tmp_path / "l.jsonl", tmp_path / "STOP", X.LANE_BOT_ID, STAKE, 8, 300_000_000, 100_000_000, X.LANE_MIN_FEE_RESERVE, 60.0)
+    return X.FloorLaneLedger(lc), lc
+
+
+def _view(lc, cash, stakes, marks, filled=None):
+    """Open positions of floor-lane-1 with the given stakes; marks is a list of values (None = no mark). pnl is what lane_fold would compute."""
+    filled = filled or [True] * len(stakes)
+    op = {f"{lc.bot_id}:m{i}": {"stake": st, "filled": f, "ts_ms": T0, "signature": f"s{i}"} for i, (st, f) in enumerate(zip(stakes, filled))}
+    md = {f"m{i}": (v, T0) for i, v in enumerate(marks) if v is not None}
+    pnl = cash + sum(md[f"m{i}"][0] for i in range(len(stakes)) if f"m{i}" in md and filled[i])
+    cost = cash + sum(st for st, f in zip(stakes, filled) if f)
+    return H.LaneView(cash=cash, pnl=pnl, cost=cost, open=op, snaps={}), md
+
+
+def test_qp_scenario_seven_at_plus_100_then_eighth_is_refused_when_wipe_breaks_budget(tmp_path):
+    led, lc = _floor_ledger(tmp_path)
+    cash = -7 * (STAKE + 3_000_000) - 60_000_000  # 7 filled plus 0.06 SOL of earlier realised loss
+    view, marks = _view(lc, cash, [STAKE] * 7, [2 * STAKE] * 7)
+    led._marks = marks
+    assert view.pnl - (view.open_stakes + STAKE + lc.fee_reserve_lamports * 8) > -lc.budget_lamports  # the uncapped rule would admit it
+    assert led.evaluate(view, T0, STAKE) == "lane_budget_presend"
+    view2, marks2 = _view(lc, cash, [STAKE] * 7, [STAKE] * 7)  # at cost the answer is the same: gains never change it
+    led._marks = marks2
+    assert led.evaluate(view2, T0, STAKE) == "lane_budget_presend"
+
+
+def test_losses_still_count_in_the_capped_presend(tmp_path):
+    led, lc = _floor_ledger(tmp_path)
+    cash = -7 * (STAKE + 3_000_000)
+    view, marks = _view(lc, cash, [STAKE] * 7, [STAKE // 2] * 7)
+    led._marks = marks
+    assert led.capped_pnl(view, T0) == view.pnl == cash + 7 * (STAKE // 2)
+    view_up, marks_up = _view(lc, cash, [STAKE] * 7, [3 * STAKE] * 7)
+    led._marks = marks_up
+    assert led.capped_pnl(view_up, T0) == cash + 7 * STAKE < view_up.pnl
+
+
+def test_eighth_goes_and_ninth_is_lane_max_open_in_the_ledger(tmp_path):
+    led, lc = _floor_ledger(tmp_path)
+    view, marks = _view(lc, -7 * (STAKE + 3_000_000), [STAKE] * 7, [STAKE] * 7)
+    led._marks = marks
+    assert led.evaluate(view, T0, STAKE) is None
+    view8, marks8 = _view(lc, -8 * (STAKE + 3_000_000), [STAKE] * 8, [STAKE] * 8)
+    led._marks = marks8
+    assert led.evaluate(view8, T0, STAKE) == "lane_max_open"
+
+
+def test_full_wipe_after_any_accepted_entry_stays_inside_the_budget(tmp_path):
+    import random
+    led, lc = _floor_ledger(tmp_path)
+    rng = random.Random(1)
+    accepted = 0
+    for _ in range(4000):
+        n = rng.randint(0, 7)
+        stakes = [rng.choice([20_000_000, 25_000_000, 30_000_000]) for _ in range(n)]
+        filled = [rng.random() < 0.8 for _ in range(n)]
+        cash = -sum(s for s, f in zip(stakes, filled) if f) - rng.randint(0, 250_000_000) + rng.randint(0, 150_000_000)
+        marks_v = [rng.choice([None, 0, s // 2, s, 2 * s, 5 * s]) for s in stakes]
+        view, md = _view(lc, cash, stakes, marks_v, filled)
+        led._marks = md
+        stake = rng.choice([20_000_000, 25_000_000, 30_000_000])
+        if led.evaluate(view, T0, stake) is None:
+            accepted += 1
+            unfilled = sum(s for s, f in zip(stakes, filled) if not f)
+            worst = cash - unfilled - stake  # filled stakes are already in cash; every other open position and the new one lost in full
+            assert worst > -lc.budget_lamports + lc.fee_reserve_lamports * (n + 1)
+    assert accepted > 200
