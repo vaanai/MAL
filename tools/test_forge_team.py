@@ -420,6 +420,15 @@ def test_val_family_cap_skips_dead_family_but_reads_others(tmp_path):
     assert team.val_pass() == 1 and "x" not in team.val_read
 
 
+def test_val_pass_skips_supersets_of_a_dead_family(tmp_path):
+    team, _ = mk(tmp_path, ev=ValFail())
+    _val_family(team, 2)
+    e = next(x for x in team.archive.values() if x)
+    team.archive["sup"] = {**e, "hash": "sup", "spec": sp(FAM + [("f5", ">")], v=77), "owners": {0}}  # evaluated before the family died
+    team.val_pass()
+    assert "sup" not in team.val_read
+
+
 def test_prompt_lists_dead_families(tmp_path):
     team, _ = mk(tmp_path, ev=ValFail(), islands=1)
     _val_family(team, 2)
