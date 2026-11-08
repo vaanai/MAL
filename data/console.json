@@ -1,8 +1,16 @@
 {
  "schema_version": "console.v1",
- "updated_utc": "2026-11-06T19:10:00Z",
+ "updated_utc": "2026-11-08T14:45:00Z",
  "review_windows": [],
  "events": [
+  {
+   "id": "floor-lane-1-live-1108",
+   "kind": "decision",
+   "atUtc": "2026-11-08T14:30:47Z",
+   "approx": false,
+   "title": "FLOOR goes LIVE: floor-lane-1 first real send 2026-11-08T14:30:47.391Z (0.03 SOL stake)",
+   "detail": "Owner yes in Helm chat (11-08 10:52Z). Helm cutover at 14:19:43Z at 3710e1af: fresh live state at the verified chain head, no dry holdings imported, wallet 1,104,432,201 lamports with no token inventory, RuntimeMaxSec infinity on both units, host never restarted. First send_intent 14:30:47.391Z, landed 14:30:51.4Z. Gate read EXP-029 counts sends from 2026-11-09T06:00Z. Notebook n_tSjw8nRZI9bv2A."
+  },
   {
    "id": "r4bt-c0-code-complete-1106",
    "kind": "job",
@@ -1633,11 +1641,11 @@
   {
    "id": "FLOOR",
    "title": "FLOOR",
-   "stage": "not registered for 10-26 (A2 floor FAIL 6.0 < 12.5/day; N not spent)",
-   "note": "Fixed-first entry posted 13:00Z (notebook n_CBfWkrs5XZDl5A); smoke jobs #1521/#1522. On fresh-0903 (a much-read exploration block) flat +0.0073 vs +0.0161 SOL/trade, not confirmed: n 62 (under 100), CI90 lower bound below 0 under both models (flat -0.0032, pressure -0.0047), pressure ex-top-3 -0.065 SOL, kit verdict KILLED/NOT_DECIDABLE; it neither confirms nor refutes F0; in-sample screen (not evidence). FLOOR's 10-26 registration did not happen (A2 floor FAIL, rate_att_lo 6.0 < 12.5/day; notebook n_27eIzN61qHjZwQ). No book has cleared the promotion gate.",
+   "stage": "LIVE in DEC-035 lane as floor-lane-1 (since 2026-11-08T14:19:43Z); gate read EXP-029 from 2026-11-09T06:00:00Z",
+   "note": "floor-lane-1 is live on mal-fast-0 at main 3710e1af: stake 0.03 SOL, max_open 8, lane budget -0.30 SOL, daily pre-entry stop -0.10 SOL. Helm started the executor at 2026-11-08T14:19:43Z. The first real send_intent was at 14:30:47.391Z (HOLDOUT_LEDGER #1288). Sends before S = 2026-11-09T06:00:00Z are real and are not trades of the gate read, but their losses count toward the read's FAIL ends (lane budget stop, budget exhaustion) from the live start 14:19:43Z (EXP-029 Erratum 1 item 1, Erratum 1a; #1289/#1290). Daily lane report job #2290 runs at 00:20Z; health watch #2291. No profit claim: no exit yet at writing.",
    "tag": {
-    "text": "not registered",
-    "tone": "muted"
+    "text": "LIVE (lane)",
+    "tone": "accent"
    }
   },
   {
@@ -2332,6 +2340,14 @@
   }
  ],
  "stream": [
+  {
+   "id": "s-20261108-floor-live",
+   "from": "claude",
+   "kind": "result",
+   "atUtc": "2026-11-08T14:45:00Z",
+   "approx": true,
+   "text": "FLOOR is live (floor-lane-1, 0.03 SOL per trade, up to 8 open). First real buy landed 14:30:51Z. Daily report at 00:20Z each day; the gate read starts counting at 2026-11-09T06:00Z. No P&L yet: the first position is still open."
+  },
   {
    "id": "s-20261101-push-plan",
    "from": "claude",
