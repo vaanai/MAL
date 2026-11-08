@@ -378,7 +378,9 @@ class Team:
         if sp.exists():
             st = json.loads(sp.read_text())
             self.last_val_ts = st.get("last_val_ts", 0.0)
-            self.analyst_text = st.get("analyst_text")
+            at = st.get("analyst_text")
+            # a failed stats run (e.g. EMFILE before ulimit) must not be cached across resumes
+            self.analyst_text = None if (at or "").startswith("(TRAIN statistics failed") else at
             for s in st.get("islands", []):
                 if s["id"] < self.n_islands:
                     isl = self.islands[s["id"]]

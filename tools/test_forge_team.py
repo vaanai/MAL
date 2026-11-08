@@ -231,6 +231,20 @@ def test_resume_continues_and_does_not_reread(tmp_path):
     assert len(v) == len(set(v))
 
 
+def test_resume_drops_cached_analyst_failure(tmp_path):
+    t1, _ = mk(tmp_path, max_rounds=1)
+    t1.run()
+    st = json.loads((tmp_path / "state.json").read_text())
+    st["analyst_text"] = "(TRAIN statistics failed: OSError)"
+    (tmp_path / "state.json").write_text(json.dumps(st))
+    t2, _ = mk(tmp_path, max_rounds=1)
+    assert t2.analyst_text is None
+    st["analyst_text"] = "real stats"
+    (tmp_path / "state.json").write_text(json.dumps(st))
+    t3, _ = mk(tmp_path, max_rounds=1)
+    assert t3.analyst_text == "real stats"
+
+
 def test_resume_keeps_spent_budget(tmp_path):
     t1, _ = mk(tmp_path, islands=1, budget=0.03, cost=0.01, max_rounds=100)
     t1.run()
