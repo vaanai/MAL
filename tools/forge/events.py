@@ -238,6 +238,66 @@ def in_gap(a, cmax_b, t, slack_ms):
     return (i >= 0) & (cmax_b[np.maximum(i, 0)] + slack_ms >= t)
 
 
+def compute_features(S, key, rank, pstart, ev, venue, fs) -> np.ndarray:
+    """The 42 causal features of the events `ev` (indices into the rank-then-time sorted columns S / key / rank; pstart = first index of each row's pool; venue = venue of each
+    event; fs = first_seen tables). Float32 [len(ev), NF]. Factored out of hour_events unchanged so the batch builder and the live host compute the same numbers."""
+    t = S["t"]
+    n = len(ev)
+    spot = S["spot"]
+    X = np.full((n, C.NF), np.nan, np.float32)
+    fi = C.FIDX
+    X[:, fi["venue"]] = venue
+    fm_k, fm_t = fs["mint"]
+    fp_k, fp_t = fs["pool"]
+    X[:, fi["age_s"]] = (t[ev] - fm_t[np.searchsorted(fm_k, S["mint"][ev])]) / 1000.0
+    X[:, fi["mig_age_s"]] = np.where(venue == 1, (t[ev] - fp_t[np.searchsorted(fp_k, S["pool"][ev])]) / 1000.0, np.nan)
+    X[:, fi["liq_sol"]] = np.where(venue == 1, S["q"][ev], S["rq"][ev]) / 1e9
+    X[:, fi["liq_real_sol"]] = S["rq"][ev] / 1e9
+    X[:, fi["mcap_sol"]] = spot[ev] * 1e6
+    for nm, w in (("30s", 30), ("1m", 60), ("5m", 300), ("15m", 900), ("1h", 3600), ("6h", 21600)):
+        ix = np.searchsorted(key, key[ev] - w * 1000, side="right") - 1
+        okr = (ix >= pstart[ev]) & (spot[np.maximum(ix, 0)] > 0)
+        with np.errstate(all="ignore"):
+            X[:, fi[f"ret_{nm}"]] = np.where(okr, spot[ev] / spot[np.maximum(ix, 0)] - 1.0, np.nan)
+    live = spot > 0
+    lsp = np.log(np.where(live, spot, 1.0))
+    off = rank.astype(np.float64) * 1e4
+    cmax = np.maximum.accumulate(np.where(live, lsp, -1e3) + off) - off
+    cmin = np.minimum.accumulate(np.where(live, lsp, 1e3) + (-off)) + off
+    with np.errstate(all="ignore"):
+        X[:, fi["dd_high"]] = np.where(live[ev], np.exp(lsp[ev] - cmax[ev]) - 1.0, np.nan)
+        X[:, fi["rise_low"]] = np.where(live[ev], np.exp(lsp[ev] - cmin[ev]) - 1.0, np.nan)
+    sol, isb = S["sol"], S["isbuy"].astype(np.float64)
+    cb = np.concatenate([[0.0], np.cumsum(isb)])
+    cbs = np.concatenate([[0.0], np.cumsum(sol * isb)])
+    css = np.concatenate([[0.0], np.cumsum(sol * (1 - isb))])
+    hi = ev + 1
+    buy_sol_arr = (sol * isb / 1e9).astype(np.float32)
+    sell_sol_arr = (sol * (1 - isb) / 1e9).astype(np.float32)
+    trader = S["trader"]
+    for nm, w in (("1m", 60), ("5m", 300), ("1h", 3600)):
+        lo = np.maximum(np.searchsorted(key, key[ev] - w * 1000, side="right"), pstart[ev])
+        cnt = (hi - lo).astype(np.float64)
+        nb = cb[hi] - cb[lo]
+        bs, ss = (cbs[hi] - cbs[lo]) / 1e9, (css[hi] - css[lo]) / 1e9
+        X[:, fi[f"n_{nm}"]] = cnt
+        X[:, fi[f"buy_share_{nm}"]] = nb / cnt
+        X[:, fi[f"buy_sol_{nm}"]] = bs
+        X[:, fi[f"sell_sol_{nm}"]] = ss
+        X[:, fi[f"net_flow_{nm}"]] = bs - ss
+        ml = int((hi - lo).max())
+        X[:, fi[f"max_buy_{nm}"]] = _range_max(_sparse_max(buy_sol_arr, ml), lo, hi)
+        X[:, fi[f"max_sell_{nm}"]] = _range_max(_sparse_max(sell_sol_arr, ml), lo, hi)
+        X[:, fi[f"uniq_{nm}"]] = [len(np.unique(trader[a:b])) for a, b in zip(lo.tolist(), hi.tolist())]
+    X[:, fi["ev_is_buy"]] = S["isbuy"][ev]
+    X[:, fi["ev_sol"]] = sol[ev] / 1e9
+    pv = np.maximum(ev - 1, 0)
+    X[:, fi["since_last_s"]] = np.where(ev - 1 >= pstart[ev], (t[ev] - t[pv]) / 1000.0, np.nan)
+    X[:, fi["curve_progress"]] = np.where(venue == 0, np.clip(1.0 - S["rb"][ev] / C.CURVE_REAL_BASE0, 0, 1), 1.0)
+    X[:, fi["utc_hour"]] = ((t[ev] // 3_600_000) % 24)
+    return X
+
+
 def hour_events(hour: str, out: str, fs, frac: float = 1.0, ingest_hist_h: int = 6) -> dict[str, np.ndarray] | None:
     """Build the events of one hour. fs: first_seen() tables. Returns dict of arrays (features float32 [n, NF], path uint16 [n, NG], meta), or None when no events."""
     hs = C.hour_ms(hour)
@@ -299,58 +359,8 @@ def hour_events(hour: str, out: str, fs, frac: float = 1.0, ingest_hist_h: int =
     venue = S["venue"][ev].astype(np.int8)
     spot = S["spot"]
 
-    # ---- features
-    X = np.full((n, C.NF), np.nan, np.float32)
-    fi = C.FIDX
-    X[:, fi["venue"]] = venue
-    fm_k, fm_t = fs["mint"]
-    fp_k, fp_t = fs["pool"]
-    X[:, fi["age_s"]] = (t[ev] - fm_t[np.searchsorted(fm_k, S["mint"][ev])]) / 1000.0
-    X[:, fi["mig_age_s"]] = np.where(venue == 1, (t[ev] - fp_t[np.searchsorted(fp_k, S["pool"][ev])]) / 1000.0, np.nan)
-    X[:, fi["liq_sol"]] = np.where(venue == 1, S["q"][ev], S["rq"][ev]) / 1e9
-    X[:, fi["liq_real_sol"]] = S["rq"][ev] / 1e9
-    X[:, fi["mcap_sol"]] = spot[ev] * 1e6
-    for nm, w in (("30s", 30), ("1m", 60), ("5m", 300), ("15m", 900), ("1h", 3600), ("6h", 21600)):
-        ix = np.searchsorted(key, key[ev] - w * 1000, side="right") - 1
-        okr = (ix >= pstart[ev]) & (spot[np.maximum(ix, 0)] > 0)
-        with np.errstate(all="ignore"):
-            X[:, fi[f"ret_{nm}"]] = np.where(okr, spot[ev] / spot[np.maximum(ix, 0)] - 1.0, np.nan)
-    live = spot > 0
-    lsp = np.log(np.where(live, spot, 1.0))
-    off = rank.astype(np.float64) * 1e4
-    cmax = np.maximum.accumulate(np.where(live, lsp, -1e3) + off) - off
-    cmin = np.minimum.accumulate(np.where(live, lsp, 1e3) + (-off)) + off
-    with np.errstate(all="ignore"):
-        X[:, fi["dd_high"]] = np.where(live[ev], np.exp(lsp[ev] - cmax[ev]) - 1.0, np.nan)
-        X[:, fi["rise_low"]] = np.where(live[ev], np.exp(lsp[ev] - cmin[ev]) - 1.0, np.nan)
-    sol, isb = S["sol"], S["isbuy"].astype(np.float64)
-    cb = np.concatenate([[0.0], np.cumsum(isb)])
-    cbs = np.concatenate([[0.0], np.cumsum(sol * isb)])
-    css = np.concatenate([[0.0], np.cumsum(sol * (1 - isb))])
-    hi = ev + 1
-    buy_sol_arr = (sol * isb / 1e9).astype(np.float32)
-    sell_sol_arr = (sol * (1 - isb) / 1e9).astype(np.float32)
-    trader = S["trader"]
-    for nm, w in (("1m", 60), ("5m", 300), ("1h", 3600)):
-        lo = np.maximum(np.searchsorted(key, key[ev] - w * 1000, side="right"), pstart[ev])
-        cnt = (hi - lo).astype(np.float64)
-        nb = cb[hi] - cb[lo]
-        bs, ss = (cbs[hi] - cbs[lo]) / 1e9, (css[hi] - css[lo]) / 1e9
-        X[:, fi[f"n_{nm}"]] = cnt
-        X[:, fi[f"buy_share_{nm}"]] = nb / cnt
-        X[:, fi[f"buy_sol_{nm}"]] = bs
-        X[:, fi[f"sell_sol_{nm}"]] = ss
-        X[:, fi[f"net_flow_{nm}"]] = bs - ss
-        ml = int((hi - lo).max())
-        X[:, fi[f"max_buy_{nm}"]] = _range_max(_sparse_max(buy_sol_arr, ml), lo, hi)
-        X[:, fi[f"max_sell_{nm}"]] = _range_max(_sparse_max(sell_sol_arr, ml), lo, hi)
-        X[:, fi[f"uniq_{nm}"]] = [len(np.unique(trader[a:b])) for a, b in zip(lo.tolist(), hi.tolist())]
-    X[:, fi["ev_is_buy"]] = S["isbuy"][ev]
-    X[:, fi["ev_sol"]] = sol[ev] / 1e9
-    pv = np.maximum(ev - 1, 0)
-    X[:, fi["since_last_s"]] = np.where(ev - 1 >= pstart[ev], (t[ev] - t[pv]) / 1000.0, np.nan)
-    X[:, fi["curve_progress"]] = np.where(venue == 0, np.clip(1.0 - S["rb"][ev] / C.CURVE_REAL_BASE0, 0, 1), 1.0)
-    X[:, fi["utc_hour"]] = ((t[ev] // 3_600_000) % 24)
+    # ---- features (shared with the live host: tools/forge/dsl_lane_host.py calls the same function on one pool's history)
+    X = compute_features(S, key, rank, pstart, ev, venue, fs)
 
     # ---- forward paths
     t_fill = t[jj]
