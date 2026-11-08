@@ -25,6 +25,8 @@ THIN_MS = 30_000
 GAP_EXCL_MS = 60_000
 T0_MS = 1_790_000_000_000
 KEY_SHIFT = 38  # composite sort key = rank << 38 | (t_ms - T0_MS)
+SCHEMA = 2  # DONE-marker version; a stage whose marker has another version is rebuilt (overwritten) by `build`
+MIN_REAL_QUOTE = 2_000_000_000  # hard floor: no entry where the pool's real quote reserve at the fill is below 2 SOL (live cannot fill there)
 DEAD_REAL_QUOTE = 10_000_000  # PumpSwap pool with real quote below 0.01 SOL after a print is marked dead (price 0)
 
 # forward-path grid, seconds after the fill: 5 s to 30 m, 1 m to 6 h, 5 m to 24 h
@@ -51,9 +53,27 @@ def _lut() -> np.ndarray:
 
 
 DECODE = _lut()
+RES_OFF, RES_SCALE = 8.0, 2500.0
+
+
+def encode_res(x) -> np.ndarray:
+    """reserve in lamports -> uint16 code (0 = none/zero); resolution 0.04%, range e^8 .. e^34 lamports"""
+    x = np.asarray(x, float)
+    with np.errstate(all="ignore"):
+        c = np.clip(np.rint((np.log(np.where(x > 1, x, 1.0)) - RES_OFF) * RES_SCALE), 1, 65000)
+    return np.where(x > 1, c, 0).astype(np.uint16)
+
+
+def _lut_res() -> np.ndarray:
+    out = np.exp(np.arange(65536, dtype=np.float64) / RES_SCALE + RES_OFF)
+    out[0] = 0.0
+    return out
+
+
+DECODE_RES = _lut_res()
 
 FEATURES = (
-    "venue", "age_s", "mig_age_s", "liq_sol", "mcap_sol",
+    "venue", "age_s", "mig_age_s", "liq_sol", "liq_real_sol", "mcap_sol",
     "ret_30s", "ret_1m", "ret_5m", "ret_15m", "ret_1h", "ret_6h",
     "dd_high", "rise_low",
     *[f"{k}_{w}" for w in ("1m", "5m", "1h") for k in ("n", "uniq", "buy_share", "buy_sol", "sell_sol", "max_sell", "max_buy", "net_flow")],

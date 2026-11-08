@@ -98,8 +98,8 @@ def validate_spec(spec: dict) -> dict:
 class Split:
     def __init__(self, root: str, hours: list[str]):
         self.hours = []
-        xs, ms = [], {k: [] for k in ("t", "t_fill", "pool", "venue", "Qf", "Bf", "fee_in")}
-        self.paths, hid, row = [], [], []
+        xs, ms = [], {k: [] for k in ("t", "t_fill", "pool", "venue", "Qf", "Bf", "fee_in", "Rr")}
+        self.paths, self.qpaths, self.rpaths, hid, row = [], [], [], [], []
         for h in hours:
             d = Path(root) / "events" / h
             if not (d / "DONE").exists() or json.loads((d / "DONE").read_text())["n"] == 0:
@@ -111,6 +111,8 @@ class Split:
             for k in ms:
                 ms[k].append(np.load(d / f"{k}.npy"))
             self.paths.append(np.load(d / "path.npy", mmap_mode="r"))
+            self.qpaths.append(np.load(d / "qpath.npy", mmap_mode="r"))
+            self.rpaths.append(np.load(d / "rpath.npy", mmap_mode="r"))
             n = len(xs[-1])
             hid.append(np.full(n, len(self.paths) - 1, np.int32)); row.append(np.arange(n, dtype=np.int64))
         self.n = sum(len(x) for x in xs)
@@ -128,6 +130,18 @@ class Split:
             m = np.flatnonzero(h == k)
             out[m] = self.paths[k][self.row[sel[m]]]
         return out
+
+
+    def gather_res_at(self, sel: np.ndarray, kx: np.ndarray):
+        """(total quote incl V, real quote) in lamports at path point kx[i] of event sel[i]."""
+        qt = np.empty(len(sel)); qr = np.empty(len(sel))
+        h = self.hid[sel]
+        for k in np.unique(h):
+            m = np.flatnonzero(h == k)
+            rows = self.row[sel[m]]
+            qt[m] = C.DECODE_RES[self.qpaths[k][rows, kx[m]]]
+            qr[m] = C.DECODE_RES[self.rpaths[k][rows, kx[m]]]
+        return qt, qr
 
 
 _CACHE: dict = {}
@@ -189,19 +203,21 @@ def simulate_paths(P: np.ndarray, ex: dict) -> tuple[np.ndarray, np.ndarray, np.
     return kx, Rf[r, kx].astype(np.float64), reason, censored
 
 
-def trade_pnl(r, Qf, Bf, fee_in, venue, stake_lamports):
-    """Net lamports of the round trip at exit ratio r (0 = dead)."""
+def trade_pnl(r, Qx_tot, Qx_real, Qf, Bf, fee_in, venue, stake_lamports):
+    """Net lamports of the round trip. Entry: the fill print's PRE-state (Qf incl V, Bf), fee, constant-product impact -> tok tokens.
+    Exit: the pool at the exit path point has total quote Qx_tot (incl V), real quote Qx_real and spot r * Qf/Bf, hence base Bx = Qx_tot / spot; our buy is
+    re-injected (arena_stack.round_trip), the tokens are sold constant-product with the fee at that state, and the proceeds can never exceed the pool's real
+    quote after our deposit (Qx_real + net). r = 0 (dead) or an unusable state loses the stake and the buy send only."""
     with np.errstate(all="ignore"):
         net = stake_lamports * (1.0 - fee_in)
         tok = Bf * net / (Qf + net)
-        s = r * Qf / Bf
-        k = Qf * Bf
-        Qx, Bx = np.sqrt(k * s), np.sqrt(k / s)
-        Qa, Ba = Qx + net, Bx - tok
+        spot_x = r * Qf / Bf
+        Bx = Qx_tot / spot_x
+        Qa, Ba = Qx_tot + net, Bx - tok
         gross = tok * Qa / (Ba + tok)
-        proceeds = gross * (1.0 - C.fee_frac(Qa, Ba, venue))
+        proceeds = np.minimum(gross * (1.0 - C.fee_frac(Qa, Ba, venue)), Qx_real + net)
         pnl = proceeds - stake_lamports - 2 * C.SEND_LAMPORTS
-    strand = ~(r > 0) | ~np.isfinite(pnl) | (Ba <= 0) | (tok <= 0)
+    strand = ~(r > 0) | ~np.isfinite(pnl) | (Ba <= 0) | (tok <= 0) | ~(Qx_tot > 0)
     return np.where(strand, -stake_lamports - C.SEND_LAMPORTS, pnl)
 
 
@@ -233,7 +249,7 @@ def _one_per_pool(pool, t, exit_t):
 
 
 def select(data: Split, spec: dict) -> np.ndarray:
-    m = np.ones(data.n, bool)
+    m = data.Rr >= C.MIN_REAL_QUOTE  # hard floor: real quote at the fill >= 2 SOL
     if spec["venue"] != "any":
         m &= data.venue == spec["venue"]
     for c in spec["entry"]:
@@ -256,7 +272,8 @@ def run_trades(data: Split, spec: dict) -> dict:
     for s in range(0, len(sel), B):
         ii = sel[s:s + B]
         kx, r, reason, c = simulate_paths(data.gather_paths(ii), spec["exit"])
-        pnl_l.append(trade_pnl(r, data.Qf[ii], data.Bf[ii], data.fee_in[ii], data.venue[ii], stake_l))
+        qt, qr = data.gather_res_at(ii, kx)
+        pnl_l.append(trade_pnl(r, qt, qr, data.Qf[ii], data.Bf[ii], data.fee_in[ii], data.venue[ii], stake_l))
         kxs.append(kx); rsn.append(reason); cen.append(c)
     if sel.size:
         pnl_l, kx, reason, cen = np.concatenate(pnl_l), np.concatenate(kxs), np.concatenate(rsn), np.concatenate(cen)
@@ -332,7 +349,7 @@ def evaluate(spec: dict, split: str = "train", root: str = DEFAULT_ROOT, data: S
 # ------------------------------------------------------------------------------------------------ team-facing helpers
 _D = {
     "venue": "0 = pump.fun curve, 1 = PumpSwap", "age_s": "seconds since the pool's first print", "mig_age_s": "seconds since migration (PumpSwap; 0/neg for curve)",
-    "liq_sol": "liquidity in SOL (quote reserve + V; curve real SOL)", "mcap_sol": "market cap in SOL",
+    "liq_sol": "liquidity in SOL (quote reserve + V; curve real SOL)", "liq_real_sol": "real quote reserve in SOL before the event (PumpSwap without V; curve real SOL)", "mcap_sol": "market cap in SOL",
     "ret_30s": "price return over 30 s", "ret_1m": "return over 1 m", "ret_5m": "return over 5 m", "ret_15m": "return over 15 m",
     "ret_1h": "return over 1 h", "ret_6h": "return over 6 h", "dd_high": "drawdown from the pool's running high (fraction)",
     "rise_low": "rise from the pool's running low (fraction)", "ev_is_buy": "1 if the event print is a buy else 0",
@@ -378,8 +395,9 @@ def analyst_data(root: str = DEFAULT_ROOT, n: int = ANALYST_N):
     for h, sec in ANALYST_H.items():
         k = int(np.searchsorted(C.GRID_S, sec, side="left"))
         r = C.DECODE[P[:, k]].astype(np.float64)
-        pnl = trade_pnl(r, d.Qf[sub], d.Bf[sub], d.fee_in[sub], d.venue[sub], stake) / stake
-        fwd[h] = np.where(np.isnan(r), np.nan, pnl)
+        qt, qr = d.gather_res_at(sub, np.full(len(sub), k))
+        pnl = trade_pnl(r, qt, qr, d.Qf[sub], d.Bf[sub], d.fee_in[sub], d.venue[sub], stake) / stake
+        fwd[h] = np.where(np.isnan(r) | (d.Rr[sub] < C.MIN_REAL_QUOTE), np.nan, pnl)
     return feats, fwd
 
 

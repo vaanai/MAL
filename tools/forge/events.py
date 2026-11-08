@@ -35,7 +35,7 @@ from tools.arena_pool_table import _lines
 from tools.forge import common as C
 
 TAPE_DIR = "/data/mal/arena/tape"
-ING_COLS = ("t", "pool", "mint", "trader", "venue", "isbuy", "sol", "tok", "q", "b", "rq", "rb", "spot")
+ING_COLS = ("t", "pool", "mint", "trader", "venue", "isbuy", "sol", "tok", "q", "b", "rq", "rb", "spot", "qpt", "qpr")
 EVENT_COLS = ("t", "t_fill", "pool", "mint", "venue", "Qf", "Bf", "fee_in", "fill_dt")
 
 
@@ -93,19 +93,22 @@ def parse_lines(lines) -> dict[str, np.ndarray]:
                 continue
             real_post = qp
             spot = (qp + v) / bp if real_post >= C.DEAD_REAL_QUOTE else 0.0
-            ven, pool, rq, rb, qq = 1, h("p:" + r["pool"]), 0.0, 0.0, q + float(v)
+            ven, pool, rq, rb, qq = 1, h("p:" + r["pool"]), q, 0.0, q + float(v)  # rq: PRE-trade real quote (PumpSwap)
+            qpt, qpr = max(qp, 0.0) + float(v), max(qp, 0.0)  # post-trade total (incl V) and real quote
         elif r["venue"] == "pump_bonding":
             if b <= 0:
                 continue
             ven, pool, spot = 0, h(r["mint"]), q / b
             rq, rb, qq = float(r.get("real_quote_reserve") or 0), float(r.get("real_base_reserve") or 0), q
+            qpt, qpr = q, rq  # curve rows are POST-trade
         else:
             continue
         cols["t"].append(int(r["t_recv_ms"])); cols["pool"].append(pool); cols["mint"].append(h(r["mint"]))
         cols["trader"].append(h(r.get("trader") or "") & 0xFFFFFFFF); cols["venue"].append(ven); cols["isbuy"].append(1 if buy else 0)
         cols["sol"].append(sol); cols["tok"].append(tok); cols["q"].append(qq); cols["b"].append(b); cols["rq"].append(rq); cols["rb"].append(rb); cols["spot"].append(spot)
+        cols["qpt"].append(qpt); cols["qpr"].append(qpr)
     dt = dict(t=np.int64, pool=np.int64, mint=np.int64, trader=np.uint32, venue=np.int8, isbuy=np.int8, sol=np.float64, tok=np.float64, q=np.float64, b=np.float64,
-              rq=np.float64, rb=np.float64, spot=np.float64)
+              rq=np.float64, rb=np.float64, spot=np.float64, qpt=np.float64, qpr=np.float64)
     out = {k: np.asarray(v, dtype=dt[k]) for k, v in cols.items()}
     out["comp_t"], out["comp_mint"] = np.asarray(comp_t, np.int64), np.asarray(comp_m, np.int64)
     out["gap_a"], out["gap_b"], out["gap_v"] = np.asarray(gap_a, np.int64), np.asarray(gap_b, np.int64), np.asarray(gap_v, np.int8)
@@ -119,6 +122,11 @@ def parse_lines(lines) -> dict[str, np.ndarray]:
     return out
 
 
+def _done_ok(d: Path) -> bool:
+    f = d / "DONE"
+    return f.exists() and json.loads(f.read_text()).get("schema") == C.SCHEMA
+
+
 def _atomic_dir(final: Path):
     tmp = final.with_name(final.name + ".tmp")
     if tmp.exists():
@@ -129,7 +137,7 @@ def _atomic_dir(final: Path):
 
 def ingest_hour(hour: str, tape_dir: str, out: str) -> dict:
     final = Path(out) / "ingest" / hour
-    if (final / "DONE").exists():
+    if _done_ok(final):
         return {"hour": hour, "skipped": True}
     p = tape_path(tape_dir, hour)
     tmp = _atomic_dir(final)
@@ -142,7 +150,7 @@ def ingest_hour(hour: str, tape_dir: str, out: str) -> dict:
         cols_missing = False
     for k, v in cols.items():
         np.save(tmp / f"{k}.npy", v)
-    (tmp / "DONE").write_text(json.dumps({"rows": int(len(cols["t"])), "missing": cols_missing}))
+    (tmp / "DONE").write_text(json.dumps({"rows": int(len(cols["t"])), "missing": cols_missing, "schema": C.SCHEMA}))
     if final.exists():
         shutil.rmtree(final)
     tmp.rename(final)
@@ -282,8 +290,9 @@ def hour_events(hour: str, out: str, fs, frac: float = 1.0, ingest_hist_h: int =
     isps = S["venue"][jj] == 1
     Qf = np.where(isps, S["q"][jj], S["q"][prev])
     Bf = np.where(isps, S["b"][jj], S["b"][prev])
+    Rr = np.where(isps, S["rq"][jj], S["rq"][prev])  # real quote reserve of the state the fill lands on
     ok &= np.where(isps, (Qf >= C.V_LO) & (Bf > 0), (Qf > 0) & (Bf > 0))
-    ev, jj, Qf, Bf = ev[ok], jj[ok], Qf[ok], Bf[ok]
+    ev, jj, Qf, Bf, Rr = ev[ok], jj[ok], Qf[ok], Bf[ok], Rr[ok]
     n = len(ev)
     if n == 0:
         return None
@@ -299,6 +308,7 @@ def hour_events(hour: str, out: str, fs, frac: float = 1.0, ingest_hist_h: int =
     X[:, fi["age_s"]] = (t[ev] - fm_t[np.searchsorted(fm_k, S["mint"][ev])]) / 1000.0
     X[:, fi["mig_age_s"]] = np.where(venue == 1, (t[ev] - fp_t[np.searchsorted(fp_k, S["pool"][ev])]) / 1000.0, np.nan)
     X[:, fi["liq_sol"]] = np.where(venue == 1, S["q"][ev], S["rq"][ev]) / 1e9
+    X[:, fi["liq_real_sol"]] = S["rq"][ev] / 1e9
     X[:, fi["mcap_sol"]] = spot[ev] * 1e6
     for nm, w in (("30s", 30), ("1m", 60), ("5m", 300), ("15m", 900), ("1h", 3600), ("6h", 21600)):
         ix = np.searchsorted(key, key[ev] - w * 1000, side="right") - 1
@@ -345,34 +355,37 @@ def hour_events(hour: str, out: str, fs, frac: float = 1.0, ingest_hist_h: int =
     # ---- forward paths
     t_fill = t[jj]
     spot_fill = Qf / Bf
-    P = forward_paths(out, hour, S["pool"][ev], t_fill, venue, S["mint"][ev], spot_fill, gg_hours=None)
-    meta = dict(t=t[ev], t_fill=t_fill, pool=S["pool"][ev], mint=S["mint"][ev], venue=venue, Qf=Qf, Bf=Bf,
+    P, QT, QR = forward_paths(out, hour, S["pool"][ev], t_fill, venue, S["mint"][ev], spot_fill, gg_hours=None)
+    meta = dict(Rr=Rr, t=t[ev], t_fill=t_fill, pool=S["pool"][ev], mint=S["mint"][ev], venue=venue, Qf=Qf, Bf=Bf,
                 fee_in=C.fee_frac(Qf, Bf, venue), fill_dt=(t_fill - t[ev]).astype(np.int32))
-    return {"X": X, "path": P, **meta}
+    return {"X": X, "path": P, "qpath": QT, "rpath": QR, **meta}
 
 
-def forward_paths(out: str, hour: str, pool, t_fill, venue, mint, spot_fill, gg_hours=None, chunk: int = 4000) -> np.ndarray:
+def forward_paths(out: str, hour: str, pool, t_fill, venue, mint, spot_fill, gg_hours=None, chunk: int = 4000):
     """uint16 path codes [n, NG] for events (fill time t_fill) of `hour`; rows of event pools from hours [H, H+24h], censored at the split end."""
     hs = C.hour_ms(hour)
     cen = C.split_censor_ms(hour)
     hours = [h for h in C.hour_range(hour, C.hour_str(hs + 24 * 3_600_000)) if C.hour_ms(h) < cen]
     upool = np.unique(pool)
-    parts_t, parts_p, parts_s = [], [], []
+    parts_t, parts_p, parts_s, parts_qt, parts_qr = [], [], [], [], []
     for hr in hours:
-        d = load_ingest(out, [hr], ("t", "pool", "spot"))
+        d = load_ingest(out, [hr], ("t", "pool", "spot", "qpt", "qpr"))
         if len(d["t"]) == 0:
             continue
         m = np.isin(d["pool"], upool)
-        parts_t.append(d["t"][m]); parts_p.append(d["pool"][m]); parts_s.append(d["spot"][m])
+        parts_t.append(d["t"][m]); parts_p.append(d["pool"][m]); parts_s.append(d["spot"][m]); parts_qt.append(d["qpt"][m]); parts_qr.append(d["qpr"][m])
     n = len(pool)
     P = np.full((n, C.NG), C.C_CENS, np.uint16)
+    QT = np.zeros((n, C.NG), np.uint16)  # post-trade total quote reserve (incl V), forward-filled, uint16 log code (common.encode_res)
+    QR = np.zeros((n, C.NG), np.uint16)  # post-trade real quote reserve
     if not parts_t:
-        return P
+        return P, QT, QR
     rt, rp, rs = np.concatenate(parts_t), np.concatenate(parts_p), np.concatenate(parts_s)
+    rqt, rqr = np.concatenate(parts_qt), np.concatenate(parts_qr)
     rr = np.searchsorted(upool, rp)
     k2 = (rr.astype(np.int64) << C.KEY_SHIFT) | (rt - C.T0_MS)
     o = np.argsort(k2, kind="stable")
-    k2, rs = k2[o], rs[o]
+    k2, rs, rqt, rqr = k2[o], rs[o], rqt[o], rqr[o]
     er = np.searchsorted(upool, pool).astype(np.int64)
     # availability of hours, gaps, completes over the path window
     gh = C.hour_range(hour, C.hour_str(hs + 24 * 3_600_000))
@@ -393,6 +406,8 @@ def forward_paths(out: str, hour: str, pool, t_fill, venue, mint, spot_fill, gg_
         with np.errstate(all="ignore"):
             code = C.encode_ratio(sp / spot_fill[s:e, None])
         code = np.where(okk, code, C.C_CENS)
+        QT[s:e] = np.where(okk, C.encode_res(rqt[np.maximum(idx, 0)]), 0)
+        QR[s:e] = np.where(okk, C.encode_res(rqr[np.maximum(idx, 0)]), 0)
         tt = tf + g_ms[None, :]
         # migrated: curve completed at or before the grid time
         cm = np.zeros(code.shape, bool)
@@ -422,12 +437,12 @@ def forward_paths(out: str, hour: str, pool, t_fill, venue, mint, spot_fill, gg_
         code = np.where(gp, C.C_GAP, code)
         code = np.where(tt >= cen, C.C_CENS, code)
         P[s:e] = code
-    return P
+    return P, QT, QR
 
 
 def write_hour(hour: str, out: str, fs, frac: float = 1.0) -> dict:
     final = Path(out) / "events" / hour
-    if (final / "DONE").exists():
+    if _done_ok(final):
         return {"hour": hour, "skipped": True}
     t0 = time.time()
     res = hour_events(hour, out, fs, frac)
@@ -437,7 +452,7 @@ def write_hour(hour: str, out: str, fs, frac: float = 1.0) -> dict:
         n = len(res["t"])
         for k, v in res.items():
             np.save(tmp / f"{k}.npy", v)
-    (tmp / "DONE").write_text(json.dumps({"n": n}))
+    (tmp / "DONE").write_text(json.dumps({"n": n, "schema": C.SCHEMA}))
     if final.exists():
         shutil.rmtree(final)
     tmp.rename(final)

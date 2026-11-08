@@ -233,14 +233,14 @@ def test_censored_and_migrated():
 def test_dead_pool_triggers_sl_and_loses_stake():
     kx, r, why, _ = sim([1.0, 0.0, 0.0], sl=0.5)
     assert why == 1 and r == 0.0
-    pnl = E.trade_pnl(np.array([0.0]), np.array([27e9]), np.array([1e15]), np.array([0.0125]), np.array([1]), 1e8)
+    pnl = E.trade_pnl(np.array([0.0]), np.array([27e9]), np.array([10e9]), np.array([27e9]), np.array([1e15]), np.array([0.0125]), np.array([1]), 1e8)
     assert pnl[0] == -1e8 - C.SEND_LAMPORTS
 
 
 # ---------------------------------------------------------------------------------------------- cost math
 def test_cost_math_roundtrip_curve():
     Qf, Bf, S, fee = 30e9, 1.073e15, 1e8, 0.0125
-    pnl = E.trade_pnl(np.array([1.0]), np.array([Qf]), np.array([Bf]), np.array([fee]), np.array([0]), S)[0]
+    pnl = E.trade_pnl(np.array([1.0]), np.array([Qf]), np.array([Qf - 1e9]), np.array([Qf]), np.array([Bf]), np.array([fee]), np.array([0]), S)[0]
     net = S * (1 - fee)
     tok = Bf * net / (Qf + net)
     Qa, Ba = Qf + net, Bf - tok  # r = 1: organic state = fill state; own buy re-injected
@@ -260,10 +260,11 @@ def test_cost_math_pumpswap_uses_fee_tier():
 
 
 def test_pnl_scales_with_ratio():
-    args = (np.array([27e9]), np.array([1e15]), np.array([0.0125]), np.array([1]), 1e8)
-    up = E.trade_pnl(np.array([2.0]), *args)[0]
-    flat = E.trade_pnl(np.array([1.0]), *args)[0]
-    dn = E.trade_pnl(np.array([0.5]), *args)[0]
+    def pn(r):  # consistent constant-product reserves at ratio r
+        Qf, Bf = 27e9, 1e15
+        Qx = np.sqrt(Qf * Bf * r * Qf / Bf)
+        return E.trade_pnl(np.array([r]), np.array([Qx]), np.array([Qx - 17.5e9]), np.array([Qf]), np.array([Bf]), np.array([0.0125]), np.array([1]), 1e8)[0]
+    up, flat, dn = pn(2.0), pn(1.0), pn(0.5)
     assert up > flat > dn
 
 
@@ -356,3 +357,67 @@ def test_end_to_end_evaluate(tmp_path):
     m2 = E.evaluate({**spec, "one_per_pool": False}, data=d)
     assert m2["n"] >= m["n"] and m2["max_concurrent"] >= 1
     assert E.evaluate(spec, data=d) == m  # deterministic
+
+
+# ---------------------------------------------------------------------------------------------- reserve pricing (artifact fix)
+def _old_pnl(r, Qf, Bf, fee_in, venue, S):
+    """the pre-fix formula: reserves rebuilt from the ratio alone"""
+    net = S * (1 - fee_in)
+    tok = Bf * net / (Qf + net)
+    s_ = r * Qf / Bf
+    k = Qf * Bf
+    Qx, Bx = np.sqrt(k * s_), np.sqrt(k / s_)
+    Qa, Ba = Qx + net, Bx - tok
+    gross = tok * Qa / (Ba + tok)
+    return gross * (1 - C.fee_frac(Qa, Ba, venue)) - S - 2 * C.SEND_LAMPORTS
+
+
+def test_artifact_tiny_reserve_huge_ratio_is_bounded():
+    Qf, Bf, S = 17.6e9, 1e15, 1e8  # a pool with ~0.02 SOL real quote
+    real_now = 5e7
+    pnl = E.trade_pnl(np.array([1000.0]), np.array([17.6e9 + real_now]), np.array([real_now]), np.array([Qf]), np.array([Bf]), np.array([0.0125]), np.array([1]), S)[0]
+    net = S * (1 - 0.0125)
+    assert pnl <= real_now + net - S - 2 * C.SEND_LAMPORTS + 1e-6  # proceeds never exceed the real quote after our deposit
+    assert pnl < 0.5 * S  # nowhere near the +100x the ratio alone would imply
+    # the old formula was not bounded
+    assert _old_pnl(1000.0, Qf, Bf, 0.0125, 1, S) > 10 * S
+
+
+@pytest.mark.parametrize("r", [0.6, 1.0, 1.3, 2.0])
+def test_normal_pool_matches_old_numbers_within_1pct(r):
+    Qf, Bf, S, fee = 27.5e9, 1.2e15, 1e8, 0.0125
+    k = Qf * Bf
+    Qx = np.sqrt(k * r * Qf / Bf)  # consistent constant-product reserves at ratio r
+    new = E.trade_pnl(np.array([r]), np.array([Qx]), np.array([Qx - 17.58e9]), np.array([Qf]), np.array([Bf]), np.array([fee]), np.array([1]), S)[0]
+    old = _old_pnl(np.array([r]), Qf, Bf, fee, np.array([1]), S)[0]
+    assert abs(new - old) <= 0.01 * S  # 1% of the stake
+
+
+def test_real_quote_floor_refuses_entries(tmp_path):
+    rows = flat_pool_rows(300, q=1e9)  # real quote 1 SOL < 2 SOL
+    out, fs = build(tmp_path, rows)
+    assert EV.write_hour(HOUR, out, fs)["events"] > 0
+    d = E.Split(out, [HOUR])
+    spec = {"entry": [], "venue": "any", "cooldown_s": 0, "one_per_pool": False, "exit": {"max_hold_s": 60}, "stake_sol": 0.1}
+    assert E.evaluate(spec, data=d)["n_candidates"] == 0
+    assert (d.Rr < C.MIN_REAL_QUOTE).all()
+
+
+def test_reserve_paths_stored_and_liq_real_feature(tmp_path):
+    rows = flat_pool_rows(300)
+    out, fs = build(tmp_path, rows)
+    r = EV.hour_events(HOUR, out, fs)
+    assert r["qpath"].shape == r["path"].shape == r["rpath"].shape
+    qt, qr = C.DECODE_RES[r["qpath"][0, 0]], C.DECODE_RES[r["rpath"][0, 0]]
+    assert qr == pytest.approx(10e9 + 1e6 * 0.99, rel=1e-3) or qr == pytest.approx(10e9, rel=1e-3)
+    assert qt - qr == pytest.approx(V, rel=1e-3)
+    assert r["X"][0, C.FIDX["liq_real_sol"]] == pytest.approx(10.0, rel=1e-6)
+    assert r["Rr"][0] == pytest.approx(10e9)
+
+
+def test_schema_mismatch_rebuilds(tmp_path):
+    out, fs = build(tmp_path, flat_pool_rows(100))
+    done = Path(out) / "ingest" / HOUR / "DONE"
+    d = json.loads(done.read_text()); d["schema"] = 1; done.write_text(json.dumps(d))
+    r = EV.ingest_hour(HOUR, str(tmp_path / "tape"), out)
+    assert "skipped" not in r and json.loads(done.read_text())["schema"] == C.SCHEMA
