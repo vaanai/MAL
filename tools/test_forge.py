@@ -426,3 +426,15 @@ def test_schema_mismatch_rebuilds(tmp_path):
     d = json.loads(done.read_text()); d["schema"] = 1; done.write_text(json.dumps(d))
     r = EV.ingest_hour(HOUR, str(tmp_path / "tape"), out)
     assert "skipped" not in r and json.loads(done.read_text())["schema"] == C.SCHEMA
+
+
+def test_censoring_is_decided_from_the_entry_not_the_outcome():
+    """Near the split end a tp-hitting trade and a time-exit trade with the same entry time are both dropped (old code kept the tp one)."""
+    win = codes([1.0, 1.2, 1.8, 1.8]); win[20:] = C.C_CENS
+    lose = codes([1.0, 0.9, 0.6, 0.6]); lose[20:] = C.C_CENS
+    ex = {"tp": 0.5, "sl": None, "trail": None, "max_hold_s": 86400}
+    kx, r, why, cen = E.simulate_paths(np.stack([win, lose]), ex)
+    assert list(cen) == [True, True]
+    ex2 = {**ex, "max_hold_s": 60}  # a hold that fits before the split end: both kept
+    kx, r, why, cen = E.simulate_paths(np.stack([win, lose]), ex2)
+    assert list(cen) == [False, False] and int(why[0]) == 3 and int(why[1]) == 0

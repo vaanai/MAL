@@ -13,7 +13,7 @@ The exit path is the pool spot ratio on the grid (common.GRID_S, seconds after t
 Net = proceeds - stake - 2 * 160,000 lamports. Rent 0. No haircut. A dead pool (price 0) or Ba <= 0 loses the stake and the buy send only.
 Exit rule at grid point k (checked on non-gap, non-censored points only): stop (sl or trail) beats tp at the same point (pessimistic); a tp/sl/trail trigger executes
 at point k+1 (one grid step of exit lag, >= 5 s); max_hold executes at the first grid point >= max_hold_s; a curve that completes before any exit is closed at its
-last curve point ("migrated"). A trade whose exit point is censored (past the split end) is dropped and counted in `n_censored`.
+last curve point ("migrated"). A trade is dropped (and counted) when its latest possible exit point (max_hold_s + one grid step) is past the split end, decided from the entry alone, never from the realised exit; counted in `n_censored`.
 
 FITNESS (one function, `fitness`): -inf if n < 40 or n_days < 6; -inf if ex_top3_total <= 0; else CI90_low * sqrt(trades_per_day), where CI90_low is the 5th percentile of
 1,000 bootstrap means of net SOL per trade (seed 1, arena_stack.boot_lo) and trades_per_day = n / days in the split. If best_day_share > 0.5 the fitness is halved when it is
@@ -198,7 +198,9 @@ def simulate_paths(P: np.ndarray, ex: dict) -> tuple[np.ndarray, np.ndarray, np.
     which = np.argmin(D, axis=1)
     kx = np.where(which == 0, np.minimum(kt + 1, NGi - 1), np.where(which == 1, np.maximum(k_mig - 1, 0), k_time))
     reason = np.where(which == 0, why_trig, np.where(which == 1, 4, 0))
-    censored = kx >= k_cens
+    # Censoring from the ENTRY alone: the latest grid point any exit of this spec can use is k_time + 1 (a trigger at k_time exits at k_time + 1).
+    # If that point is past the split end the trade is dropped whatever its realised exit, so tp / sl / trail / time / migrated exits are treated alike.
+    censored = np.minimum(k_time + 1, NGi - 1) >= k_cens
     kx = np.minimum(kx, NGi - 1)
     return kx, Rf[r, kx].astype(np.float64), reason, censored
 

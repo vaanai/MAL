@@ -317,3 +317,127 @@ def test_real_evaluator_interface_alignment():
     assert T.mget(m, "n") == 60 and T.mget(m, "pos_days") == m["positive_days"] and T.mget(m, "ex_top3") == m["ex_top3_total"]
     assert T.mget(m, "ci") == m["ci90_low"] and T.mget(m, "tpd") == m["trades_per_day"]
     assert T.Team.is_shortlist({"n": 20, "mean": 0.01, "ex_top3_total": 0.1, "positive_days": 3, "fitness": float("-inf")})
+
+
+# ---- diversity: family key, dead families, VAL dedup, per-family archive cap
+
+def sp(conds, venue=1, v=-50, exit_tp=0.5, **kw):
+    d = json.loads(json.dumps(GOOD))
+    d["entry"] = [{"f": f, "op": op, "v": v} for f, op in conds]
+    d["venue"] = venue
+    d["exit"]["tp"] = exit_tp
+    d.update(kw)
+    return d
+
+
+FAM = [("f1", "<="), ("f2", ">=")]
+
+
+class ValFail(T.FakeEvaluator):
+    def evaluate(self, spec, split):
+        m = super().evaluate(spec, split)
+        if split == "TRAIN":
+            m.update(n=100, n_days=10, mean=0.01, ex_top3_total=0.5, ci90_low=0.004, best_day_share=0.2, trades_per_day=10)
+        else:
+            m.update(n=100, mean=-0.01, ex_top3_total=-1, positive_days=0)
+        return m
+
+
+class ValPass(ValFail):
+    def evaluate(self, spec, split):
+        m = super().evaluate(spec, split)
+        if split == "VAL":
+            m.update(n=30, mean=0.01, ex_top3_total=0.1, positive_days=4)
+        return m
+
+
+def _val_family(team, k, fam=FAM):
+    for i in range(k):
+        assert team.evaluate_train(sp(fam, v=i + 1), 0, 0, "t")[0] == "new"
+    team.val_pass()
+
+
+def test_family_key_ignores_thresholds_exits_order():
+    a = sp(FAM, v=1)
+    b = sp(list(reversed(FAM)), v=7, exit_tp=0.9, cooldown_s=60)
+    assert T.family_key(a) == T.family_key(b)
+    assert T.family_key(a) != T.family_key(sp(FAM, venue=0))
+    assert T.family_key(a) != T.family_key(sp([("f1", "<=")]))
+    assert T.family_key(a) != T.family_key(sp([("f1", "<="), ("f2", "<=")]))
+
+
+def test_dead_family_after_two_failed_reads_and_resume(tmp_path):
+    team, _ = mk(tmp_path, ev=ValFail())
+    _val_family(team, 2)
+    assert team.dead_families() == {T.family_key(sp(FAM))}
+    t2, _ = mk(tmp_path, ev=ValFail())  # resume derives it from val.jsonl alone
+    assert t2.dead_families() == team.dead_families()
+    assert t2.evaluate_train(sp(FAM, v=99), 0, 1, "t")[0] == "rejected"
+
+
+def test_dead_family_needs_two_reads_and_no_pass(tmp_path):
+    team, _ = mk(tmp_path, ev=ValFail())
+    _val_family(team, 1)
+    assert not team.dead_families()
+    t2, _ = mk(tmp_path / "m", ev=ValPass())
+    _val_family(t2, 2)
+    assert not t2.dead_families()
+
+
+def test_dead_family_superset_rejected_before_eval(tmp_path):
+    team, ev = mk(tmp_path, ev=ValFail())
+    _val_family(team, 2)
+    n_train = ev.calls["TRAIN"]
+    assert team.evaluate_train(sp(FAM + [("f3", "<")], v=5), 1, 3, "t")[0] == "rejected"
+    assert team.evaluate_train(sp(FAM, v=-3, exit_tp=0.2), 1, 3, "t")[0] == "rejected"
+    assert ev.calls["TRAIN"] == n_train and team.counts["dead_family"] == 2
+    rj = [r for r in rows(tmp_path / "rejects.jsonl") if r["reason"] == "dead_family"]
+    assert len(rj) == 2 and rj[0]["family"] == T.family_key(sp(FAM + [("f3", "<")]))
+    # other venue, a subset of the dead set, or a different op: allowed
+    assert team.evaluate_train(sp(FAM, venue=0, v=5), 1, 3, "t")[0] == "new"
+    assert team.evaluate_train(sp([("f1", "<=")], v=5), 1, 3, "t")[0] == "new"
+    assert team.evaluate_train(sp([("f1", "<="), ("f2", "<")], v=5), 1, 3, "t")[0] == "new"
+
+
+def test_val_family_cap_three_in_one_pass_and_across_resume(tmp_path):
+    team, _ = mk(tmp_path, ev=ValPass())  # passing VAL: the family never dies, so only the cap limits it
+    for i in range(6):
+        team.evaluate_train(sp(FAM, v=i + 1), 0, 0, "t")
+    assert team.val_pass() == T.FAMILY_VAL_CAP
+    assert team.val_pass() == 0
+    assert len([r for r in rows(tmp_path / "val.jsonl") if r["kind"] == "val"]) == T.FAMILY_VAL_CAP
+    t2, _ = mk(tmp_path, ev=ValPass())
+    t2.evaluate_train(sp(FAM, v=50), 0, 0, "t")
+    assert t2.val_pass() == 0
+
+
+def test_val_family_cap_skips_dead_family_but_reads_others(tmp_path):
+    team, _ = mk(tmp_path, ev=ValFail())
+    _val_family(team, 2)
+    e = next(x for x in team.archive.values() if x)
+    team.archive["x"] = {**e, "hash": "x", "spec": sp(FAM, v=77), "owners": {0}}
+    team.evaluate_train(sp([("f5", ">")], v=1), 0, 0, "t")
+    assert team.val_pass() == 1 and "x" not in team.val_read
+
+
+def test_prompt_lists_dead_families(tmp_path):
+    team, _ = mk(tmp_path, ev=ValFail(), islands=1)
+    _val_family(team, 2)
+    team.islands[0].step()
+    u = team.models[0].last_user
+    assert "DEAD FAMILIES (failed out-of-sample, do not propose these or supersets)" in u
+    assert f"- {T.family_key(sp(FAM))}" in u
+    block = u.split("DEAD FAMILIES")[1].split("LESSONS")[0]
+    assert "-0.01" not in block and "mean" not in block  # keys only, no VAL numbers
+    t3, _ = mk(tmp_path / "clean", islands=1)
+    t3.islands[0].step()
+    assert "DEAD FAMILIES" not in t3.models[0].last_user
+
+
+def test_island_top_family_cap(tmp_path):
+    team, _ = mk(tmp_path, ev=ValFail())
+    for i in range(6):
+        team.evaluate_train(sp(FAM, v=i + 1), 0, 0, "t")
+    team.evaluate_train(sp([("f5", ">")], v=1), 0, 0, "t")
+    fams = [T.family_key(e["spec"]) for e in team.island_top(0, 10)]
+    assert fams.count(T.family_key(sp(FAM))) == T.FAMILY_TRAIN_CAP and len(fams) == T.FAMILY_TRAIN_CAP + 1
