@@ -394,7 +394,7 @@ def test_dead_family_superset_rejected_before_eval(tmp_path):
     rj = [r for r in rows(tmp_path / "rejects.jsonl") if r["reason"] == "dead_family"]
     assert len(rj) == 2 and rj[0]["family"] == T.family_key(sp(FAM + [("f3", "<")]))
     # other venue, a subset of the dead set, or a different op: allowed
-    assert team.evaluate_train(sp(FAM, venue=0, v=5), 1, 3, "t")[0] == "new"
+    assert not team.is_dead(sp(FAM, venue=0, v=5))  # other venue: not dead (rejected as venue_not_live instead)
     assert team.evaluate_train(sp([("f1", "<=")], v=5), 1, 3, "t")[0] == "new"
     assert team.evaluate_train(sp([("f1", "<="), ("f2", "<")], v=5), 1, 3, "t")[0] == "new"
 
@@ -441,3 +441,13 @@ def test_island_top_family_cap(tmp_path):
     team.evaluate_train(sp([("f5", ">")], v=1), 0, 0, "t")
     fams = [T.family_key(e["spec"]) for e in team.island_top(0, 10)]
     assert fams.count(T.family_key(sp(FAM))) == T.FAMILY_TRAIN_CAP and len(fams) == T.FAMILY_TRAIN_CAP + 1
+
+
+def test_non_pumpswap_venue_rejected_before_eval_and_never_val_read(tmp_path):
+    team, ev = mk(tmp_path, max_rounds=0)
+    for v in (0, "any"):
+        assert team.evaluate_train(sp([("f1", ">")], venue=v), 0, 1, "t")[0] == "rejected"
+    assert team.counts["venue_not_live"] == 2
+    assert [r["reason"] for r in rows(tmp_path / "rejects.jsonl")] == ["venue_not_live", "venue_not_live"]
+    assert "venue must be 1" in team.fixed
+    assert all("venue 1" in T.island_brief(i) for i in range(8))
