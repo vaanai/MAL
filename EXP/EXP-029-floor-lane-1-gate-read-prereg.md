@@ -142,6 +142,20 @@ This section tightens Erratum 1. It changes no test or threshold, and it does no
 5. **What was read before Erratum 1.** The figure 0.031673840 SOL in Erratum 1 is the first buy's **cost basis**, which is entry side. Erratum 1 was exit-blind, not fully outcome-blind: one entry cost and the lane headroom were read, and no exit, proceeds or mark.
 6. **Daily reports.** `lane_daily_report` books a position on its close day. From 2026-11-09, its daily figures mix pre-S and in-read floor-lane-1 positions. No daily figure is quoted as read-trade P&L. The read alone computes in-read P&L, by the §2 sum over trades with `ts_ms` ≥ S.
 
+## Erratum 1b (written 2026-11-08T15:32:49Z by `date -u`, before S; the frozen 14-day entry window)
+
+**Found.** The frozen executor refuses every new entry with `canary_expired` once `now > first_send_ms + CANARY_MAX_MS`. `CANARY_MAX_MS` = 14 × 86,400,000 (`tools/floor_arena_executor.py:65` and `:205-207`, Appendix A blob `b05d4c92`). `floor_lane_executor.entry_refusal` calls it unchanged (`tools/floor_lane_executor.py:414-419`).
+- floor-lane-1's `first_send_ms` is 1794148248897 (2026-11-08T14:30:48.897Z, HELM-REPLY-1107-2f). So from **2026-11-22T14:30:48.897Z** no new floor-lane-1 entry can be sent. Exits are not affected.
+- That is about 13.4 days after S, while the deadline is S + 21 d. EXP-029 Revision 3 and Errata 1/1a did not account for this. Neither DEC-035 nor this file sets a 14-day limit; it comes from the arena C0 canary design.
+
+**Rule, fixed now, before S, and blind to every exit, proceeds and mark** (the manager has read only entry-side facts of the two pre-S buys):
+1. **Pre-commitment to extend.** Before 2026-11-22T14:30:48.897Z, the manager installs a successor bot under §3 (ii), whatever the read's interim results. It is identical except that the 14-day entry window is lifted or set to at least the deadline. The amendment carries the §3 (ii) md5 decision-equivalence replay on a pinned window that ends before the canary end, and names the successor bot_id. Its trades join this read from its first send, under the same S, C rule and tests. Installing it is an executor-only restart, which is a pause under §3.
+2. **Not installed in time.** If C has not come and no successor is sending by 2026-11-22T14:30:48.897Z, the `canary_expired` end of entries is a **stop not on the pause list**. The read is FAIL at that instant (§3 "Any other stop before C").
+   - The one exception is when a §3 FAIL end, (a), (b) or a rule change, has already occurred; that FAIL stands.
+   - It cannot be turned into NOT_DECIDABLE by letting the window lapse.
+3. **If C comes first,** the canary end has no effect on the read.
+4. **Reporting.** The read reports `canary_expired` refusal counts, and the successor's install instant and bot_id.
+
 ## Appendix A. Frozen files (git blob ids at 3710e1af)
 
 This is the transitive closure of `tools.*` imports, including imports inside functions, from `tools/floor_lane_executor.py` and `tools/floor_lane_host.py`, computed with `ast` over `git show 3710e1af:<file>`. Every blob is the same on main 5a1c2300.
