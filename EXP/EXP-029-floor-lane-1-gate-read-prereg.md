@@ -28,7 +28,7 @@ Nothing in this file says or implies that FLOOR makes money. The read below is t
 
 ## 2. Start instant, trade unit, P&L
 
-- **S = 2026-11-09T06:00:00Z.** The host start at 08:32:01Z blocks all FLOOR entries for about 24 h (runbook `scripts/mal-fast/README.md`), so no entry is possible before S.
+- **S = 2026-11-09T06:00:00Z.** The host start at 08:32:01Z blocks all FLOOR entries for about 24 h (runbook `scripts/mal-fast/README.md`), so no entry is possible before S. **This sentence is wrong; see Erratum 1.**
 - **Trade.** A trade is a lane-ledger row with `ev` = `send_intent` and `bot_id` = `floor-lane-1`, whose `ts_ms` is ≥ S and < C (§3).
   - **Not trades:** a `send_intent` later closed by a `writeoff` row with `reason` = `not_sent`. Such an order never reached the chain and moved no SOL.
   - **Trades:** every other `send_intent`, including those closed by `writeoff` `buy_expired` and buys that landed with an error. Each counts at its real cash, which may be 0 or its fees alone. The read reports how many trades had 0 cash.
@@ -112,6 +112,22 @@ All four tests run on the full trade set. Real-fill failures are observed, not m
   - the host start row's frozen sha and host file sha256;
   - the counts of `not_sent`, 0-cash, `estimated` and `lane_full` rows.
 - **Seals.** The docs/HOLDOUT_LEDGER.md entry of 2026-11-08 (made under DEC-035 §7, PR #1275) covers the overlapped reads. Each of them is reported "not blind: live-lane observation declared <floor-lane-1 first-send instant>".
+
+## Erratum 1 (2026-11-08, written before S; outcome-blind)
+
+**What was wrong.** §2 says the host start at 08:32:01Z blocks all FLOOR entries for about 24 h, so no entry is possible before S.
+- That is false. The runbook's 24 h block applies only to a *restart*, which records a `host_down` span. The 08:32:01Z start was the host's first start. Its checkpoint had `blocked_pools` 0, `gaps` 0 and `gap_refusals` 0 (MiScusi #2284, #2285).
+- Helm started the live executor at 2026-11-08T14:19:43Z (HELM-REPLY-1107-2e). floor-lane-1's first live `send_intent` is at 2026-11-08T14:30:47.391Z (MiScusi #2289; HOLDOUT_LEDGER first-send record, PR #1288). So floor-lane-1 sends real trades **before S**.
+
+**Unchanged.** S stays 2026-11-09T06:00:00Z. The trade definition, C, R, the tests, the deadline and the no-second-look rule are unchanged. A `send_intent` with `ts_ms` < S is never a trade of this read, and its P&L never enters the four tests. This holds even when its position is still open at S or exits after S.
+
+**Pre-S rows: how they count.** These rules are fixed at 2026-11-08T14:35Z (`date -u`), before S and before any floor-lane-1 exit. The manager has read only the first buy's cost basis and the lane headroom (MiScusi #2288, 0.031673840 SOL, one open position); no exit, proceeds or mark existed.
+1. **FAIL ends (a) and (b) apply from the live start, 2026-11-08T14:19:43Z, not only from S.** The lane budget, daily stop and open cap are shared state, and pre-S floor-lane-1 losses count toward them like another lane bot's losses (§3 "Other lane bots").
+   - If `lane_budget_stop` fires, or condition (b) holds, at any instant from the live start onward, the read is FAIL at that event under §3. A FAIL before S still sets C to the first 00:00Z after the event and R = C + 25 h, with an empty or partial trade set.
+   - The lane cannot escape a stop by restarting the clock (§3 "No second look").
+2. **Open slots.** floor-lane-1 positions opened before S and still open at S hold lane slots, like another bot's positions. `lane_full` refusals of floor-lane-1 entries in [S, C) are reported in three groups: (i) another lane bot holding slots, (ii) only pre-S floor-lane-1 positions holding slots, (iii) neither.
+3. **Pauses and stops before S** are judged by the same §3 rules from the live start. A stop not on the pause list, made by a person between the live start and S, is a FAIL end.
+4. **Reporting** (§6). The read lists the pre-S floor-lane-1 sends separately: count, UTC days, and total P&L by the §2 sum, with positions still open at R scored as §2 says. They are disclosure only and are not in any test.
 
 ## Appendix A. Frozen files (git blob ids at 3710e1af)
 
