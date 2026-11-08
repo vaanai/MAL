@@ -20,7 +20,7 @@ BUY_OUT = STAKE + 2_100_000 + 160_000
 
 
 def led(tmp, bot="floor-lane-1"):
-    cfg = H.LaneConfig(tmp / "lane" / "ledger.jsonl", tmp / "lane" / "STOP", bot, STAKE, 8, 300_000_000, 100_000_000, X.LANE_MIN_FEE_RESERVE, 60.0)
+    cfg = H.LaneConfig(tmp / "lane" / "lane-ledger.jsonl", tmp / "lane" / "STOP", bot, STAKE, 8, 300_000_000, 100_000_000, X.LANE_MIN_FEE_RESERVE, 60.0)
     return X.FloorLaneLedger(cfg)
 
 
@@ -30,11 +30,12 @@ def intent(l, mint, ts, sig="s"):
 
 
 def report(tmp, day=DAY):
-    return R.build(tmp / "lane", day)
+    return R.build(tmp / "lane" / "lane-ledger.jsonl", day)
 
 
 def test_zero_trade_day(tmp_path):
     (tmp_path / "lane").mkdir()
+    (tmp_path / "lane" / "lane-ledger.jsonl").write_text("")
     rep = report(tmp_path)
     assert rep["bots"] == {} and rep["lane"]["budget_headroom_lamports"] == 300_000_000 and rep["lane"]["daily_stop"]["status"] == R.NA
     out = R.summary(rep)
@@ -46,7 +47,7 @@ def test_zero_trade_day(tmp_path):
         l.append({"ev": "snap", "ts_ms": D0, "day": DAY, "pnl_lamports": 0, "pnl_cost_lamports": 0, "estimated": False})
     r = report(tmp_path)
     b = r["bots"]["floor-lane-1"]
-    assert b["sends_attempted"] == 0 and b["realized_lamports"] == 0 and r["lane"]["daily_stop"]["status"] == "ok"
+    assert b["sends_attempted"] == 0 and b["realized_lamports"] == 0 and r["lane"]["daily_stop"]["status"] == "ok (cost-basis, no marks)"
 
 
 def test_one_win_one_loss_through_the_real_bridge(tmp_path):
@@ -65,7 +66,7 @@ def test_one_win_one_loss_through_the_real_bridge(tmp_path):
     inner.land_sell("MP", proceeds=40_000_000)
     inner.land_sell("MQ", proceeds=10_000_000)
     br._poll_ports()
-    rep = R.build(tmp_path / "lane", DAY, [br.log_path])
+    rep = R.build(tmp_path / "lane" / "ledger.jsonl", DAY, [br.log_path])
     b = rep["bots"]["floor-lane-1"]
     win, loss = 42_100_000 - 160_000 - BUY_OUT, 12_100_000 - 160_000 - BUY_OUT
     assert (win, loss) == (14_680_000, -15_320_000)
@@ -78,7 +79,7 @@ def test_one_win_one_loss_through_the_real_bridge(tmp_path):
     assert g["exit_timing"]["exit_decision_to_send"]["n"] == 2
     assert "realized -0.000640000 SOL" in R.summary(rep)
     # without a bridge log the gap fields say so and never invent
-    assert report(tmp_path)["bots"]["floor-lane-1"]["gap"]["landing_delay"] == R.NA
+    assert R.build(tmp_path / "lane" / "ledger.jsonl", DAY)["bots"]["floor-lane-1"]["gap"]["landing_delay"] == R.NA
 
 
 def test_failed_send_is_counted_at_its_real_cost(tmp_path):
@@ -118,7 +119,7 @@ def test_daily_stop_trips_and_budget_headroom(tmp_path):
     intent(l, "M1", T0, "s1")
     l.record("fill", "M1", {}, T0 + 10, ok=False, sol_out=100_000_000, signature="s1")
     lane = report(tmp_path)["lane"]
-    assert lane["daily_stop"]["status"] == "TRIPPED" and lane["daily_stop"]["day_pnl_sol"] == "-0.100000000"
+    assert lane["daily_stop"]["status"] == "TRIPPED (cost-basis, no marks)" and lane["daily_stop"]["day_pnl_sol"] == "-0.100000000"
     assert lane["budget_headroom_sol"] == "0.200000000" and lane["budget_stop"] is False
 
 
@@ -144,3 +145,48 @@ def test_cli_writes_json_and_summary(tmp_path, capsys):
     assert R.main(["--ledger-dir", str(tmp_path / "lane"), "--day", DAY, "--json-out", str(out)]) == 0
     assert json.loads(out.read_text())["bots"]["floor-lane-1"]["pending_unlanded_intents"] == 1
     assert "sends 1" in capsys.readouterr().out
+
+
+def test_missing_ledger_file_is_an_error_not_a_zero_day(tmp_path, capsys):
+    d = tmp_path / "nolane"
+    for args in (["--ledger-dir", str(d)], ["--ledger-file", str(d / "x.jsonl")]):
+        assert R.main([*args, "--day", DAY]) == 2
+    assert "ERROR" in capsys.readouterr().err and not d.exists()  # strictly read-only: the dir is not created
+
+
+def test_real_file_name_and_config_limits(tmp_path, capsys):
+    l = led(tmp_path)
+    assert l.path.name == "lane-ledger.jsonl"  # the name scripts/mal-fast/floor-lane-live.json.example:14 uses
+    intent(l, "M1", T0, "s1")
+    l.record("fill", "M1", {}, T0 + 10, ok=False, sol_out=50_000_000, signature="s1")
+    cfgp = tmp_path / "exec.json"
+    cfgp.write_text(json.dumps({"state_dir": str(tmp_path / "state"), "lane": {"ledger_path": str(l.path), "budget_lamports": 100_000_000, "daily_loss_lamports": 40_000_000}}))
+    out = tmp_path / "r.json"
+    assert R.main(["--config", str(cfgp), "--day", DAY, "--json-out", str(out)]) == 0
+    lane = json.loads(out.read_text())["lane"]
+    assert lane["budget_lamports"] == 100_000_000 and lane["budget_headroom_lamports"] == 50_000_000 and lane["daily_stop"]["limit_lamports"] == 40_000_000
+    assert "0.100000000" in capsys.readouterr().out
+    assert report(tmp_path)["lane"]["budget_lamports"] == 300_000_000  # no config: code constants
+    assert "cost-basis, no marks" in report(tmp_path)["lane"].get("daily_stop", {}).get("status", "cost-basis, no marks")
+
+
+def test_unmatched_fee_is_realized_and_listed(tmp_path):
+    l = led(tmp_path)
+    l.record("fee", "ORPHAN", {}, T0, sol_out=170_000, reason="sell_failed", signature="x")
+    b = report(tmp_path)["bots"]["floor-lane-1"]
+    assert b["realized_lamports"] == -170_000 and b["unmatched_fees"] == [{"mint": "ORPHAN", "ts_ms": T0, "lamports": -170_000}]
+
+
+def test_dry_bridge_rows_are_not_in_live_gap(tmp_path):
+    l = led(tmp_path)
+    intent(l, "M1", T0, "s1")
+    bl = tmp_path / "bl.jsonl"
+    bl.write_text(json.dumps({"kind": "buy_sent", "mode": "dry", "bot_id": "l1-floor-v2", "lane_bot_id": "floor-lane-1", "order_id": "o1", "decision_ms": T0, "decision_to_send_ms": 5, "ts_ms": T0 + 5}) + "\n")
+    assert R.build(l.path, DAY, [bl])["bots"]["floor-lane-1"]["gap"]["landing_delay"] == R.NA
+
+
+def test_daily_stop_status_is_labelled_cost_basis(tmp_path):
+    l = led(tmp_path)
+    with l.locked():
+        l.append({"ev": "snap", "ts_ms": D0, "day": DAY, "pnl_lamports": 0, "pnl_cost_lamports": 0, "estimated": False})
+    assert report(tmp_path)["lane"]["daily_stop"]["status"] == "ok (cost-basis, no marks)"

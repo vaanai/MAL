@@ -1,12 +1,12 @@
 """lane_daily_report: the DEC-035 section 5 daily report for a live-learning lane bot (first user: floor-lane-1).
 
-  python -m tools.lane_daily_report --ledger-dir <dir> --day YYYY-MM-DD [--json-out PATH] [--bridge-log PATH ...]
+  python -m tools.lane_daily_report (--config <executor json> | --ledger-file <file> | --ledger-dir <dir>) --day YYYY-MM-DD [--json-out PATH] [--bridge-log PATH ...]
 
 Read-only: it opens the lane ledger and bridge log files for reading and nothing else. No network, no wallet, no credential. It writes only to stdout and, if asked, --json-out.
 
 INPUTS AND THE FIELDS USED (exactly what the executors write). The shared lane ledger is one schema: tools/forge/dsl_lane_executor.DslLaneLedger subclasses
 tools.floor_lane_executor.FloorLaneLedger, so floor-lane-1 and DSL lane books are read by the same code.
- Lane ledger  <ledger-dir>/ledger.jsonl  (the parent of lane.ledger_path)
+ Lane ledger  <ledger-dir>/lane-ledger.jsonl  (the parent of lane.ledger_path)
    envelope    schema, bot_id, row_id, ev, ts_ms                    tools/h5_lane_executor.py:249 (append), :365 (record)
    ev values   start, snap, send_intent, fill, exit, fee, writeoff   h5_lane_executor.py:154 (lane_fold); floor_lane_executor.py:342,478,498-519,571-582
    snap        day, pnl_lamports, pnl_cost_lamports                  h5_lane_executor.py:317-320 (_snap_locked: the 00:00Z snapshot)
@@ -50,7 +50,7 @@ from tools import h5_lane_executor as H
 
 DAY_MS = 86_400_000
 NA = "n/a (field not recorded)"
-LEDGER_NAME = "ledger.jsonl"
+LEDGER_NAME = "lane-ledger.jsonl"  # scripts/mal-fast/floor-lane-live.json.example:14 (lane.ledger_path)
 BRIDGE_LOG_NAME = "bridge-log-live.jsonl"
 
 
@@ -107,6 +107,7 @@ def bot_report(rows: list[dict[str, Any]], d0: int, d1: int) -> dict[str, Any]:
     pos: dict[str, dict[str, Any]] = {}
     rep: dict[str, Any] = {"sends_attempted": 0, "landed": 0, "failed_landing": 0, "failed_unlanded": 0, "entries": 0, "exits": 0, "writeoffs": {}, "failed_sell_fee_rows": 0}
     cash_flow = realized = lifetime_realized = failed_cost = 0
+    unmatched: list[dict[str, Any]] = []
     fee_n = fee_p = fee_t = rent_unrec = est = lifetime_closed = 0
     for r in rows:
         ts, ev = _i(r.get("ts_ms")), r.get("ev")
@@ -125,6 +126,13 @@ def bot_report(rows: list[dict[str, Any]], d0: int, d1: int) -> dict[str, Any]:
         if ev == "send_intent":
             pos[key] = {"cash": net, "filled": False}
             rep["sends_attempted"] += ind
+            continue
+        if ev == "fee" and key not in pos:
+            # A fee row with no open position (its intent is not in the ledger): a real cost, never dropped. Realized at once and listed as unmatched.
+            unmatched.append({"mint": key, "ts_ms": ts, "lamports": net})
+            lifetime_realized += net
+            if ind:
+                realized += net
             continue
         p = pos.setdefault(key, {"cash": 0, "filled": False})  # a row whose intent is before the ledger start: counted at its own cash
         p["cash"] += net
@@ -166,6 +174,8 @@ def bot_report(rows: list[dict[str, Any]], d0: int, d1: int) -> dict[str, Any]:
         "cash_flow_lamports": cash_flow, "cash_flow_sol": sol(cash_flow),
         "fees_breakdown_lamports": {"network": fee_n, "priority": fee_p, "tip": fee_t, "rent_unreclaimed": rent_unrec, "note": "already inside realized; not added again"},
         "estimated_rows": est,
+        "unmatched_fees": [u for u in unmatched if d0 <= u["ts_ms"] < d1],  # fee rows with no position; included in realized
+        "unmatched_fees_lifetime_n": len(unmatched),
         "open_at_day_end": {"n": len(open_filled), "cost_basis_lamports": basis, "cost_basis_sol": sol(basis), "mints": sorted(open_filled)},
         "pending_unlanded_intents": len(pos) - len(open_filled),
         "lifetime_realized_lamports": lifetime_realized, "lifetime_realized_sol": sol(lifetime_realized), "lifetime_closed_positions": lifetime_closed,
@@ -173,11 +183,13 @@ def bot_report(rows: list[dict[str, Any]], d0: int, d1: int) -> dict[str, Any]:
     return rep
 
 
-def lane_budget(all_rows: list[dict[str, Any]], ledger_path: Path, d0: int, d1: int, bot: str) -> dict[str, Any]:
-    """Lane-wide (every bot_id in the shared ledger) budget headroom and daily stop, by the ledger's own code (capped_pnl, lane_fold)."""
+def lane_budget(all_rows: list[dict[str, Any]], ledger_path: Path, d0: int, d1: int, bot: str, limits: dict[str, int] | None = None) -> dict[str, Any]:
+    """Lane-wide (every bot_id in the shared ledger) budget headroom and daily stop, by the ledger's own code (capped_pnl, lane_fold).
+    `limits` (budget_lamports, daily_loss_lamports) come from the lane config when --config is given; otherwise the code constants."""
     rows = [r for r in all_rows if _i(r.get("ts_ms")) < d1]
-    cfg = H.LaneConfig(ledger_path, ledger_path.with_name("STOP"), bot, X.FLOOR_LANE_STAKE_BOUNDS_LAMPORTS[0], X.LANE_MAX_OPEN, X.LANE_BUDGET_MAX_LAMPORTS,
-                       X.LANE_DAILY_MAX_LAMPORTS, X.LANE_MIN_FEE_RESERVE, float(X.LANE_MARK_STALE_MAX_S))
+    lim = limits or {}
+    cfg = H.LaneConfig(ledger_path, ledger_path.with_name("STOP"), bot, X.FLOOR_LANE_STAKE_BOUNDS_LAMPORTS[0], X.LANE_MAX_OPEN, lim.get("budget_lamports", X.LANE_BUDGET_MAX_LAMPORTS),
+                       lim.get("daily_loss_lamports", X.LANE_DAILY_MAX_LAMPORTS), X.LANE_MIN_FEE_RESERVE, float(X.LANE_MARK_STALE_MAX_S))
     led = X.FloorLaneLedger(cfg)
     view = H.lane_fold(rows, {}, d1 - 1, cfg.mark_stale_s, bot)
     capped = led.capped_pnl(view, d1 - 1)
@@ -190,7 +202,7 @@ def lane_budget(all_rows: list[dict[str, Any]], ledger_path: Path, d0: int, d1: 
         out["daily_stop"] = {"status": NA, "limit_lamports": cfg.daily_loss_lamports, "note": "no 00:00Z snapshot row for this day"}
     else:
         dp, dc = view.pnl - base[0], view.cost - base[1]
-        out["daily_stop"] = {"status": "TRIPPED" if (dp <= -cfg.daily_loss_lamports or dc <= -cfg.daily_loss_lamports) else "ok", "limit_lamports": cfg.daily_loss_lamports,
+        out["daily_stop"] = {"status": ("TRIPPED" if (dp <= -cfg.daily_loss_lamports or dc <= -cfg.daily_loss_lamports) else "ok") + " (cost-basis, no marks)", "limit_lamports": cfg.daily_loss_lamports,
                              "day_pnl_lamports": dp, "day_pnl_sol": sol(dp), "day_pnl_cost_lamports": dc, "day_pnl_cost_sol": sol(dc)}
     return out
 
@@ -231,11 +243,13 @@ def gap_report(bot: str, bridge: list[dict[str, Any]], d0: int, d1: int) -> dict
     }
 
 
-def build(ledger_dir: Path, day: str, bridge_logs: Sequence[Path] = ()) -> dict[str, Any]:
+def build(lp: Path, day: str, bridge_logs: Sequence[Path] = (), limits: dict[str, int] | None = None) -> dict[str, Any]:
+    """lp is the ledger FILE. A missing file raises FileNotFoundError: a wrong path must never read as a zero-trade day."""
     d0, d1 = day_bounds(day)
-    lp = ledger_dir / LEDGER_NAME
-    rows = dedupe(read_jsonl(lp)) if lp.exists() else []
-    paths = list(bridge_logs) or ([ledger_dir / BRIDGE_LOG_NAME] if (ledger_dir / BRIDGE_LOG_NAME).exists() else [])
+    if not lp.is_file():
+        raise FileNotFoundError(f"lane ledger not found: {lp}")
+    rows = dedupe(read_jsonl(lp))
+    paths = list(bridge_logs) or ([lp.parent / BRIDGE_LOG_NAME] if (lp.parent / BRIDGE_LOG_NAME).exists() else [])
     bridge: list[dict[str, Any]] = []
     for p in paths:
         bridge += read_jsonl(p)
@@ -245,7 +259,7 @@ def build(ledger_dir: Path, day: str, bridge_logs: Sequence[Path] = ()) -> dict[
         rep = bot_report([r for r in rows if r.get("bot_id") == b], d0, d1)
         rep["gap"] = gap_report(b, bridge, d0, d1)
         out["bots"][b] = rep
-    out["lane"] = lane_budget(rows, lp, d0, d1, bots[0] if bots else "report")
+    out["lane"] = lane_budget(rows, lp, d0, d1, bots[0] if bots else "report", limits)
     return out
 
 
@@ -257,7 +271,7 @@ def summary(rep: dict[str, Any]) -> str:
                      f"exits {r['exits']}, realized {r['realized_sol']} SOL after all fees, open {r['open_at_day_end']['n']} (basis {r['open_at_day_end']['cost_basis_sol']} SOL)")
         lines.append(f"  gap: landing delay median {ld['median_ms'] if isinstance(ld, dict) else ld} ms, slippage {r['gap']['fill_slippage_bps']}")
     L = rep["lane"]
-    lines.append(f"lane: cost-capped pnl {L['capped_pnl_sol']} SOL, budget headroom {L['budget_headroom_sol']} of 0.300000000 SOL, daily stop {L['daily_stop']['status']} (limit -0.100000000)")
+    lines.append(f"lane: cost-capped pnl {L['capped_pnl_sol']} SOL, budget headroom {L['budget_headroom_sol']} of {sol(L['budget_lamports'])} SOL, daily stop {L['daily_stop']['status']} (limit -{sol(L['daily_stop']['limit_lamports'])})")
     if not rep["bots"]:
         lines.insert(0, f"{rep['day']}: no ledger rows (zero trades)")
     return "\n".join(lines)
@@ -265,12 +279,32 @@ def summary(rep: dict[str, Any]) -> str:
 
 def main(argv: Sequence[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description="DEC-035 section 5 daily report for a lane bot (read-only)")
-    ap.add_argument("--ledger-dir", required=True, type=Path)
+    ap.add_argument("--ledger-file", type=Path, help="the lane ledger file (the lane writes lane-ledger.jsonl)")
+    ap.add_argument("--ledger-dir", type=Path, help=f"directory holding {LEDGER_NAME}")
+    ap.add_argument("--config", type=Path, help="the executor config JSON: lane.ledger_path, lane.budget_lamports, lane.daily_loss_lamports, state_dir (bridge log)")
     ap.add_argument("--day", required=True, help="UTC day YYYY-MM-DD")
     ap.add_argument("--json-out", type=Path)
     ap.add_argument("--bridge-log", action="append", type=Path, default=[])
     a = ap.parse_args(argv)
-    rep = build(a.ledger_dir, a.day, a.bridge_log)
+    lp, limits, logs = a.ledger_file, None, list(a.bridge_log)
+    if a.config:
+        cfg = json.loads(a.config.read_text())
+        lane = cfg.get("lane") or {}
+        lp = lp or (Path(lane["ledger_path"]) if lane.get("ledger_path") else None)
+        limits = {k: lane[k] for k in ("budget_lamports", "daily_loss_lamports") if isinstance(lane.get(k), int)}
+        sd = cfg.get("state_dir")
+        if not logs and sd and (Path(sd) / BRIDGE_LOG_NAME).is_file():
+            logs = [Path(sd) / BRIDGE_LOG_NAME]
+    if lp is None and a.ledger_dir:
+        lp = a.ledger_dir / LEDGER_NAME
+    if lp is None:
+        print("lane_daily_report: give --ledger-file, --config or --ledger-dir", file=sys.stderr)
+        return 2
+    try:
+        rep = build(lp, a.day, logs, limits)
+    except (FileNotFoundError, ValueError, KeyError) as exc:
+        print(f"lane_daily_report: ERROR {exc}", file=sys.stderr)
+        return 2
     if a.json_out:
         a.json_out.write_text(json.dumps(rep, indent=2, sort_keys=True) + "\n")
     print(summary(rep))
