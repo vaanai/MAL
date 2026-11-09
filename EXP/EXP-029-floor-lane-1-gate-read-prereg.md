@@ -203,6 +203,29 @@ Neither DEC-035 nor this file sets these three limits. Without a fix, n ≥ 100 
 5. **Unchanged.** S, the trade definition, C, R, the four tests, the deadline, FAIL ends (a) and (b), Erratum 1b and its window reset. The reset leaves the probe state alone: `max_days` 60 counts from 2026-11-08T14:30:47.392Z and runs past the deadline.
 6. **Reporting.** The read reports the install instants, the pins, the blob check, and the refusal counts of item 4.
 
+## Erratum 1d (written 2026-11-09T01:42:06Z by `date -u`, before S; probe `sell_stuck` halt, and QP/reviewer MINORs on PR #1298)
+
+**Found (QP MAJOR on #1298).** The probe executor has one more buy stop that this file did not classify. `probe_live.LiveExecutor.handle_signal` refuses a buy with `limit:sell_stuck` while `sell_stuck()` holds (`tools/probe_live.py:423-424`, `:445-446`, Appendix A blob `15de5829`), that is, while any open position is `stuck` or `abandoned`.
+- A position becomes `stuck` after `sell_retries` failed sells (default 5, `:364`, `:721-723`). It keeps retrying, with backoff from 30 s up to 10 min (`:784-785`), and the halt clears when it sells.
+- A position becomes `abandoned` at `sell_max_attempts` (at most 10, `:55`, `:365`, `:725`). It then has no more sells, and buys stay stopped until someone edits the state.
+
+PR #1297 does not change this. At writing, no floor-lane-1 position has a failed sell (MiScusi #2310: `buy_sent` 3, `buy_landed` 3, no sell rows).
+
+**Outcome-blindness.** The same as Erratum 1c. No live exit, proceeds or mark exists or was read.
+
+**Rule, fixed now, before S.**
+1. **`limit:sell_stuck` refusals** are `send_intent` + `writeoff` `not_sent` pairs (the same port path as Erratum 1c item 4), so they are not trades (§2). While they last, they are a §3 pause. They never start or extend a §3 (b) window. The read reports their count and the total time buys were halted by `sell_stuck`, split into stuck and abandoned.
+2. **No escape into NOT_DECIDABLE.** If C has not come by the deadline (2026-11-30T06:00:00Z), and at any time in [S, deadline) new buys were halted by `sell_stuck` (stuck or abandoned) for 24 h or more in total, the read is **FAIL** at the deadline, not NOT_DECIDABLE. Sell failures are real execution failures of this book (DEC-035 §6). The positions' P&L is scored as §2 says.
+3. **No remedy is pre-authorised.** Clearing a `stuck` or `abandoned` flag, a manual sell or sweep of a lane position, or any other state edit for it is a change. It needs its own §3 amendment merged before it is done. Otherwise it is a FAIL end at its instant (§3 "installed without a merged amendment"). Helm's wallet-wide STOP/HALT stays a pause, as §3 lists.
+
+**Clarifications of Erratum 1c (QP and reviewer MINORs on #1298).**
+4. **`end_ms`.** The installed live config `/etc/mal-floor-lane/live-3710e1af8cf434faca570046de896a7702464709.json` has `end_ms` 1796688000000 = 2026-12-08T00:00:00Z (MiScusi #2312). That is after the deadline, so it binds nothing in this read. The new pin keeps the same value; a lower value would be an unamended change.
+5. **Merge order.** Both #1297 (main 54051438) and #1298 (main e8790f93) merged at 2026-11-09T01:41Z, before any install. Erratum 1c item 3 is read as requiring both merges before the install, and both happened.
+6. **"Attempt 60".** The source of the attempt count is the `attempts` field of `<state_dir>/probe/state-live.json` (`/var/lib/mal-live/floor-lane/state/probe/state-live.json`). At writing it is 3 (#2311). The install record reports its value at the stop.
+7. **Scope.** `tools/forge/dsl_lane_executor.py` builds its live port through the same `FloorLanePort`, so the #1297 fix applies to any DSL lane bot as well. No DSL bot is registered or running.
+   - Erratum 1c item 2's "`FloorLanePort` is built only by `build_live_port`" is true for floor-lane-1's executor. For DSL bots the port is built in the DSL executor's own live path, never on a dry path.
+   - DEC-035 Amendment 2's "it only makes §2 item 3 take effect" is too strong. Read it as: "it makes §2 item 3 take effect and removes two probe stops (60 attempts, 7 days) that this DEC does not set."
+
 ## Appendix A. Frozen files (git blob ids at 3710e1af)
 
 This is the transitive closure of `tools.*` imports, including imports inside functions, from `tools/floor_lane_executor.py` and `tools/floor_lane_host.py`, computed with `ast` over `git show 3710e1af:<file>`. Every blob is the same on main 5a1c2300.
