@@ -252,6 +252,24 @@ PR #1297 does not change this. At writing, no floor-lane-1 position has a failed
    - Erratum 1c item 2's "`FloorLanePort` is built only by `build_live_port`" is true for floor-lane-1's executor. For DSL bots the port is built in the DSL executor's own live path, never on a dry path.
    - DEC-035 Amendment 2's "it only makes §2 item 3 take effect" is too strong. Read it as: "it makes §2 item 3 take effect and removes two probe stops (60 attempts, 7 days) that this DEC does not set."
 
+## Erratum 1e (written 2026-11-09T13:48:09Z by `date -u`, after S; the budget pre-send double count)
+
+**Written after S.** S was 2026-11-09T06:00:00Z. This erratum changes no trade definition, no test, no C or R rule and no deadline. It corrects one execution check and the §3 (b) formula that mirrors it.
+
+**Found.** The executor's budget pre-send (`tools/floor_lane_executor.py`, Appendix A as amended by Erratum 1c, blob `6f353716`, `evaluate`) refuses when `capped_pnl - (open_stakes + stake + reserve) <= -budget`. `capped_pnl` is lane cash plus min(fresh mark, stake) per filled open position, and lane cash already holds every filled buy's SOL out (`tools/h5_lane_executor.py` `lane_fold`). Each filled position whose mark is below its stake is therefore charged twice. From 2026-11-09T10:46:27Z to 12:33:53Z, 16 host entries were refused `lane_budget_presend` (MiScusi #2344; host log seq 13–30) with lane cash -139,591,048 lamports and 5 filled positions open. Losing all 5 and the new one in full ends near -192,750,000 lamports, inside the -300,000,000 budget. DEC-035 Amendment 3 records the limit's intended reading.
+
+The §3 (b) formula, `cash - (open stakes of all lane bots + 30000000 + fee_reserve_lamports x (open positions + 1)) <= -300000000`, carries the same double count. Its own premise, "When this holds, the pre-send budget check refuses any new floor-lane-1 entry", holds for the code before the fix but not after it.
+
+**Outcome-blindness.** The manager has read, since S: the lane report lines (sends, landed, failed, exits, realized, open, basis, headroom; #2332–#2343), the first exit (order `15b6196fab12c71c`, tp_1.5x, landed 2026-11-09T05:33:08.820Z, realized +0.018778152 SOL; entered before S, not a trade of this read), the host log rows' seq, kind, instant, order_id and exit reason (#2339, #2344), and the probe state's entry marks (#2345: entry-time marks only, no current mark). No current mark or unrealised value of any open position was read. The fix was chosen from the code and the refusal count, not from any outcome.
+
+**Rule.**
+1. **The fix, same bot_id.** PR #1303 at its merged head changes only `tools/floor_lane_executor.py` (new blob named in the merge record) and its test file. The pre-send becomes `wipe_floor - (stake + reserve) <= -budget`, where `wipe_floor` = lane cash minus the stakes of open positions whose buy is not yet filled (any lane bot). Marks never add headroom. Every other check in `evaluate` is unchanged and in the same order.
+2. **Classification.** A §3 (i)-kind lane-limit correction, as Erratum 1c item 2: the host does not import this file, and the dry path never builds the lane ledger, so no host decision and no dry row changes. The §3 (ii) md5 replay and successor bot_id do not apply. DEC-035 Amendment 3 records the bot_id ruling.
+3. **Install.** As Erratum 1c item 1: Helm stops `mal-floor-lane.service` only (never the host), starts it from a clean checkout of a main sha whose Appendix A blobs are unchanged except `tools/floor_lane_executor.py` = the PR #1303 blob, with the same config, §1 parameters, bot_id, state files and LIVE_OK. The interval is a §3 restart pause, recorded as §3 requires. No install deadline: until the install, the old check runs.
+4. **§3 (b), corrected from the install instant.** From the install instant, (b)'s condition reads: `cash - (stakes of open positions of all lane bots whose buy is not yet filled + 30000000 + fee_reserve_lamports x (open positions of all lane bots + 1)) <= -300000000`. Before it, the condition as written applies. A (b) window that spans the install must hold under each formula for its own part.
+5. **Refusals.** `lane_budget_presend` refusals send nothing, so they are not trades (§2). They are not a FAIL end except through (b). The read reports their count in [S, install) and [install, R).
+6. **Unchanged.** S, the trade definition, C, R, the four tests, the deadline, FAIL end (a), Errata 1–1d and the window reset of Erratum 1b.
+
 ## Appendix A. Frozen files (git blob ids at 3710e1af)
 
 This is the transitive closure of `tools.*` imports, including imports inside functions, from `tools/floor_lane_executor.py` and `tools/floor_lane_host.py`, computed with `ast` over `git show 3710e1af:<file>`. Every blob is the same on main 5a1c2300.

@@ -56,3 +56,12 @@ Live outcomes of a book in this lane are the lane's own data and are not sealed.
 **Unchanged.** Every §2 limit; §3 for any other code change; §6 scaling.
 
 **Amendment 2, wording note (2026-11-09, EXP-029 Erratum 1d item 7).** "It only makes §2 item 3 take effect" means: it makes §2 item 3 take effect and removes two probe stops (60 attempts, 7 days) that this DEC does not set. The same `FloorLanePort` serves the forge DSL lane executor, so the fix applies to DSL lane bots too; none is running.
+
+## Amendment 3 (2026-11-09): the §2 item 1 pre-send is the full-wipe bound (no double count)
+**Decider.** manager21, under the owner's word quoted in Amendment 1 ("You can raise the cap, that's a decision you can make on your own"). Written 2026-11-09T13:48:09Z, after EXP-029's S; see EXP-029 Erratum 1e.
+
+**Found.** §2 item 1 sends a new entry only if "lane P&L - (stakes of all open positions + the new stake + a configured fee reserve) > -0.30 SOL, so losing every open position in full cannot break the budget". Lane P&L is cash plus marks, and cash already holds every filled buy's SOL out. Subtracting the open stakes again charges each filled position's loss twice whenever its mark is below its stake (a stale or missing mark counts 0). Live, from 2026-11-09T10:46:27Z, floor-lane-1 refused 16 host entries `lane_budget_presend` (to 12:33:53Z; MiScusi #2344) with cash -139,591,048 lamports and 5 open, although losing all 5 plus the new one in full ends near -192,750,000 lamports, inside -300,000,000.
+
+**Change.** The item 1 pre-send is the bound its own sentence states: a new entry is sent only if cash - (stakes of open positions whose buy is not yet filled + the new stake + the fee reserve) > -0.30 SOL. Filled positions are in cash at their full cost; unfilled intents are charged at their stake; marks never add headroom. Implemented for floor-lane-1 in `tools/floor_lane_executor.py` (`wipe_floor`, PR #1303). `tools/h5_lane_executor.py` is byte-pinned and keeps its own copy; no H5 lane bot runs. floor-lane-1 keeps its bot_id, as in Amendment 2: the change touches only the live lane check, not the host or any dry row.
+
+**Unchanged.** The 0.30 SOL budget and its STOP (lane P&L <= -0.30), the fee reserve, the daily stop, the open cap 8, the stake, §3 for any other code change, §6.
