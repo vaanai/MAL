@@ -149,9 +149,8 @@ class FloorLaneLedger(H.LaneLedger):
         self._marks = marks
         return super().reserve(mint, signature, marks, now_ms, stake, pool_gap_waived)
 
-    def capped_pnl(self, view: H.LaneView, now_ms: int) -> int:
-        """Lane P&L with every open filled position of this bot counted at min(fresh mark, stake): unrealised gains never add headroom, losses still count; a stale or missing mark counts 0
-        (as in lane_fold). Amendment 1: the item 1 pre-send runs on this, so a full wipe of all open positions plus the new one ends above -budget (less fees beyond the reserve)."""
+    def _capped_value(self, view: H.LaneView, now_ms: int) -> int:
+        """Sum of min(fresh mark, stake) over this bot's filled open positions; a stale or missing mark counts 0 (as in lane_fold). Other bots' positions have no mark here and count 0."""
         c = self.cfg
         value = 0
         for key, p in view.open.items():
@@ -159,7 +158,18 @@ class FloorLaneLedger(H.LaneLedger):
             mk = self._marks.get(mint) if owner == c.bot_id else None
             if p["filled"] and mk is not None and 0 <= now_ms - mk[1] <= c.mark_stale_s * 1000:
                 value += min(int(mk[0]), int(p["stake"]))
-        return view.cash + value
+        return value
+
+    def capped_pnl(self, view: H.LaneView, now_ms: int) -> int:
+        """Lane P&L with every open filled position of this bot counted at min(fresh mark, stake): unrealised gains never add headroom, losses still count (Amendment 1)."""
+        return view.cash + self._capped_value(view, now_ms)
+
+    def wipe_floor(self, view: H.LaneView, now_ms: int) -> int:
+        """Lane P&L if every open position were worth 0: capped_pnl minus the capped mark values it added (= view.cash), minus the full stake of every UNFILLED open intent (any bot).
+        Filled positions' buys are already in cash (the fill row carries sol_out); a send_intent row carries sol_out 0 (h5_lane_executor.py:354-355), so an unfilled intent is charged at stake.
+        DEC-035 Amendment 3: the item 1 pre-send is this full-wipe bound. open_stakes must NOT be subtracted for filled positions: that charged each open loss twice."""
+        unfilled = sum(int(p["stake"]) for p in view.open.values() if not p["filled"])
+        return self.capped_pnl(view, now_ms) - self._capped_value(view, now_ms) - unfilled
 
     def evaluate(self, view: H.LaneView, now_ms: int, stake: int, n_pending_extra: int = 0) -> str | None:
         c = self.cfg
@@ -174,7 +184,7 @@ class FloorLaneLedger(H.LaneLedger):
         if len(view.open) >= c.max_open:
             return "lane_max_open"
         reserve = c.fee_reserve_lamports * (len(view.open) + 1)
-        if self.capped_pnl(view, now_ms) - (view.open_stakes + stake + reserve) <= -c.budget_lamports:  # cost-capped (Amendment 1): marked gains are not headroom
+        if self.wipe_floor(view, now_ms) - (stake + reserve) <= -c.budget_lamports:  # full-wipe bound (Amendment 3): cash already holds the open buys; only the new stake + reserve are added
             return "lane_budget_presend"
         # DEC-035 Amendment 1: no worst-case daily pre-send for floor-lane-1 (h5_lane_executor.LaneLedger.evaluate has one; that file is byte-pinned and unchanged). The marked daily stop above and the item 1 budget pre-send stay.
         return None
