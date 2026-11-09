@@ -15,9 +15,9 @@ Exit rule at grid point k (checked on non-gap, non-censored points only): stop (
 at point k+1 (one grid step of exit lag, >= 5 s); max_hold executes at the first grid point >= max_hold_s; a curve that completes before any exit is closed at its
 last curve point ("migrated"). A trade is dropped (and counted) when its latest possible exit point (max_hold_s + one grid step) is past the split end, decided from the entry alone, never from the realised exit; counted in `n_censored`.
 
-FITNESS (one function, `fitness`): -inf if n < 40 or n_days < 6; -inf if ex_top3_total <= 0; else CI90_low * sqrt(trades_per_day), where CI90_low is the 5th percentile of
-1,000 bootstrap means of net SOL per trade (seed 1, arena_stack.boot_lo) and trades_per_day = n / days in the split. If best_day_share > 0.5 the fitness is halved when it is
-positive (a negative fitness is left as is: the penalty never rewards).
+FITNESS (one function, `fitness`): -inf if n < 40 or n_days < 6, else with r = ex_top3_total / (n - 3) (mean SOL per trade without the 3 best trades): r <= 0 gives
+fitness = r (less negative is better, so islands keep a gradient); r > 0 gives r * sqrt(trades_per_day) * positive_days / n_days, halved when best_day_share > 0.5
+(trades_per_day = n / days in the split). The bootstrap CI90_low is still reported in the metrics (seed 1, arena_stack.boot_lo) but is not part of the fitness.
 """
 from __future__ import annotations
 
