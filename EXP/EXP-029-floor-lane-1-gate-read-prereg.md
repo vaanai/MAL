@@ -174,6 +174,35 @@ This section tightens Erratum 1. It changes no test or threshold, and it does no
    - the number of floor-lane-1 positions open at the stop;
    - the `canary_expired` refusal counts.
 
+## Erratum 1c (written 2026-11-09T01:34:19Z by `date -u`, before S; hidden probe-port limits)
+
+**Found.** The live port wraps the probe executor: `FloorLanePort` → `B.make_live_port` → `BridgeExecutor(probe_live.LiveExecutor)` (`tools/arena_live_bridge.py:1328-1603`, Appendix A blob `06ec1813`). The bridge builds it from a config with `"max_open": cfg.max_open, "max_attempts": 60` and no `limits_profile` (`:1514`). So `probe_executor.Limits` takes the `dec019` profile (Appendix A blob `07b2851b`, `:138-150`), and `Limits.__post_init__` clamps every limit to that profile's maxima. In live mode, `probe_live.LiveExecutor.handle_signal` (blob `15de5829`, `:438-451`) refuses a buy with `limit:<why>` from `pe.check_buy`, whose live-mode soft stops apply:
+- **`max_open` 3**, not the §1 value 8. This is already binding. The first refusal came at 2026-11-09T01:16:26.005Z: a `send_intent` row (`intent:6c99e6047ef2d6a6`), then a `writeoff` with `reason` `not_sent` 7 ms later, with 3 floor-lane-1 positions open (MiScusi #2310, #2311). By §2 it is not a trade.
+- **`max_attempts` 60.** After 60 probe buy attempts, no new buy is ever sent. At writing, the count is 3 (`state/probe/state-live.json`, #2311).
+- **`max_days` 7**, counted from the probe's `first_attempt_ms` 1794148247392 = 2026-11-08T14:30:47.392Z. From **2026-11-15T14:30:47.392Z**, no new buy is ever sent.
+- `loss_cap_lamports` (= `budget_lamports`, realized only) and `end_ms` (the bridge's own) do not bind before the lane's own stops. They are unchanged.
+
+Neither DEC-035 nor this file sets these three limits. Without a fix, n ≥ 100 is impossible: there would be at most 60 attempts, and none after 11-15T14:30:47.392Z.
+
+**Outcome-blindness.** The manager has read only entry-side facts of floor-lane-1's three live buys: instants, cost basis, the lane headroom, and the refusal above. No live exit, proceeds or mark exists or was read. One disclosed contact: the host decision log shows one `exit` row, tp_1.5x, for the dry-run entry seq 3 (order `503c632a6f8f399a`, never on-chain), read at 2026-11-08T21:3xZ while checking that no live sell was missed (#2303). No P&L of it was read.
+
+**Rule, fixed now, before S.**
+1. **Pre-committed execution fix, same bot_id.**
+   - **The change:** PR #1297 at head `99afddd8f93fca6775d05b3f039471f256ebd85b`. It touches only `tools/floor_lane_executor.py`, new blob `6f353716e29f72c8f92699310d44f21ce23dd0dd`, plus its test file. In `FloorLanePort.__init__`, it sets `ex.limits.max_open` = the lane config's `max_open` (8), `max_attempts` = 100,000 and `max_days` = 60.0, next to the existing `priority_lamports` override. No other Appendix A blob changes.
+   - **The install:** Helm stops `mal-floor-lane.service` (the executor only, never the host). Helm starts it again from a clean checkout of a main sha whose blobs equal Appendix A, except `tools/floor_lane_executor.py` = `6f353716…`. Same config, §1 parameters, bot_id `floor-lane-1`, state files and LIVE_OK.
+   - The stop-to-start interval is a §3 restart pause. Its instants, the old and new pins and the blob check are recorded as §3 requires.
+   - Positions, bridge state and the lane ledger carry over unchanged. No position is handed to another bot_id.
+2. **Classification.** This is a §3 (i)-kind lane-limit correction, not a rule change.
+   - It makes the installed open cap equal the registered §1 `max_open` 8. It removes two stops that no document sets.
+   - It changes no decision of the host (which does not import `tools/floor_lane_executor.py`). It changes no dry row: `FloorLanePort` is built only by `build_live_port` on `run --live`, and the dry path uses `B.DryPort`. This is why the §3 (ii) md5 replay and the §3 (ii) successor bot_id do not apply to this one change. DEC-035 Amendment 2 records the bot_id ruling.
+   - The change only turns `limit:max_open`, `limit:max_attempts` and `limit:max_days` refusals into ordinary entry checks.
+3. **When.** As soon as PR #1297 merges with QP OK and REVIEWER APPROVE at its exact head. In every case it must be before **2026-11-15T14:30:47.392Z**, and before the probe attempt count reaches 60.
+   - **Done** means the executor's journal shows a live-mode start at the new pin, and the blob check passes, before both of those limits.
+   - **Not done in time:** if C has not come and no §3 FAIL end has occurred, the read is **FAIL** at the earlier of the two instants. This is a new FAIL end of the same kind as Erratum 1b item 4. A lapse can never turn the read into NOT_DECIDABLE.
+4. **Refusals before the install.** `limit:max_open`, `limit:max_attempts` and `limit:max_days` rows are `send_intent` + `writeoff` `not_sent` pairs. They are therefore not trades (§2), and they are pauses (§3). They never start or extend a §3 (b) window. The read reports their counts by label and by [live start, S) and [S, install).
+5. **Unchanged.** S, the trade definition, C, R, the four tests, the deadline, FAIL ends (a) and (b), Erratum 1b and its window reset. The reset leaves the probe state alone: `max_days` 60 counts from 2026-11-08T14:30:47.392Z and runs past the deadline.
+6. **Reporting.** The read reports the install instants, the pins, the blob check, and the refusal counts of item 4.
+
 ## Appendix A. Frozen files (git blob ids at 3710e1af)
 
 This is the transitive closure of `tools.*` imports, including imports inside functions, from `tools/floor_lane_executor.py` and `tools/floor_lane_host.py`, computed with `ast` over `git show 3710e1af:<file>`. Every blob is the same on main 5a1c2300.
