@@ -341,7 +341,7 @@ def test_max_open_8_accepted_and_9_refused(tmp_path):
 def test_presend_budget_still_refuses_with_fewer_than_8_open(tmp_path):
     clk = Clock(T0)
     other_bot_rows(tmp_path, 4)  # 4 open of 8: the cap has room
-    other_cash(tmp_path, 180_000_000)  # pnl -0.18 - (4 + 1 stakes + reserves) <= -0.30
+    other_cash(tmp_path, 260_000_000)  # full-wipe bound (Amendment 3): cash -0.26 - (new stake + 5 reserves) <= -0.30
     br, inner = mk(tmp_path, clk)
     entry(tmp_path)
     feed(br, clk)
@@ -428,10 +428,10 @@ def test_budget_stop_found_at_the_entry_check_writes_the_stop_file(tmp_path):
 
 
 def test_budget_presend_counts_open_stakes_and_fee_reserve(tmp_path):
-    """pnl -0.20: one open position (stake) + the new stake + 2 x reserve must keep pnl - that > -0.30; here it does not."""
+    """Amendment 3: cash -0.27 (open buys already inside) - the new stake - 2 x reserve must stay > -0.30; here it does not."""
     clk = Clock(T0)
     other_bot_rows(tmp_path, 1)
-    other_cash(tmp_path, 250_000_000)
+    other_cash(tmp_path, 270_000_000)
     br, inner = mk(tmp_path, clk)
     entry(tmp_path)
     feed(br, clk)
@@ -833,10 +833,87 @@ def test_full_wipe_after_any_accepted_entry_stays_inside_the_budget(tmp_path):
         stake = rng.choice([20_000_000, 25_000_000, 30_000_000])
         if led.evaluate(view, T0, stake) is None:
             accepted += 1
-            unfilled = sum(s for s, f in zip(stakes, filled) if not f)
-            worst = cash - unfilled - stake  # filled stakes are already in cash; every other open position and the new one lost in full
+            worst = cash - stake  # every buy (filled or not) is already in cash (Amendment 3); only the new stake is still to be sent
             assert worst > -lc.budget_lamports + lc.fee_reserve_lamports * (n + 1)
     assert accepted > 200
+
+
+# --- Amendment 3: the pre-send is the full-wipe bound; open_stakes is not subtracted a second time ----------------------------------------------------
+LIVE_CASH = -139_591_048
+RES = X.LANE_MIN_FEE_RESERVE
+
+
+def _old_formula(led, view, stake):
+    return led.capped_pnl(view, T0) - (view.open_stakes + stake + led.cfg.fee_reserve_lamports * (len(view.open) + 1))
+
+
+def test_live_case_2026_11_09_is_allowed_where_the_old_formula_refused(tmp_path):
+    led, lc = _floor_ledger(tmp_path)
+    stake = 30_000_000
+    view, marks = _view(lc, LIVE_CASH, [stake] * 5, [None] * 5)  # stale or missing marks count 0
+    led._marks = marks
+    assert _old_formula(led, view, stake) == LIVE_CASH - 5 * stake - stake - 6 * RES == -342_751_048 <= -lc.budget_lamports  # old: refused
+    assert led.wipe_floor(view, T0) == LIVE_CASH
+    assert LIVE_CASH - (stake + 6 * RES) == -192_751_048 > -lc.budget_lamports
+    assert led.evaluate(view, T0, stake) is None
+
+
+def test_fresh_marks_at_stake_agree_with_wipe_bound(tmp_path):
+    led, lc = _floor_ledger(tmp_path)
+    for cash in (-50_000_000, -150_000_000, -250_000_000, -270_000_000):
+        view, marks = _view(lc, cash, [STAKE] * 3, [STAKE] * 3)
+        led._marks = marks
+        assert led.wipe_floor(view, T0) == cash
+        # marks at stake: old formula = cash + 3*STAKE - (3*STAKE + STAKE + reserve) = the new one
+        assert (led.evaluate(view, T0, STAKE) is None) == (_old_formula(led, view, STAKE) > -lc.budget_lamports)
+
+
+def test_presend_boundary_is_exact(tmp_path):
+    led, lc = _floor_ledger(tmp_path)
+    n = 4
+    cash = -lc.budget_lamports + STAKE + RES * (n + 1)
+    view, marks = _view(lc, cash, [STAKE] * n, [None] * n)
+    led._marks = marks
+    assert led.evaluate(view, T0, STAKE) == "lane_budget_presend"
+    view2, marks2 = _view(lc, cash + 1, [STAKE] * n, [None] * n)
+    led._marks = marks2
+    assert led.evaluate(view2, T0, STAKE) is None
+
+
+def test_gains_never_add_headroom_in_the_wipe_bound(tmp_path):
+    led, lc = _floor_ledger(tmp_path)
+    cash = -lc.budget_lamports + STAKE + RES * 4  # exactly on the boundary with 3 open
+    res = []
+    for mk in (STAKE, 3 * STAKE, 100 * STAKE):
+        view, marks = _view(lc, cash, [STAKE] * 3, [mk] * 3)
+        led._marks = marks
+        res.append((led.wipe_floor(view, T0), led.evaluate(view, T0, STAKE)))
+    assert res[0] == res[1] == res[2] == (cash, "lane_budget_presend")
+
+
+def test_other_bots_open_position_counts_its_cash_and_is_not_subtracted_twice(tmp_path):
+    led, lc = _floor_ledger(tmp_path)
+    view, _ = _view(lc, -100_000_000, [STAKE], [STAKE])
+    view.open["other-1:mx"] = {"stake": STAKE, "filled": True, "ts_ms": T0, "signature": "sx"}
+    led._marks = {"m0": (STAKE, T0), "mx": (0, T0)}  # a mark under the other bot's mint must not be used
+    assert led._capped_value(view, T0) == STAKE  # only this bot's position
+    assert led.wipe_floor(view, T0) == view.cash == -100_000_000
+    assert led.evaluate(view, T0, STAKE) is None
+    view.open["other-2:my"] = dict(view.open["other-1:mx"])
+    view_cash = -lc.budget_lamports + STAKE + RES * 4  # n_open = 3 -> reserve x4, boundary
+    v3 = H.LaneView(cash=view_cash, pnl=view_cash, cost=view_cash, open=view.open, snaps={})
+    assert led.evaluate(v3, T0, STAKE) == "lane_budget_presend"
+    assert led.evaluate(H.LaneView(cash=view_cash + 1, pnl=view_cash + 1, cost=view_cash + 1, open=view.open, snaps={}), T0, STAKE) is None
+
+
+def test_budget_stop_and_max_open_still_come_before_the_presend(tmp_path):
+    led, lc = _floor_ledger(tmp_path)
+    view, marks = _view(lc, -lc.budget_lamports, [STAKE] * 8, [None] * 8)
+    led._marks = marks
+    assert led.evaluate(view, T0, STAKE) == "lane_budget_stop"  # before max_open and presend
+    view2, marks2 = _view(lc, -100_000_000, [STAKE] * 8, [STAKE] * 8)
+    led._marks = marks2
+    assert led.evaluate(view2, T0, STAKE) == "lane_max_open"
 
 
 def test_fee_reserve_sell_sends_cover_probe_sell_max_attempts():
