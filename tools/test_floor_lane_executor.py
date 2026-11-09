@@ -15,6 +15,7 @@ from tools import arena_live_bridge as B
 from tools import floor_arena_executor as F
 from tools import floor_lane_executor as X
 from tools import h5_lane_executor as H
+from tools import probe_executor as pe
 from tools.test_floor_arena_executor import Clock, Log, SHA40, cfg_dict, _env  # noqa: F401  (autouse fixture)
 from tools.test_arena_rule_l1 import H0
 
@@ -845,3 +846,34 @@ def test_fee_reserve_sell_sends_cover_probe_sell_max_attempts():
     assert F.SELL_RESERVE_LAMPORTS == F.SELL_RESERVE_SENDS * F.SEND_FEE_LAMPORTS
     assert X.LANE_MIN_FEE_RESERVE == F.RENT_RESERVE_LAMPORTS + F.SEND_FEE_LAMPORTS + F.SELL_RESERVE_SENDS * F.SEND_FEE_LAMPORTS
     assert X.LANE_MIN_FEE_RESERVE == 3_860_000
+
+
+# --- probe dec019 clamps lifted in the live port (incident 2026-11-09: limit:max_open at 3 open) -----------------------------------------------------
+
+def _bridge_like_limits():
+    return pe.Limits.from_config({"size_lamports": 30_000_000, "max_open": 8, "max_attempts": 60, "loss_cap_lamports": 300_000_000, "priority_lamports": 500_000})
+
+
+def test_dec019_limits_clamp_max_open_without_the_port():
+    lim = _bridge_like_limits()
+    assert lim.max_open == 3 and lim.max_attempts == 60 and lim.max_days == 7
+
+
+def test_port_lifts_probe_clamps(tmp_path):
+    cfg, _, _ = X.make_config(lane_raw(tmp_path))
+    inner = FakeInner()
+    inner.ex.limits = lim = _bridge_like_limits()
+    loss_cap, size, end_ms = lim.loss_cap_lamports, lim.size_lamports, lim.end_ms
+    X.FloorLanePort(inner, cfg)
+    assert lim.max_open == cfg.max_open == 8
+    assert lim.max_attempts == X.LANE_PROBE_MAX_ATTEMPTS == 100_000
+    assert lim.max_days == X.LANE_PROBE_MAX_DAYS == 60.0
+    assert lim.priority_lamports == F.PRIORITY_LAMPORTS
+    assert (lim.loss_cap_lamports, lim.size_lamports, lim.end_ms) == (loss_cap, size, end_ms)
+    now = 1_800_000_000_000
+    object.__setattr__(lim, "end_ms", now + 86_400_000)
+    st = pe.State(attempts=61, first_attempt_ms=now - 8 * 86_400_000)
+    st.open = {f"M{i}": {} for i in range(7)}
+    assert pe.check_buy(lim, st, now, False, "live") is None
+    st.open["M7"] = {}
+    assert pe.check_buy(lim, st, now, False, "live") == "max_open"
