@@ -1,6 +1,6 @@
 {
  "schema_version": "console.v1",
- "updated_utc": "2026-11-09T07:40:00Z",
+ "updated_utc": "2026-11-09T14:50:00Z",
  "review_windows": [],
  "events": [
   {
@@ -2340,6 +2340,14 @@
   }
  ],
  "stream": [
+  {
+   "id": "s-20261109-floor-budgetfix",
+   "from": "claude",
+   "kind": "result",
+   "atUtc": "2026-11-09T14:26:01Z",
+   "approx": false,
+   "text": "FLOOR second fix installed 14:26Z: from 10:46Z the live executor refused every new entry (19 in all) because its budget check counted the open positions' cost twice. With 5 open, a total wipe-out plus one more entry would still have stayed about 0.107 SOL inside the 0.30 SOL budget. Fixed (#1303), rules updated (DEC-035 Amendment 3, EXP-029 Erratum 1e, #1304), reviewed by QP, the reviewer and Helm, and installed by Helm (executor only, 0.72 s pause, positions unchanged). Budget size, daily stop, open cap and stake unchanged. Second exit: the first live buy sold on its 24 h clock at 14:30:49Z; realized so far +0.020582267 SOL after all fees over 2 exits, 4 open. No profit claim."
+  },
   {
    "id": "s-20261109-floor-exit1",
    "from": "claude",
