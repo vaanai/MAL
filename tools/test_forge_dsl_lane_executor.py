@@ -588,8 +588,11 @@ def floor_open(tmp, n=1, ts=T0):
 
 def test_two_dsl_bots_and_floor_share_one_ledger(tmp_path):
     clk1, clk2 = Clock(T0), Clock(T0)
-    br1, in1 = mk(tmp_path, clk1, bot=BOT)
-    br2, in2 = mk(tmp_path, clk2, bot=BOT2)
+    # the lane cap is 8 since DEC-035 Amendment 1; the config may lower it, so this test runs the shared-slot logic at a cap of 3
+    raw1, raw2 = raw_cfg(tmp_path, BOT), raw_cfg(tmp_path, BOT2)
+    raw1["lane"]["max_open"] = raw2["lane"]["max_open"] = 3
+    br1, in1 = mk(tmp_path, clk1, raw=raw1, bot=BOT)
+    br2, in2 = mk(tmp_path, clk2, raw=raw2, bot=BOT2)
     started(tmp_path, BOT).entry(T0, "a1", pool="P")
     started(tmp_path, BOT2).entry(T0, "b1", pool="Q")
     feed(br1, clk1)
@@ -599,7 +602,7 @@ def test_two_dsl_bots_and_floor_share_one_ledger(tmp_path):
     rows = ledger_rows(tmp_path)
     intents = {r["bot_id"]: r for r in rows if r["ev"] == "send_intent"}
     assert set(intents) == {BOT, BOT2, "floor-lane-1"}
-    # the lane is now full (3 open): a new entry of either DSL bot is lane_full
+    # the lane is now full (3 open of cap 3): a new entry of either DSL bot is lane_full
     Log(tmp_path, BOT).entry(T0 + 1000, "a2", pool="R")
     Log(tmp_path, BOT2).entry(T0 + 1000, "b2", pool="S")
     feed(br1, clk1)
@@ -747,9 +750,10 @@ def test_seven_positions_up_100pct_and_an_eighth_entry_is_refused(tmp_path):
     with led.locked():
         view = H.lane_fold(led.read(), marks, T0, 60.0, BOT)
     assert view.pnl > 0 and led.unrealised_gain(view, T0) == 7 * 30_000_000
-    # the uncapped base rule (FLOOR's ledger today) lets the 8th in on the strength of the unrealised gain ...
-    assert X.FloorLaneLedger.evaluate(led, view, T0, 30_000_000) is None
-    # ... the cost-capped rule does not: a full wipe of all eight would break -0.30 SOL
+    # since PR #1303 (DEC-035 Amendment 3) the base FLOOR rule is the full-wipe bound too: filled positions are in cash at full cost and marks never add headroom,
+    # so the unrealised gain no longer lets the 8th in ...
+    assert X.FloorLaneLedger.evaluate(led, view, T0, 30_000_000) == "lane_budget_presend"
+    # ... and the cost-capped rule agrees: a full wipe of all eight would break -0.30 SOL
     assert led.check(marks, T0, 30_000_000) == "lane_budget_presend"
     assert led.reserve("W7", "intent:w7", marks, T0, 30_000_000) == "lane_budget_presend"
     assert not (tmp_path / "lane" / "STOP").exists()  # a presend refusal is not the budget stop
