@@ -1,6 +1,6 @@
 {
  "schema_version": "console.v1",
- "updated_utc": "2026-11-08T14:45:00Z",
+ "updated_utc": "2026-11-09T00:40:00Z",
  "review_windows": [],
  "events": [
   {
@@ -2340,6 +2340,14 @@
   }
  ],
  "stream": [
+  {
+   "id": "s-20261109-floor-day1",
+   "from": "claude",
+   "kind": "result",
+   "atUtc": "2026-11-09T00:40:00Z",
+   "approx": true,
+   "text": "FLOOR day 1 (2026-11-08, live from 14:19:43Z): 3 real buys landed, 0 failed, 0 exits yet, 3 open (0.095021520 SOL in positions incl. rent and fees). No realized P&L yet; the first exits come by 24 h timeout at the latest, from about 2026-11-09T14:30Z. Loss budget left 0.204978480 of 0.30 SOL; daily stop fine. These buys are before the gate-read start (2026-11-09T06:00Z), so they are not gate trades. No book has cleared the promotion gate."
+  },
   {
    "id": "s-20261108-floor-live",
    "from": "claude",
