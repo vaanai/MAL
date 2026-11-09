@@ -1,0 +1,18 @@
+F..............F...............                                          [100%]
+=================================== FAILURES ===================================
+E   AssertionError: tools/floor_lane_executor.py
+    assert b'"""floor_la...xit(main())\n' == b'"""floor_la...xit(main())\n'
+      
+      At index 3698 diff: b'L' != b'#'
+      Use -v to get more diff
+/workspace/ARTIFACTS/lab/floor-live-budget-3710e1af/test_floor_live_budget_safety.py:116: AssertionError: tools/floor_lane_executor.py
+E   AssertionError: tools/floor_lane_executor.py
+    assert b'"""floor_la...xit(main())\n' == b'"""floor_la...xit(main())\n'
+      
+      At index 3698 diff: b'L' != b'#'
+      Use -v to get more diff
+/workspace/ARTIFACTS/lab/floor-live-budget-3710e1af/test_floor_live_init_cutover.py:59: AssertionError: tools/floor_lane_executor.py
+=========================== short test summary info ============================
+FAILED ARTIFACTS/lab/floor-live-budget-3710e1af/test_floor_live_budget_safety.py::test_review_is_pinned_to_the_requested_commit
+FAILED ARTIFACTS/lab/floor-live-budget-3710e1af/test_floor_live_init_cutover.py::test_review_is_pinned_to_the_requested_commit
+2 failed, 29 passed in 0.76s

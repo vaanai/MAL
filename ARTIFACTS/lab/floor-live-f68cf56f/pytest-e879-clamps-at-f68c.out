@@ -1,0 +1,10 @@
+F......................                                                  [100%]
+=================================== FAILURES ===================================
+E   AssertionError: assert '556d15623459...5b2b2257cd577' == '6f353716e29f...4f21ce23dd0dd'
+      
+      - 6f353716e29f72c8f92699310d44f21ce23dd0dd
+      + 556d15623459d56c8db706e2a2a5b2b2257cd577
+/workspace/ARTIFACTS/lab/floor-live-e8790f93/test_floor_live_e879_clamps.py:60: AssertionError: assert '556d15623459...5b2b2257cd577' == '6f353716e29f...4f21ce23dd0dd'
+=========================== short test summary info ============================
+FAILED ARTIFACTS/lab/floor-live-e8790f93/test_floor_live_e879_clamps.py::test_imported_floor_lane_executor_is_the_e879_blob
+1 failed, 22 passed in 0.88s
