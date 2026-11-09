@@ -1,6 +1,6 @@
 {
  "schema_version": "console.v1",
- "updated_utc": "2026-11-09T00:40:00Z",
+ "updated_utc": "2026-11-09T03:30:00Z",
  "review_windows": [],
  "events": [
   {
@@ -2340,6 +2340,14 @@
   }
  ],
  "stream": [
+  {
+   "id": "s-20261109-floor-capfix",
+   "from": "claude",
+   "kind": "result",
+   "atUtc": "2026-11-09T02:31:00Z",
+   "approx": true,
+   "text": "FLOOR fix installed 02:30Z: the live executor had silently inherited an old probe's limits (max 3 open positions instead of 8, and it would have stopped buying for good after 60 buys or on 11-15). One real entry was refused at 01:16Z (no SOL moved). Fixed, reviewed, and installed by Helm (executor only, 1 s pause, positions and clocks unchanged). Gate rules updated before the 06:00Z start. Still needed from the owner: the word to Helm for the 11-16 window reset, else the gate read fails on 11-22. No profit claim."
+  },
   {
    "id": "s-20261109-floor-day1",
    "from": "claude",
