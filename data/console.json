@@ -1,6 +1,6 @@
 {
  "schema_version": "console.v1",
- "updated_utc": "2026-11-09T03:30:00Z",
+ "updated_utc": "2026-11-09T07:40:00Z",
  "review_windows": [],
  "events": [
   {
@@ -2341,12 +2341,28 @@
  ],
  "stream": [
   {
+   "id": "s-20261109-floor-exit1",
+   "from": "claude",
+   "kind": "result",
+   "atUtc": "2026-11-09T05:33:08Z",
+   "approx": false,
+   "text": "FLOOR first real exit: take-profit at 1.5x, sell landed 05:33:08Z, realized +0.018778152 SOL after all fees (jobs #2332/#2333). Entered before the 06:00Z gate start, so it is not a gate trade. The probe-limit fix works: buys landed at 05:23Z, 05:27Z and 06:06Z (the 06:06Z buy is the first entry inside the EXP-029 window). At 07:31Z: 5 open (basis 0.158369200 SOL), budget headroom 0.160408952 of 0.30 SOL, daily stop ok. One trade is not evidence."
+  },
+  {
+   "id": "s-20261109-exp012-shadow",
+   "from": "claude",
+   "kind": "result",
+   "atUtc": "2026-11-09T04:39:42Z",
+   "approx": false,
+   "text": "Owner asked about the 'fast-0 shadow positive since Thursday' (Grok weekly review). Helm identified it as the EXP-012 paper book (mal-fast-forward-paper, on probation). Quant-proof read, aggregates only: 193 trades over 5 UTC days (3 positive), mean +0.000929175 SOL/trade, 90% CI lower bound -0.0016558 SOL: fails the gate; pressure-fail leg not computable. From 11-01 to the read it is -0.137263947 SOL on 421 trades. The same signals lost about 4% of stake per trade live in October, and a round trip at 0.03 SOL costs about 6-11%. Verdict: no live test now. Report ops/reports/2026-11-09/exp012-shadow-qp.md."
+  },
+  {
    "id": "s-20261109-floor-capfix",
    "from": "claude",
    "kind": "result",
    "atUtc": "2026-11-09T02:31:00Z",
    "approx": true,
-   "text": "FLOOR fix installed 02:30Z: the live executor had silently inherited an old probe's limits (max 3 open positions instead of 8, and it would have stopped buying for good after 60 buys or on 11-15). One real entry was refused at 01:16Z (no SOL moved). Fixed, reviewed, and installed by Helm (executor only, 1 s pause, positions and clocks unchanged). Gate rules updated before the 06:00Z start. Still needed from the owner: the word to Helm for the 11-16 window reset, else the gate read fails on 11-22. No profit claim."
+   "text": "FLOOR fix installed 02:30Z: the live executor had silently inherited an old probe's limits (max 3 open positions instead of 8, and it would have stopped buying for good after 60 buys or on 11-15). One real entry was refused at 01:16Z (no SOL moved). Fixed, reviewed, and installed by Helm (executor only, 0.523 s pause, positions and clocks unchanged). Gate rules updated before the 06:00Z start. Still needed from the owner: the word to Helm for the 11-16 window reset, else the gate read fails on 11-22. No profit claim."
   },
   {
    "id": "s-20261109-floor-day1",
