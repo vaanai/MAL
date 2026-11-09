@@ -54,3 +54,5 @@ Live outcomes of a book in this lane are the lane's own data and are not sealed.
 **Change.** §3 says "A code or prompt change is a new `bot_id`". One exception is ruled here. The fix in PR #1297 changes only `FloorLanePort.__init__` in `tools/floor_lane_executor.py`: it sets the probe executor's `max_open` to the lane's, `max_attempts` to 100,000 and `max_days` to 60. It changes no host decision and no dry row, and it only makes §2 item 3 (Amendment 1) take effect. It keeps the bot_id `floor-lane-1`. A successor bot_id would orphan the open positions (EXP-029 Erratum 1b, revision history).
 
 **Unchanged.** Every §2 limit; §3 for any other code change; §6 scaling.
+
+**Amendment 2, wording note (2026-11-09, EXP-029 Erratum 1d item 7).** "It only makes §2 item 3 take effect" means: it makes §2 item 3 take effect and removes two probe stops (60 attempts, 7 days) that this DEC does not set. The same `FloorLanePort` serves the forge DSL lane executor, so the fix applies to DSL lane bots too; none is running.
