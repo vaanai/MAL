@@ -165,9 +165,11 @@ class FloorLaneLedger(H.LaneLedger):
         return view.cash + self._capped_value(view, now_ms)
 
     def wipe_floor(self, view: H.LaneView, now_ms: int) -> int:
-        """Lane P&L if every open position were worth 0: capped_pnl minus the capped mark values it added, i.e. view.cash (every buy's SOL out is already in cash).
-        DEC-035 Amendment 3: the item 1 pre-send is this full-wipe bound. open_stakes must NOT be subtracted again: that charged each open position's loss twice."""
-        return self.capped_pnl(view, now_ms) - self._capped_value(view, now_ms)
+        """Lane P&L if every open position were worth 0: capped_pnl minus the capped mark values it added (= view.cash), minus the full stake of every UNFILLED open intent (any bot).
+        Filled positions' buys are already in cash (the fill row carries sol_out); a send_intent row carries sol_out 0 (h5_lane_executor.py:354-355), so an unfilled intent is charged at stake.
+        DEC-035 Amendment 3: the item 1 pre-send is this full-wipe bound. open_stakes must NOT be subtracted for filled positions: that charged each open loss twice."""
+        unfilled = sum(int(p["stake"]) for p in view.open.values() if not p["filled"])
+        return self.capped_pnl(view, now_ms) - self._capped_value(view, now_ms) - unfilled
 
     def evaluate(self, view: H.LaneView, now_ms: int, stake: int, n_pending_extra: int = 0) -> str | None:
         c = self.cfg

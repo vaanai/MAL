@@ -833,7 +833,8 @@ def test_full_wipe_after_any_accepted_entry_stays_inside_the_budget(tmp_path):
         stake = rng.choice([20_000_000, 25_000_000, 30_000_000])
         if led.evaluate(view, T0, stake) is None:
             accepted += 1
-            worst = cash - stake  # every buy (filled or not) is already in cash (Amendment 3); only the new stake is still to be sent
+            unfilled = sum(s for s, f in zip(stakes, filled) if not f)
+            worst = cash - unfilled - stake  # filled buys are in cash (Amendment 3); a send_intent carries sol_out 0, so unfilled intents are charged at stake
             assert worst > -lc.budget_lamports + lc.fee_reserve_lamports * (n + 1)
     assert accepted > 200
 
@@ -914,6 +915,36 @@ def test_budget_stop_and_max_open_still_come_before_the_presend(tmp_path):
     view2, marks2 = _view(lc, -100_000_000, [STAKE] * 8, [STAKE] * 8)
     led._marks = marks2
     assert led.evaluate(view2, T0, STAKE) == "lane_max_open"
+
+
+def test_unfilled_intent_of_this_bot_is_charged_at_stake(tmp_path):
+    """send_intent rows carry sol_out 0 (h5_lane_executor.py:354); the outflow lands at the fill row."""
+    led, lc = _floor_ledger(tmp_path)
+    view, marks = _view(lc, -100_000_000, [STAKE, STAKE], [None, None], filled=[True, False])
+    led._marks = marks
+    assert led.wipe_floor(view, T0) == -100_000_000 - STAKE
+    cash = -lc.budget_lamports + STAKE + RES * 3 + STAKE  # boundary incl. the unfilled stake, 2 open
+    v, m = _view(lc, cash, [STAKE, STAKE], [None, None], filled=[True, False])
+    led._marks = m
+    assert led.evaluate(v, T0, STAKE) == "lane_budget_presend"
+    v2, m2 = _view(lc, cash + 1, [STAKE, STAKE], [None, None], filled=[True, False])
+    led._marks = m2
+    assert led.evaluate(v2, T0, STAKE) is None
+
+
+def test_unfilled_intent_of_another_bot_is_charged_at_stake(tmp_path):
+    led, lc = _floor_ledger(tmp_path)
+    view, marks = _view(lc, -100_000_000, [STAKE], [STAKE])
+    view.open["other-1:mx"] = {"stake": 20_000_000, "filled": False, "ts_ms": T0, "signature": "sx"}
+    led._marks = marks
+    assert led.wipe_floor(view, T0) == -100_000_000 - 20_000_000
+
+
+def test_live_case_with_five_filled_still_allowed_after_unfilled_rule(tmp_path):
+    led, lc = _floor_ledger(tmp_path)
+    view, marks = _view(lc, LIVE_CASH, [30_000_000] * 5, [None] * 5, filled=[True] * 5)
+    led._marks = marks
+    assert led.wipe_floor(view, T0) == LIVE_CASH and led.evaluate(view, T0, 30_000_000) is None
 
 
 def test_fee_reserve_sell_sends_cover_probe_sell_max_attempts():
