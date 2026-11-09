@@ -203,20 +203,46 @@ Neither DEC-035 nor this file sets these three limits. Without a fix, n ≥ 100 
 5. **Unchanged.** S, the trade definition, C, R, the four tests, the deadline, FAIL ends (a) and (b), Erratum 1b and its window reset. The reset leaves the probe state alone: `max_days` 60 counts from 2026-11-08T14:30:47.392Z and runs past the deadline.
 6. **Reporting.** The read reports the install instants, the pins, the blob check, and the refusal counts of item 4.
 
-## Erratum 1d (written 2026-11-09T01:42:06Z by `date -u`, before S; probe `sell_stuck` halt, and QP/reviewer MINORs on PR #1298)
+## Erratum 1d (written 2026-11-09T01:42:06Z by `date -u`, before S; probe `sell_stuck` halt, bridge latches, and QP/reviewer MINORs on PR #1298; revised after QP NOT OK at fb9400ee)
 
 **Found (QP MAJOR on #1298).** The probe executor has one more buy stop that this file did not classify. `probe_live.LiveExecutor.handle_signal` refuses a buy with `limit:sell_stuck` while `sell_stuck()` holds (`tools/probe_live.py:423-424`, `:445-446`, Appendix A blob `15de5829`), that is, while any open position is `stuck` or `abandoned`.
-- A position becomes `stuck` after `sell_retries` failed sells (default 5, `:364`, `:721-723`). It keeps retrying, with backoff from 30 s up to 10 min (`:784-785`), and the halt clears when it sells.
+- A position becomes `stuck` after `sell_retries` failed sells (default 5, `:364`, `:721-723`). It keeps retrying, with backoff from 30 s up to 10 min (`:784-785`). The probe's own flag clears when the position sells.
 - A position becomes `abandoned` at `sell_max_attempts` (at most 10, `:55`, `:365`, `:725`). It then has no more sells, and buys stay stopped until someone edits the state.
+
+**Found (QP NOT OK on #1299 at fb9400ee): bridge latches.** On this stack the halt does **not** clear when the stuck position sells.
+- When a sell lands with an error and the position becomes stuck, the bridge sets the latch `stuck_sell` (`tools/arena_live_bridge.py:1162-1163`, `:1464-1471`, blob `06ec1813`). No code clears it.
+- Every latch stops new buys with `latched:<name>` *before* any `send_intent` row is written (`tools/arena_live_bridge.py:718-720`; `tools/floor_lane_executor.py:444`). A latch is set once, with a `latch` row (`latch`, `why`, `ts_ms`) in the bridge log `bridge-log-live.jsonl` and an ALERT line in the journal (`tools/arena_live_bridge.py:455-460`).
+- Other latches on this stack also stop buys for good. They include `chain_break`, `sealed_path`, `frozen_sha_mismatch`, `stake_mismatch`, `landed_buy_unreadable`, `parity_hard_halt`, `read_record`, `twin_pin_mismatch`, `tieout_mismatch`, `a3_pins_changed`, `owner_line`, `ata_rent_not_refunded` and `lane_buy_error` (`tools/floor_lane_executor.py:65-66`, `:270`, `:523`). They also include the loss-cap and port-error latches the bridge sets.
+- Only `feed_break` clears itself (`tools/arena_live_bridge.py:865`, `:887`), when the feed recovers.
 
 PR #1297 does not change this. At writing, no floor-lane-1 position has a failed sell (MiScusi #2310: `buy_sent` 3, `buy_landed` 3, no sell rows).
 
 **Outcome-blindness.** The same as Erratum 1c. No live exit, proceeds or mark exists or was read.
 
 **Rule, fixed now, before S.**
-1. **`limit:sell_stuck` refusals** are `send_intent` + `writeoff` `not_sent` pairs (the same port path as Erratum 1c item 4), so they are not trades (§2). While they last, they are a §3 pause. They never start or extend a §3 (b) window. The read reports their count and the total time buys were halted by `sell_stuck`, split into stuck and abandoned.
-2. **No escape into NOT_DECIDABLE.** If C has not come by the deadline (2026-11-30T06:00:00Z), and at any time in [S, deadline) new buys were halted by `sell_stuck` (stuck or abandoned) for 24 h or more in total, the read is **FAIL** at the deadline, not NOT_DECIDABLE. Sell failures are real execution failures of this book (DEC-035 §6). The positions' P&L is scored as §2 says.
-3. **No remedy is pre-authorised.** Clearing a `stuck` or `abandoned` flag, a manual sell or sweep of a lane position, or any other state edit for it is a change. It needs its own §3 amendment merged before it is done. Otherwise it is a FAIL end at its instant (§3 "installed without a merged amendment"). Helm's wallet-wide STOP/HALT stays a pause, as §3 lists.
+1. **Refusals.**
+   - `limit:sell_stuck` refusals are `send_intent` + `writeoff` `not_sent` pairs (the same port path as Erratum 1c item 4).
+   - `latched:<name>` refusals write no `send_intent` at all.
+
+   Neither kind is a trade (§2). While they last, they are a §3 pause, and they never start or extend a §3 (b) window.
+   - **`limit:sell_stuck` halt time** runs from the probe's `sell_stuck` alert for a position until no position is stuck or abandoned. It comes from the probe fill log and the journal.
+   - **Latch halt time** runs from the latch's `latch` row to its removal, or to the deadline.
+
+   The read reports the counts and halt times by label: `limit:sell_stuck` split into stuck and abandoned, and each latch by name.
+2. **No escape into NOT_DECIDABLE.** The read is **FAIL** at the deadline, not NOT_DECIDABLE, if C has not come by 2026-11-30T06:00:00Z and, within [S, deadline), the total time new buys were halted by either or both of the following is 24 h or more:
+   - `limit:sell_stuck`, stuck or abandoned;
+   - any latch other than `feed_break`.
+
+   Overlapping halts count once. `feed_break` stays the §3 "host or feed failure" pause, judged as before.
+
+   Rationale: these halts come from the book's own execution path (sell failures, chain or ledger integrity, pins, stake, fee/rent), and DEC-035 §6 counts real execution failures. The positions' P&L is scored as §2 says.
+3. **No remedy is pre-authorised. Removing a latch is a state edit.** The following are state edits:
+   - clearing a probe `stuck` or `abandoned` flag;
+   - removing any bridge latch (including `stuck_sell`), by hand or by any tool;
+   - a manual sell or sweep of a lane position;
+   - any other edit of executor state for these.
+
+   §3 allows only two kinds of change, (i) lane limits and (ii) execution-only code, and Erratum 1b adds one named state edit. None of these covers the edits above. So a state edit is allowed only after a later amendment adds it as a named change, merged before it is done. Otherwise it is a FAIL end at its instant (§3, "installed without a merged amendment"). Helm's wallet-wide STOP/HALT stays a pause, as §3 lists.
 
 **Clarifications of Erratum 1c (QP and reviewer MINORs on #1298).**
 4. **`end_ms`.** The installed live config `/etc/mal-floor-lane/live-3710e1af8cf434faca570046de896a7702464709.json` has `end_ms` 1796688000000 = 2026-12-08T00:00:00Z (MiScusi #2312). That is after the deadline, so it binds nothing in this read. The new pin keeps the same value; a lower value would be an unamended change.
