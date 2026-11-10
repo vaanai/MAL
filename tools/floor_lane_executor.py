@@ -48,12 +48,14 @@ FROZEN_SHA = F.FROZEN_SHA
 # THE stake bounds of this book in the lane (DEC-035 s2 item 2). A later owner decision raises them here and in DEC-035, plus the test that pins them. Nothing else holds a copy.
 FLOOR_LANE_STAKE_BOUNDS_LAMPORTS = (20_000_000, 100_000_000)  # owner step-up 0.03 -> 0.10 SOL (2026-11-10); the live config still sets the stake in use
 LANE_MAX_OPEN = 16  # a ceiling only; the live config sets max_open
+LANE_MAX_OPEN_DEFAULT = 8  # what a lane block without max_open gets (unchanged from before the step-up)
 # The bridge builds its probe executor with the dec019 profile, which CLAMPS max_open to 3, max_attempts to its pcfg value (60) and max_days to 7. Incident 2026-11-09: a real
 # FLOOR entry was refused `limit:max_open` with only 3 open (the lane cap is 8). The lane's own budget, daily stop, max_open and frozen 14-day canary (floor_arena_executor) are the
 # real limits, so the live port lifts the probe's counters far above anything the lane can reach. FloorLanePort.__init__ applies them to ex.limits.
 LANE_PROBE_MAX_ATTEMPTS = 100_000
 LANE_PROBE_MAX_DAYS = 60.0
 LANE_BUDGET_MAX_LAMPORTS = 600_000_000  # a ceiling only; the live config sets budget_lamports
+LANE_BUDGET_DEFAULT_LAMPORTS = 300_000_000  # what a lane block without budget_lamports gets (unchanged from before the step-up)
 LANE_DAILY_MAX_LAMPORTS = 100_000_000
 LANE_MARK_STALE_MAX_S = 60
 # What one position can cost beyond its stake: ATA rent, the buy fee, the sell ladder at the pinned p155 fee (F.SELL_RESERVE_LAMPORTS).
@@ -95,8 +97,8 @@ def parse_lane(raw: Any) -> H.LaneConfig:
     stake = _whole(raw, "stake_lamports")
     if not lo <= stake <= hi:
         raise LaneConfigError(f"lane.stake_lamports {stake} is outside [{lo}, {hi}]")
-    max_open = _whole(raw, "max_open", LANE_MAX_OPEN)
-    budget = _whole(raw, "budget_lamports", LANE_BUDGET_MAX_LAMPORTS)
+    max_open = _whole(raw, "max_open", LANE_MAX_OPEN_DEFAULT)
+    budget = _whole(raw, "budget_lamports", LANE_BUDGET_DEFAULT_LAMPORTS)
     daily = _whole(raw, "daily_loss_lamports", LANE_DAILY_MAX_LAMPORTS)
     if not 1 <= max_open <= LANE_MAX_OPEN:
         raise LaneConfigError(f"lane.max_open must be 1..{LANE_MAX_OPEN}")

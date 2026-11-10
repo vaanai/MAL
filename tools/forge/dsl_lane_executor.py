@@ -87,8 +87,8 @@ def parse_lane(raw: Any, bot_id: str) -> H.LaneConfig:
     stake = X._whole(raw, "stake_lamports")
     if not lo <= stake <= hi:
         raise X.LaneConfigError(f"lane.stake_lamports {stake} is outside [{lo}, {hi}]")
-    max_open = X._whole(raw, "max_open", X.LANE_MAX_OPEN)
-    budget = X._whole(raw, "budget_lamports", X.LANE_BUDGET_MAX_LAMPORTS)
+    max_open = X._whole(raw, "max_open", X.LANE_MAX_OPEN_DEFAULT)
+    budget = X._whole(raw, "budget_lamports", X.LANE_BUDGET_DEFAULT_LAMPORTS)
     daily = X._whole(raw, "daily_loss_lamports", X.LANE_DAILY_MAX_LAMPORTS)
     if not 1 <= max_open <= X.LANE_MAX_OPEN:
         raise X.LaneConfigError(f"lane.max_open must be 1..{X.LANE_MAX_OPEN}")

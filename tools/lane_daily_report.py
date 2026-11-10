@@ -188,7 +188,7 @@ def lane_budget(all_rows: list[dict[str, Any]], ledger_path: Path, d0: int, d1: 
     `limits` (budget_lamports, daily_loss_lamports) come from the lane config when --config is given; otherwise the code constants."""
     rows = [r for r in all_rows if _i(r.get("ts_ms")) < d1]
     lim = limits or {}
-    cfg = H.LaneConfig(ledger_path, ledger_path.with_name("STOP"), bot, X.FLOOR_LANE_STAKE_BOUNDS_LAMPORTS[0], X.LANE_MAX_OPEN, lim.get("budget_lamports", X.LANE_BUDGET_MAX_LAMPORTS),
+    cfg = H.LaneConfig(ledger_path, ledger_path.with_name("STOP"), bot, X.FLOOR_LANE_STAKE_BOUNDS_LAMPORTS[0], X.LANE_MAX_OPEN_DEFAULT, lim.get("budget_lamports", X.LANE_BUDGET_DEFAULT_LAMPORTS),
                        lim.get("daily_loss_lamports", X.LANE_DAILY_MAX_LAMPORTS), X.LANE_MIN_FEE_RESERVE, float(X.LANE_MARK_STALE_MAX_S))
     led = X.FloorLaneLedger(cfg)
     view = H.lane_fold(rows, {}, d1 - 1, cfg.mark_stale_s, bot)
