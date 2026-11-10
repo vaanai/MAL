@@ -141,10 +141,6 @@ class FloorLaneLedger(H.LaneLedger):
 
     _marks: dict[str, tuple[int, int]] = {}
 
-    def __init__(self, cfg: H.LaneConfig, open_worst_case_frac: float = 1.0):
-        super().__init__(cfg)
-        self.open_worst_case_frac = open_worst_case_frac  # 1.0 = the Amendment 3 bound exactly; < 1 is config-gated (floor_arena_executor.FloorConfig)
-
     def check(self, marks: dict[str, tuple[int, int]], now_ms: int, stake: int) -> str | None:
         self._marks = marks  # evaluate() needs the marks per position for the cost-capped pre-send (the view only has the sum)
         return super().check(marks, now_ms, stake)
@@ -172,15 +168,8 @@ class FloorLaneLedger(H.LaneLedger):
         """Lane P&L if every open position were worth 0: capped_pnl minus the capped mark values it added (= view.cash), minus the full stake of every UNFILLED open intent (any bot).
         Filled positions' buys are already in cash (the fill row carries sol_out); a send_intent row carries sol_out 0 (h5_lane_executor.py:354-355), so an unfilled intent is charged at stake.
         DEC-035 Amendment 3: the item 1 pre-send is this full-wipe bound. open_stakes must NOT be subtracted for filled positions: that charged each open loss twice."""
-        frac = self.open_worst_case_frac
-        if frac == 1.0:
-            unfilled = sum(int(p["stake"]) for p in view.open.values() if not p["filled"])
-            return self.capped_pnl(view, now_ms) - self._capped_value(view, now_ms) - unfilled
-        # open_worst_case_frac < 1: a position loses at most frac of its stake. An unfilled intent is charged frac*stake; a filled position of this bot is worth at least the rest.
-        c = self.cfg
-        unfilled = sum(F.stake_charge(int(p["stake"]), frac) for p in view.open.values() if not p["filled"])
-        kept = sum(int(p["stake"]) - F.stake_charge(int(p["stake"]), frac) for k, p in view.open.items() if p["filled"] and k.split(":", 1)[0] == c.bot_id)
-        return view.cash + kept - unfilled
+        unfilled = sum(int(p["stake"]) for p in view.open.values() if not p["filled"])
+        return self.capped_pnl(view, now_ms) - self._capped_value(view, now_ms) - unfilled
 
     def evaluate(self, view: H.LaneView, now_ms: int, stake: int, n_pending_extra: int = 0) -> str | None:
         c = self.cfg
@@ -195,7 +184,7 @@ class FloorLaneLedger(H.LaneLedger):
         if len(view.open) >= c.max_open:
             return "lane_max_open"
         reserve = c.fee_reserve_lamports * (len(view.open) + 1)
-        if self.wipe_floor(view, now_ms) - (F.stake_charge(stake, self.open_worst_case_frac) + reserve) <= -c.budget_lamports:  # full-wipe bound (Amendment 3): cash already holds the open buys; only the new stake + reserve are added
+        if self.wipe_floor(view, now_ms) - (stake + reserve) <= -c.budget_lamports:  # full-wipe bound (Amendment 3): cash already holds the open buys; only the new stake + reserve are added
             return "lane_budget_presend"
         # DEC-035 Amendment 1: no worst-case daily pre-send for floor-lane-1 (h5_lane_executor.LaneLedger.evaluate has one; that file is byte-pinned and unchanged). The marked daily stop above and the item 1 budget pre-send stay.
         return None
@@ -358,7 +347,7 @@ class FloorLaneBridge(F.FloorBridge):
         self._a3_pause: str | None = None
         self._a3_polled_ms: int | None = None
         if live:  # the per-bot lock comes BEFORE the parent loads, reconciles or saves any state: a second process is refused before it can write
-            self.lane = FloorLaneLedger(lane_cfg, getattr(cfg, "open_worst_case_frac", 1.0))
+            self.lane = FloorLaneLedger(lane_cfg)
             self._lane_bot_lock = bot_lock if bot_lock is not None else take_bot_lock(self.lane)
         try:
             super().__init__(cfg, port, now_ms=now_ms, live_ok_path=Path(live_ok_path), tier_path=tier_path, root_checks=root_checks, close_blocked=close_blocked, dry_replay_caps=dry_replay_caps)

@@ -30,7 +30,6 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
-import math
 import sys
 from pathlib import Path
 from typing import Any, Callable, Mapping
@@ -80,13 +79,6 @@ def _num(v: Any) -> bool:
     return isinstance(v, (int, float)) and not isinstance(v, bool) and v == v and abs(v) != float("inf")
 
 
-def stake_charge(stake: int, frac: float) -> int:
-    """The part of a stake charged as a worst case. frac 1.0 returns the stake itself (integer path, no float)."""
-    if frac == 1.0:
-        return int(stake)
-    return math.ceil(round(stake * frac, 3))  # whole lamports, rounded UP (never charges less); round() strips float noise like 20000000.000000004
-
-
 def make_config(d: Mapping[str, Any]) -> B.Config:
     """The bridge Config for FLOOR. Fail closed: any pin that does not hold raises ValueError. Caps are min(config, C0); the hold is the rule's."""
     if LIVE_BUILT is False and d.get("mode", B.DRY) != B.DRY:
@@ -124,10 +116,6 @@ def make_config(d: Mapping[str, Any]) -> B.Config:
             kw[k] = str(d[k])
     if "dry_balance_lamports" in d:
         kw["dry_balance_lamports"] = int(d["dry_balance_lamports"])
-    frac = d.get("open_worst_case_frac", 1.0)
-    if not _num(frac) or not 0 < frac <= 1:
-        raise ValueError("config open_worst_case_frac must be a number in (0, 1]")
-    kw["open_worst_case_frac"] = float(frac)
     once = d.get("wallet_floor_count_held_once", False)
     if not isinstance(once, bool):
         raise ValueError("config wallet_floor_count_held_once must be a boolean")
@@ -180,8 +168,7 @@ class FloorBridge(B.Bridge):
 
     # -- money
     def _position_worst_case(self, stake: int) -> int:
-        frac = getattr(self.cfg, "open_worst_case_frac", 1.0)
-        return stake_charge(stake, frac) + SEND_FEE_LAMPORTS + RENT_RESERVE_LAMPORTS + SELL_RESERVE_LAMPORTS
+        return stake + SEND_FEE_LAMPORTS + RENT_RESERVE_LAMPORTS + SELL_RESERVE_LAMPORTS
 
     def committed_loss_lamports(self, scope: bool = True) -> int:
         """realized loss since the first send (floored at 0) + the worst case of every open or in-flight position (DEC-032 s3)."""
