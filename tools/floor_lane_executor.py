@@ -56,6 +56,9 @@ LANE_PROBE_MAX_DAYS = 60.0
 LANE_BUDGET_MAX_LAMPORTS = 300_000_000
 LANE_DAILY_MAX_LAMPORTS = 100_000_000
 LANE_MARK_STALE_MAX_S = 60
+# probe_executor prices an open position from its pool cache only while the cache is younger than STATIC_TTL_MS (300 s). A FLOOR position is held up to 24 h, so the port re-primes the cache
+# of every open mint with one full snapshot at most once per this interval (audit 2026-11-10 option A). Below STATIC_TTL_MS so the cache never lapses between two re-primes.
+LANE_REPRIME_MS = 240_000
 # What one position can cost beyond its stake: ATA rent, the buy fee, the sell ladder at the pinned p155 fee (F.SELL_RESERVE_LAMPORTS).
 LANE_MIN_FEE_RESERVE = F.RENT_RESERVE_LAMPORTS + F.SEND_FEE_LAMPORTS + F.SELL_RESERVE_LAMPORTS
 LANE_UNRESOLVED_MS = H.LANE_UNRESOLVED_MS
@@ -228,6 +231,7 @@ class FloorLanePort(B.OrderPort):
             raise SystemExit("floor lane port refused: needs LIVE_BUILT, a live config and a live inner port with an executor")
         self.inner, self.cfg, self.pre_buy, self.on_error = inner, cfg, pre_buy, on_error
         self._rows: dict[tuple[str, str], list[dict[str, Any]]] = {}
+        self._reprime_at: dict[str, int] = {}
         ex = inner.ex
         orig = ex._log
 
@@ -288,7 +292,34 @@ class FloorLanePort(B.OrderPort):
         return self.inner.holdings()
 
     def warm(self, mints: list[str]) -> None:
+        self._reprime_open(mints)
         self.inner.warm(mints)
+
+    def _reprime_open(self, mints: list[str]) -> None:
+        """Keep each open position's pool cache fresh (existing fetch/parse path `ex._snapshot`, V from the pool account), at most one fetch per mint per LANE_REPRIME_MS, success or not.
+        A failed fetch leaves the cache and the mark stale (a stale mark counts 0, as before) and is logged by label only. Never raises; touches no order, no entry and no exit."""
+        ex = self.inner.ex
+        cache, state = getattr(ex, "_pool_cache", None), getattr(ex, "state", None)
+        if cache is None or state is None or not getattr(ex, "fast_exit", False):
+            return
+        now = ex.now_ms()
+        for m in mints:
+            if m not in state.open or m in state.pending:
+                self._reprime_at.pop(m, None)
+                continue
+            last = self._reprime_at.get(m)
+            if last is not None and 0 <= now - last < LANE_REPRIME_MS:
+                continue
+            cached = cache.get(m)
+            if cached is not None and 0 <= now - cached[2] < LANE_REPRIME_MS:
+                continue
+            self._reprime_at[m] = now
+            try:
+                snap, _pool, err = ex._snapshot(m)
+            except (Exception, SystemExit) as exc:  # label only
+                snap, err = None, type(exc).__name__
+            if snap is None:
+                print(f"floor_lane_executor ALERT mark_reprime_failed mint={m} label={err}", flush=True)
 
     def position_return(self, mint: str) -> float | None:
         return self.inner.position_return(mint)
