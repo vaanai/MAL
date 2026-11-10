@@ -125,6 +125,8 @@ class Config:
     tieout_dir: str = ""  # hv4_c0 only: the daily tie-out results directory (arena_tieout --check-last-day)
     a3_record_file: str = ""  # hv4_c0 only: the A3 daily record (newest line). A halt flag latches a3_pins_changed (new buys stop; exits run). A live start needs it
     reads_dir: str = ""  # hv4_c0 only: the directory that holds the bot's recorded read (`<bot_id>.json`); no decision row is read without a recorded PASS there
+    open_worst_case_frac: float = 1.0  # FLOOR only (tools/floor_arena_executor.py): share of an open stake charged as its worst case; every other executor leaves it at 1.0 and never reads it
+    wallet_floor_count_held_once: bool = False  # FLOOR only: True drops the `held` term of its floor_problem; every other executor leaves it False and never reads it
 
     @classmethod
     def from_dict(cls, d: Mapping[str, Any], tier: str = "T0") -> "Config":
