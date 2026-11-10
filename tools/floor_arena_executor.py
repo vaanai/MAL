@@ -116,6 +116,10 @@ def make_config(d: Mapping[str, Any]) -> B.Config:
             kw[k] = str(d[k])
     if "dry_balance_lamports" in d:
         kw["dry_balance_lamports"] = int(d["dry_balance_lamports"])
+    once = d.get("wallet_floor_count_held_once", False)
+    if not isinstance(once, bool):
+        raise ValueError("config wallet_floor_count_held_once must be a boolean")
+    kw["wallet_floor_count_held_once"] = once
     return B.Config(bot_id=BOT_ID, frozen_sha=sha, root=str(d["root"]), state_dir=str(d["state_dir"]), end_ms=int(end), max_hold_ms=HOLD_MS, mode=B.DRY,
                     sl_backstop=B.MAX_SL_BACKSTOP, **kw)
 
@@ -179,7 +183,7 @@ class FloorBridge(B.Bridge):
         opens = self.open_orders(scope)
         if self.committed_loss_lamports(scope) + self._position_worst_case(stake) > self.cfg.total_loss_lamports:
             return "committed_loss_stop"
-        held = sum(int(o["stake_lamports"]) for o in opens.values())
+        held = 0 if getattr(self.cfg, "wallet_floor_count_held_once", False) else sum(int(o["stake_lamports"]) for o in opens.values())
         need = held + stake + SEND_FEE_LAMPORTS + RENT_RESERVE_LAMPORTS + (len(opens) + 1) * SELL_RESERVE_LAMPORTS + self.cfg.wallet_floor_lamports
         return "wallet_floor" if bal < need else None
 
