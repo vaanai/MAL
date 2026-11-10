@@ -9,8 +9,8 @@ immediately before EVERY buy. Any one missing runs DRY (a DryPort: logged, never
 LIMITS (DEC-035 s2; the shared ledger is the h5-lane ledger, tools/h5_lane_executor.LaneLedger, taken under its flock and read before every send)
   1 BUDGET      lane P&L <= -0.30 SOL: the budget stop writes the lane STOP file and no entry goes. An entry goes only if lane P&L - (open stakes + new stake + fee reserve per position) > -0.30 SOL.
                 Open positions are marked at the last fresh quote; a mark older than mark_stale_s (<= 60) is worth 0.
-  2 STAKE       FLOOR_LANE_STAKE_BOUNDS_LAMPORTS, one named constant (default 0.02 to 0.03 SOL). The configured stake outside it: the executor refuses to start. One entry per position.
-  3 OPEN        at most LANE_MAX_OPEN (8; DEC-035 Amendment 1, 2026-11-08) across the lane, counted in the shared ledger. A full lane refuses the entry with reason `lane_full` (first come, first served).
+  2 STAKE       FLOOR_LANE_STAKE_BOUNDS_LAMPORTS, one named constant (code ceiling 0.02 to 0.10 SOL; the live config sets the stake in use). The configured stake outside it: the executor refuses to start. One entry per position.
+  3 OPEN        at most LANE_MAX_OPEN (code ceiling 16; the live config sets the value in use, 8 at DEC-035 Amendment 1, 2026-11-08) across the lane, counted in the shared ledger. A full lane refuses the entry with reason `lane_full` (first come, first served).
   4 DAILY       lane P&L now minus lane P&L at the last 00:00Z <= -0.10 SOL: no new entries until the next 00:00Z. Applied as written (marked P&L); no worst-case daily pre-send (Amendment 1).
   6 STOP        the lane STOP file (and the wallet-wide /var/lib/mal-live/STOP and HALT, which the bridge honours) is checked before every send. New entries only: open positions keep the rule's exits.
   ATA           every sell closes the token account (probe_live._start_sell builds close_token_account, checked at start); a landed sell that refunded no rent latches `ata_rent_not_refunded`.
@@ -46,16 +46,21 @@ BOOK_BOT_ID = F.BOT_ID  # the decision-log arm the bridge reads
 FROZEN_SHA = F.FROZEN_SHA
 
 # THE stake bounds of this book in the lane (DEC-035 s2 item 2). A later owner decision raises them here and in DEC-035, plus the test that pins them. Nothing else holds a copy.
-FLOOR_LANE_STAKE_BOUNDS_LAMPORTS = (20_000_000, 30_000_000)
-LANE_MAX_OPEN = 8
+FLOOR_LANE_STAKE_BOUNDS_LAMPORTS = (20_000_000, 100_000_000)  # owner step-up 0.03 -> 0.10 SOL (2026-11-10); the live config still sets the stake in use
+LANE_MAX_OPEN = 16  # a ceiling only; the live config sets max_open
+LANE_MAX_OPEN_DEFAULT = 8  # what a lane block without max_open gets (unchanged from before the step-up)
 # The bridge builds its probe executor with the dec019 profile, which CLAMPS max_open to 3, max_attempts to its pcfg value (60) and max_days to 7. Incident 2026-11-09: a real
 # FLOOR entry was refused `limit:max_open` with only 3 open (the lane cap is 8). The lane's own budget, daily stop, max_open and frozen 14-day canary (floor_arena_executor) are the
 # real limits, so the live port lifts the probe's counters far above anything the lane can reach. FloorLanePort.__init__ applies them to ex.limits.
 LANE_PROBE_MAX_ATTEMPTS = 100_000
 LANE_PROBE_MAX_DAYS = 60.0
-LANE_BUDGET_MAX_LAMPORTS = 300_000_000
+LANE_BUDGET_MAX_LAMPORTS = 600_000_000  # a ceiling only; the live config sets budget_lamports
+LANE_BUDGET_DEFAULT_LAMPORTS = 300_000_000  # what a lane block without budget_lamports gets (unchanged from before the step-up)
 LANE_DAILY_MAX_LAMPORTS = 100_000_000
 LANE_MARK_STALE_MAX_S = 60
+# probe_executor prices an open position from its pool cache only while the cache is younger than STATIC_TTL_MS (300 s). A FLOOR position is held up to 24 h, so the port re-primes the cache
+# of every open mint with one full snapshot at most once per this interval (audit 2026-11-10 option A). Below STATIC_TTL_MS so the cache never lapses between two re-primes.
+LANE_REPRIME_MS = 240_000
 # What one position can cost beyond its stake: ATA rent, the buy fee, the sell ladder at the pinned p155 fee (F.SELL_RESERVE_LAMPORTS).
 LANE_MIN_FEE_RESERVE = F.RENT_RESERVE_LAMPORTS + F.SEND_FEE_LAMPORTS + F.SELL_RESERVE_LAMPORTS
 LANE_UNRESOLVED_MS = H.LANE_UNRESOLVED_MS
@@ -95,8 +100,8 @@ def parse_lane(raw: Any) -> H.LaneConfig:
     stake = _whole(raw, "stake_lamports")
     if not lo <= stake <= hi:
         raise LaneConfigError(f"lane.stake_lamports {stake} is outside [{lo}, {hi}]")
-    max_open = _whole(raw, "max_open", LANE_MAX_OPEN)
-    budget = _whole(raw, "budget_lamports", LANE_BUDGET_MAX_LAMPORTS)
+    max_open = _whole(raw, "max_open", LANE_MAX_OPEN_DEFAULT)
+    budget = _whole(raw, "budget_lamports", LANE_BUDGET_DEFAULT_LAMPORTS)
     daily = _whole(raw, "daily_loss_lamports", LANE_DAILY_MAX_LAMPORTS)
     if not 1 <= max_open <= LANE_MAX_OPEN:
         raise LaneConfigError(f"lane.max_open must be 1..{LANE_MAX_OPEN}")
@@ -228,6 +233,7 @@ class FloorLanePort(B.OrderPort):
             raise SystemExit("floor lane port refused: needs LIVE_BUILT, a live config and a live inner port with an executor")
         self.inner, self.cfg, self.pre_buy, self.on_error = inner, cfg, pre_buy, on_error
         self._rows: dict[tuple[str, str], list[dict[str, Any]]] = {}
+        self._reprime_at: dict[str, int] = {}
         ex = inner.ex
         orig = ex._log
 
@@ -237,7 +243,11 @@ class FloorLanePort(B.OrderPort):
             orig(kind, mint, **kw)
 
         ex._log = _log
-        # Lift the probe dec019 clamps (max_open 3, max_attempts 60, max_days 7); see LANE_PROBE_MAX_ATTEMPTS. loss_cap, size and end_ms stay as the bridge set them.
+        # Lift the probe dec019 clamps (max_open 3, max_attempts 60, max_days 7); see LANE_PROBE_MAX_ATTEMPTS. The probe Limits also clamp size_lamports to 50,000,000 and loss_cap to
+        # 350,000,000 (DEC019_MAX); a lane stake above 0.05 SOL would then be refused `gate:stake_sent_differs`, and a budget above 0.35 SOL would stop at 0.35. Both are set to the
+        # lane's own values (identical to the clamped values for stake 30,000,000 / budget 300,000,000). end_ms stays as the bridge set it.
+        object.__setattr__(ex.limits, "size_lamports", int(cfg.stake_lamports))
+        object.__setattr__(ex.limits, "loss_cap_lamports", int(cfg.total_loss_lamports))
         object.__setattr__(ex.limits, "max_open", int(cfg.max_open))
         object.__setattr__(ex.limits, "max_attempts", LANE_PROBE_MAX_ATTEMPTS)
         object.__setattr__(ex.limits, "max_days", LANE_PROBE_MAX_DAYS)
@@ -288,7 +298,34 @@ class FloorLanePort(B.OrderPort):
         return self.inner.holdings()
 
     def warm(self, mints: list[str]) -> None:
+        self._reprime_open(mints)
         self.inner.warm(mints)
+
+    def _reprime_open(self, mints: list[str]) -> None:
+        """Keep each open position's pool cache fresh (existing fetch/parse path `ex._snapshot`, V from the pool account), at most one fetch per mint per LANE_REPRIME_MS, success or not.
+        A failed fetch leaves the cache and the mark stale (a stale mark counts 0, as before) and is logged by label only. Never raises; touches no order and no entry decision. Side effect (DEC-035 Am.4 item 4): a sell later than ~300 s after entry is built from this warm snapshot (min_out included) instead of a full snapshot fetched at exit."""
+        ex = self.inner.ex
+        cache, state = getattr(ex, "_pool_cache", None), getattr(ex, "state", None)
+        if cache is None or state is None or not getattr(ex, "fast_exit", False):
+            return
+        now = ex.now_ms()
+        for m in mints:
+            if m not in state.open or m in state.pending:
+                self._reprime_at.pop(m, None)
+                continue
+            last = self._reprime_at.get(m)
+            if last is not None and 0 <= now - last < LANE_REPRIME_MS:
+                continue
+            cached = cache.get(m)
+            if cached is not None and 0 <= now - cached[2] < LANE_REPRIME_MS:
+                continue
+            self._reprime_at[m] = now
+            try:
+                snap, _pool, err = ex._snapshot(m)
+            except (Exception, SystemExit) as exc:  # label only
+                snap, err = None, type(exc).__name__
+            if snap is None:
+                print(f"floor_lane_executor ALERT mark_reprime_failed mint={m} label={err}", flush=True)
 
     def position_return(self, mint: str) -> float | None:
         return self.inner.position_return(mint)

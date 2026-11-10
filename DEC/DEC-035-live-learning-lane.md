@@ -65,3 +65,65 @@ Live outcomes of a book in this lane are the lane's own data and are not sealed.
 **Change.** The item 1 pre-send is the bound its own sentence states: a new entry is sent only if cash - (stakes of open positions whose buy is not yet filled + the new stake + the fee reserve) > -0.30 SOL. Filled positions are in cash at their full cost; unfilled intents are charged at their stake; marks never add headroom. Implemented for floor-lane-1 in `tools/floor_lane_executor.py` (`wipe_floor`, PR #1303). `tools/h5_lane_executor.py` is byte-pinned and keeps its own copy; no H5 lane bot runs. The forge DSL lane executor uses the same `floor_lane_executor` ledger class, so DSL lane bots inherit this check; none is running. floor-lane-1 keeps its bot_id, as in Amendment 2: the change touches only the live lane check, not the host or any dry row.
 
 **Unchanged.** The 0.30 SOL budget and its STOP (lane P&L <= -0.30), the fee reserve, the daily stop, the open cap 8, the stake, §3 for any other code change, §6.
+
+## Amendment 4 (2026-11-10): floor-lane-1 step-up to 0.10 SOL, budget 0.60 SOL; fresh marks; open stakes counted once in the wallet floor
+**Decider.** Vaan (owner).
+
+The owner's question came in two copies.
+- **In chat**, manager22 put two options to the owner, in these exact words:
+  > "**(A) Stay at 0.03 until the gate test reaches 100 trades** (the fixes speed that up). If it passes, scale to 0.10–0.25 with real confidence behind it."
+  >
+  > "**(B) Step up to 0.10 once the risk-check fix is installed and the 10-trade fills check passes.** Same S and every trade so far, re-registered. The loss cap stays at your 0.6 SOL."
+
+  The same chat message added: "raising the stake past 0.03 breaks two of the lab's rules: It needs your explicit override of the rule that only a book that passed the promotion gate can scale. It automatically ends FLOOR's current gate test as a FAIL on process grounds."
+- **In MiScusi**, question q_rciWQWvV_i20Rg (17:35Z) offered:
+  - A+: "keep 0.03 SOL a trade, raise the open-position limit 8 → 16, raise the lifetime loss budget 0.30 → 0.60 SOL (your limit)…";
+  - B: "raise the stake to 0.10 after trade #10. Only about 5 positions fit at once, and by its own rules the gate test ends as a FAIL on process grounds."
+
+**Answer.** The owner answered in chat. The manager's state file records the answer at 17:42:36Z; that is the write time of the state line, and the answer came shortly before it.
+> "As for my two choices. Let's step it up. If we can get to 9 dollars a day that will work for now. We need to work hard to get there. From there putting more capital behind it, and having the 9 dollars stack into more capital we can use is easy."
+
+**How the manager reads it.** "Step it up" is option B as offered in chat, including its 0.6 SOL loss cap. "9 dollars a day" is the owner's target, not evidence (CLAUDE.md owner notes).
+
+The owner's standing ramp word of 2026-11-08 (MiScusi notebook, "OWNER 11-08 ~00Z") was: "Let's get started on Floor, you can ramp it up as you see it working." The 0.6 SOL ceiling is the manager's record of the ladder (memory `owner-golive-1108`). It is not the owner's own words; the owner accepted it by choosing B.
+
+**Scope of the override.** It overrides §6 ("only through the promotion gate") for this step and for floor-lane-1 only. It does not lower the promotion gate (CLAUDE.md): **floor-lane-1 has not cleared the gate**, and nothing in this amendment says it makes money.
+
+**Found** (manager22, 2026-11-10):
+1. **Stale marks.** An open position's mark is V-correct, but it goes stale about 300 s after entry: the pool cache is re-primed only while young, and a stale mark counts 0 (§2 item 1). The item 4 daily stop's marked arm then trips at about the 4th net new entry in a UTC day. (A false budget STOP through stale marks alone is prevented by the Am.3 pre-send; it was reachable only through fees beyond the per-position reserve.)
+   - Audit: `/data/mal/hunt-1008/ops/reports/2026-11-10/floor-mark-daily-stop-audit.md`.
+2. **Held stakes counted twice.** The wallet floor (`floor_arena_executor.floor_problem`) adds the open stakes on top of a cash balance that has already paid the landed ones (EXP-029 Erratum 1f, "Found").
+
+**Change** (floor-lane-1 only):
+1. **Stake:** 100,000,000 lamports (0.10 SOL) per entry. The §2 item 2 bounds read [0.02, 0.10] SOL; code `FLOOR_LANE_STAKE_BOUNDS_LAMPORTS`.
+   - The port now sets the inner probe's size and loss cap to the lane values; its own 0.05 / 0.35 SOL clamps would refuse every 0.10 buy.
+2. **Budget:** item 1 reads −0.60 SOL in place of −0.30 SOL; code ceiling `LANE_BUDGET_MAX_LAMPORTS` 600,000,000.
+   - The budget counts from lane start, 0.03 history included; it is not 0.60 more. It still never resets.
+   - Each open position is charged at full stake. The bound study found tails to −21% and three −100% strands (`/data/mal/hunt-1008/push-1110/floor-study/PART1-BOUND.md`), so no reduced weight is used.
+3. **Open cap:** at most 16 across the lane (code ceiling `LANE_MAX_OPEN` 16; the config sets the value in use; owner, Amendment 1: cap raises are the manager's call). At 0.10 SOL other checks bind first (QP arithmetic, PR #1314):
+   - at a balance of 1,088,736,731 lamports, the wallet floor binds at 3 opens;
+   - after the Erratum 1f top-up (1,338,736,731), the wallet floor, `committed_loss_stop` and the pre-send tie at 5;
+   - each −0.1055 SOL of lane cash removes one.
+4. **Fresh marks:** the executor re-primes the pool cache of every open mint at most once per 240 s (`FloorLanePort.warm`), so a healthy open position keeps a fresh, V-correct mark. A failed fetch leaves the mark stale (counted 0), as now.
+   - **Side effect on exits:** a sell later than about 300 s after entry is now built from that warm snapshot (`min_out` included), where before it came from a full snapshot fetched at exit (arena_live_bridge.py:1478-1490; probe_executor.py:1320, :1358-1365; probe_live.py:751-754). The snapshot is at most 240 s old plus the warm cadence.
+   - **Load:** one full pool snapshot per open mint per 240 s, at most 16 mints, so at most about 4 RPC snapshots a minute.
+   - The post-install fills check splits sells by snapshot kind.
+5. **Wallet floor:** `wallet_floor_count_held_once` is true in the floor-lane-1 config. The floor then requires the stakes of buys not yet landed (`buy_sending`, `buy_sent`) + the new stake + send fee + rent reserve + (open + 1) × sell reserve + `wallet_floor_lamports` (max(0.05, funded − 0.25)). The stakes of landed buys are no longer added a second time.
+6. **Daily stop:** unchanged at 0.10 SOL, both arms. With item 4 the marked arm measures real marks. Consequences at the new size (Am.1 (b), (c) restated):
+   - **Daily stop:** it is checked before an entry only, so one UTC day can lose up to the whole remaining lifetime budget (about 5 × 0.1039 SOL plus up to 0.10 already lost that day), never past −0.60 SOL lifetime.
+   - **Quote gaps:** a quote gap over 60 s, or an executor restart (which empties the marks), with even **one** open 0.10 position trips the marked arm until marks are fresh again. At 0.03 that took 4.
+7. **Price impact at 0.10 (§6; in-sample, `PART1-BOUND.md` "Distance to the floor"):** price / floor after our own buy is 1.0113 (q = 0) to 1.0693 (q = 0.5 SOL), against 1.0034 to 1.0612 at 0.03. About 0.55% more one-way impact per 0.07 SOL of extra stake against V + q ≈ 18 SOL. Precondition (b) below measures fills at 0.03 only; the first 10 fills at 0.10 are checked with the same tool after install.
+
+**Bot id.** floor-lane-1 keeps its bot_id and ledger, as in Amendments 2 and 3. Items 4 and 5 are execution-only: they change live lane checks and, for item 4, the sell snapshot, but no host decision and no dry row, because the port is live-only (Errata 1c/1e grounds). Item 1 changes the stake, which EXP-029 §3 treats as a rule change. EXP-029 records the end in Erratum 1g.
+
+**Install.** One HELM-ASK covers the merge sha of this PR, the changed blobs (`tools/floor_lane_executor.py`, `tools/floor_arena_executor.py`, `tools/arena_live_bridge.py`, `tools/forge/dsl_lane_executor.py`) and a new live config: stake 100,000,000; budget 600,000,000; max_open 16; daily 100,000,000; `wallet_floor_count_held_once` true; `funded_lamports` 1,000,000,000. Helm restarts the executor only; the decision host is never restarted.
+
+Before the ask, all of these hold, and the manager records them in the state file:
+- (a) QP OK and REVIEWER APPROVE at the exact head of this PR;
+- (b) `tools.floor_fills_vs_model` prints `FILLS_MATCH_MODEL yes` on at least 10 measured trades (at 0.03);
+- (c) the §2 item 7 unit tests pass at the merge sha;
+- (d) the lane STOP file is absent, and lane cash is recorded.
+
+**Scaling past this step.** Above 0.10 SOL, or above a 0.60 SOL budget, requires the owner's word in a new amendment, with its stake and a price-impact estimate (§6).
+
+**Unchanged.** Keys, STOP/HALT, A3 pauses, the shared lane ledger and lock, the host, the rule `l1-floor-v2` and its exits, §4, §5, §7, and every other lane bot's limits. The DSL lane keeps 0.03 / 0.30 / 8 (`DSL_LANE_*` constants); the stopped H5 lane executors keep theirs.
