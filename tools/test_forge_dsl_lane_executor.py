@@ -129,7 +129,7 @@ def test_lane_bot_id_must_equal_the_config_bot_id_and_config_only_lowers(tmp_pat
     raw["lane"]["bot_id"] = "floor-lane-1"
     with pytest.raises(X.LaneConfigError):
         D.make_config(raw)
-    for k, v in [("max_open", X.LANE_MAX_OPEN + 1), ("budget_lamports", X.LANE_BUDGET_MAX_LAMPORTS + 1), ("daily_loss_lamports", 100_000_001), ("fee_reserve_lamports", 1), ("mark_stale_s", 61)]:
+    for k, v in [("max_open", D.DSL_LANE_MAX_OPEN + 1), ("budget_lamports", D.DSL_LANE_BUDGET_MAX_LAMPORTS + 1), ("daily_loss_lamports", 100_000_001), ("fee_reserve_lamports", 1), ("mark_stale_s", 61)]:
         raw = raw_cfg(tmp_path)
         raw["lane"][k] = v
         with pytest.raises(X.LaneConfigError):
@@ -774,3 +774,17 @@ def test_cost_capping_changes_nothing_when_marks_are_below_cost_or_stale(tmp_pat
 def test_the_bridge_path_uses_the_capped_ledger(tmp_path):
     br, _ = mk(tmp_path, Clock(T0))
     assert isinstance(br.lane, D.DslLaneLedger)
+
+
+def test_dsl_ceilings_stay_8_and_030_after_floor_step_up(tmp_path):
+    """PR #1314 review MAJOR 2: DEC-035 Am.4 raises 16 / 0.60 SOL for floor-lane-1 only; DSL lane bots keep 8 / 0.30 SOL."""
+    assert (D.DSL_LANE_MAX_OPEN, D.DSL_LANE_BUDGET_MAX_LAMPORTS) == (8, 300_000_000)
+    for k, v in [("max_open", 9), ("budget_lamports", 300_000_001)]:
+        raw = raw_cfg(tmp_path)
+        raw["lane"][k] = v
+        with pytest.raises(X.LaneConfigError):
+            D.make_config(raw)
+    for k, v in [("max_open", 8), ("budget_lamports", 300_000_000)]:
+        raw = raw_cfg(tmp_path)
+        raw["lane"][k] = v
+        D.make_config(raw)

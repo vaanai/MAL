@@ -53,6 +53,7 @@ PAPER_STAKE_SOL = L.STAKE_SOL  # the paper book's deciding stake (0.25); the can
 PRIORITY_LAMPORTS = 155_000
 BASE_FEE_LAMPORTS = 5_000
 SEND_FEE_LAMPORTS = PRIORITY_LAMPORTS + BASE_FEE_LAMPORTS  # 160,000
+UNLANDED_BUY_STATUSES = frozenset({"buy_sending", "buy_sent"})  # bridge order statuses whose buy has not landed (arena_live_bridge.open_orders)
 SELL_RESERVE_SENDS = 10  # the worst case of one exit: the sell ladder's sends, each at the top priority (as in h5_arena_executor.SELL_RESERVE_SENDS)
 SELL_RESERVE_LAMPORTS = SELL_RESERVE_SENDS * SEND_FEE_LAMPORTS  # 1,600,000
 RENT_RESERVE_LAMPORTS = B.RENT_RESERVE_LAMPORTS  # 2,100,000, paid on the buy and refunded by the closing sell
@@ -183,7 +184,11 @@ class FloorBridge(B.Bridge):
         opens = self.open_orders(scope)
         if self.committed_loss_lamports(scope) + self._position_worst_case(stake) > self.cfg.total_loss_lamports:
             return "committed_loss_stop"
-        held = 0 if getattr(self.cfg, "wallet_floor_count_held_once", False) else sum(int(o["stake_lamports"]) for o in opens.values())
+        if getattr(self.cfg, "wallet_floor_count_held_once", False):
+            # DEC-035 Am.4 item 5: a landed buy's stake has already left the balance; a buy still sending/sent (not yet landed) has not, so it stays counted
+            held = sum(int(o["stake_lamports"]) for o in opens.values() if o.get("status") in UNLANDED_BUY_STATUSES)
+        else:
+            held = sum(int(o["stake_lamports"]) for o in opens.values())
         need = held + stake + SEND_FEE_LAMPORTS + RENT_RESERVE_LAMPORTS + (len(opens) + 1) * SELL_RESERVE_LAMPORTS + self.cfg.wallet_floor_lamports
         return "wallet_floor" if bal < need else None
 

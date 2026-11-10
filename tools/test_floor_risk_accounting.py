@@ -108,3 +108,14 @@ def test_lane_config_passes_the_option_through(tmp_path):
     raw["wallet_floor_count_held_once"] = "yes"
     with pytest.raises(ValueError):
         X.make_config(raw)
+
+
+@pytest.mark.parametrize("status", ["buy_sending", "buy_sent"])
+def test_held_once_still_counts_unlanded_buys(tmp_path, status):
+    """PR #1314 review MAJOR 1: a buy not yet landed has not left the balance, so held-once keeps its stake in `need`."""
+    b = lane_bridge(tmp_path, wallet_floor_count_held_once=True)
+    b.state.orders = {"o0": {"status": "open", "live": False, "stake_lamports": STAKE},
+                      "o1": {"status": status, "live": False, "stake_lamports": STAKE}}
+    need = STAKE + STAKE + SEND + RENT + 3 * SELL + FLOOR_LAMPORTS  # o1's unlanded stake + the new stake
+    assert b.floor_problem(STAKE, need) is None
+    assert b.floor_problem(STAKE, need - 1) == "wallet_floor"

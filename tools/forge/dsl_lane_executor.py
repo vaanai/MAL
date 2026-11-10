@@ -43,6 +43,8 @@ from tools import h5_lane_executor as H
 LIVE_BUILT = True  # as floor_lane_executor: removes only the `live_not_built` refusal; a send still needs mode live + --live + LIVE_OK + every lane limit
 RESERVED_BOT_IDS = ("floor-lane-1", "h5-lane", "l1-floor-v2")
 DSL_LANE_STAKE_BOUNDS_LAMPORTS = (20_000_000, 30_000_000)  # DEC-035 s2 item 2, this book's one named constant. A later owner decision raises it here, in DEC-035 and in the test that pins it.
+DSL_LANE_MAX_OPEN = 8  # DEC-035 Am.4 raises the ceilings for floor-lane-1 only; DSL lane bots keep Amendment 1's 8
+DSL_LANE_BUDGET_MAX_LAMPORTS = 300_000_000  # and the 0.30 SOL budget
 DSL_RULE = "dsl"
 FOLLOWED_EXIT_REASONS = ("tp", "sl", "trail", "time", "migrated", "restart_close")  # tools/forge/dsl_lane_host.py: the evaluator's REASONS plus no_fill
 REASON_BACKSTOP = "time_backstop"
@@ -90,10 +92,10 @@ def parse_lane(raw: Any, bot_id: str) -> H.LaneConfig:
     max_open = X._whole(raw, "max_open", X.LANE_MAX_OPEN_DEFAULT)
     budget = X._whole(raw, "budget_lamports", X.LANE_BUDGET_DEFAULT_LAMPORTS)
     daily = X._whole(raw, "daily_loss_lamports", X.LANE_DAILY_MAX_LAMPORTS)
-    if not 1 <= max_open <= X.LANE_MAX_OPEN:
-        raise X.LaneConfigError(f"lane.max_open must be 1..{X.LANE_MAX_OPEN}")
-    if not 1 <= budget <= X.LANE_BUDGET_MAX_LAMPORTS:
-        raise X.LaneConfigError(f"lane.budget_lamports must be 1..{X.LANE_BUDGET_MAX_LAMPORTS}")
+    if not 1 <= max_open <= DSL_LANE_MAX_OPEN:
+        raise X.LaneConfigError(f"lane.max_open must be 1..{DSL_LANE_MAX_OPEN}")
+    if not 1 <= budget <= DSL_LANE_BUDGET_MAX_LAMPORTS:
+        raise X.LaneConfigError(f"lane.budget_lamports must be 1..{DSL_LANE_BUDGET_MAX_LAMPORTS}")
     if not 1 <= daily <= X.LANE_DAILY_MAX_LAMPORTS:
         raise X.LaneConfigError(f"lane.daily_loss_lamports must be 1..{X.LANE_DAILY_MAX_LAMPORTS}")
     reserve = X._whole(raw, "fee_reserve_lamports", X.LANE_MIN_FEE_RESERVE)
