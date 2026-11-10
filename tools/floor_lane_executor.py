@@ -303,7 +303,7 @@ class FloorLanePort(B.OrderPort):
 
     def _reprime_open(self, mints: list[str]) -> None:
         """Keep each open position's pool cache fresh (existing fetch/parse path `ex._snapshot`, V from the pool account), at most one fetch per mint per LANE_REPRIME_MS, success or not.
-        A failed fetch leaves the cache and the mark stale (a stale mark counts 0, as before) and is logged by label only. Never raises; touches no order, no entry and no exit."""
+        A failed fetch leaves the cache and the mark stale (a stale mark counts 0, as before) and is logged by label only. Never raises; touches no order and no entry decision. Side effect (DEC-035 Am.4 item 4): a sell later than ~300 s after entry is built from this warm snapshot (min_out included) instead of a full snapshot fetched at exit."""
         ex = self.inner.ex
         cache, state = getattr(ex, "_pool_cache", None), getattr(ex, "state", None)
         if cache is None or state is None or not getattr(ex, "fast_exit", False):

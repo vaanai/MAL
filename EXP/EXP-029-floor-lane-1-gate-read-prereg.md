@@ -292,7 +292,9 @@ The §3 (b) formula, `cash - (open stakes of all lane bots + 30000000 + fee_rese
 
 **Rule.**
 1. The install instant of the 0.10 SOL config is the event. It is the executor restart time from Helm's reply, recorded in the manager's state file and the MiScusi notebook. C is the first 00:00Z after it, R = C + 25 h, and the result is **FAIL** whatever the four tests give (§3).
-2. **The FAIL is procedural.** The read still runs the four §4 tests on the trades in [S, C) and reports them with that label, so the record shows what the fills did. No sentence in the report may call the FAIL a market verdict or call the tests a pass.
+   - If an earlier FAIL-end event (§3 (a) or (b)) comes first, that event sets C.
+   - DEC-035 Amendment 4 item 2 can clear a STOP written under the 0.30 SOL budget. That never undoes a FAIL (a) already reached.
+2. **The FAIL is procedural.** The read still runs the four §4 tests on the trades in [S, C) and reports them with that label, pooled and split by stake (0.03 and 0.10 SOL), so the record shows what the fills did. No sentence in the report may call the FAIL a market verdict or call the tests a pass.
 3. **No second look (§3), unchanged.** Any later registration of `floor-lane-1`, or of `l1-floor-v2` under any lane bot_id, keeps S = 2026-11-09T06:00:00Z and includes every trade since S, at 0.03 and at 0.10 SOL. The clock never restarts.
 4. **Before the install,** every Errata 1–1f rule still applies as written. This includes the one 250,000,000-lamport top-up of Erratum 1f, still not on chain at 17:45Z (balance 1,088,736,731 lamports).
 5. **Outcome-blindness disclosure.** When this was written, the manager had read:
@@ -300,7 +302,13 @@ The §3 (b) formula, `cash - (open stakes of all lane bots + 30000000 + fee_rese
    - the per-trade live returns of the 9 closed floor-lane-1 trades (fills-vs-model, MiScusi #2399/#2400; 4 of them since S);
    - in-sample exploration results (`/data/mal/hunt-1008/push-1110/floor-study/`).
 
-   The choice to end the read was the owner's, made to scale profit, not on the read's outcome.
+   The manager recommended keeping the read in two places: A+ in MiScusi q_rciWQWvV_i20Rg, and B only after the fix in chat. The owner chose B.
+   The owner question and the chat message carried these figures:
+   - the live per-trade returns of the 24 h exits ("about 3%" loss each) and "+50%" for a take-profit;
+   - "$3–4 a day" at 0.10 if the edge is real, which is the manager's estimate;
+   - the in-sample Part 2 SOL/day at 0.10, in "The plan to $9/day" later the same day, labelled "from history, not from proof".
+
+   The FAIL end does not depend on the outcome. The choice was the owner's, made to scale profit, not on the read's outcome.
 
 ## Appendix A. Frozen files (git blob ids at 3710e1af)
 
