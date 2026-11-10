@@ -88,7 +88,8 @@ def started(tmp, bot=BOT):
 
 # ------------------------------------------------------------------------------------------------ constants and config
 def test_constants_follow_dec035_s2_and_the_host():
-    assert D.DSL_LANE_STAKE_BOUNDS_LAMPORTS == X.FLOOR_LANE_STAKE_BOUNDS_LAMPORTS == (H.LANE_STAKE_MIN_LAMPORTS, H.LANE_STAKE_MAX_LAMPORTS) == (20_000_000, 30_000_000)
+    assert D.DSL_LANE_STAKE_BOUNDS_LAMPORTS == (H.LANE_STAKE_MIN_LAMPORTS, H.LANE_STAKE_MAX_LAMPORTS) == (20_000_000, 30_000_000)  # the DSL book's own bound did not move with the FLOOR step-up
+    assert X.FLOOR_LANE_STAKE_BOUNDS_LAMPORTS == (20_000_000, 100_000_000)
     assert D.DSL_BACKSTOP_MARGIN_MS == int(max(C.GRID_S[1:] - C.GRID_S[:-1])) * 1000 + 60_000
     from tools.forge import dsl_lane_host as host
     assert set(D.FOLLOWED_EXIT_REASONS) == set(host.REASON) | {"restart_close"}
@@ -128,7 +129,7 @@ def test_lane_bot_id_must_equal_the_config_bot_id_and_config_only_lowers(tmp_pat
     raw["lane"]["bot_id"] = "floor-lane-1"
     with pytest.raises(X.LaneConfigError):
         D.make_config(raw)
-    for k, v in [("max_open", X.LANE_MAX_OPEN + 1), ("budget_lamports", 300_000_001), ("daily_loss_lamports", 100_000_001), ("fee_reserve_lamports", 1), ("mark_stale_s", 61)]:
+    for k, v in [("max_open", X.LANE_MAX_OPEN + 1), ("budget_lamports", X.LANE_BUDGET_MAX_LAMPORTS + 1), ("daily_loss_lamports", 100_000_001), ("fee_reserve_lamports", 1), ("mark_stale_s", 61)]:
         raw = raw_cfg(tmp_path)
         raw["lane"][k] = v
         with pytest.raises(X.LaneConfigError):

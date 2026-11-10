@@ -156,8 +156,10 @@ def refusals(br):
 
 # ------------------------------------------------------------------------------------------------ constants and config
 def test_constants_follow_dec035_s2():
-    assert X.FLOOR_LANE_STAKE_BOUNDS_LAMPORTS == (20_000_000, 30_000_000) == (H.LANE_STAKE_MIN_LAMPORTS, H.LANE_STAKE_MAX_LAMPORTS)
-    assert (X.LANE_MAX_OPEN, X.LANE_BUDGET_MAX_LAMPORTS, X.LANE_DAILY_MAX_LAMPORTS, X.LANE_MARK_STALE_MAX_S) == (8, 300_000_000, 100_000_000, 60)
+    assert X.FLOOR_LANE_STAKE_BOUNDS_LAMPORTS == (20_000_000, 100_000_000)
+    assert (H.LANE_STAKE_MIN_LAMPORTS, H.LANE_STAKE_MAX_LAMPORTS) == (20_000_000, 30_000_000)  # the H5 lane's own copy is unchanged
+    assert (X.LANE_MAX_OPEN, X.LANE_BUDGET_MAX_LAMPORTS, X.LANE_DAILY_MAX_LAMPORTS, X.LANE_MARK_STALE_MAX_S) == (16, 600_000_000, 100_000_000, 60)
+    assert (X.LANE_MAX_OPEN_DEFAULT, X.LANE_BUDGET_DEFAULT_LAMPORTS) == (8, 300_000_000)  # what a block without the keys gets: unchanged
     assert X.LANE_BOT_ID == "floor-lane-1" and X.BOOK_BOT_ID == "l1-floor-v2" and X.FROZEN_SHA == F.FROZEN_SHA
     assert X.LANE_MIN_FEE_RESERVE == 2_100_000 + 160_000 + 1_600_000
 
@@ -168,7 +170,7 @@ def test_floor_arena_executor_stays_dry():
         F.make_config(cfg_dict(Path("/x"), mode="live"))
 
 
-@pytest.mark.parametrize("stake", [0, 19_999_999, 30_000_001, 50_000_000, None, True, 25_000_000.5])
+@pytest.mark.parametrize("stake", [0, 19_999_999, 100_000_001, 100_000_000.5, None, True, 25_000_000.5])
 def test_refuse_on_bad_stake_config(tmp_path, stake):
     raw = lane_raw(tmp_path)
     if stake is None:
@@ -182,7 +184,7 @@ def test_refuse_on_bad_stake_config(tmp_path, stake):
     assert not (tmp_path / "lane" / "ledger.jsonl").exists()
 
 
-@pytest.mark.parametrize("stake", [20_000_000, 30_000_000])
+@pytest.mark.parametrize("stake", [20_000_000, 30_000_000, 100_000_000])
 def test_bounds_are_inclusive(tmp_path, stake):
     raw = lane_raw(tmp_path)
     raw["lane"]["stake_lamports"] = stake
@@ -190,12 +192,12 @@ def test_bounds_are_inclusive(tmp_path, stake):
 
 
 def test_bounds_come_from_one_constant(tmp_path, monkeypatch):
-    monkeypatch.setattr(X, "FLOOR_LANE_STAKE_BOUNDS_LAMPORTS", (20_000_000, 40_000_000))
+    monkeypatch.setattr(X, "FLOOR_LANE_STAKE_BOUNDS_LAMPORTS", (20_000_000, 130_000_000))
     raw = lane_raw(tmp_path)
-    raw["lane"]["stake_lamports"] = 35_000_000
+    raw["lane"]["stake_lamports"] = 120_000_000
     cfg, lane, _ = X.make_config(raw)
-    assert cfg.stake_lamports == 35_000_000 and lane.stake_lamports == 35_000_000
-    monkeypatch.setattr(X, "FLOOR_LANE_STAKE_BOUNDS_LAMPORTS", (20_000_000, 30_000_000))
+    assert cfg.stake_lamports == 120_000_000 and lane.stake_lamports == 120_000_000
+    monkeypatch.setattr(X, "FLOOR_LANE_STAKE_BOUNDS_LAMPORTS", (20_000_000, 100_000_000))
     with pytest.raises(SystemExit):  # the bridge refuses to start outside the bounds even with a config object that slipped through
         X.FloorLaneBridge(cfg, B.DryPort(1), lane, now_ms=Clock(T0))
 
@@ -204,12 +206,12 @@ def test_bridge_refuses_stake_mismatch_and_bad_max_open(tmp_path):
     import dataclasses
     cfg, lane, _ = X.make_config({**lane_raw(tmp_path), "mode": "dry"})
     with pytest.raises(SystemExit):
-        X.FloorLaneBridge(dataclasses.replace(cfg, stake_lamports=50_000_000), B.DryPort(1), lane, now_ms=Clock(T0))
+        X.FloorLaneBridge(dataclasses.replace(cfg, stake_lamports=100_000_001), B.DryPort(1), lane, now_ms=Clock(T0))
     with pytest.raises(SystemExit):
-        X.FloorLaneBridge(dataclasses.replace(cfg, max_open=9), B.DryPort(1), lane, now_ms=Clock(T0))
+        X.FloorLaneBridge(dataclasses.replace(cfg, max_open=17), B.DryPort(1), lane, now_ms=Clock(T0))
 
 
-@pytest.mark.parametrize("k,v", [("max_open", 9), ("budget_lamports", 300_000_001), ("daily_loss_lamports", 100_000_001), ("mark_stale_s", 61), ("fee_reserve_lamports", 1),
+@pytest.mark.parametrize("k,v", [("max_open", 17), ("budget_lamports", 600_000_001), ("daily_loss_lamports", 100_000_001), ("mark_stale_s", 61), ("fee_reserve_lamports", 1),
                                  ("bot_id", "h5-lane"), ("surprise", 1)])
 def test_lane_config_only_lowers(tmp_path, k, v):
     raw = lane_raw(tmp_path)
@@ -328,14 +330,94 @@ def test_lane_full_race_is_caught_at_the_send_and_releases_the_mint(tmp_path, mo
     assert not [r for r in ledger_rows(tmp_path) if r["ev"] == "send_intent" and r["bot_id"] == "floor-lane-1"]
 
 
-def test_max_open_8_accepted_and_9_refused(tmp_path):
+def test_max_open_ceiling_16_accepted_and_17_refused(tmp_path):
     raw = lane_raw(tmp_path)
-    raw["lane"]["max_open"] = 8
-    cfg, lane, _ = X.make_config(raw)
-    assert lane.max_open == 8 and cfg.max_open == 8
-    raw["lane"]["max_open"] = 9
+    for n in (8, 16):
+        raw["lane"]["max_open"] = n
+        cfg, lane, _ = X.make_config(raw)
+        assert lane.max_open == n and cfg.max_open == n
+    raw["lane"]["max_open"] = 17
     with pytest.raises(ValueError):
         X.make_config(raw)
+
+
+def test_absent_keys_take_the_old_defaults_not_the_new_ceilings(tmp_path):
+    cfg, lane, _ = X.make_config(lane_raw(tmp_path))
+    assert (lane.max_open, lane.budget_lamports) == (8, 300_000_000) and (cfg.max_open, cfg.total_loss_lamports) == (8, 300_000_000)
+
+
+def test_step_up_bounds_accept_010_stake_060_budget_and_refuse_one_lamport_over(tmp_path):
+    raw = lane_raw(tmp_path)
+    raw["lane"].update(stake_lamports=100_000_000, budget_lamports=600_000_000, max_open=16)
+    cfg, lane, _ = X.make_config(raw)
+    assert (lane.stake_lamports, lane.budget_lamports, lane.max_open) == (100_000_000, 600_000_000, 16)
+    assert cfg.stake_lamports == 100_000_000 and cfg.total_loss_lamports == 600_000_000 and cfg.per_trade_loss_lamports == 100_000_000 + lane.fee_reserve_lamports
+    for k, v in (("stake_lamports", 100_000_001), ("budget_lamports", 600_000_001), ("max_open", 17)):
+        bad = lane_raw(tmp_path)
+        bad["lane"].update(stake_lamports=100_000_000, budget_lamports=600_000_000, max_open=16)
+        bad["lane"][k] = v
+        with pytest.raises(ValueError):
+            X.make_config(bad)
+
+
+def test_live_config_stake_30m_budget_300m_max_open_8_validates_and_decides_as_before(tmp_path):
+    raw = lane_raw(tmp_path)
+    raw["lane"].update(stake_lamports=30_000_000, budget_lamports=300_000_000, max_open=8)
+    cfg, lane, _ = X.make_config(raw)
+    assert (lane.stake_lamports, lane.budget_lamports, lane.max_open) == (30_000_000, 300_000_000, 8)
+    led = X.FloorLaneLedger(lane)
+    view = H.lane_fold([], {}, T0, lane.mark_stale_s, X.LANE_BOT_ID)
+    assert led.evaluate(view, T0, 30_000_000) is None
+    assert led.evaluate(view, T0, 30_000_001) is None  # in bounds for the ledger (the config pins the stake); the old 0.03 ceiling no longer applies
+    assert led.evaluate(view, T0, 100_000_001) == "lane_stake_out_of_bounds"
+
+
+def test_port_sets_probe_size_and_loss_cap_to_the_lane_values(tmp_path):
+    """The probe Limits clamp size to 50M and loss_cap to 350M; the port must carry the lane's own (30M/300M unchanged, 100M/600M new)."""
+    for stake, budget in ((30_000_000, 300_000_000), (100_000_000, 600_000_000)):
+        raw = lane_raw(tmp_path)
+        raw["lane"].update(stake_lamports=stake, budget_lamports=budget, max_open=8)
+        cfg, _, _ = X.make_config(raw)
+        inner = FakeInner()
+        inner.ex.limits = lim = pe.Limits.from_config({"size_lamports": stake, "max_open": 8, "max_attempts": 60, "loss_cap_lamports": budget, "priority_lamports": 500_000})
+        X.FloorLanePort(inner, cfg)
+        assert lim.size_lamports == stake and lim.loss_cap_lamports == budget
+        assert pe.check_buy(lim, pe.State(realized_lamports=-(budget - 1)), 1_800_000_000_000 - 10 ** 9, False, "live") != "loss_cap"
+
+
+def test_real_probe_limits_are_clamped_below_010_without_the_port_lift():
+    """Pins WHY the port lifts size/loss_cap: the probe's own Limits cap them (DEC019_MAX), so an unlifted 0.10 buy would refuse gate:stake_sent_differs."""
+    from tools import probe_executor as pe
+    lim = pe.Limits(size_lamports=100_000_000, loss_cap_lamports=600_000_000)
+    assert (lim.size_lamports, lim.loss_cap_lamports) == (50_000_000, 350_000_000)
+
+
+def test_010_stake_entry_flows_through_dry_path_with_the_right_reserves(tmp_path):
+    clk = Clock(T0)
+    raw = lane_raw(tmp_path)
+    raw["lane"].update(stake_lamports=100_000_000, budget_lamports=600_000_000, max_open=16)
+    inner = FakeInner()
+    inner.ex.limits.size_lamports = 100_000_000
+    br, inner = mk(tmp_path, clk, inner=inner, raw=raw)
+    entry(tmp_path)
+    feed(br, clk)
+    assert len(inner.buys) == 1 and inner.buys[0]["stake_lamports"] == 100_000_000
+    intents = [r for r in ledger_rows(tmp_path) if r.get("ev") == "send_intent"]
+    assert len(intents) == 1 and intents[0]["stake_lamports"] == 100_000_000
+    assert br.cfg.per_trade_loss_lamports == 100_000_000 + X.LANE_MIN_FEE_RESERVE
+    assert br._position_worst_case(100_000_000) == 100_000_000 + F.SEND_FEE_LAMPORTS + F.RENT_RESERVE_LAMPORTS + F.SELL_RESERVE_LAMPORTS
+    assert F.RENT_RESERVE_LAMPORTS + F.SEND_FEE_LAMPORTS + F.SELL_RESERVE_LAMPORTS == X.LANE_MIN_FEE_RESERVE
+
+
+def test_010_stake_presend_budget_uses_the_new_stake(tmp_path):
+    clk = Clock(T0)
+    raw = lane_raw(tmp_path)
+    raw["lane"].update(stake_lamports=100_000_000, budget_lamports=600_000_000, max_open=16)
+    other_cash(tmp_path, 500_000_000 - 1)  # cash -0.5 + ... : -(0.5) - (0.10 + reserve) <= -0.60 -> presend refuses
+    br, inner = mk(tmp_path, clk, raw=raw)
+    entry(tmp_path)
+    feed(br, clk)
+    assert inner.buys == [] and refusals(br)[-1]["why"] == "lane_budget_presend"
 
 
 def test_presend_budget_still_refuses_with_fewer_than_8_open(tmp_path):
@@ -968,7 +1050,9 @@ def test_dec019_limits_clamp_max_open_without_the_port():
 
 
 def test_port_lifts_probe_clamps(tmp_path):
-    cfg, _, _ = X.make_config(lane_raw(tmp_path))
+    raw = lane_raw(tmp_path)
+    raw["lane"]["stake_lamports"] = 30_000_000  # the live stake: the bridge-like limits above carry 30M / 300M, which the port leaves unchanged
+    cfg, _, _ = X.make_config(raw)
     inner = FakeInner()
     inner.ex.limits = lim = _bridge_like_limits()
     loss_cap, size, end_ms = lim.loss_cap_lamports, lim.size_lamports, lim.end_ms
