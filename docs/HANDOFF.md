@@ -6,16 +6,16 @@ Read this first. Then the tail of `/data/mal/hunt-1008/ops/manager21/state-manag
 **No book has cleared the promotion gate.** One book trades real money: **FLOOR floor-lane-1** (DEC-035 live-learning lane, mal-fast-0). Realized so far +0.016928927 SOL over 4 closed trades (all bought before the gate read's start S), 5 positions still open at a cost of 0.158369200 SOL. Their market value is not read, so the true total is unknown; the wallet is ~0.14 SOL below its start until those 5 sell.
 
 ## 0. Owner direction (current)
-- **11-08 (memory `owner-golive-1108`):** skip forward paper, go live. FLOOR stake ramp 0.03 → 0.10 → 0.25 only on evidence plus a DEC-035 amendment. All paper reads were retired that night.
+- **11-08 (memory `owner-golive-1108`):** skip forward paper, go live. **FLOOR stake ramp ladder:** 0.03 → 0.10 after 10 closed trades with fills matching the model → 0.25 after 30 with net > 0; each step needs a DEC-035 amendment. The loss cap is never above 0.6 SOL without the owner. All paper reads were retired that night.
 - **Standing:** lane cap raises are the manager's call (memory `owner-floor-cap-1108`). Act without asking and go live when the evidence supports it (`owner-go-live-authority-1106`). Never sit idle: always run parallel work toward revenue (`feedback-never-idle-1108`).
-- **11-09 ~16:1xZ (memory `owner-1109-shadow-iterate`):** "Floor currently is going fine, as long as any fixes are in and it keeps making good trades." Stay proactive. Study the EXP-012 fast-0 shadow's positive vs negative periods and iterate. Haiku/API credits are the manager's call ("maybe you model a haiku after the successes of the fast-0 shadow").
+- **11-09 ~16:1xZ (memory `owner-1109-shadow-iterate`; paraphrase, not verbatim):** FLOOR is going fine as long as the fixes are in and it keeps making good trades. Stay proactive. Study the EXP-012 fast-0 shadow's positive vs negative periods and iterate. Haiku/API credits are the manager's call; the owner suggested a Haiku bot modelled on the shadow's successes.
 - **Helm acts on the owner's word given directly in Helm chat**, not on relayed approval. Funding goes only through the owner and Helm. No Claude session reads a wallet key.
 - Hard rules, seals and the promotion gate are unchanged (CLAUDE.md).
 
 ## 1. FLOOR floor-lane-1 (the one live book)
 **Setup.**
 - **Live config:** `/etc/mal-floor-lane/live-f68cf56fcce8b1127e7159d8069506f0988eb95d.json`, sha256 24bcdeb9… It is byte-identical to the older live-3710e1af… and live-e8790f93… files.
-- **Limits:** stake 0.03 SOL; max_open 8; lifetime budget 0.30 SOL; daily stop 0.10; fee reserve 3,860,000; executor end 1796688000000 (12-07).
+- **Limits:** stake 0.03 SOL; max_open 8; lifetime budget 0.30 SOL; daily stop 0.10; fee reserve 3,860,000; executor end 1796688000000 (2026-12-08T00:00:00Z).
 - **Executor:** `mal-floor-lane.service`, PID **101816**, pin f68cf56f (blob tools/floor_lane_executor.py 556d1562), started 2026-11-09T14:26:01.071Z (HELM-REPLY-1109-3).
 - **Host:** `mal-floor-lane-host.service`, PID **3484327**, since 11-08T08:32:01Z, uncapped paper book l1-floor-v2, exits tp_1.5x or time_24h. **Never restart the host** (a restart blocks entries 24 h). Executor-only restarts go through Helm (HELM-ASK files).
 - **Wallet:** 5n95HyhZqjZNkjdp44QGJoAqk4ZFjDgMKuUzWcQqSugk (public key only). A buy costs 31,673,840 lamports; the sell closes the ATA, so rent comes back.
@@ -29,7 +29,7 @@ Read this first. Then the tail of `/data/mal/hunt-1008/ops/manager21/state-manag
 
 **OPEN OWNER QUESTION `q_Ehou-Xil3LPdQw`** (Helm top-up ~0.25 SOL; deadline **2026-11-11T16:32:39Z**).
 - Manager recommendation given: yes. The 0.30 lifetime budget does not change; the top-up adds slots only.
-- **On yes**, per EXP-029 Erratum 1f (#1307): write a HELM-ASK for exactly 250,000,000 lamports with no config change. Record the instant, the amount, and the refusal counts before and after. Close the question with `miscusi_ask_close`.
+- **On yes**, per EXP-029 Erratum 1f item 2 (#1307): write a HELM-ASK for exactly 250,000,000 lamports; the transfer fee is extra. Make no config change: `funded_lamports` stays 1,000,000,000, and there is no restart. Never ask for a different amount or a second top-up in this read. Helm acts only on the owner's own word in Helm chat (§0), so ask the owner to tell Helm directly too. Record the instant (the transfer's block time), the amount, and the wallet_floor refusal counts before and after. Close the question with `miscusi_ask_close`.
 - **On no, or no answer by the deadline:** no top-up in this read. Close the question.
 
 **Gate read EXP-029** (Errata 1, 1a–1f merged).
@@ -58,12 +58,13 @@ Read this first. Then the tail of `/data/mal/hunt-1008/ops/manager21/state-manag
 | daily 00:20 | #2290 writes `~/mal-data/floor-lane-daily/<day>.{txt,json}` on fast-0 → notebook (+ console.json when there is news) |
 | every 300 s | #2291 health watch (exit 3 = alert) |
 | **11-11 16:32:39** | Deadline of the owner top-up question (§1) |
-| **11-11 22:00–22:08** | research-0 arena feed #1652 ends (runbook `docs/runbooks/feed-handover-1111.md`). Its consumers (Haiku v4, forge) are retired or stopped. **First check whether anything still reads `/data/mal/arena/tape`** (memory `feedback-archive-list-check`). If nothing does, let it end and record that. FLOOR does not use it. The cron "11-10 20:13" is this step. |
-| **by ~11-15T07Z** | **Tip writer #2033 + push #2039 reach their 14-day limits.** FLOOR's host reads the tip tape (via link-dir #2266), so a writer stop starves FLOOR. Follow `docs/runbooks/tip-writer-handoff.md` (resumable writer; `after` does not fire on a time-limit stop). Expect one writer-restart hour: confirm with a counts-only check that the FLOOR host sees no gap or refusal storm afterwards. The cron is "11-12 10:13". |
+| **11-11 22:00–22:08** | research-0 arena feed #1652: this is the runbook's fallback hand-off window (`docs/runbooks/feed-handover-1111.md`); the job's own limit ends ~11-12T00:30Z. Its consumers (Haiku v4, forge) are retired or stopped. **First check whether anything still reads `/data/mal/arena/tape`** (memory `feedback-archive-list-check`). If nothing does, let it end and record that. FLOOR does not use it. The cron "11-10 20:13" is this step. |
+| **by ~11-15T06Z** | **Tip writer #2033 (~06:08Z) + push #2039 (~06:23Z) reach their 14-day limits.** FLOOR's host reads the tip tape (via link-dir #2266), so a writer stop starves FLOOR. Follow `docs/runbooks/tip-writer-handoff.md` (resumable writer; `after` does not fire on a time-limit stop). Expect one writer-restart hour: confirm with a counts-only check that the FLOOR host sees no gap or refusal storm afterwards. The cron is "11-12 10:13". |
+| **job limits (computed at 02:05Z as limit − ran)** | Before each end, start a successor or record "let end (reason)":<ul><li>#1814 meta-capture ~11-11T15:20Z: its consumers (HV books) are retired; let it end unless something still reads it.</li><li>#2169 r4-b mirror ~11-14T21:23Z: r4-b is not active; probably let it end.</li><li>**#1952 watchdog ~11-14T04:17Z: successor.**</li><li>**#2276 fast-0 disk guard ~11-15T08:35Z: successor.**</li><li>**#2055 pool_cache ~11-15T23:30Z, #2064 hour-health staging ~11-16T00:15Z, #2062 follower health ~11-21T01:01Z:** tip health. The job names say "END 11-25", but the 336 h limit stops them first. Successor if anything FLOOR-side uses them.</li><li>**#1896 A3 deadman ~11-18T21:17Z, #1898 A3 guard ~11-21T01:01Z:** the FLOOR executor checks the A3 gate (`/var/lib/mal-hv4-c0/a3/daily.jsonl`; Helm's replies show "A3 gate clear"). Confirm what a stale A3 record does to FLOOR, then start successors in time.</li><li>#2134 venue tape ~11-21T02:31Z: check its consumers.</li></ul>MiScusi refuses totals above 14 days, and `after` does not fire on a time-limit stop. |
 | 11-14 12:00 | #2348 pin check (accepts blob 6f353716 or 556d1562) |
 | 11-16 06:13 | Nudge cron: HELM-ASK-1108-1 window open (check only; the owner already said yes) |
 | 11-21 00:05 | #2353 reset check (exit 3 = not done → chase Helm) |
-| **11-21 18:13** | Successors to END 2026-11-30T07Z for: #2290 daily report and #2291 health watch (end 11-22), **and #2266 FLOOR tip link-dir (limit ≈ 11-22T01:40Z)**. Also #2062/#2064/#2055 tip health (END 11-25) if FLOOR still reads tip health then. |
+| **11-21 18:13** | Successors to END 2026-11-30T07Z for: #2290 daily report and #2291 health watch (end 11-22), **and #2266 FLOOR tip link-dir (limit ≈ 11-22T01:43Z)**. (#2290/#2291 end ~11-22T13:3xZ.) |
 | 11-30 06:00 | EXP-029 deadline: write the read per the prereg + errata (QP first) |
 
 ## 3. Other lines (all off unless said)
@@ -72,7 +73,7 @@ Read this first. Then the tail of `/data/mal/hunt-1008/ops/manager21/state-manag
   - **Holdout:** ungated −3.4% per trade, and the best gates were worse (−4.8%, −7.2%).
   - No autocorrelation or hour structure. Live cost is ~5.8% per trade.
   - **Verdict:** no regime to catch. The "positive since Thursday" stretch (11-08 +0.156) was followed by 11-09 −0.176 (partial day). Do not model a Haiku bot on it.
-- **Haiku strategy forge:** STOPPED 11-09 16:11Z (#2279 cancelled). best_fit was flat at 0.190 for ~2 days; 232,616 specs; shortlist 0; VAL reads all negative; $99.68 of $160 spent. About $60 is left; spend it only on an idea with a testable edge. The $200/month API cap resets after 11-11 (memory `owner-approvals-1028`). Code: `tools/forge/`, spec `ops/manager21/FORGE-SPEC.md`. The DSL live path is merged (#1277/#1282) but no DSL bot was ever started.
+- **Haiku strategy forge:** STOPPED 11-09 16:11Z (#2279 cancelled). best_fit was flat at 0.190 for ~2 days; 232,616 specs; shortlist 0; all VAL reads failed (ex-top-3 negative or CI90 lower bound < 0); $99.68 of $160 spent. About $60 is left; spend it only on an idea with a testable edge. The $200/month API cap resets after 11-11 (memory `owner-approvals-1028`). Code: `tools/forge/`, spec `ops/manager21/FORGE-SPEC.md`. The DSL live path is merged (#1277/#1282) but no DSL bot was ever started.
 - **slowbot-h-1:** stopped 11-08 00:11Z with 0 sends. HV4/HV6/HV7, h5v2, h5 lane3, BOOST watch and EXP-027 were all retired 11-08 ~00:34Z (owner decision; notebook n_j0z3_wYlJOMCaw). r4-b and s1t are not active.
 
 ## 4. Owed (not yet done)
@@ -93,10 +94,10 @@ Read this first. Then the tail of `/data/mal/hunt-1008/ops/manager21/state-manag
 - **Tip / feeds:** #2033 writer, #2039 push, #2062, #2064, #2055, #2169 r4-b mirror, #2134 venue tape, #1652 research-0 arena feed, #1814 meta-capture.
 - **Guards:** #1952 watchdog, #2276 disk guard, #1898 + #1896 A3 guards, #2214 (→ #2217) structure monitor.
 
-**Never `miscusi_job_status`** these: #1561 #1562 #1419 #1421 #1543 #1540 #1446 #1036 #1290 #2018 #2019, nor any s1t / h5v2 / HV4 shadow, smoke, judge or score job. Use job_list for them.
+**Never `miscusi_job_status`** (carried word for word from the manager20 handoff): #1561 #1562 #1419 #1421 #1543 #1540 #1446 #1036 #1290, the HV4 E5/E6 loops (#1567 #1568 #1569, #1559 #1560), #2018 #2019, and every s1t / h5v2-bx10-f1 shadow, smoke, judge, A3 or score job (incl. **#2219, #2251**). Use job_list. Treat HV4 L8 jobs (#1519 #1520) cautiously. Many of these were cancelled 11-08, but the rule still holds. For the A3 guards #1896/#1898, read limits from job_list, not job status. (The #1309 review agent ran job status on #1896/#1898 filtered to the name, limit and ran lines only, with no log lines shown; this is disclosed in its report `ops/reports/2026-11-10/pr1309-handoff-t0-review.md`.)
 
 ## 6. Rules you will need at once
-- Paste `/data/mal/hunt-1008/push-1016/hunt30/SEALS-BRIEF.md` verbatim into every tape-touching brief. Never open /var/lib/mal/sealed/*, tape contents, or shadow/smoke dirs. Readers of /var/lib/mal-live/** are manager jobs only, counts and order ids only.
+- Paste `/data/mal/hunt-1008/push-1016/hunt30/SEALS-BRIEF.md` (sha256 now dce6104b…, after the EXP-012 runner reader line of 11-09T04:41Z; AGENT-BRIEF-COMMON still cites 9995ec7d) verbatim into every tape-touching brief. Never open /var/lib/mal/sealed/*, tape contents, or shadow/smoke dirs. Readers of /var/lib/mal-live/** are manager jobs only, counts and order ids only.
 - **Merges:** `QP VERDICT <head> OK` + `REVIEWER VERDICT <head> APPROVE` at the exact head, then `gh pr merge N --squash --match-head-commit <sha>`. T1 needs separate agents; T0 can use one combined agent. Workers never merge.
 - **MiScusi jobs:**
   - fast-0 has 8 CPU slots and they fill up; use cpus 0.2 for status jobs and 0.1 for sleepers.
