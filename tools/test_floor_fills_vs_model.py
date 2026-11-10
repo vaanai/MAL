@@ -16,10 +16,11 @@ BUY_OUT = S + 2_100_000 + 160_000
 QE = 20e9  # effective quote reserve, lamports (V included)
 BE = 1e15  # base reserve, raw
 SPOT_LAM = QE / BE  # lamports per raw token
-MARK = SPOT_LAM / 1000.0  # SOL per UI token (the units of mark0 and mark_send)
+MARK = SPOT_LAM / 1000.0  # SOL per UI token: mark0 (the pool spot at the decision print)
 FEE_LAM = 75_000  # pool fee estimate on S
 NET = S - FEE_LAM
 TOK_Q = BE * NET / (QE + NET)  # tokens the quote promises
+MARK_SEND = (QE + NET) / (BE - TOK_Q) / 1000.0  # mark_send is the POST-buy spot of the quoted buy (probe_executor.entry_quote)
 
 
 def lrow(ev, mint, ts, *, sol_in=0, sol_out=0, sig=None, **kw):
@@ -53,7 +54,7 @@ def dec_exit(oid, ms, reason, seq=1):
     return {"seq": seq, "arm": T.BOOK_BOT_ID, "ms": ms, "kind": "exit", "order_id": oid, "pool": "P" + oid, "reason": reason, "attempt": 1, "decision_slot": 9, "prev": "0", "sha": "0"}
 
 
-def fills_buy(mint, ts, *, sig="sigb", slip=0.0, mark_send=MARK, tokens=None, **kw):
+def fills_buy(mint, ts, *, sig="sigb", slip=0.0, mark_send=MARK_SEND, tokens=None, **kw):
     """A probe `buy` row. tokens = quote tokens / (1 + slip): the fill price is `slip` above the quote price."""
     tok = TOK_Q / (1.0 + slip) if tokens is None else tokens
     return {"kind": "buy", "ts_ms": ts, "mint": mint, "book": "b", "landed": True, "signature": sig, "spend_lamports": S, "tokens_received": int(tok), "expected_tokens": int(TOK_Q),
@@ -83,7 +84,7 @@ def test_entry_slippage_matches_injected_slip_and_fees():
     assert t1["fees_live_pp"] == pytest.approx(320_000 / S * 100) and t1["fees_model_pp"] == pytest.approx(320_000 / S * 100)
     assert t1["entry_lag_ms"] == 50 and t1["entry_ts_ms"] == BASE + STEP and t1["exit_ts_ms"] == BASE + STEP + 3_600_000
     s = rep["summary"]
-    assert s["median_entry_slip_pp"] == pytest.approx(1.0, abs=1e-3) and s["verdict"] == "yes" and not any(s["flags"].values())
+    assert s["median_entry_slip_pp"] == pytest.approx(1.0, abs=1e-3) and s["verdict"] == "no" and not any(s["flags"].values())  # only 2 measured: below the 10
 
 
 def test_impact_term_uses_live_stake():
@@ -255,3 +256,62 @@ def test_constants_match_code():
     assert T.LANE_BOT_ID == FL.LANE_BOT_ID and T.BOOK_BOT_ID == FL.BOOK_BOT_ID == L.BOT_ID
     assert (L.REASON_TP, L.REASON_TIME) == T.FOLLOWED_EXITS
     assert T.SEND_FEE_LAMPORTS == FA.SEND_FEE_LAMPORTS
+
+
+def test_derive_qe_recovers_reserve_from_post_buy_spot():
+    # the real entry_quote convention: mark = spot after the quoted buy; Q = 60e9, B = 3e14, spend 0.03 SOL
+    q, b, spend = 60e9, 3e14, 30_000_000
+    net = spend - 75_000
+    tok = b * net / (q + net)
+    mark_post = (q + net) / (b - tok) / 1000.0
+    assert T.derive_qe(spend, 75_000, tok, mark_post) == pytest.approx(q, rel=1e-6)
+    assert T.derive_qe(spend, 75_000, tok, (q / b) / 1000.0) is None  # a pre-trade spot is not the convention
+
+
+def test_min_trades_counts_only_measured_entry_slips():
+    led, dec, fil = make([(0.45, "tp_1.5x", 0.0)])
+    for i in range(1, 10):  # nine more closed trades that never bought: matched, but no fill to score
+        mint, oid, t0 = f"X{i:02d}xxxxxxxx", f"x{i:02d}", BASE + i * STEP
+        led += [intent(mint, oid, t0), lrow("writeoff", mint, t0 + 70_000, reason="buy_expired", sig=f"intent:{oid}")]
+        dec.append(dec_entry(oid, t0 - 50, mint, 100 + i))
+    s = T.build_report(led, dec, fil)["summary"]
+    assert s["n_matched"] == 10 and s["n_entry_measured"] == 1 and s["verdict"] == "no"
+    assert any("only 1 matched filled trades" in c for c in s["verdict_failed_clauses"])
+
+
+def test_min_trades_cannot_be_lowered():
+    led, dec, fil = make([(0.45, "tp_1.5x", 0.0)] * 3)
+    rep = T.build_report(led, dec, fil, min_trades=1)
+    assert rep["summary"]["verdict"] == "no" and rep["rule"]["min_trades"] == 10
+    led, dec, fil = make([(0.45, "tp_1.5x", 0.0)] * 12)
+    assert T.build_report(led, dec, fil, min_trades=13)["summary"]["verdict"] == "no"
+
+
+def test_fallback_match_skips_claimed_host_entries():
+    led, dec, fil = make([(0.45, "tp_1.5x", 0.0), (0.45, "tp_1.5x", 0.0)])
+    dec = [d for d in dec if d["order_id"] != "o01"]  # o01's own host entry is missing
+    dec[0]["meta"]["mint"] = "M01xxxxxxxx"  # o00's entry (claimed by o00) now looks like a mint/time candidate for o01
+    rep = T.build_report(led, dec, fil, min_trades=1)
+    by = {r["order_id"]: r for r in rep["trades"]}
+    assert by["o00"]["match_key"] == "order_id" and not by["o01"]["matched"]
+    assert rep["summary"]["n_unmatched"] == 1
+
+
+def test_estimated_token_count_is_not_measured():
+    led, dec, fil = make([(0.45, "tp_1.5x", 0.0)])
+    fil[0]["tokens_source"] = "quote_estimate"
+    r = T.build_report(led, dec, fil, min_trades=1)
+    t = r["trades"][0]
+    assert t["entry_slip_pp"] is None and t["entry_note"] == "estimated_tokens"
+    assert r["summary"]["filled_without_entry_slip"] == ["o00"] and r["summary"]["verdict"] == "no"
+    fil[0]["tokens_source"], fil[0]["estimated"] = "meta", True
+    assert T.build_report(led, dec, fil, min_trades=1)["trades"][0]["entry_note"] == "estimated_tokens"
+    fil[0]["estimated"] = False
+    assert T.build_report(led, dec, fil, min_trades=1)["trades"][0]["entry_slip_pp"] is not None
+
+
+def test_intent_on_open_mint_is_counted_and_fails():
+    led, dec, fil = make([(0.45, "tp_1.5x", 0.0)] * 10)
+    led.insert(0, intent("M00xxxxxxxx", "dropped", BASE - 5_000))  # still open when o00's intent arrives on the same mint
+    s = T.build_report(led, dec, fil)["summary"]
+    assert s["n_overwritten_open"] == 1 and s["verdict"] == "no" and any("overwrote" in c for c in s["verdict_failed_clauses"])

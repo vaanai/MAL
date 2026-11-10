@@ -26,7 +26,8 @@ ENTRY CHECK
   model price   = mark0 x (1 + net / Qe) / (1 - fee_ppm / 1e6) at the LIVE stake. mark0 is the pool spot at the decision print (post-trade state of that print, SOL/UI,
                   V included; arena_rule_l1.on_row), NOT a post-buy mark. The price a buy of `net` pays on a constant-product book with effective quote reserve Qe is
                   spot x (1 + net/Qe) (tools/arena_rule_l1._tp_hit: tok = Be x net / (Qe + net)). net = spend - pool_fee_est; fee_ppm = pool_fee_est x 1e6 / spend. Qe is not in
-                  the decision row; it is backed out of the live quote at send (expected_tokens, mark_send, spend): Qe = net / (net / (mark_send x 1000 x expected_tokens) - 1).
+                  the decision row; it is backed out of the live quote at send (expected_tokens, mark_send, spend): Qe = r x net / (1 - r), r = net / (mark_send x 1000 x expected_tokens).
+                  mark_send is the POST-buy spot of the quoted buy (probe_executor.entry_quote), on the same V basis (vault + V) as mark0.
                   If Qe cannot be derived, the impact term is left out (impact_adjusted false) and the number then includes the live stake's own impact.
   entry_slip_pp = (live price / model price - 1) x 100. Positive = paid more than the model. Caveat, stated not fixed: the paper model fills at the landing state a few slots
                   after the decision print; mark0 is the decision-print spot, so market drift during our latency is inside this number. fill_vs_quote_pp (price_vs_quote_bps / 100,
@@ -45,8 +46,10 @@ VERDICT RULE (fixed in code; constants below)
     (1) every closed trade is matched to a host entry row;
     (2) every trade that bought (a filled buy) has a measurable entry slippage, and the median entry slippage is <= 3.0 pp;
     (3) no trade carries flag_a, flag_b or flag_c;
-    (4) at least 10 matched closed trades (--min-trades).
-  Otherwise `FILLS_MATCH_MODEL no`, with the failing clauses listed. Buys that landed with an error and expired buys are closed trades, scored at real cash.
+    (4) at least 10 matched, filled trades with a MEASURED entry slip (--min-trades can raise this, never lower it);
+    (5) no send_intent overwrote a still-open group on the same mint.
+  Otherwise `FILLS_MATCH_MODEL no`, with the failing clauses listed. Buys that landed with an error and expired buys are closed trades, scored at real cash
+  and under the flags, but they do not count toward (4). A buy whose token count is an estimate (tokens_source not meta / ata_balance, or estimated) has no measured slip.
 
 Filters: --day YYYY-MM-DD (UTC day of the send_intent), --since / --until (ISO or epoch ms). Output: text table (default) or --json.
 """
@@ -125,6 +128,7 @@ def fold_trades(rows: Iterable[dict[str, Any]], bot_id: str = LANE_BOT_ID) -> di
     cur: dict[str, dict[str, Any]] = {}  # mint -> open group
     closed: list[dict[str, Any]] = []
     not_sent = 0
+    overwritten = 0
     for r in rows:
         if r.get("bot_id") != bot_id:
             continue
@@ -137,6 +141,8 @@ def fold_trades(rows: Iterable[dict[str, Any]], bot_id: str = LANE_BOT_ID) -> di
         if ev in ("start", "snap") or not isinstance(mint, str) or ev == "would_send" or r.get("mode") == "dry":
             continue
         if ev == "send_intent":
+            if mint in cur:
+                overwritten += 1  # an earlier group on this mint is dropped by a new intent (lane_fold does the same); counted, and it fails the verdict
             sig = r.get("signature")
             oid = sig[len("intent:"):] if isinstance(sig, str) and sig.startswith("intent:") else None
             cur[mint] = {"order_id": oid, "mint": mint, "intent_ms": _i(r.get("ts_ms")), "stake_lamports": _i(r.get("stake_lamports")), "net": 0, "fees": 0, "rent_unreclaimed": 0,
@@ -167,7 +173,7 @@ def fold_trades(rows: Iterable[dict[str, Any]], bot_id: str = LANE_BOT_ID) -> di
                 g["close_ev"], g["close_reason"], g["close_ms"] = close, r.get("reason"), _i(r.get("ts_ms"))
                 closed.append(g)
             del cur[mint]
-    return {"closed": closed, "open": list(cur.values()), "not_sent": not_sent}
+    return {"closed": closed, "open": list(cur.values()), "not_sent": not_sent, "overwritten_open": overwritten}
 
 
 # --------------------------------------------------------------------------------------------------------------------------------- joins
@@ -185,12 +191,12 @@ def index_decisions(rows: Iterable[dict[str, Any]]) -> dict[str, dict[str, Any]]
     return out
 
 
-def match_decision(t: dict[str, Any], dec: dict[str, dict[str, Any]]) -> tuple[str | None, dict[str, Any] | None, str | None]:
+def match_decision(t: dict[str, Any], dec: dict[str, dict[str, Any]], claimed: set[str] = frozenset()) -> tuple[str | None, dict[str, Any] | None, str | None]:
     """(order_id of the host entry, its decision record, match key)."""
     oid = t["order_id"]
     if oid is not None and oid in dec and dec[oid]["entry"] is not None:
         return oid, dec[oid], "order_id"
-    cands = [(k, d) for k, d in dec.items() if d["entry"] is not None and (d["entry"].get("meta") or {}).get("mint") == t["mint"]
+    cands = [(k, d) for k, d in dec.items() if k not in claimed and d["entry"] is not None and (d["entry"].get("meta") or {}).get("mint") == t["mint"]
              and 0 <= t["intent_ms"] - _i(d["entry"].get("ms")) <= FALLBACK_WINDOW_MS]
     if len(cands) == 1:
         return cands[0][0], cands[0][1], "mint_time"
@@ -209,19 +215,25 @@ def find_buy(t: dict[str, Any], fills: Sequence[dict[str, Any]]) -> tuple[dict[s
 
 
 def derive_qe(spend: float, fee_lam: float, tok_q: float | None, mark_send: float | None) -> float | None:
-    """Effective quote reserve (lamports, V included) backed out of the live quote at send: tok = Be x net / (Qe + net), spot = Qe / Be."""
+    """Effective quote reserve Qe (lamports, V included) backed out of the live quote at send. `mark_send` is the POST-buy spot of the quoted buy
+    (probe_executor.entry_quote: spot_sol_per_ui(q + net, base - tokens)): mark x tok = net x (Qe + net) / Qe, so r = net / (mark_lam x tok) = Qe / (Qe + net) and Qe = r x net / (1 - r)."""
     if not tok_q or not mark_send or tok_q <= 0 or mark_send <= 0:
         return None
     net = spend - fee_lam
-    s_lam = mark_send * 1000.0  # lamports per raw token
-    den = net / (s_lam * tok_q) - 1.0
-    return net / den if den > 0 and net > 0 else None
+    if net <= 0:
+        return None
+    r = net / (mark_send * 1000.0 * tok_q)  # mark in lamports per raw token = mark_send x 1000
+    return r * net / (1.0 - r) if 0 < r < 1 else None
 
 
 def entry_check(buy: dict[str, Any] | None, mark0: float | None) -> dict[str, Any]:
     out: dict[str, Any] = {"live_price": None, "model_price": None, "entry_slip_pp": None, "impact_adjusted": None, "fill_vs_quote_pp": None, "entry_note": None}
     if buy is None:
         out["entry_note"] = "no_fills_row"
+        return out
+    src = buy.get("tokens_source")
+    if buy.get("estimated") is True or (src is not None and src not in ("meta", "ata_balance")):
+        out["entry_note"] = "estimated_tokens"  # tokens_received is the quote's own number (probe_live._finish_buy): the price would show drift only
         return out
     spend, tok = _num(buy.get("spend_lamports")), _num(buy.get("tokens_received"))
     if not spend or not tok or spend <= 0 or tok <= 0:
@@ -253,12 +265,13 @@ def build_report(ledger_rows: Sequence[dict[str, Any]], decision_rows: Sequence[
 
     closed = [t for t in fold["closed"] if in_window(t)]
     open_ = [t for t in fold["open"] if in_window(t)]
+    claimed = {t["order_id"] for t in fold["closed"] + fold["open"] if t["order_id"] is not None and t["order_id"] in dec and dec[t["order_id"]]["entry"] is not None}
     trades: list[dict[str, Any]] = []
     unmatched: list[dict[str, Any]] = []
     for t in sorted(closed, key=lambda x: x["intent_ms"]):
         stake = t["stake_lamports"]
         live = t["net"] / stake if stake > 0 else None
-        hid, d, key = match_decision(t, dec)
+        hid, d, key = match_decision(t, dec, claimed)
         followed = [e for e in (d["exits"] if d else []) if e.get("reason") in FOLLOWED_EXITS]
         if t["close_ev"] == "exit":
             reason = followed[0]["reason"] if followed else (d["exits"][0].get("reason") if d and d["exits"] else "no_decision_exit")
@@ -296,7 +309,8 @@ def build_report(ledger_rows: Sequence[dict[str, Any]], decision_rows: Sequence[
                                "n_estimated_rows": sum(t["estimated_rows"] for t in closed), "n_zero_cash": sum(1 for t in closed if t["net"] == 0),
                                "n_entry_measured": len(slips), "filled_without_entry_slip": filled_no_slip,
                                "median_entry_slip_pp": statistics.median(slips) if slips else None, "mean_entry_slip_pp": statistics.fmean(slips) if slips else None,
-                               "worst_entry_slip_pp": max(slips) if slips else None, "flags": flags}
+                               "worst_entry_slip_pp": max(slips) if slips else None, "flags": flags, "n_overwritten_open": fold["overwritten_open"]}
+    min_eff = max(min_trades, MIN_TRADES)  # a lower --min-trades never makes the ramp verdict easier
     fails: list[str] = []
     if summary["n_unmatched"]:
         fails.append(f"{summary['n_unmatched']} closed trade(s) not matched to a host entry row")
@@ -309,12 +323,14 @@ def build_report(ledger_rows: Sequence[dict[str, Any]], decision_rows: Sequence[
     for k, names in flags.items():
         if names:
             fails.append(f"{k} fires on {len(names)} trade(s): {', '.join(str(n) for n in names[:5])}")
-    if n_matched < min_trades:
-        fails.append(f"only {n_matched} matched closed trades (< {min_trades})")
+    if fold["overwritten_open"]:
+        fails.append(f"{fold['overwritten_open']} send_intent(s) overwrote a still-open group on the same mint")
+    if len(slips) < min_eff:
+        fails.append(f"only {len(slips)} matched filled trades with a measured entry slip (< {min_eff})")
     summary["verdict"] = "yes" if not fails else "no"
     summary["verdict_failed_clauses"] = fails
     return {"rule": {"median_entry_slip_max_pp": MEDIAN_ENTRY_SLIP_MAX_PP, "flag_a_below": FLAG_A_RET, "flag_b_tp_below": FLAG_B_RET, "flag_c_time_below": FLAG_C_RET,
-                     "min_trades": min_trades, "send_fee_lamports": SEND_FEE_LAMPORTS}, "trades": trades, "summary": summary}
+                     "min_trades": min_eff, "send_fee_lamports": SEND_FEE_LAMPORTS}, "trades": trades, "summary": summary}
 
 
 # --------------------------------------------------------------------------------------------------------------------------------- output
