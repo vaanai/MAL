@@ -310,6 +310,43 @@ def test_rpc_errors_do_not_leak_key(monkeypatch):
     assert key not in str(ei.value)
 
 
+def test_http_exception_is_transient_not_fatal(monkeypatch):
+    """A cut chunked body (http.client.IncompleteRead) escapes rpc_call; fetch and get_tip turn it into TransientError
+    (retried by _fetch_with_retry) instead of killing the process (live exit 2026-11-11T16:47:48Z)."""
+    import http.client
+
+    def cut(*a, **k):
+        raise http.client.IncompleteRead(b"partial-body")
+
+    monkeypatch.setattr(ftf, "rpc_call", cut)
+    fetch, get_tip, _credits, _ = ftf.make_rpc("https://example.invalid/?api-key=K", 1000.0)
+    with pytest.raises(TransientError) as ei:
+        fetch(1)
+    assert "IncompleteRead" in str(ei.value) and "partial-body" not in str(ei.value)
+    with pytest.raises(TransientError):
+        get_tip()
+
+
+def test_incomplete_read_is_retried_then_block_lands(tmp_path, monkeypatch):
+    """End to end through _fetch_with_retry: one IncompleteRead, then a block -> outcome ok, retries counted, no gap."""
+    import http.client
+
+    calls = {"n": 0}
+
+    def flaky(url, method, params, limiter, timeout=60.0, budget=None, header_out=None):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise http.client.IncompleteRead(b"")
+        return {"blockTime": 1, "transactions": []}, 10, None
+
+    monkeypatch.setattr(ftf, "rpc_call", flaky)
+    fetch, _tip, _c, _ = ftf.make_rpc("https://example.invalid/", 1000.0)
+    f = _follower(tmp_path, Rpc(tip=3))
+    f.fetch = fetch
+    block, outcome = f._fetch_with_retry(5)
+    assert outcome == "ok" and isinstance(block, dict) and f.retries == 1
+
+
 def test_refuses_without_key(monkeypatch):
     monkeypatch.delenv("HELIUS_API_KEY", raising=False)
     assert ftf.main(["--out", "/nonexistent-x"]) == 2
