@@ -286,7 +286,7 @@ The §3 (b) formula, `cash - (open stakes of all lane bots + 30000000 + fee_rese
 3. **`committed_loss_stop` (QP R3).** In the same `floor_problem`, checked first, a buy is refused `committed_loss_stop` when realized loss (floored at 0) plus the worst case of every open position and the new one (stake + send fee + rent reserve + sell reserve each) exceeds `total_loss_lamports`, which the lane config sets to the 300,000,000 budget (`tools/floor_lane_executor.py`). It counts each open position once. After a top-up it is the next check to bind. Its refusals send nothing: they are not trades, not a FAIL end, and a pause of the same kind as `lane_full`. The read reports their count.
 4. **Unchanged.** The 0.30 SOL lane budget and its STOP, the daily stop, max_open 8, the stake, S, the trade definition, C, R, the four tests, the deadline, and Errata 1–1e.
 
-## Erratum 1g (written 2026-11-10T17:5xZ by `date -u` 17:57:23Z, after S; the owner's step-up ends this read FAIL on process)
+## Erratum 1g (written 2026-11-10T17:5xZ by `date -u` 17:57:23Z, after S; revised 2026-11-11T10:47:07Z (Rule 5 wording only); the owner's step-up ends this read FAIL on process)
 
 **Found.** The owner chose to raise floor-lane-1's stake from 0.03 to 0.10 SOL and its budget from 0.30 to 0.60 SOL (DEC-035 Amendment 4, owner quote there). The owner was told before choosing that this ends this read. Under §3, a change to `stake_lamports` is a rule change and a **FAIL end at its install instant**. A raised budget falls under §3 (i) only within DEC-035, and Amendment 4 is what extends DEC-035 to it.
 
@@ -302,7 +302,7 @@ The §3 (b) formula, `cash - (open stakes of all lane bots + 30000000 + fee_rese
    - the per-trade live returns of the 9 closed floor-lane-1 trades (fills-vs-model, MiScusi #2399/#2400; 4 of them since S);
    - in-sample exploration results (`/data/mal/hunt-1008/push-1110/floor-study/`).
 
-   The manager recommended keeping the read in two places: A+ in MiScusi q_rciWQWvV_i20Rg, and B only after the fix in chat. The owner chose B.
+   In MiScusi (q_rciWQWvV_i20Rg) the manager recommended A+, which keeps the read; in chat the manager offered A, which keeps it, and B, which ends it. The owner chose B. (Sentence revised 2026-11-11T10:47:07Z by `date -u`, QP MINOR 3 on #1314 at c2ad6ab1; the earlier wording read as if B kept the read.)
    The owner question and the chat message carried these figures:
    - the live per-trade returns of the 24 h exits ("about 3%" loss each) and "+50%" for a take-profit;
    - "$3–4 a day" at 0.10 if the edge is real, which is the manager's estimate;
