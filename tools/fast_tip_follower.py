@@ -46,6 +46,7 @@ import argparse
 import base64
 import binascii
 import hashlib
+import http.client
 import json
 import os
 import re
@@ -1017,6 +1018,8 @@ def make_rpc(
             result, _w, _c = rpc_call(url, "getSlot", [{"commitment": "confirmed"}], limiter, timeout=15.0, budget=budget)
         except RuntimeError as exc:
             raise TransientError(redact_rpc_url(str(exc))) from None
+        except http.client.HTTPException as exc:  # e.g. IncompleteRead: a cut chunked body escapes rpc_call's own retries
+            raise TransientError(f"getSlot transport {type(exc).__name__}") from None
         if not isinstance(result, int):
             raise TransientError("getSlot returned no slot")
         return result
@@ -1036,6 +1039,8 @@ def make_rpc(
             result, _w, code = rpc_call(url, "getBlock", params, limiter, timeout=60.0, budget=budget)
         except RuntimeError as exc:
             raise TransientError(redact_rpc_url(str(exc))) from None
+        except http.client.HTTPException as exc:  # 2026-11-11T16:47:48Z: IncompleteRead here exited the follower (status 1); now retried like any transport error
+            raise TransientError(f"getBlock transport {type(exc).__name__}") from None
         if isinstance(result, dict):
             return result, None
         if code in SKIP_CODES:
