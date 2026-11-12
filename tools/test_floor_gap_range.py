@@ -72,3 +72,14 @@ def test_ts_shadow_scheduled_only_for_overlapped_non_time_exit(tmp_path):
     clean = mk(tmp_path / "x", gap_exclusion=False, ts_variant=True)
     drive(clean, False)
     assert clean.ts_open() == 0
+
+
+def test_reader_groups_on_engine_ledger(tmp_path):
+    import json
+    import floor_gap_range as R
+    eng = mk(tmp_path, gap_exclusion=False, ts_variant=True)
+    drive(eng, True)
+    R.main(str(tmp_path / "ledger"), str(tmp_path / "o.json"))
+    r = json.load(open(tmp_path / "o.json"))
+    assert r["counts"]["overlap_n"] == 1 and r["counts"]["A_n"] == 0
+    assert r["groups"]["0.1:flat"]["B"]["pooled"]["K=16"]["n"] == 1 or r["groups"]["0.1:flat"]["B"]["per_day"]

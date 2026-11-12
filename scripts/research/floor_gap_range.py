@@ -107,7 +107,7 @@ def main(led, outp, control=None):
         res["control_pooled_all_K16"] = {k: c["out"][k]["pooled"]["all"]["K=16"] for k in ("0.1:flat", "0.1:press", "0.25:flat", "0.25:press") if k in c["out"]}
     json.dump(res, open(outp, "w"), indent=1, default=str)
     a = res["groups"]["0.1:flat"]["A"]["pooled"]["K=16"]
-    print("A 0.10 flat K16:", a["n"], a["sum_sol"], a["sum_ex_top3_sol"])
+    print("A 0.10 flat K16:", a.get("n"), a.get("sum_sol"), a.get("sum_ex_top3_sol"))
     print("counts", res["counts"]); print("entries_by_day", res["entries_by_day"])
 
 
