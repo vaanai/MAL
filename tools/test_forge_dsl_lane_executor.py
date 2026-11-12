@@ -89,7 +89,7 @@ def started(tmp, bot=BOT):
 # ------------------------------------------------------------------------------------------------ constants and config
 def test_constants_follow_dec035_s2_and_the_host():
     assert D.DSL_LANE_STAKE_BOUNDS_LAMPORTS == (H.LANE_STAKE_MIN_LAMPORTS, H.LANE_STAKE_MAX_LAMPORTS) == (20_000_000, 30_000_000)  # the DSL book's own bound did not move with the FLOOR step-up
-    assert X.FLOOR_LANE_STAKE_BOUNDS_LAMPORTS == (20_000_000, 100_000_000)
+    assert X.FLOOR_LANE_STAKE_BOUNDS_LAMPORTS == (20_000_000, 250_000_000)
     assert D.DSL_BACKSTOP_MARGIN_MS == int(max(C.GRID_S[1:] - C.GRID_S[:-1])) * 1000 + 60_000
     from tools.forge import dsl_lane_host as host
     assert set(D.FOLLOWED_EXIT_REASONS) == set(host.REASON) | {"restart_close"}
