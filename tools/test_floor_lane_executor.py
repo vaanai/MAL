@@ -1163,7 +1163,7 @@ def test_am5_committed_loss_stop_ties_at_11_and_wallet_floor_binds_at_3_then_not
     assert _am5_floor_bridge(tmp_path, 11, None).floor_problem(STAKE10, 10 ** 12) == "committed_loss_stop"
     # real check, balance 1,119,513,796: the wallet floor stops the 4th open (3 admitted)
     assert _am5_opens_admitted(tmp_path, 1_119_513_796) == (3, "wallet_floor")
-    # real check, balance 3,119,513,796: the wallet floor never binds; the committed stop does at the 12th
+    # assumed balance 3,119,513,796 (the 1,119,513,796 reading plus an assumed 2 SOL top-up; the real balance on 2026-11-12 was 3,160,503,113): the wallet floor never binds; the committed stop does at the 12th
     assert _am5_opens_admitted(tmp_path, 3_119_513_796) == (11, "committed_loss_stop")
 
 
