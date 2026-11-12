@@ -78,6 +78,7 @@ These are the owner's instructions. They are not measurements.
 - Helius autoscaling is set to about **20M extra credits**. Use it when it clearly speeds the work up or makes the system better. Report what was used (which job, how many credits, what got faster).
 - The owner expects to clear about **$300** in profit once real trading starts, and much more monthly after a couple more weeks. That is the **owner's target**, not evidence. Nothing goes live until a book clears the promotion gate and the owner approves.
 - Move fast toward profit. Keep the bar high: honest fees, out-of-sample days, and the gate above.
+- **Do not stop (owner, 2026-11-12).** Unfinished work is carried through, not paused or parked: follow through until it is done, and when one thing waits (Helm, a job, a clock) work the next in parallel. Realistic means making hard things work and dropping only what the evidence says cannot; it never lowers the gate, the seals or the lane limits.
 
 ## This week's clocks
 
