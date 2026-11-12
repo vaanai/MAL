@@ -4,7 +4,7 @@
 No table seed: the pool table is built from the slice itself (pools that graduated before the slice start are missing, disclosed in the report).
 Usage: floor_nov_paper.py --root R --tape-dir T --from-ms A --to-ms B [--send 160000]
 """
-import argparse, dataclasses, sys
+import argparse, dataclasses, json, sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent))
@@ -16,6 +16,7 @@ from tools.arena_stack_v2 import stack_config_for
 from tools.arena_state import WARM_MIN_DEFAULT, ArenaState
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from floor_replay_proof_reg import scratch_register  # noqa: E402
+from floor_tape_paths import require_ok  # noqa: E402
 
 
 def main():
@@ -25,15 +26,24 @@ def main():
     ap.add_argument("--send", type=int, default=160_000)
     ap.add_argument("--set", nargs="*", default=[], help="variant overrides on tools.arena_rule_l1 module constants, NAME=value (e.g. Q_STAR=0.75e9 AGE_LO=43200); the file is not edited")
     a = ap.parse_args()
+    require_ok(a.tape_dir)
     from tools import arena_rule_l1 as _L
+    overrides = {}
     for kv in a.set:
         k, v = kv.split("=", 1)
-        assert hasattr(_L, k) and k in ("Q_STAR", "AGE_LO", "AGE_HI", "VOL_MIN_LAMPORTS", "R6_MAX"), k
+        if not (hasattr(_L, k) and k in ("Q_STAR", "AGE_LO", "AGE_HI", "VOL_MIN_LAMPORTS", "R6_MAX")):  # explicit (an assert vanishes under python -O)
+            raise SystemExit("refusing override of %r" % k)
         setattr(_L, k, float(v) if k != "AGE_LO" and k != "AGE_HI" else int(float(v)))
+        overrides[k] = getattr(_L, k)
         print("override", k, getattr(_L, k), flush=True)
     if R._inside(a.root, R.ARENA_OUTPUT_ROOT):
         raise SystemExit("refusing to write inside the arena output root")
     root = Path(a.root); root.mkdir(parents=True, exist_ok=True)
+    # the ledger is registered under the pinned FROZEN_SHA; a variant must not pass for the frozen rule, so the header says so (the reader prints it)
+    hdr = {"variant": overrides, "frozen_rule": not overrides, "registered_frozen_sha_is_not_the_rule": bool(overrides), "send": a.send}
+    (root / "ledger").mkdir(exist_ok=True)
+    for d in (root, root / "ledger"):
+        (d / "variant.json").write_text(json.dumps(hdr, indent=1, sort_keys=True) + "\n")
     ledger, registry = str(root / "ledger"), str(root / "bots.json")
     rules = load_rules_v2([H.BOT_ID])
     scratch_register(registry, a.from_ms)
