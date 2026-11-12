@@ -48,27 +48,28 @@ This is how r4bt-a1 / dry-long-1101a ran: sidecar job #2018, then host job #2019
 | J6 | daily | A3 / structure monitor and r4bt decode-check chain | Amendment 27 item 12 (research-0 `tools/pump_structure_monitor.py` daily, then the r4bt classifier). The 11-17 A3 successors in docs/HANDOFF.md §2 must also cover r4bt-a2 |
 | J7 | continuous, through the confirmation's last exit + 2 h | follower-state 60 s sampler, writer counts log, hour-health staging | hard-gap rule (ii) and (iii) and the feed bar need them over the P0 days. **#2055 and #2064 end about 2026-11-15T23:30Z to 11-16T00:15Z. Start their successors before 2026-11-16T00:00Z** (HANDOFF says "only if FLOOR-side reads them"; r4bt-a2 reads them) |
 | J8 | 2026-11-15 06:41Z | tip writer/push hand-off check (`docs/runbooks/tip-writer-handoff.md`) | the price path; the successors #2503/#2504 end about 11-29T06Z, so plan the next hand-off |
-| J9 | after the registration record; an HH:05Z leaving the catch-up done before the clock; planned **2026-11-19T21:05Z** | decision host + its sidecar (≥ 30 min earlier) | as J1/J2 at the W′ tree with `<change_id>` `r4bt-a2-<MMDD><letter>` and `--max-marks` (second wrapper arg) set to exit 0 before the 14-day limit; `after:` J3 (fires only on exit 0) |
+| J9 | after the registration record; an HH:05Z leaving the catch-up done before the clock; planned **2026-11-19T21:05Z** | decision host + its sidecar (≥ 30 min earlier) | as J1/J2 at the W′ tree with `<change_id>` `r4bt-a2-<MMDD><letter>` and `--max-marks` (second wrapper arg) set to exit 0 before the 14-day limit; **submitted only after the registration record**, as a scheduled job at its HH:05Z (planned 2026-11-19T21:05Z), with J3's exit 0 checked first. Never `after: J3` alone: J3 exits about 11-19T00:0xZ, about 21 h before the planned start and before the registration record that item 10 requires |
 | J10 | from the clock | count jobs (`r4bt_attempts.py count --clock-ms 1795132800000 --h-days <H> --hour-table …`), hourly or daily | boundary detection only; outcome-blind. The counter takes no `--bot-id` (unchanged pinned blob) |
 | J11 | daily, from the registration | A3 apply for a2 | `tools/r4bt_a3.py apply --bot-id r4bt-a2 --verdict … --registry … --applied-log …` at W′ |
 | J12 | after the screen boundary, last exit and every item 13 entry | screen pricer, then read | `$HOME/mal-venvs/r4b/bin/python -m tools.r4bt_price_bot --bot-id r4bt-a2 <r4bt_price args, incl. --h-days, --feed-delay-slots d, --k-rounding ceil>` from a clean checkout at W′ (never `tools/r4bt_price.py` directly: it would run as `r4bt-a1` and refuse); then `tools/r4bt_read.py --bot-id r4bt-a2 …` and, after a screen PASS, `tools/r4bt_read_confirm.py --bot-id r4bt-a2 …`. Both refuse if the registry `clock_start_ms` is not the table's 1795132800000. Use the `--bot-id r4bt-a2` form (two tokens): the wrapper does not parse `--bot-id=…` |
 
 `R4B_RUN_END_EPOCH=1795046700` is 2026-11-19T00:05:00Z. The P0 days and every fixed instant above are host-side jobs scheduled or chained with `after`, never session crons alone. At session start, also run CronList and re-create crons from the crons file.
 
-## 3. Day-1 dry check (counts only; memory "day-1 dry score")
+## 3. Day-1 dry check (names and structural counts only; no entry count)
 
-On the first closed UTC day after the dry host is caught up (2026-11-14 if J2 runs 11-13), run as a manager job:
-- `tools/r4bt_attempts.py day-sha` (file names, sha256, chain head, chain verified);
-- `tools/r4bt_attempts.py count --declog-root … --clock-ms <00:00Z of that day> --h-days 14` (entry counts per UTC date only).
+On the first closed UTC day after the dry host is caught up (2026-11-14 if J2 runs 11-13), run as a manager job only:
+- `tools/r4bt_attempts.py day-sha --declog-root $HOME/mal-data/r4b-dry/<dry change_id>/declog --arm r4b-exp027 --out <new file>`. It prints names and hashes only: the arm, the as-of instant and the sha256 of each closed day file.
 
-Pass shape:
-- chain verified;
+Pass shape (structure only):
 - root and arm exist (`decisions/r4b-exp027/`);
-- day files present;
-- `start` and `gap` rows only where expected;
-- **entries per day well above 0** (a figure near the 2026-11-04..06 values of 1/0/0 means the universe is still empty: stop and ask QP before the P0 days).
+- a closed day file exists for that day and has a sha256;
+- the host job is running (job list state, not the status view), and the sidecar shows the scope and the catch-up end (names, counts and timings).
 
-The counts are a seen count. The fixed-first P0 text (written before 2026-11-16T00:00Z) states them ("A seen count is disclosed, not disqualifying"). Do not open declog rows, `out/`, `host.log` or the sidecar beyond names, counts and timings. Never print exit timing per day.
+**Do not run `r4bt_attempts.py count` or `p0` on the dry host before the J4 instant, and do not look at entry counts in any other way.** No entry count of an r4bt-a2 host is printed, read or cited before 2026-11-19T00:10Z.
+
+**Am.30 item 7 (verbatim):** "A stop, non-start or non-run of the item 6 host or of the P0 count job, decided after any per-day entry count of an r4bt-a2 host was seen, is scored as the P0 miss kill line (item 14), not as an operational NOT_DECIDABLE. Only a cause recorded from names, timings or job state, with no entry count cited, is operational."
+
+Do not open declog rows, `out/`, `host.log` or the sidecar beyond names, counts and timings.
 
 ## 4. Fixed-first P0 text (notebook, before 2026-11-16T00:00:00Z)
 
@@ -77,7 +78,7 @@ The text names:
 - the tool path@sha256;
 - the root and the arm;
 - the J4 output path;
-- whether any per-day entry count of the dry host for those days was seen;
+- whether any per-day entry count of the dry host for those days was seen (none should be: §3 prints no entry count);
 - the ruling §2.2 (ii) disclosure: jobs #2223 and #2225, their output sha256, and entries 2/7/1/1/0/0 for 11-01..11-06.
 
 Floor: a mean of at least 2.0 a day and no day at 0. Hard-gap rule (i) to (iii) as Am.30 item 7.
@@ -86,8 +87,12 @@ Floor: a mean of at least 2.0 a day and no day at 0. Hard-gap rule (i) to (iii) 
 
 Tick (a) to (o). Most are records. The non-record ones:
 - (c) W′ is done (`3c12c5fd`, #1330). Record the closure comparison by `git rev-parse` over the 88-file closure at W and W′;
-- (f) the train/serve check is done (job #2531, train DISCLOSE, serve PASS descriptive). Record QP's choice between Am.30 alternatives (A) and (B) by a one-line erratum, or carry both;
-- (g) the #1173 envelope tool on the dry sidecar: `$HOME/mal-venvs/r4b/bin/python -I scripts/research/r4b_c0_envelope.py --sidecar $HOME/mal-data/r4b-dry/<dry change_id>/sidecar.jsonl …`;
+- (f) the train/serve check is done (job #2531, train DISCLOSE, serve PASS descriptive). QP ruled (A), qualified, in the Am.30 review, and Am.30 item 2 (4) carries the sentence. Add no guard or count for it. Every read prints the writer counts log's per-day pool_create/complete over the P0 days and the counted dates, labelled descriptive;
+- (g) the #1173 envelope tool on the dry sidecar: `$HOME/mal-venvs/r4b/bin/python -I scripts/research/r4b_c0_envelope.py --sidecar $HOME/mal-data/r4b-dry/<dry change_id>/sidecar.jsonl --origin-epoch 1795125300 --run-end-epoch 1796346060 --host-job-start-epoch 1795122300 --cap-mib 5120`.
+  - `--origin-epoch` is when the decision host's state holds 52 h of history, which is its catch-up end. Planned: J9 start 2026-11-19T21:05Z (1795122300) + the 50 min catch-up budget = 2026-11-19T21:55:00Z = 1795125300. Use the real `catch_up_done` instant if J9 has run.
+  - `--run-end-epoch` is the last instant the host must still run: the confirmation read's worst case, boundary 2026-12-02T00:00Z + T_max 176,460 s = 2026-12-04T01:01:00Z = 1796346060.
+  - `--host-job-start-epoch` is the J9 start, 1795122300.
+  - Expected: the 14-day lifetime check FAILS by about 4 h, since 1795122300 + 1,209,600 = 1796331900 = 2026-12-03T21:05Z. That case is the Am.30 item 10 successor (new `change_id`, `after`-chained), with its restart exits as §1.4 `engine_restart` exclusions. Record which applies.
 - (h) d from at least 24 h of the 60 s sampler;
 - (i) the feed bar over the 24 closed hours before the registration hour.
 
