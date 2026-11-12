@@ -1,0 +1,20 @@
+{
+ "7dGrdJRYtsNR8UYxZ3TnifXGjGc9eRYLq9sELwYpuuUu": {
+  "distinct_sigs": 5013,
+  "asked": 20,
+  "found": 20,
+  "found_ok": 20
+ },
+ "8oSD5a9EG933qyuL8YdnSy6YPF7peNiXm7PAx19R1phB": {
+  "distinct_sigs": 1593,
+  "asked": 20,
+  "found": 20,
+  "found_ok": 20
+ },
+ "MriyaNN8TMp6qRWjfr723PK7xgQK7yCt7Kg2v2PQu7X": {
+  "distinct_sigs": 8447,
+  "asked": 20,
+  "found": 20,
+  "found_ok": 20
+ }
+}

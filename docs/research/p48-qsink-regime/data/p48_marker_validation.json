@@ -1,0 +1,14 @@
+{
+ "True": {
+  "population_distinct_sigs": 2709441,
+  "asked": 60,
+  "found": 60,
+  "found_ok": 60
+ },
+ "False": {
+  "population_distinct_sigs": 69375,
+  "asked": 60,
+  "found": 57,
+  "found_ok": 57
+ }
+}
