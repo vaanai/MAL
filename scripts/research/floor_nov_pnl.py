@@ -60,6 +60,9 @@ def _p(r, rule, lat):
 # The host ticks every TICK_MS = 1_000 (tools/arena_rules.py:67) and stops at to_ms (arena_rules.py:572-588, ticks T < t_to), so the due tick is <= decision_ms + HOLD_MS + TICK_MS.
 # The engine then needs feed up to exit_ms + (exit_lag_slots(sps)+1)*sps*1000 (tools/arena_paper.py:1215) to price or exclude it; exit_lag_slots = ceil(0.55 s/sps) (arena_stack.py:66-70),
 # so (lag+1)*sps < 0.55 + 2*sps <= 1.55 s for sps <= 0.5 s (the slot is ~0.4 s). Bound: tape end >= last_entry + HOLD_MS + TICK_MS + 1_550 ms.
+# The 1_550 ms is a FLOOR, not a true upper bound: _needed_slot also adds the feed delay d = 7 slots (arena_paper.py:1209-1211, ~2.8 s) and a pool with no print after the exit
+# resolves only once the global feed is GRACE_SLOTS = 10_000 slots (~1 h) past need (arena_paper.py:86, :1274, the derived_last path); the replay never calls engine.flush()
+# (arena_paper.py:1302-1305), so an unresolved position stays pending = open_at_tape_end. That only makes a day INCOMPLETE (stricter), never looser; the data test is the second half of the rule.
 TICK_MS = 1_000
 EXIT_LEG_MARGIN_MS = 1_550
 
@@ -77,7 +80,7 @@ def complete_bound_ms(last_entry_ms):
 
 def entries_by_day(opens, trades, excl, rule, lat, send_delta, to_ms=None):
     """-> (by_day, positions). The 11-07T18Z cut-over hour is skipped (as in the funnel report). Per position and stake the status is
-    closed (trade row), excluded_feed_gap (engine `excluded` row; reason kept) or open_at_tape_end (neither: no exit decision by the end of the tape).
+    closed (trade row), engine_excluded (engine `excluded` row; reason kept) or open_at_tape_end (neither: no exit decision by the end of the tape).
     A day is complete only if it has no open_at_tape_end entry (any stake) and, when to_ms is given, to_ms >= complete_bound_ms(last entry of the day).
     An incomplete day carries counts only: total_sol / ex_top3_sol are None."""
     ents = {pid: o for pid, o in opens.items() if phase(o["decision_ms"]["entry"]) != "cutover"}
@@ -87,7 +90,7 @@ def entries_by_day(opens, trades, excl, rule, lat, send_delta, to_ms=None):
         rec = {"pid": pid, "pool": o["pool"], "t0": o["decision_ms"]["entry"], "day": day(o["decision_ms"]["entry"]), "status": {}, "reason": {}, "net": {}}
         for stake in (0.10, 0.25):
             t, x = trades.get(pid, {}).get(stake), excl.get(pid, {}).get(stake)
-            rec["status"][str(stake)] = "closed" if t is not None else "excluded_feed_gap" if x is not None else "open_at_tape_end"
+            rec["status"][str(stake)] = "closed" if t is not None else "engine_excluded" if x is not None else "open_at_tape_end"
             if x is not None and t is None:
                 rec["reason"][str(stake)] = x
             if t is not None:
@@ -109,7 +112,7 @@ def entries_by_day(opens, trades, excl, rule, lat, send_delta, to_ms=None):
                 complete = n_open_any == 0 and bound_ok
                 srt = sorted(nets, reverse=True)
                 reasons = collections.Counter(p["reason"][str(stake)] for p in ps if str(stake) in p["reason"])
-                blk[d] = {"n_entries": len(ps), "n_closed": len(nets), "n_priced": len(nets), "n_excluded_feed_gap": st.count("excluded_feed_gap"), "exclusion_reasons": dict(reasons),
+                blk[d] = {"n_entries": len(ps), "n_closed": len(nets), "n_priced": len(nets), "n_engine_excluded": st.count("engine_excluded"), "exclusion_reasons": dict(reasons),
                           "n_open_at_tape_end": st.count("open_at_tape_end"), "last_entry_ms": last, "complete_bound_ms": complete_bound_ms(last), "complete": complete,
                           "total_sol": sum(nets) / 1e9 if complete else None,
                           "ex_top3_sol": (sum(srt[3:]) / 1e9 if len(nets) > 3 else None) if complete else None}
@@ -129,7 +132,7 @@ def main(argv=None):
     ap = argparse.ArgumentParser()
     ap.add_argument("ledger"); ap.add_argument("out"); ap.add_argument("rule", nargs="?", default="total"); ap.add_argument("lat", nargs="?", default="1p9")
     ap.add_argument("--send-lamports", type=int, default=None); ap.add_argument("--ledger-send", type=int, default=1_673_840)
-    ap.add_argument("--to-ms", type=int, default=None, help="tape end (ms, exclusive); enables the exit-completeness bound per entry day")
+    ap.add_argument("--to-ms", type=int, default=None, help="tape end (ms, exclusive); enables the exit-completeness bound per entry day. Default None = no bound (JSON bound_applied=false); floor_forward_ab.py table refuses such a file")
     a = ap.parse_args(argv)
     led, outp, rule, lat = a.ledger, a.out, a.rule, a.lat
     send_delta = (a.ledger_send - a.send_lamports) if a.send_lamports is not None else 0
@@ -205,8 +208,12 @@ def main(argv=None):
     res["send_delta_lamports"] = send_delta
     res["entries_by_day"], res["positions"] = entries_by_day(opens, trades, excl, rule, lat, send_delta, a.to_ms)
     res["to_ms"] = a.to_ms
+    res["bound_applied"] = a.to_ms is not None  # the A/B table refuses a pnl file without it
     res["header"] = load_variant(led)
     res["n_open_at_tape_end_any_stake"] = sum(1 for p in res["positions"] if "open_at_tape_end" in p["status"].values())
+    if res["n_open_at_tape_end_any_stake"]:  # K-cap figures must never be quoted from a ledger with open positions at tape end (QP #1331)
+        res["out"] = None
+        res["out_refused"] = "%d position(s) open_at_tape_end: K-cap per_day/pooled figures withheld" % res["n_open_at_tape_end_any_stake"]
     res["pooled_note"] = "`out` (per_day/pooled) counts closed positions only and is NOT censor-corrected; use entries_by_day (complete days) for any read"
     json.dump(res, open(outp, "w"), indent=1, default=str)
     print("ok", len(pos), res["states"])

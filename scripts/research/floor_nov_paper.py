@@ -16,7 +16,7 @@ from tools.arena_stack_v2 import stack_config_for
 from tools.arena_state import WARM_MIN_DEFAULT, ArenaState
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from floor_replay_proof_reg import scratch_register  # noqa: E402
-from floor_tape_paths import require_ok  # noqa: E402
+from floor_tape_paths import require_files_ok  # noqa: E402
 
 
 def main():
@@ -26,7 +26,7 @@ def main():
     ap.add_argument("--send", type=int, default=160_000)
     ap.add_argument("--set", nargs="*", default=[], help="variant overrides on tools.arena_rule_l1 module constants, NAME=value (e.g. Q_STAR=0.75e9 AGE_LO=43200); the file is not edited")
     a = ap.parse_args()
-    require_ok(a.tape_dir)
+    require_files_ok(a.tape_dir)
     from tools import arena_rule_l1 as _L
     overrides = {}
     for kv in a.set:

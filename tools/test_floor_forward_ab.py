@@ -50,7 +50,7 @@ def test_open_at_end_is_open_not_feed_gap_and_gap_is_separate():
     rows = both("a", "A", ms(5, 1), 1_000_000) + [op("o", "O", ms(5, 2))] + [op("g", "G", ms(5, 3)), ex("g", 0.10), ex("g", 0.25)]
     with tempfile.TemporaryDirectory() as d:
         day = run_pnl(d, rows)["entries_by_day"]["0.1:flat"]["2026-11-05"]
-    assert (day["n_entries"], day["n_closed"], day["n_excluded_feed_gap"], day["n_open_at_tape_end"]) == (3, 1, 1, 1)
+    assert (day["n_entries"], day["n_closed"], day["n_engine_excluded"], day["n_open_at_tape_end"]) == (3, 1, 1, 1)
     assert day["exclusion_reasons"] == {"feed_gap": 1}
     assert "n_unpriced" not in day
 
@@ -136,10 +136,10 @@ def test_pair_groups_same_retimed_base_only_variant_only():
 def test_refused_tape_dirs():
     bad = ["/var/lib/mal/sealed/fast-trades-tip", "/var/lib/mal-live/x", "/data/mal/arena/tape", "/home/claude/mal-data/arena-mirror/tape", "/data/mal/meta-capture",
            "/data/mal/blocks/forward-1016/trades", "/data2/mal/scratch/walk2/x", "/data2/mal/scratch/probe-a", "/data2/mal/scratch/hv4", "/data2/mal/scratch/q50", "/home/claude/tape",
-           "/data2/mal/arena-tip-feed/other", "/data2/mal/scratchy"]
+           "/data2/mal/arena-tip-feed/other", "/data2/mal/scratchy", "/data2/mal/scratch", "/data2/mal/scratch/arena-tip-equiv/x", "/data2/mal/scratch/gapfill-x/tape"]
     for p in bad:
         assert TP.refusal(p), p
-    for p in ("/data2/mal/arena-tip-feed/hv7", "/data2/mal/scratch/floor-nov-funnel/tapecopy", "/data2/mal/scratch/floor-forward-ab/2026-11-12T20/tapelink"):
+    for p in ("/data2/mal/arena-tip-feed/hv7", "/data2/mal/scratch/floor-nov-funnel/tapecopy", "/data2/mal/scratch/floor-forward-ab/2026-11-12T20/tapelink", "/data2/mal/scratch/floor-gap-range/x"):
         assert TP.refusal(p) is None, p
 
 
@@ -147,3 +147,86 @@ def test_paper_script_refuses_before_any_work():
     r = subprocess.run([sys.executable, str(ROOT / "scripts/research/floor_nov_paper.py"), "--root", "/nonexistent-x", "--tape-dir", "/var/lib/mal/sealed/x", "--from-ms", "0", "--to-ms", "1"],
                        capture_output=True, text=True)
     assert r.returncode != 0 and "refused path" in (r.stderr + r.stdout)
+
+
+def _table(d, base, vault, forward_from="2026-11-12"):
+    for n, o in (("b", base), ("v", vault)):
+        json.dump(o, open(f"{d}/{n}.json", "w"))
+    AB.table(types.SimpleNamespace(base=d + "/b.json", variant=d + "/v.json", out_json=d + "/ab.json", out_md=d + "/ab.md", end_hour="2026-11-19T23", forward_from=forward_from))
+    return json.load(open(d + "/ab.json")), open(d + "/ab.md").read()
+
+
+def test_table_refuses_pnl_without_bound():
+    rows = both("a", "A", ms(10, 1), 1_000_000)
+    ok, nb = pnl_json(rows, ms(20)), pnl_json(rows, None)
+    assert ok["bound_applied"] is True and nb["bound_applied"] is False
+    for base, vault in ((nb, ok), (ok, nb)):
+        with tempfile.TemporaryDirectory() as d:
+            try:
+                _table(d, base, vault)
+                raise AssertionError("table accepted a pnl file without --to-ms")
+            except SystemExit as e:
+                assert "--to-ms" in str(e)
+
+
+def test_like_for_like_subtotal_excludes_one_side_priced_pairs():
+    def pos(pid, pool, t, net, status="closed"):
+        return {"pid": pid, "pool": pool, "t0": t, "day": "2026-11-12", "status": {"0.1": status}, "net": {"0.1:flat": net}}
+    base = [pos("b1", "S", ms(12, 1), 1e6), pos("b2", "R", ms(12, 2), 2e6), pos("b4", "X", ms(12, 4), 8e6, "open_at_tape_end")]
+    vault = [pos("v1", "S", ms(12, 1), 1.5e6), pos("v2", "R", ms(12, 5), 3e6), pos("v4", "X", ms(12, 4), 5e6), pos("v3", "V", ms(12, 6), 16e6)]
+    L = AB.pair(base, vault, "0.1", "flat", {"2026-11-12"})["like_for_like"]["same_plus_retimed"]
+    assert L["n_both_priced"] == 2 and abs(L["base_sol"] - 3e-3) < 1e-12 and abs(L["vault_sol"] - 4.5e-3) < 1e-12 and abs(L["delta_sol"] - 1.5e-3) < 1e-12
+    assert L["n_vault_priced_only"] == 1 and abs(L["vault_sol_one_side"] - 5e-3) < 1e-12 and L["n_base_priced_only"] == 0
+    # the vault-only pool V (not a pair) is in neither the delta nor the one-side row
+    assert abs(L["vault_sol"] - 4.5e-3) < 1e-12
+
+
+def test_like_for_like_rows_in_markdown_and_heading_does_not_promise_a_delta():
+    rows_b = both("a", "A", ms(12, 1), 1_000_000) + [op("x", "X", ms(12, 2)), ex("x", 0.10, "missing_v"), ex("x", 0.25, "missing_v")]
+    rows_v = both("a", "A", ms(12, 1), 3_000_000) + both("x", "X", ms(12, 2), 5_000_000)
+    with tempfile.TemporaryDirectory() as d:
+        r, md = _table(d, pnl_json(rows_b, ms(20)), pnl_json(rows_v, ms(20)))
+    assert "like-for-like" in md and "NOT in the delta" in md and "delta of totals below" not in md
+    L = r["legs"]["0.1:flat"]["paired"]["FORWARD"]["like_for_like"]["same_plus_retimed"]
+    assert L["n_both_priced"] == 1 and abs(L["delta_sol"] - 2e-3) < 1e-12 and L["n_vault_priced_only"] == 1
+    assert "engine exclusion reasons, FORWARD: base {'missing_v': 1}" in md
+    assert r["legs"]["0.1:flat"]["pooled"]["FORWARD"]["base"]["exclusion_reasons"] == {"missing_v": 1}
+
+
+def test_engine_exclusion_reasons_are_all_counted_with_breakdown():
+    rows = [op("g", "G", ms(5, 3)), ex("g", 0.10), ex("g", 0.25), op("m", "M", ms(5, 4)), ex("m", 0.10, "missing_v"), ex("m", 0.25, "missing_v"),
+            op("r", "R", ms(5, 5)), ex("r", 0.10, "engine_restart"), ex("r", 0.25, "engine_restart")]
+    with tempfile.TemporaryDirectory() as d:
+        day = run_pnl(d, rows)["entries_by_day"]["0.1:flat"]["2026-11-05"]
+    assert day["n_engine_excluded"] == 3 and day["n_open_at_tape_end"] == 0
+    assert day["exclusion_reasons"] == {"feed_gap": 1, "missing_v": 1, "engine_restart": 1}
+
+
+def test_header_follows_forward_from():
+    assert AB.header("2026-11-15").startswith("paper; days < 2026-11-15 are IN-SAMPLE")
+    assert AB.header() == AB.HEADER and "days < 2026-11-12" in AB.HEADER
+
+
+def test_kcap_block_withheld_when_a_position_is_open_at_tape_end():
+    with tempfile.TemporaryDirectory() as d:
+        r = run_pnl(d, both("a", "A", ms(5, 1), 1_000_000) + [op("o", "O", ms(5, 2))], to_ms=ms(20))
+        assert r["out"] is None and "withheld" in r["out_refused"]
+    with tempfile.TemporaryDirectory() as d:
+        r = run_pnl(d, both("a", "A", ms(5, 1), 1_000_000), to_ms=ms(20))
+        assert r["out"] and "out_refused" not in r
+
+
+def test_per_file_symlink_guard_and_narrowed_roots():
+    import os
+    with tempfile.TemporaryDirectory() as allowed, tempfile.TemporaryDirectory() as outside:
+        real, evil = Path(allowed) / "tape-2026-11-02T01.jsonl.zst", Path(outside) / "tape-x.jsonl.zst"
+        real.write_text("x"); evil.write_text("y")
+        TP.require_files_ok(allowed, roots=(os.path.realpath(allowed),))
+        os.symlink(evil, Path(allowed) / "tape-2026-11-02T02.jsonl.zst")
+        try:
+            TP.require_files_ok(allowed, roots=(os.path.realpath(allowed),))
+            raise AssertionError("file symlink escaping the allowed root was accepted")
+        except SystemExit as e:
+            assert "tape-2026-11-02T02" in str(e)
+        # non-tape entries are not opened by the replay and are ignored
+    assert TP.refusal("/data2/mal/scratch/floor-nov-funnel/tapecopy") is None and TP.refusal("/data2/mal/scratch/other-job/x")

@@ -103,5 +103,5 @@ def test_unfilled_leg_counts_as_open_at_tape_end_not_feed_gap():
         f.write_text(f.read_text() + json.dumps({"kind": "open", "position_id": "x", "pool": "x", "decision_ms": {"entry": ms(5, 22)}}) + "\n")
         P.main([led, d + "/o.json"])
         day = json.load(open(d + "/o.json"))["entries_by_day"]["0.1:flat"]["2026-11-05"]
-        assert (day["n_entries"], day["n_closed"], day["n_excluded_feed_gap"], day["n_open_at_tape_end"]) == (4, 3, 0, 1)
+        assert (day["n_entries"], day["n_closed"], day["n_engine_excluded"], day["n_open_at_tape_end"]) == (4, 3, 0, 1)
         assert day["complete"] is False and day["total_sol"] is None
