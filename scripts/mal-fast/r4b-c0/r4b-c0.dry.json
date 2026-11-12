@@ -1,0 +1,13 @@
+{
+  "mode": "dry",
+  "bot_id": "r4b-exp027",
+  "frozen_sha": "<AT-EVENT:frozen_sha>",
+  "root": "/var/lib/mal-r4b-c0/declog",
+  "state_dir": "/var/lib/mal-r4b-c0/state",
+  "end_ms": "<AT-EVENT:end_ms>",
+  "slot_s": "<AT-EVENT:slot_s>",
+  "funded_lamports": "<AT-EVENT:funded_lamports>",
+  "dry_balance_lamports": "<AT-EVENT:funded_lamports>",
+  "stop_file": "/var/lib/mal-r4b-c0/state/STOP",
+  "halt_file": "/var/lib/mal-r4b-c0/state/HALT"
+}

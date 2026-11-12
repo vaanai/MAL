@@ -1,0 +1,63 @@
+[Unit]
+Description=MAL r4-b C0 executor (EXP-027, DEC-032 Amendment 8; tools/r4b_arena_executor), keyless DRY base unit: no signing, no sending, no network
+Documentation=https://github.com/vaanai/MAL/blob/main/docs/runbooks/r4b-c0-executor.md
+# One instance: the book r4-b (bot_id r4b-exp027). The executor tails the r4-b decision host's hash-chained decision log (read-only bind below) and logs the
+# orders it WOULD send. tools/r4b_arena_executor.LIVE_BUILT is False at this pack's sha: a live config or --live is refused in code. This base unit has NO drop-in
+# in a keyless install: a drop-in directory for this unit means a live switch, and scripts/ops/r4b-c0-dry-checklist.sh fails on it.
+# Before EXP-027's read is recorded the decision dir is EMPTY (no decision row of r4-b is readable before the read; EXP-027 section 11) and the unit is NOT
+# enabled or started: the only pre-read start is the checklist's synthetic smoke, in a mktemp dir.
+StartLimitIntervalSec=600
+StartLimitBurst=3
+
+[Service]
+Type=simple
+User=mal-r4b-c0
+Group=mal-r4b-c0
+Nice=10
+WorkingDirectory=/opt/mal-r4b-c0/current
+Environment=LC_ALL=C.UTF-8
+Environment=LANG=C.UTF-8
+# Root-owned gate dir (root-run check, "+"; %% is systemd's escape for %).
+ExecStartPre=+/usr/bin/env -i /bin/sh -c 'test "$(/usr/bin/stat -c %%u:%%g:%%a /etc/mal-r4b-c0)" = 0:0:755'
+# KEYLESS dry run: no --live, no LoadCredential, no EnvironmentFile. -E/-s: no PYTHON* variables, no user site; the pinned tree (cwd) is the only extra sys.path entry.
+ExecStart=/opt/mal-r4b-c0/venv/bin/python -E -s -B -u -m tools.r4b_arena_executor run --config /etc/mal-r4b-c0/r4b-c0.dry.json
+Restart=on-failure
+RestartSec=30
+# A start refusal (SystemExit from a pin) exits 1; StartLimitBurst stops a refusal from looping.
+NoNewPrivileges=true
+# Dry makes no RPC: no network at all.
+PrivateNetwork=true
+RestrictAddressFamilies=AF_UNIX
+# Writes only its state dir (mal-r4b-c0:claude 3770: setgid so files are group claude, sticky so the job user can add STOP but not remove the executor's files).
+ProtectSystem=strict
+ReadWritePaths=/var/lib/mal-r4b-c0/state
+ReadOnlyPaths=/opt/mal-r4b-c0
+TemporaryFileSystem=/var/lib/mal:ro
+TemporaryFileSystem=/data:ro
+ProtectHome=tmpfs
+# Read-only bind (a missing source fails the start; no "-" prefix): the r4-b decision root (config root; decisions/r4b-exp027/ under it). claude:claude 0755.
+BindReadOnlyPaths=/var/lib/mal-r4b-c0/declog
+InaccessiblePaths=-/etc/mal-probe -/etc/mal-probe-rpc -/etc/mal-h5-arena-key -/etc/mal-hv4-c0-key -/etc/mal-r4b-c0-key
+PrivateTmp=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+LockPersonality=true
+CapabilityBoundingSet=
+PrivateDevices=true
+ProtectProc=invisible
+SystemCallFilter=@system-service
+SystemCallArchitectures=native
+RestrictNamespaces=true
+RestrictRealtime=true
+ProtectClock=true
+ProtectKernelLogs=true
+ProtectHostname=true
+UMask=0027
+LimitCORE=0
+MemoryMax=1500M
+MemorySwapMax=0
+
+[Install]
+WantedBy=multi-user.target
