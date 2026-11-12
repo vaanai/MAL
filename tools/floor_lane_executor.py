@@ -54,9 +54,10 @@ LANE_MAX_OPEN_DEFAULT = 8  # what a lane block without max_open gets (unchanged 
 # real limits, so the live port lifts the probe's counters far above anything the lane can reach. FloorLanePort.__init__ applies them to ex.limits.
 LANE_PROBE_MAX_ATTEMPTS = 100_000
 LANE_PROBE_MAX_DAYS = 60.0
-LANE_BUDGET_MAX_LAMPORTS = 600_000_000  # a ceiling only; the live config sets budget_lamports
+LANE_BUDGET_MAX_LAMPORTS = 1_200_000_000  # a ceiling only; the live config sets budget_lamports. DEC-035 Am.5 (owner, 2026-11-12): 0.60 -> 1.20 SOL lifetime
 LANE_BUDGET_DEFAULT_LAMPORTS = 300_000_000  # what a lane block without budget_lamports gets (unchanged from before the step-up)
-LANE_DAILY_MAX_LAMPORTS = 100_000_000
+LANE_DAILY_MAX_LAMPORTS = 200_000_000  # DEC-035 Am.5 (owner, 2026-11-12): 0.10 -> 0.20 SOL daily stop ceiling
+LANE_DAILY_DEFAULT_LAMPORTS = 100_000_000  # what a lane block without daily_loss_lamports gets (unchanged by Am.5, like LANE_BUDGET_DEFAULT_LAMPORTS)
 LANE_MARK_STALE_MAX_S = 60
 # probe_executor prices an open position from its pool cache only while the cache is younger than STATIC_TTL_MS (300 s). A FLOOR position is held up to 24 h, so the port re-primes the cache
 # of every open mint with one full snapshot at most once per this interval (audit 2026-11-10 option A). Below STATIC_TTL_MS so the cache never lapses between two re-primes.
@@ -102,7 +103,7 @@ def parse_lane(raw: Any) -> H.LaneConfig:
         raise LaneConfigError(f"lane.stake_lamports {stake} is outside [{lo}, {hi}]")
     max_open = _whole(raw, "max_open", LANE_MAX_OPEN_DEFAULT)
     budget = _whole(raw, "budget_lamports", LANE_BUDGET_DEFAULT_LAMPORTS)
-    daily = _whole(raw, "daily_loss_lamports", LANE_DAILY_MAX_LAMPORTS)
+    daily = _whole(raw, "daily_loss_lamports", LANE_DAILY_DEFAULT_LAMPORTS)
     if not 1 <= max_open <= LANE_MAX_OPEN:
         raise LaneConfigError(f"lane.max_open must be 1..{LANE_MAX_OPEN}")
     if not 1 <= budget <= LANE_BUDGET_MAX_LAMPORTS:
