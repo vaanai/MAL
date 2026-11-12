@@ -10,12 +10,13 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent))
 from tools import arena_rules as R
 from tools import floor_lane_host as H
-from tools.arena_paper import ArenaEngine, canon
+from tools.arena_paper import canon
 from tools.arena_rules_v2 import HostV2, load_rules_v2
 from tools.arena_stack_v2 import stack_config_for
 from tools.arena_state import WARM_MIN_DEFAULT, ArenaState
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from floor_replay_proof_reg import scratch_register  # noqa: E402
+from floor_gap_range_engine import GapRangeEngine  # noqa: E402
 
 
 def main():
@@ -24,6 +25,8 @@ def main():
     ap.add_argument("--from-ms", type=int, required=True); ap.add_argument("--to-ms", type=int, required=True)
     ap.add_argument("--send", type=int, default=1_673_840)
     ap.add_argument("--set", nargs="*", default=[], help="variant overrides on tools.arena_rule_l1 module constants, NAME=value (e.g. Q_STAR=0.75e9 AGE_LO=43200); the file is not edited")
+    ap.add_argument("--gap-exclusion", choices=("on", "off"), default="on", help="research only. on (default) = engine behaviour, positions whose hold overlaps a data_loss gap are excluded (feed_gap). off = price them through the holes; rows carry gap_overlap/gap_holes either way")
+    ap.add_argument("--ts-variant", action="store_true", help="research only: also price a 24 h time-stop shadow (ledger/<bot>-ts) for every gap-overlap position that exited by take-profit")
     a = ap.parse_args()
     from tools import arena_rule_l1 as _L
     for kv in a.set:
@@ -39,12 +42,12 @@ def main():
     scratch_register(registry, a.from_ms)
     cfg = dataclasses.replace(stack_config_for(2, R.DEFAULT_FEED_DELAY_SLOTS), send=a.send, stakes_sol=(0.10, 0.25))
     state = ArenaState(a.tape_dir, start_ms=a.from_ms, warm_min=WARM_MIN_DEFAULT)
-    engine = ArenaEngine(ledger, registry, cfg=cfg)
+    engine = GapRangeEngine(ledger, registry, cfg=cfg, gap_exclusion=(a.gap_exclusion == "on"), ts_variant=a.ts_variant)
     hc = R.HostConfig(root=str(root), registry=registry, frozen_sha=H.FROZEN_SHA, clock_start_ms=a.from_ms, live=False, verbose=True)
     host = HostV2(hc, rules, state, engine)
     print(canon({"resumed": host.resume(), "send": cfg.send, "stakes": cfg.stakes_sol}), flush=True)
     host.run(a.from_ms, a.to_ms)
-    print(canon({"done": host.status()}), flush=True)
+    print(canon({"done": host.status(), "ts_unfired": engine.ts_unfired}), flush=True)
 
 
 main()
