@@ -92,7 +92,7 @@ Tick (a) to (o). Most are records. The non-record ones:
   - `--origin-epoch` is when the decision host's state holds 52 h of history, which is its catch-up end. Planned: J9 start 2026-11-19T21:05Z (1795122300) + the 50 min catch-up budget = 2026-11-19T21:55:00Z = 1795125300. Use the real `catch_up_done` instant if J9 has run.
   - `--run-end-epoch` is the last instant the host must still run: the confirmation read's worst case, boundary 2026-12-02T00:00Z + T_max 176,460 s = 2026-12-04T01:01:00Z = 1796346060.
   - `--host-job-start-epoch` is the J9 start, 1795122300.
-  - Expected: the 14-day lifetime check FAILS by about 4 h, since 1795122300 + 1,209,600 = 1796331900 = 2026-12-03T21:05Z. That case is the Am.30 item 10 successor (new `change_id`, `after`-chained), with its restart exits as §1.4 `engine_restart` exclusions. Record which applies.
+  - Expected: the 14-day lifetime check FAILS by about 4 h, since 1795122300 + 1,209,600 = 1796331900 = 2026-12-03T21:05Z. A FAIL of the 14-day check is recorded, not repaired: per Am.30 item 10 no successor feeds r4bt-a2, and a confirmation that needs an exit after the host's end is an operational NOT_DECIDABLE.
 - (h) d from at least 24 h of the 60 s sampler;
 - (i) the feed bar over the 24 closed hours before the registration hour.
 
