@@ -1062,3 +1062,18 @@ def test_run_starts_daemon_status_thread(tmp_path):
     f.step = step
     f.run(stop)
     assert f._hb_thread is not None and f._hb_thread.daemon
+
+
+def test_run_stops_status_thread_when_loop_raises(tmp_path):
+    # a crashed follower must go stale: the status thread stops even when run() exits by an exception
+    f = _follower(tmp_path, Rpc(tip=3))
+
+    def step():
+        raise RuntimeError("boom")
+
+    f.step = step
+    with pytest.raises(RuntimeError):
+        f.run(threading.Event())
+    assert f._hb_stop.is_set()
+    f._hb_thread.join(timeout=ftf.HEARTBEAT_S + 5)
+    assert not f._hb_thread.is_alive()
