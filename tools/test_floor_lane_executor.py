@@ -158,7 +158,7 @@ def refusals(br):
 def test_constants_follow_dec035_s2():
     assert X.FLOOR_LANE_STAKE_BOUNDS_LAMPORTS == (20_000_000, 100_000_000)
     assert (H.LANE_STAKE_MIN_LAMPORTS, H.LANE_STAKE_MAX_LAMPORTS) == (20_000_000, 30_000_000)  # the H5 lane's own copy is unchanged
-    assert (X.LANE_MAX_OPEN, X.LANE_BUDGET_MAX_LAMPORTS, X.LANE_DAILY_MAX_LAMPORTS, X.LANE_MARK_STALE_MAX_S) == (16, 1_200_000_000, 200_000_000, 60)
+    assert (X.LANE_MAX_OPEN, X.LANE_BUDGET_MAX_LAMPORTS, X.FLOOR_LANE_DAILY_MAX_LAMPORTS, X.LANE_MARK_STALE_MAX_S) == (16, 1_200_000_000, 200_000_000, 60)
     assert (X.LANE_MAX_OPEN_DEFAULT, X.LANE_BUDGET_DEFAULT_LAMPORTS) == (8, 300_000_000)  # what a block without the keys gets: unchanged
     assert X.LANE_BOT_ID == "floor-lane-1" and X.BOOK_BOT_ID == "l1-floor-v2" and X.FROZEN_SHA == F.FROZEN_SHA
     assert X.LANE_MIN_FEE_RESERVE == 2_100_000 + 160_000 + 1_600_000
@@ -1132,22 +1132,39 @@ def test_am5_presend_allows_the_11th_open_at_010_and_refuses_the_12th(tmp_path):
     assert res[11] == (-1_231_238_405, "lane_budget_presend")
 
 
+def _am5_floor_bridge(tmp_path, opens, balance_check):
+    """A FloorBridge with the Am.5 lane numbers; floor_problem is the executor's own check."""
+    import dataclasses
+    from tools.test_floor_arena_executor import bridge as fbridge
+    br, _ = fbridge(tmp_path, Clock(T0), funded_lamports=1_000_000_000, wallet_floor_count_held_once=True)
+    br.cfg = dataclasses.replace(br.cfg, stake_lamports=STAKE10, total_loss_lamports=1_200_000_000, max_open=100)
+    br.state.orders = {f"o{i}": {"status": "open", "live": False, "stake_lamports": STAKE10} for i in range(opens)}
+    return br
+
+
+def _am5_opens_admitted(tmp_path, bal0):
+    """Opens admitted one after the other by the executor's own floor_problem; each landed open takes stake + rent + send fee from the balance."""
+    n = 0
+    while n < 40:
+        br = _am5_floor_bridge(tmp_path, n, None)
+        if br.floor_problem(STAKE10, bal0 - n * (STAKE10 + F.RENT_RESERVE_LAMPORTS + F.SEND_FEE_LAMPORTS)) is not None:
+            return n, br.floor_problem(STAKE10, bal0 - n * (STAKE10 + F.RENT_RESERVE_LAMPORTS + F.SEND_FEE_LAMPORTS))
+        n += 1
+    return n, None
+
+
 def test_am5_committed_loss_stop_ties_at_11_and_wallet_floor_binds_at_3_then_not(tmp_path):
-    raw = lane_raw(tmp_path)
-    raw["lane"].update(stake_lamports=STAKE10, budget_lamports=1_200_000_000, daily_loss_lamports=200_000_000, max_open=16)
-    br, _ = mk(tmp_path, Clock(T0), raw=raw)
-    wc = br._position_worst_case(STAKE10)
+    wc = STAKE10 + F.SEND_FEE_LAMPORTS + F.RENT_RESERVE_LAMPORTS + F.SELL_RESERVE_LAMPORTS
     assert wc == 103_860_000
-    assert 11 * wc <= 1_200_000_000 < 12 * wc  # committed_loss_stop (gains ignored): 11 positions fit, the 12th does not
-    # wallet floor, funded 1.0 SOL held-once: floor 750,000,000; each landed open takes stake + rent + send fee = 102,260,000 from the balance
-    floor = 750_000_000
-    def allowed(bal):
-        n = 0
-        while bal - n * 102_260_000 >= STAKE10 + 160_000 + 2_100_000 + (n + 1) * 1_600_000 + floor:
-            n += 1
-        return n
-    assert allowed(1_119_500_000) == 3
-    assert allowed(3_119_500_000) == 22  # > 16: the wallet floor stops binding, the 11-open pre-send / committed stop does
+    assert 11 * wc <= 1_200_000_000 < 12 * wc
+    assert _am5_floor_bridge(tmp_path, 0, None).cfg.wallet_floor_lamports == 750_000_000
+    # real check, huge balance: only committed_loss_stop can refuse; it admits 11 opens and refuses the 12th
+    assert _am5_floor_bridge(tmp_path, 10, None).floor_problem(STAKE10, 10 ** 12) is None
+    assert _am5_floor_bridge(tmp_path, 11, None).floor_problem(STAKE10, 10 ** 12) == "committed_loss_stop"
+    # real check, balance 1,119,513,796: the wallet floor stops the 4th open (3 admitted)
+    assert _am5_opens_admitted(tmp_path, 1_119_513_796) == (3, "wallet_floor")
+    # real check, balance 3,119,500,000: the wallet floor never binds; the committed stop does at the 12th
+    assert _am5_opens_admitted(tmp_path, 3_119_513_796) == (11, "committed_loss_stop")
 
 
 def test_am5_daily_stop_fires_at_minus_200m_not_before(tmp_path):
@@ -1169,3 +1186,8 @@ def test_am5_daily_stop_via_the_bridge_at_minus_200m(tmp_path):
     entry(tmp_path)
     feed(br, clk)
     assert inner.buys == [] and refusals(br)[-1]["why"] == "lane_daily_stop"
+
+
+def test_am5_shared_daily_ceiling_stays_100m_for_the_dsl_lane():
+    """The DSL lane reads the shared LANE_DAILY_MAX_LAMPORTS; Am.5 raises the floor-only constant."""
+    assert X.LANE_DAILY_MAX_LAMPORTS == 100_000_000 and X.FLOOR_LANE_DAILY_MAX_LAMPORTS == 200_000_000
