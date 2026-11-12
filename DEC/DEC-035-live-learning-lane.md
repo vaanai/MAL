@@ -127,3 +127,147 @@ Before the ask, all of these hold, and the manager records them in the state fil
 **Scaling past this step.** Above 0.10 SOL, or above a 0.60 SOL budget, requires the owner's word in a new amendment, with its stake and a price-impact estimate (§6).
 
 **Unchanged.** Keys, STOP/HALT, A3 pauses, the shared lane ledger and lock, the host, the rule `l1-floor-v2` and its exits, §4, §5, §7, and every other lane bot's limits. The DSL lane keeps 0.03 / 0.30 / 8 (`DSL_LANE_*` constants); the stopped H5 lane executors keep theirs.
+
+## Amendment 5 (2026-11-12): floor-lane-1 lifetime budget 1.20 SOL, daily stop 0.20 SOL; stake unchanged
+**Decider.** Vaan (owner).
+
+**The question.** Manager22 asked the owner in chat, 2026-11-12 ~01:0xZ, in these exact words:
+> "How much total loss are you willing to risk on the scaled-up lane? I'd suggest about 1.2 SOL, with the daily stop raised to 0.2 SOL, once the new capital lands. That one number decides how many positions we can hold."
+
+**The answer.** The owner answered in chat at ~01:1xZ. The manager's state file (`/data/mal/hunt-1008/ops/manager22/state-manager22.md`, line "2026-11-12T01:14:36Z OWNER DECISION") records it at 01:14:36Z; that is the write time of the state line, and the answer came shortly before it.
+> "As for what you need from me, I think we can go with what you suggest, and obviously we're hoping to be profitable, and not hit that point lol. Otherwise good job with the replay and digging into what's happening to make sure everything is solid, I'm going to try and get this 2 sol tonight. And you just keep things moving"
+
+**How the manager reads it.**
+- "What you suggest" is the 1.2 SOL total lane loss limit and the 0.2 SOL daily stop.
+- The 1.2 SOL counts from lane start, with the 0.03 and the 0.10 history included. It is not 1.2 more, and it never resets.
+- The 0.20 SOL daily stop applies to both arms (marked and cost-basis) of the item 4 daily stop.
+- "I'm going to try and get this 2 sol tonight" makes the top-up a condition: this applies once the owner's top-up is on chain, not before. The owner's hope that the lane is profitable is the owner's hope, not evidence.
+
+**Scope of the override.** As in Amendment 4, it overrides §6 ("only through the promotion gate") for this step and for floor-lane-1 only. It does not lower the promotion gate (CLAUDE.md): **floor-lane-1 has not cleared the gate**, and nothing in this amendment says it makes money.
+
+**Change** (floor-lane-1 only):
+1. **Budget:** item 1 reads −1.20 SOL in place of −0.60 SOL; code ceiling `LANE_BUDGET_MAX_LAMPORTS` 1,200,000,000 (`tools/floor_lane_executor.py`).
+2. **Daily stop:** item 4 reads 0.20 SOL in place of 0.10 SOL; code ceiling `FLOOR_LANE_DAILY_MAX_LAMPORTS` 200,000,000, used by the floor-lane-1 config validation only. The shared `LANE_DAILY_MAX_LAMPORTS` stays 100,000,000 because the DSL lane (`tools/forge/dsl_lane_executor.py`, a pinned blob that is not changed) reads it as its default and its ceiling. `LANE_BUDGET_MAX_LAMPORTS` is read by floor-lane-1 validation alone (the DSL lane has `DSL_LANE_BUDGET_MAX_LAMPORTS`, 300,000,000). The default for a config without `daily_loss_lamports` stays 100,000,000 (new `LANE_DAILY_DEFAULT_LAMPORTS`, as the budget default stays 300,000,000); `tools/lane_daily_report.py` uses that default when run without `--config`.
+3. **No inner clamp.** The other places that carry a 0.60 or 0.10 SOL figure for this lane were checked:
+   - the probe `Limits` clamp (loss cap 350,000,000): the port sets `loss_cap_lamports` to `cfg.total_loss_lamports`, so 1.20 SOL passes (test `test_am5_port_lifts_probe_loss_cap_to_1200m`);
+   - the DEC-032 C0 table in `floor_arena_executor.tier_limits` (daily 100,000,000, total 200,000,000, min() with config): the lane's own `tier_limits` returns the lane values (test `test_am5_tier_limits_carry_the_lane_values_not_the_c0_table`);
+   - `committed_loss_stop` and `total_loss_lamports` read `cfg.total_loss_lamports` = the lane budget;
+   - `lane_daily_report` takes the budget and daily values from the lane config when `--config` is given;
+   - the stake bounds stay [0.02, 0.10] SOL and `LANE_MAX_OPEN` stays 16.
+
+**Capacity at 0.10 SOL** (reserve 3,860,000 = rent 2,100,000 + send fee 160,000 + sell reserve 1,600,000; per-position worst case 103,860,000):
+- **Pre-send (item 1, Am.3 full-wipe bound).** Lane cash = realized − n × 0.10 SOL with n filled opens; realized +15,081,595 (the 10 closed trades, HELM-REPLY-1111-1).
+  - Admitting the 11th (n = 10): 15,081,595 − 1,000,000,000 − (100,000,000 + 11 × 3,860,000) = −1,127,378,405, inside −1,200,000,000: allowed.
+  - Admitting the 12th (n = 11): 15,081,595 − 1,100,000,000 − (100,000,000 + 12 × 3,860,000) = −1,231,238,405, past −1,200,000,000: `lane_budget_presend`.
+  - So the pre-send allows **11 opens**. Test `test_am5_presend_allows_the_11th_open_at_010_and_refuses_the_12th`.
+- **`committed_loss_stop`** (realized loss floored at 0, so gains give no room): 11 × 103,860,000 = 1,142,460,000 ≤ 1,200,000,000 < 12 × 103,860,000 = 1,246,320,000. Also **11 opens**.
+- **Wallet floor** (funded 1,000,000,000, held-once: floor = max(0.05, funded − 0.25) = 750,000,000). Each landed open takes about 102,260,000 (stake + rent + send fee) from the balance. The next open needs 100,000,000 + 160,000 + 2,100,000 + (n + 1) × 1,600,000 + 750,000,000.
+  - Balance 1,119,513,796 (the manager's reading, 0 open assumed; re-record it before install): **3 opens**. n = 2 passes (balance left 914,993,796 against a need of 857,060,000); n = 3 fails (812,733,796 against 858,660,000).
+  - Balance about 3,119,500,000 (after a 2 SOL top-up): the floor allows 22, above the 16 cap and above 11, so it does not bind.
+- **Which binds first.** Before the top-up the wallet floor binds, at 3 opens (as Amendment 4 item 3 found at 3 to 5). After the top-up the pre-send and `committed_loss_stop` tie at 11; `max_open` 16 never binds at 0.10 SOL. Each −0.1039 SOL of realized lane cash removes about one open from the pre-send.
+- These counts are structural arithmetic, not a forecast of how many entries the host triggers. Test `test_am5_committed_loss_stop_ties_at_11_and_wallet_floor_binds_at_3_then_not`.
+
+**Consequences.**
+- **Daily stop:** it is checked before an entry only (Am.4 item 6, restated), so one UTC day can lose more than 0.20 SOL. The bound is min(remaining lifetime room, about 0.20 SOL already lost that day plus 11 × 0.1039 SOL of positions admitted after it). The remaining lifetime room cannot exceed 1.2 SOL plus realized gains, about 1.215 SOL now (1,200,000,000 + realized 15,081,595), and lifetime P&L never goes past −1.20 SOL. The stop fires at −0.20 SOL, not before (tests `test_am5_daily_stop_fires_at_minus_200m_not_before`, `test_am5_daily_stop_via_the_bridge_at_minus_200m`).
+- **Quote gaps:** a quote gap over 60 s, or an executor restart (which empties the marks), with even one open 0.10 position trips the marked arm until marks are fresh again (Am.4 item 6 restated). At 0.20 the marked arm needs a larger loss to trip, but a stale mark still counts 0.
+- **Budget stop:** at −1.20 SOL lifetime the lane STOP file is written, as for any lane budget stop.
+
+**Price impact (§6).** The stake stays 0.10 SOL, so per-trade impact is as in Amendment 4 item 7. More concurrent positions are in distinct pools (one open per pool), so they do not add impact to each other; they add exposure.
+
+**Bot id.** floor-lane-1 keeps its bot_id and ledger. The change is to two lane ceilings and the config; no decision logic and no host rule changes.
+
+**EXP-029.** Read of Erratum 1g (EXP/EXP-029-floor-lane-1-gate-read-prereg.md, line 289): the owner's 0.10 step-up ended the gate read as a procedural FAIL at the install instant, 2026-11-12T00:46:04.584Z (HELM-REPLY-1111-1), and any later registration keeps S = 2026-11-09T06:00:00Z and every trade since. This amendment changes no stake, so it adds no FAIL-end event of its own, and the read is already ended. The Erratum 1g descriptive tests run on the trades until 2026-11-13T00Z, so an install before then is noted in that read's report; this is a note, not an erratum. No EXP-029 erratum is written. The Erratum 1g rule 3 (no second look) is unchanged.
+
+**Install.** One HELM-ASK covers the merge sha of this PR, the changed blobs (`tools/floor_lane_executor.py`, `tools/lane_daily_report.py`; `tools/forge/dsl_lane_executor.py` is not changed and keeps blob 8cbc81a5) and a new live config. It is identical to `live-fc6ab6b2579655be792f8d12864ab209b8434d0d.json` except `budget_lamports` 1,200,000,000 and `daily_loss_lamports` 200,000,000 (`funded_lamports` stays 1,000,000,000, so the wallet floor stays 0.75 SOL; stake 100,000,000; max_open 16; `wallet_floor_count_held_once` true). Helm restarts the executor only; the decision host is never restarted. Until Helm installs it, the live lane keeps 0.60 / 0.10.
+
+Before the ask, all of these hold, and the manager records them in the state file:
+- (a) QP OK and REVIEWER APPROVE at the exact head of this PR;
+- (b) the owner's top-up is visible on chain, and the balance is recorded;
+- (c) the unit tests pass at the merge sha (every test file that imports `floor_lane_executor`, plus the arena executor tests: `test_floor_lane_executor`, `test_floor_arena_executor`, `test_floor_risk_accounting`, `test_floor_lane_mark_refresh`, `test_lane_daily_report`, `test_floor_fills_vs_model`, `test_forge_dsl_lane_executor`);
+- (d) the lane STOP file is absent, and lane cash and the number of open positions (0 or more) are recorded;
+- (e) if at least 10 trades at 0.10 SOL have closed by then, `tools.floor_fills_vs_model` prints `FILLS_MATCH_MODEL yes` on them. If fewer have closed, the check runs at the 10th closed 0.10 trade, and a "no" stops new entries through the lane STOP file.
+
+**Scaling past this step.** A stake above 0.10 SOL, or a budget above 1.20 SOL, requires the owner's word in a new amendment, with its stake and a price-impact estimate (§6).
+
+**Unchanged.** Keys, STOP/HALT, A3 pauses, the shared lane ledger and lock, the host, the rule `l1-floor-v2` and its exits, the stake bounds [0.02, 0.10], `LANE_MAX_OPEN` 16, `FUNDED_MAX_LAMPORTS`, §4, §5, §7, and every other lane bot's limits. `tools/h5_lane_executor.py` and the DSL lane (`DSL_LANE_*`: 0.03 / 0.30 / 8) keep their constants; the stopped H5 lane executors keep theirs.
+
+## Amendment 6 (2026-11-12): floor-lane-1 stake ceiling 0.25 SOL, lifetime budget 2.10 SOL, daily stop 0.50 SOL (install gated on 20 closed trades at 0.10)
+**Decider.** Vaan (owner).
+
+**The recommendation.** The manager (manager22) put it to the owner in chat, 2026-11-12 ~06:1xZ, in these exact words:
+> "My recommendation: after 20 closed trades at 0.10 (instead of the planned 30), if they're net positive and the fills keep matching the model."
+
+and, on the loss budget:
+> "With about 3.1 SOL in the wallet we can afford 8–9 positions at 0.25. That needs a 2.1 SOL loss budget"
+
+**The answer.** The owner answered in chat, 2026-11-12 ~06:4xZ, in these exact words:
+> "alright it's go time … the first 10 trades ending up positive looked good, so now we're scaling. Your recommendations look good and I accept the loss budget for whatever you think is going to get us more profitable. We need to be smart, we need to make sure everything is working properly, you need to be competent and proactive."
+
+**How the manager reads it.**
+- "Your recommendations" is the step-up to 0.25 SOL stake after 20 closed trades at 0.10 SOL (not the 30 first planned), conditional on those trades being net positive and the fills continuing to match the model. The condition is the manager's own text that the owner accepted; this amendment writes it down as install preconditions (b) and (c) below.
+- "The loss budget" is the 2.1 SOL lifetime loss budget. As in Amendment 5 it counts from lane start, with the 0.03, 0.10 and any later history included. It is not 2.1 more, and it never resets.
+- "Smart ... everything working properly" is read as: the preconditions are checks that must pass, not a formality. A "no" on (b) or (c) means the lane stays at 0.10 SOL and the manager reports to the owner.
+- The owner's "first 10 trades ending up positive looked good" refers to the 10 trades at 0.03 SOL. It is the owner's reading, not evidence of an edge.
+
+**Scope of the override.** As in Amendments 4 and 5, it overrides §6 ("only through the promotion gate") for this step and for floor-lane-1 only. It does not lower the promotion gate (CLAUDE.md): **floor-lane-1 has not cleared the gate**, and nothing in this amendment says it makes money.
+
+**Evidence the manager had (all small, none a gate read).**
+- Live: 10 closed trades at 0.03 SOL, +0.015081595 SOL after all fees; fills check #2439: 10/10 matched the model. The 10 trades are at about one-eighth (0.03 / 0.25 = 0.12) of the stake now asked for, and they say nothing about fills or impact at 0.25.
+- November paper replay (`/data/mal/hunt-1008/ops/reports/2026-11-12/floor-nov-funnel.md`, section "Manager erratum": the replay charged refundable ATA rent as a cost; corrected reader). Rent-corrected, flat leg, K = 16, stake 0.25: n 50, mean +5.66%, median −2.21%, total +0.7072 SOL, ex top 3 +0.1988 SOL, 6 of 8 entry-day buckets positive (11-07 is split at the deploy; combined 11-07 is −0.0096 SOL, so 6 of 7 UTC days positive; per_day in `/data2/mal/scratch/floor-nov-funnel/pnl-rentfix.json`). In-sample, not a gate read, and 29 feed-gap positions are unpriced (the busy 11-09 and 11-10 days). The median is negative, and the ex-top-3 total is a fraction of the total. **Caveat, the regime the live host runs in:** the post-deploy subset (11-07T19Z onward, same cell) is n 17, total +0.3106 SOL, ex top 3 **−0.1035 SOL** (pressure leg −0.0970). The positive pooled ex-top-3 comes from the pre-deploy rows together with the post-deploy rows; the most relevant slice has a negative ex-top-3.
+- Price impact at 0.25 (§6): see "Price impact" below.
+
+**Change** (floor-lane-1 only; no decision logic changes):
+1. **Stake ceiling:** item 2 reads [0.02, 0.25] SOL; `FLOOR_LANE_STAKE_BOUNDS_LAMPORTS` (20,000,000, 250,000,000) in place of (20,000,000, 100,000,000). The DSL lane has its own `DSL_LANE_STAKE_BOUNDS_LAMPORTS` (20,000,000, 30,000,000), which does not move.
+2. **Budget:** item 1 reads −2.10 SOL in place of −1.20 SOL; `LANE_BUDGET_MAX_LAMPORTS` 2,100,000,000.
+3. **Daily stop:** item 4 reads 0.50 SOL in place of 0.20 SOL; `FLOOR_LANE_DAILY_MAX_LAMPORTS` 500,000,000.
+4. **No shared constant moves.** Every reader of the three constants was grepped across `tools/` (including `tools/forge/`, `floor_arena_executor.py`, `floor_risk_accounting`, `lane_daily_report`, `h5_*`, `slowbot/`). `FLOOR_LANE_DAILY_MAX_LAMPORTS` already was floor-only (Am.5). `LANE_BUDGET_MAX_LAMPORTS` is read by floor-lane-1 validation alone (`tools/slowbot/live_executor.py` and `tools/h5_lane_executor.py` use `h5_lane_executor`'s own copy). `FLOOR_LANE_STAKE_BOUNDS_LAMPORTS` is read only inside `floor_lane_executor.py` and by `lane_daily_report` (as the minimum, index 0, unchanged). The shared `LANE_DAILY_MAX_LAMPORTS` stays 100,000,000 and the defaults stay (`LANE_BUDGET_DEFAULT_LAMPORTS` 300,000,000, `LANE_DAILY_DEFAULT_LAMPORTS` 100,000,000, `LANE_MAX_OPEN_DEFAULT` 8). `tools/forge/dsl_lane_executor.py` (blob 8cbc81a5e7b92790a3dc651fce234af39d4003f7), `tools/floor_arena_executor.py` and `tools/arena_live_bridge.py` are not changed (`git diff origin/main` on the three is empty). No new split was needed in this amendment; the Am.5 split already covers the daily ceiling.
+5. **No inner clamp** (checked in Am.5 for 1.20; the same paths carry 2.10): the probe `Limits` loss cap is set to `cfg.total_loss_lamports` by the port, the lane's own `tier_limits` returns the lane values, and `committed_loss_stop` reads the lane budget. The tests for these (`test_am5_*`) are unchanged and pass at the new numbers through the config.
+
+**Capacity at 0.25 SOL** (reserve 3,860,000 = rent 2,100,000 + send fee 160,000 + sell reserve 1,600,000; per-position worst case 253,860,000; install config `max_open` 16):
+- **Pre-send (item 1, Am.3 full-wipe bound).** Lane cash = realized − n × 0.25 SOL with n filled opens; realized +15,081,595 now (it moves with every closed trade; the install records the live figure).
+  - Admitting the 8th (n = 7): 15,081,595 − 1,750,000,000 − (250,000,000 + 8 × 3,860,000) = −2,015,798,405, inside −2,100,000,000: allowed.
+  - Admitting the 9th (n = 8): 15,081,595 − 2,000,000,000 − (250,000,000 + 9 × 3,860,000) = −2,269,658,405, past −2,100,000,000: `lane_budget_presend`.
+  - So the pre-send allows **8 opens**; `max_open` 16 never binds. Test `test_am6_presend_admits_8_opens_at_025_and_refuses_the_9th`.
+- **`committed_loss_stop`** (realized loss floored at 0): 8 × 253,860,000 = 2,030,880,000 ≤ 2,100,000,000 < 9 × 253,860,000 = 2,284,740,000. Also **8 opens**.
+- **Wallet floor** (funded 1,000,000,000, held-once: floor = max(0.05, funded − 0.25) = 750,000,000). Each landed open takes 252,260,000 (stake + rent + send fee) from the balance. The next open needs 250,000,000 + 160,000 + 2,100,000 + (n + 1) × 1,600,000 + 750,000,000.
+  - Balance 3,160,503,113 (the manager's reading 2026-11-12, 0 open assumed; re-record it before install): the floor alone admits **9 opens**. n = 8 passes (balance left 1,142,423,113 against a need of 1,016,660,000); n = 9 fails (890,163,113 against 1,018,260,000).
+- **Which binds first.** The budget (pre-send and `committed_loss_stop` tie) binds at **8**; the wallet floor at 9. The wallet floor binds first if the balance at install is lower: each 0.252 SOL less balance removes about one open. Run together as the executor runs them, the 9th is refused with `committed_loss_stop` (test `test_am6_committed_loss_stop_and_wallet_floor_capacity_at_025`). The roughly "8–9 positions" of the manager's recommendation is this arithmetic.
+- These counts are structural, not a forecast of how many entries the host triggers.
+
+**Why the daily stop is 0.50.** The marked daily stop (`FloorLaneLedger.evaluate`: `view.pnl - snap <= -daily`, where `pnl` counts open filled positions at fresh marks and a stale or missing mark as 0) would at 0.25 × 8 open (2.0 SOL exposed) halt new entries on a roughly 10% dip of the marks (0.20 SOL), or on one stale mark (a 0.25 SOL position counted at 0). The mark is a sell quote, so the pool fees on both legs plus the rent and buy fee held in cash until the close already lower the marked P&L at the fill, about 0.007 SOL per position at 0.25 (about 0.055 SOL with 8 open). `evaluate` also stops on a second, cost-basis arm (`view.cost - base[1] <= -daily`), which carries open filled positions at their stake; at 0.50 that arm is a pure realized-plus-fees loss stop. A 0.20 SOL stop would be a mark-noise switch on the marked arm, not a loss stop. At 0.50 SOL it stays a loss stop, and it is still well under the 2.10 SOL lifetime budget. The stale-mark behaviour itself is unchanged (Am.4 item 6): one stale 0.25 position moves the marked P&L by up to 0.25 SOL, half the stop.
+
+**Consequences.**
+- **Daily stop:** checked before an entry only, so one UTC day can lose more than 0.50 SOL. The bound is min(remaining lifetime room, about 0.50 SOL already lost that day plus 8 × 0.2539 SOL of positions admitted after it). The remaining lifetime room cannot exceed 2.1 SOL plus realized gains, about 2.115 SOL now (2,100,000,000 + realized 15,081,595), and lifetime P&L never goes past −2.10 SOL. (Same pattern as Am.5, QP M1 of #1317.)
+- **Worst case.** The pre-send admits an entry only if the full-wipe lane P&L after the new stake and one fee reserve (3,860,000) per position is still above −2.10 SOL, and the budget stop writes the lane STOP at −2.10 SOL. So lifetime lane loss is bounded by the 2.10 SOL budget; the fee reserves of every counted position are inside that bound, not on top of it. The buy spends exactly the stake (exact quote-in, spend margin 0): a worse fill price means fewer tokens, not more SOL lost, and the full-wipe bound already counts the whole stake as lost. The fill row books the actual SOL out, so the token-account rent and the buy fee are in lane cash at the fill. Sells stop after 10 attempts, so sell fees stay inside the per-position sell reserve. The remaining real escape paths are rows that never reach the ledger (backlogged rows block entries) and estimated fill rows. The wallet floor (0.75 SOL) and the fills-vs-model check watch those; the wallet cannot be taken below the floor by an entry.
+- **Quote gaps:** unchanged (Am.4 item 6): a gap over 60 s or an executor restart empties the marks, and the marked arm counts them 0 until fresh.
+- **Budget stop:** at −2.10 SOL lifetime the lane STOP file is written, as for any lane budget stop.
+
+**Price impact (§6; in-sample, Am.4 item 7 arithmetic, V + q ≈ 18 SOL, constant product; figures from the REVIEWER comment on #1318).** Post-buy price / floor at q = 0 is (18.25 / 18)² ≈ 1.0280 at 0.25, against 1.0113 at 0.10. The average-fill premium is about 0.25 / 18 ≈ 1.39%, against 0.56% at 0.10. Round-trip impact is about 0.007 SOL per trade at 0.25, against about 0.0011 SOL at 0.10. So impact in percent scales about 2.5×, and the impact cost in SOL per trade about 6.25× (stake squared). These are model figures, not fills; fills at 0.10 cannot show impact at 0.25, so a fills check runs after the install (Post-install check below). The model's fill price already includes the pool's virtual reserve. The paper replay at 0.25 (above) applies the same impact model. More concurrent positions are in distinct pools (one open per pool), so they do not add impact to each other; they add exposure.
+
+**Bot id.** floor-lane-1 keeps its bot_id and ledger. The change is to three lane ceilings and the config; no decision logic and no host rule changes.
+
+**EXP-029.** Erratum 1g (EXP/EXP-029-floor-lane-1-gate-read-prereg.md, line 289) already ended the gate read as a procedural FAIL at the 0.10 install instant, 2026-11-12T00:46:04.584Z (HELM-REPLY-1111-1), and any later registration keeps S = 2026-11-09T06:00:00Z and every trade since. This amendment changes no registration, writes no EXP-029 erratum, and adds no FAIL-end event; Erratum 1g rule 3 (no second look) is unchanged. The 20-trade check below is a precondition of this install, a descriptive read for the manager, and not a gate read.
+
+**Install.** Not installed by this PR. One HELM-ASK covers the merge sha of this PR, the changed blob `tools/floor_lane_executor.py` (`tools/forge/dsl_lane_executor.py` is not changed and keeps blob 8cbc81a5e7b92790a3dc651fce234af39d4003f7) and a new live config. It is identical to the Am.5 config except `stake_lamports` 250,000,000, `budget_lamports` 2,100,000,000 and `daily_loss_lamports` 500,000,000; `max_open` 16 (the budget binds at 8 by the arithmetic above); `funded_lamports` stays 1,000,000,000 (wallet floor 0.75 SOL); `wallet_floor_count_held_once` true; everything else as in the Am.5 config. Helm restarts the executor only; the decision host is never restarted. Until Helm installs it, the live lane keeps the Am.5 limits (0.10 / 1.20 / 0.20).
+
+Before the ask, all of these hold, and the manager records them in the state file:
+- (a) QP OK and REVIEWER APPROVE at the exact head of this PR;
+- (b) decided ONCE, on the first 20 closed filled round trips (an exit or a write-off after a fill) at stake 0.10 SOL since 2026-11-12T00:46:04.584Z, in lane-ledger order of exit. Failed or guarded buys do not count toward the 20, but their fees count in the realized sum. Pass = realized P&L after all fees over exactly those 20 ≥ 0. There are no rolling re-checks at 21, 22, ...;
+- (c) `tools.floor_fills_vs_model` prints `FILLS_MATCH_MODEL yes` over the 0.10 trades, checked at the 10th and at the 20th of those same trades (the check at 20 is over exactly those 20);
+- (d) the unit tests pass at the merge sha (every test file that imports `floor_lane_executor`, plus the arena executor tests: `test_floor_lane_executor`, `test_floor_arena_executor`, `test_floor_risk_accounting`, `test_floor_lane_mark_refresh`, `test_lane_daily_report`, `test_floor_fills_vs_model`, `test_forge_dsl_lane_executor`);
+- (e) the lane STOP file and the wallet-wide STOP and HALT are absent, and lane cash and the number of open positions (0 or more) are recorded;
+- (f) the wallet balance is recorded, and the wallet-floor capacity at that balance (the floor arithmetic above, with the open positions' stakes already out of the balance) is at least the budget capacity (8); otherwise the lower number is stated in the ask.
+
+A "no" on (b) or (c): the lane stays at 0.10 SOL, nothing is installed, and the manager reports to the owner. The only re-decision is one second checkpoint, on the first 40 closed filled round trips at 0.10, and only with a new owner word.
+
+**Post-install check.** After the install, `tools.floor_fills_vs_model` runs at the 10th closed trade at stake 0.25. A "no" writes the lane STOP file, and the manager asks Helm to return to the 0.10 config (the Am.5 config).
+
+**Scaling past this step.** A stake above 0.25 SOL, or a budget above 2.10 SOL, requires the owner's word in a new amendment, with its stake and a price-impact estimate (§6).
+
+**Unchanged.** Keys, STOP/HALT, A3 pauses, the shared lane ledger and lock, the host, the rule `l1-floor-v2` and its exits, `LANE_MAX_OPEN` 16, the shared `LANE_DAILY_MAX_LAMPORTS` 100,000,000, `FUNDED_MAX_LAMPORTS`, §4, §5, §7, and every other lane bot's limits. `tools/h5_lane_executor.py` and the DSL lane (`DSL_LANE_*`: 0.03 / 0.30 / 8) keep their constants; the stopped H5 lane executors keep theirs.
+
+**Erratum 1 (2026-11-12, verdict nits on #1318; merged as 8dec3a3b; wording only, no limit, code or install condition changes beyond making (b) exact).** From the final QP and REVIEWER verdicts at 82dec346:
+1. The combined 11-07 figure in the evidence bullet is −0.0096 SOL (the file's value is −0.009575; QP nit). The line above is corrected in place.
+2. In "Why the daily stop is 0.50", the drop of the marked P&L at the fill comes from the pool fees on both legs plus the rent and buy fee held in cash until the close, not from price impact (QP nit). The word is corrected in that sentence only; the "Price impact" section is unchanged.
+3. Precondition (b): the realized sum over the 20 trades counts every lane-ledger row of those 20 positions, plus the fee rows of failed or guarded buys whose send falls between 2026-11-12T00:46:04.584Z and the exit instant of the 20th trade (REVIEWER minor 1, QP nit). Failed or guarded buys still do not count toward the 20.
+4. In "Worst case", the fills-vs-model check does not catch rows missing from the lane ledger: it compares fills with the model. Only the wallet floor bounds those (REVIEWER minor 2). Read "The wallet floor (0.75 SOL) and the fills-vs-model check watch those" with this correction.

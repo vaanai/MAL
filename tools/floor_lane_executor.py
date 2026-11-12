@@ -7,11 +7,11 @@ SWITCHES. A real send needs ALL of: config mode "live", the `--live` flag, the l
 immediately before EVERY buy. Any one missing runs DRY (a DryPort: logged, never sent) or refuses to start. Only the manager starts the book (DEC-035 s3).
 
 LIMITS (DEC-035 s2; the shared ledger is the h5-lane ledger, tools/h5_lane_executor.LaneLedger, taken under its flock and read before every send)
-  1 BUDGET      lane P&L <= -0.30 SOL: the budget stop writes the lane STOP file and no entry goes. An entry goes only if lane P&L - (open stakes + new stake + fee reserve per position) > -0.30 SOL.
+  1 BUDGET      lane P&L <= -budget: the budget stop writes the lane STOP file and no entry goes. An entry goes only if the full-wipe lane P&L - (new stake + fee reserve per position) > -budget. Code ceiling 2.10 SOL (DEC-035 Am.6; 0.30 at s2, 0.60 Am.4, 1.20 Am.5); the live config sets the value in use.
                 Open positions are marked at the last fresh quote; a mark older than mark_stale_s (<= 60) is worth 0.
-  2 STAKE       FLOOR_LANE_STAKE_BOUNDS_LAMPORTS, one named constant (code ceiling 0.02 to 0.10 SOL; the live config sets the stake in use). The configured stake outside it: the executor refuses to start. One entry per position.
+  2 STAKE       FLOOR_LANE_STAKE_BOUNDS_LAMPORTS, one named constant (code ceiling 0.02 to 0.25 SOL, DEC-035 Am.6; the live config sets the stake in use). The configured stake outside it: the executor refuses to start. One entry per position.
   3 OPEN        at most LANE_MAX_OPEN (code ceiling 16; the live config sets the value in use, 8 at DEC-035 Amendment 1, 2026-11-08) across the lane, counted in the shared ledger. A full lane refuses the entry with reason `lane_full` (first come, first served).
-  4 DAILY       lane P&L now minus lane P&L at the last 00:00Z <= -0.10 SOL: no new entries until the next 00:00Z. Applied as written (marked P&L); no worst-case daily pre-send (Amendment 1).
+  4 DAILY       lane P&L now minus lane P&L at the last 00:00Z <= -daily (code ceiling FLOOR_LANE_DAILY_MAX_LAMPORTS 0.50 SOL, DEC-035 Am.6; 0.10 at s2, 0.20 Am.5; the live config sets the value in use; the shared LANE_DAILY_MAX_LAMPORTS stays 0.10 for the DSL lane): no new entries until the next 00:00Z. Applied as written (marked P&L); no worst-case daily pre-send (Amendment 1).
   6 STOP        the lane STOP file (and the wallet-wide /var/lib/mal-live/STOP and HALT, which the bridge honours) is checked before every send. New entries only: open positions keep the rule's exits.
   ATA           every sell closes the token account (probe_live._start_sell builds close_token_account, checked at start); a landed sell that refunded no rent latches `ata_rent_not_refunded`.
 
@@ -46,7 +46,7 @@ BOOK_BOT_ID = F.BOT_ID  # the decision-log arm the bridge reads
 FROZEN_SHA = F.FROZEN_SHA
 
 # THE stake bounds of this book in the lane (DEC-035 s2 item 2). A later owner decision raises them here and in DEC-035, plus the test that pins them. Nothing else holds a copy.
-FLOOR_LANE_STAKE_BOUNDS_LAMPORTS = (20_000_000, 100_000_000)  # owner step-up 0.03 -> 0.10 SOL (2026-11-10); the live config still sets the stake in use
+FLOOR_LANE_STAKE_BOUNDS_LAMPORTS = (20_000_000, 250_000_000)  # floor-lane-1 only (the DSL lane has DSL_LANE_STAKE_BOUNDS_LAMPORTS). Owner step-up 0.03 -> 0.10 SOL (2026-11-10); DEC-035 Am.6 (owner, 2026-11-12): ceiling 0.10 -> 0.25 SOL; the live config still sets the stake in use
 LANE_MAX_OPEN = 16  # a ceiling only; the live config sets max_open
 LANE_MAX_OPEN_DEFAULT = 8  # what a lane block without max_open gets (unchanged from before the step-up)
 # The bridge builds its probe executor with the dec019 profile, which CLAMPS max_open to 3, max_attempts to its pcfg value (60) and max_days to 7. Incident 2026-11-09: a real
@@ -54,9 +54,11 @@ LANE_MAX_OPEN_DEFAULT = 8  # what a lane block without max_open gets (unchanged 
 # real limits, so the live port lifts the probe's counters far above anything the lane can reach. FloorLanePort.__init__ applies them to ex.limits.
 LANE_PROBE_MAX_ATTEMPTS = 100_000
 LANE_PROBE_MAX_DAYS = 60.0
-LANE_BUDGET_MAX_LAMPORTS = 600_000_000  # a ceiling only; the live config sets budget_lamports
+LANE_BUDGET_MAX_LAMPORTS = 2_100_000_000  # a ceiling only (read by floor-lane-1 validation alone; the DSL lane has DSL_LANE_BUDGET_MAX_LAMPORTS); the live config sets budget_lamports. DEC-035 Am.5 (owner, 2026-11-12): 0.60 -> 1.20 SOL lifetime; Am.6: 1.20 -> 2.10 SOL
 LANE_BUDGET_DEFAULT_LAMPORTS = 300_000_000  # what a lane block without budget_lamports gets (unchanged from before the step-up)
-LANE_DAILY_MAX_LAMPORTS = 100_000_000
+LANE_DAILY_MAX_LAMPORTS = 100_000_000  # the SHARED daily ceiling: the DSL lane (tools/forge/dsl_lane_executor.py, a pinned blob) reads it. DEC-035 Am.5 does not move it
+FLOOR_LANE_DAILY_MAX_LAMPORTS = 500_000_000  # floor-lane-1 only: DEC-035 Am.5 (owner, 2026-11-12) 0.10 -> 0.20 SOL daily stop ceiling; Am.6: 0.20 -> 0.50 SOL
+LANE_DAILY_DEFAULT_LAMPORTS = 100_000_000  # what a lane block without daily_loss_lamports gets (unchanged by Am.5, like LANE_BUDGET_DEFAULT_LAMPORTS)
 LANE_MARK_STALE_MAX_S = 60
 # probe_executor prices an open position from its pool cache only while the cache is younger than STATIC_TTL_MS (300 s). A FLOOR position is held up to 24 h, so the port re-primes the cache
 # of every open mint with one full snapshot at most once per this interval (audit 2026-11-10 option A). Below STATIC_TTL_MS so the cache never lapses between two re-primes.
@@ -102,13 +104,13 @@ def parse_lane(raw: Any) -> H.LaneConfig:
         raise LaneConfigError(f"lane.stake_lamports {stake} is outside [{lo}, {hi}]")
     max_open = _whole(raw, "max_open", LANE_MAX_OPEN_DEFAULT)
     budget = _whole(raw, "budget_lamports", LANE_BUDGET_DEFAULT_LAMPORTS)
-    daily = _whole(raw, "daily_loss_lamports", LANE_DAILY_MAX_LAMPORTS)
+    daily = _whole(raw, "daily_loss_lamports", LANE_DAILY_DEFAULT_LAMPORTS)
     if not 1 <= max_open <= LANE_MAX_OPEN:
         raise LaneConfigError(f"lane.max_open must be 1..{LANE_MAX_OPEN}")
     if not 1 <= budget <= LANE_BUDGET_MAX_LAMPORTS:
         raise LaneConfigError(f"lane.budget_lamports must be 1..{LANE_BUDGET_MAX_LAMPORTS}")
-    if not 1 <= daily <= LANE_DAILY_MAX_LAMPORTS:
-        raise LaneConfigError(f"lane.daily_loss_lamports must be 1..{LANE_DAILY_MAX_LAMPORTS}")
+    if not 1 <= daily <= FLOOR_LANE_DAILY_MAX_LAMPORTS:
+        raise LaneConfigError(f"lane.daily_loss_lamports must be 1..{FLOOR_LANE_DAILY_MAX_LAMPORTS}")
     reserve = _whole(raw, "fee_reserve_lamports", LANE_MIN_FEE_RESERVE)
     if reserve < LANE_MIN_FEE_RESERVE:
         raise LaneConfigError(f"lane.fee_reserve_lamports must be >= {LANE_MIN_FEE_RESERVE}")

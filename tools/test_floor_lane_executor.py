@@ -156,9 +156,9 @@ def refusals(br):
 
 # ------------------------------------------------------------------------------------------------ constants and config
 def test_constants_follow_dec035_s2():
-    assert X.FLOOR_LANE_STAKE_BOUNDS_LAMPORTS == (20_000_000, 100_000_000)
+    assert X.FLOOR_LANE_STAKE_BOUNDS_LAMPORTS == (20_000_000, 250_000_000)
     assert (H.LANE_STAKE_MIN_LAMPORTS, H.LANE_STAKE_MAX_LAMPORTS) == (20_000_000, 30_000_000)  # the H5 lane's own copy is unchanged
-    assert (X.LANE_MAX_OPEN, X.LANE_BUDGET_MAX_LAMPORTS, X.LANE_DAILY_MAX_LAMPORTS, X.LANE_MARK_STALE_MAX_S) == (16, 600_000_000, 100_000_000, 60)
+    assert (X.LANE_MAX_OPEN, X.LANE_BUDGET_MAX_LAMPORTS, X.FLOOR_LANE_DAILY_MAX_LAMPORTS, X.LANE_MARK_STALE_MAX_S) == (16, 2_100_000_000, 500_000_000, 60)
     assert (X.LANE_MAX_OPEN_DEFAULT, X.LANE_BUDGET_DEFAULT_LAMPORTS) == (8, 300_000_000)  # what a block without the keys gets: unchanged
     assert X.LANE_BOT_ID == "floor-lane-1" and X.BOOK_BOT_ID == "l1-floor-v2" and X.FROZEN_SHA == F.FROZEN_SHA
     assert X.LANE_MIN_FEE_RESERVE == 2_100_000 + 160_000 + 1_600_000
@@ -170,7 +170,7 @@ def test_floor_arena_executor_stays_dry():
         F.make_config(cfg_dict(Path("/x"), mode="live"))
 
 
-@pytest.mark.parametrize("stake", [0, 19_999_999, 100_000_001, 100_000_000.5, None, True, 25_000_000.5])
+@pytest.mark.parametrize("stake", [0, 19_999_999, 250_000_001, 100_000_000.5, None, True, 25_000_000.5])
 def test_refuse_on_bad_stake_config(tmp_path, stake):
     raw = lane_raw(tmp_path)
     if stake is None:
@@ -197,7 +197,7 @@ def test_bounds_come_from_one_constant(tmp_path, monkeypatch):
     raw["lane"]["stake_lamports"] = 120_000_000
     cfg, lane, _ = X.make_config(raw)
     assert cfg.stake_lamports == 120_000_000 and lane.stake_lamports == 120_000_000
-    monkeypatch.setattr(X, "FLOOR_LANE_STAKE_BOUNDS_LAMPORTS", (20_000_000, 100_000_000))
+    monkeypatch.setattr(X, "FLOOR_LANE_STAKE_BOUNDS_LAMPORTS", (20_000_000, 250_000_000))
     with pytest.raises(SystemExit):  # the bridge refuses to start outside the bounds even with a config object that slipped through
         X.FloorLaneBridge(cfg, B.DryPort(1), lane, now_ms=Clock(T0))
 
@@ -211,7 +211,7 @@ def test_bridge_refuses_stake_mismatch_and_bad_max_open(tmp_path):
         X.FloorLaneBridge(dataclasses.replace(cfg, max_open=17), B.DryPort(1), lane, now_ms=Clock(T0))
 
 
-@pytest.mark.parametrize("k,v", [("max_open", 17), ("budget_lamports", 600_000_001), ("daily_loss_lamports", 100_000_001), ("mark_stale_s", 61), ("fee_reserve_lamports", 1),
+@pytest.mark.parametrize("k,v", [("max_open", 17), ("budget_lamports", 2_100_000_001), ("daily_loss_lamports", 500_000_001), ("mark_stale_s", 61), ("fee_reserve_lamports", 1),
                                  ("bot_id", "h5-lane"), ("surprise", 1)])
 def test_lane_config_only_lowers(tmp_path, k, v):
     raw = lane_raw(tmp_path)
@@ -343,6 +343,7 @@ def test_max_open_ceiling_16_accepted_and_17_refused(tmp_path):
 
 def test_absent_keys_take_the_old_defaults_not_the_new_ceilings(tmp_path):
     cfg, lane, _ = X.make_config(lane_raw(tmp_path))
+    assert lane.daily_loss_lamports == 100_000_000  # Am.5 raised the ceiling, not the default
     assert (lane.max_open, lane.budget_lamports) == (8, 300_000_000) and (cfg.max_open, cfg.total_loss_lamports) == (8, 300_000_000)
 
 
@@ -352,7 +353,7 @@ def test_step_up_bounds_accept_010_stake_060_budget_and_refuse_one_lamport_over(
     cfg, lane, _ = X.make_config(raw)
     assert (lane.stake_lamports, lane.budget_lamports, lane.max_open) == (100_000_000, 600_000_000, 16)
     assert cfg.stake_lamports == 100_000_000 and cfg.total_loss_lamports == 600_000_000 and cfg.per_trade_loss_lamports == 100_000_000 + lane.fee_reserve_lamports
-    for k, v in (("stake_lamports", 100_000_001), ("budget_lamports", 600_000_001), ("max_open", 17)):
+    for k, v in (("stake_lamports", 250_000_001), ("budget_lamports", 2_100_000_001), ("max_open", 17)):
         bad = lane_raw(tmp_path)
         bad["lane"].update(stake_lamports=100_000_000, budget_lamports=600_000_000, max_open=16)
         bad["lane"][k] = v
@@ -369,7 +370,7 @@ def test_live_config_stake_30m_budget_300m_max_open_8_validates_and_decides_as_b
     view = H.lane_fold([], {}, T0, lane.mark_stale_s, X.LANE_BOT_ID)
     assert led.evaluate(view, T0, 30_000_000) is None
     assert led.evaluate(view, T0, 30_000_001) is None  # in bounds for the ledger (the config pins the stake); the old 0.03 ceiling no longer applies
-    assert led.evaluate(view, T0, 100_000_001) == "lane_stake_out_of_bounds"
+    assert led.evaluate(view, T0, 250_000_001) == "lane_stake_out_of_bounds"
 
 
 def test_port_sets_probe_size_and_loss_cap_to_the_lane_values(tmp_path):
@@ -1069,3 +1070,212 @@ def test_port_lifts_probe_clamps(tmp_path):
     assert pe.check_buy(lim, st, now, False, "live") is None
     st.open["M7"] = {}
     assert pe.check_buy(lim, st, now, False, "live") == "max_open"
+
+
+# ------------------------------------------------------------------------------------------------ Amendment 5: budget 1.20 SOL, daily stop 0.20 SOL
+STAKE10 = 100_000_000
+REALIZED_PLUS = 15_081_595
+
+
+def test_am5_bounds_accept_ceilings_and_refuse_one_lamport_over(tmp_path):
+    raw = lane_raw(tmp_path)
+    raw["lane"].update(stake_lamports=STAKE10, budget_lamports=1_200_000_000, daily_loss_lamports=200_000_000, max_open=16)
+    cfg, lane, _ = X.make_config(raw)
+    assert (lane.budget_lamports, lane.daily_loss_lamports) == (1_200_000_000, 200_000_000)
+    assert (cfg.total_loss_lamports, cfg.daily_loss_lamports) == (1_200_000_000, 200_000_000)  # no inner clamp: the C0 table is not used for a lane config
+    assert X.FLOOR_LANE_STAKE_BOUNDS_LAMPORTS == (20_000_000, 250_000_000) and X.LANE_MAX_OPEN == 16
+    for k, v in (("budget_lamports", 2_100_000_001), ("daily_loss_lamports", 500_000_001), ("stake_lamports", 250_000_001), ("max_open", 17)):
+        bad = lane_raw(tmp_path)
+        bad["lane"].update(stake_lamports=STAKE10, budget_lamports=1_200_000_000, daily_loss_lamports=200_000_000, max_open=16)
+        bad["lane"][k] = v
+        with pytest.raises(ValueError):
+            X.make_config(bad)
+
+
+def test_am5_tier_limits_carry_the_lane_values_not_the_c0_table(tmp_path):
+    raw = lane_raw(tmp_path)
+    raw["lane"].update(stake_lamports=STAKE10, budget_lamports=1_200_000_000, daily_loss_lamports=200_000_000, max_open=16)
+    br, _ = mk(tmp_path, Clock(T0), raw=raw)
+    tier, lim, _ = br.tier_limits()
+    assert tier == "LANE" and lim["total_loss_lamports"] == 1_200_000_000 and lim["daily_loss_lamports"] == 200_000_000 and lim["max_open"] == 16
+
+
+def test_am5_port_lifts_probe_loss_cap_to_1200m(tmp_path):
+    raw = lane_raw(tmp_path)
+    raw["lane"].update(stake_lamports=STAKE10, budget_lamports=1_200_000_000, daily_loss_lamports=200_000_000, max_open=16)
+    cfg, _, _ = X.make_config(raw)
+    inner = FakeInner()
+    inner.ex.limits = lim = pe.Limits.from_config({"size_lamports": STAKE10, "max_open": 8, "max_attempts": 60, "loss_cap_lamports": 1_200_000_000, "priority_lamports": 500_000})
+    X.FloorLanePort(inner, cfg)
+    assert lim.size_lamports == STAKE10 and lim.loss_cap_lamports == 1_200_000_000 and lim.max_open == 16
+    assert pe.check_buy(lim, pe.State(realized_lamports=-(1_200_000_000 - 1)), 1_800_000_000_000 - 10 ** 9, False, "live") != "loss_cap"
+
+
+def _am5_ledger(tmp_path):
+    lc = H.LaneConfig(tmp_path / "l.jsonl", tmp_path / "STOP", X.LANE_BOT_ID, STAKE10, 16, 1_200_000_000, 200_000_000, X.LANE_MIN_FEE_RESERVE, 60.0)
+    return X.FloorLaneLedger(lc), lc
+
+
+def test_am5_presend_allows_the_11th_open_at_010_and_refuses_the_12th(tmp_path):
+    """Exact arithmetic. RES = 3,860,000 (rent 2,100,000 + send fee 160,000 + sell reserve 1,600,000). cash = realized - n x stake (each filled buy is in cash).
+    n = 10 open, admitting the 11th: 15,081,595 - 1,000,000,000 - (100,000,000 + 11 x 3,860,000) = -1,127,378,405 > -1,200,000,000 -> allowed.
+    n = 11 open, admitting the 12th: 15,081,595 - 1,100,000,000 - (100,000,000 + 12 x 3,860,000) = -1,231,238,405 <= -1,200,000,000 -> lane_budget_presend."""
+    led, lc = _am5_ledger(tmp_path)
+    assert X.LANE_MIN_FEE_RESERVE == 3_860_000
+    res = {}
+    for n in (10, 11):
+        cash = REALIZED_PLUS - n * STAKE10
+        view, marks = _view(lc, cash, [STAKE10] * n, [None] * n)
+        led._marks = marks
+        res[n] = (led.wipe_floor(view, T0) - (STAKE10 + 3_860_000 * (n + 1)), led.evaluate(view, T0, STAKE10))
+    assert res[10] == (-1_127_378_405, None)
+    assert res[11] == (-1_231_238_405, "lane_budget_presend")
+
+
+def _am5_floor_bridge(tmp_path, opens, balance_check):
+    """A FloorBridge with the Am.5 lane numbers; floor_problem is the executor's own check."""
+    import dataclasses
+    from tools.test_floor_arena_executor import bridge as fbridge
+    br, _ = fbridge(tmp_path, Clock(T0), funded_lamports=1_000_000_000, wallet_floor_count_held_once=True)
+    br.cfg = dataclasses.replace(br.cfg, stake_lamports=STAKE10, total_loss_lamports=1_200_000_000, max_open=100)
+    br.state.orders = {f"o{i}": {"status": "open", "live": False, "stake_lamports": STAKE10} for i in range(opens)}
+    return br
+
+
+def _am5_opens_admitted(tmp_path, bal0):
+    """Opens admitted one after the other by the executor's own floor_problem; each landed open takes stake + rent + send fee from the balance."""
+    n = 0
+    while n < 40:
+        br = _am5_floor_bridge(tmp_path, n, None)
+        if br.floor_problem(STAKE10, bal0 - n * (STAKE10 + F.RENT_RESERVE_LAMPORTS + F.SEND_FEE_LAMPORTS)) is not None:
+            return n, br.floor_problem(STAKE10, bal0 - n * (STAKE10 + F.RENT_RESERVE_LAMPORTS + F.SEND_FEE_LAMPORTS))
+        n += 1
+    return n, None
+
+
+def test_am5_committed_loss_stop_ties_at_11_and_wallet_floor_binds_at_3_then_not(tmp_path):
+    wc = STAKE10 + F.SEND_FEE_LAMPORTS + F.RENT_RESERVE_LAMPORTS + F.SELL_RESERVE_LAMPORTS
+    assert wc == 103_860_000
+    assert 11 * wc <= 1_200_000_000 < 12 * wc
+    assert _am5_floor_bridge(tmp_path, 0, None).cfg.wallet_floor_lamports == 750_000_000
+    # real check, huge balance: only committed_loss_stop can refuse; it admits 11 opens and refuses the 12th
+    assert _am5_floor_bridge(tmp_path, 10, None).floor_problem(STAKE10, 10 ** 12) is None
+    assert _am5_floor_bridge(tmp_path, 11, None).floor_problem(STAKE10, 10 ** 12) == "committed_loss_stop"
+    # real check, balance 1,119,513,796: the wallet floor stops the 4th open (3 admitted)
+    assert _am5_opens_admitted(tmp_path, 1_119_513_796) == (3, "wallet_floor")
+    # assumed balance 3,119,513,796 (the 1,119,513,796 reading plus an assumed 2 SOL top-up; the real balance on 2026-11-12 was 3,160,503,113): the wallet floor never binds; the committed stop does at the 12th
+    assert _am5_opens_admitted(tmp_path, 3_119_513_796) == (11, "committed_loss_stop")
+
+
+def test_am5_daily_stop_fires_at_minus_200m_not_before(tmp_path):
+    led, lc = _am5_ledger(tmp_path)
+    day = H.day_of(T0)
+    for loss, want in ((199_999_999, None), (200_000_000, "lane_daily_stop")):
+        view, marks = _view(lc, -loss, [], [])
+        view.snaps[day] = (0, 0)
+        led._marks = marks
+        assert led.evaluate(view, T0, STAKE10) == want
+
+
+def test_am5_daily_stop_via_the_bridge_at_minus_200m(tmp_path):
+    clk = Clock(T0)
+    raw = lane_raw(tmp_path)
+    raw["lane"].update(stake_lamports=STAKE10, budget_lamports=1_200_000_000, daily_loss_lamports=200_000_000, max_open=16)
+    other_cash(tmp_path, 200_000_000, snap_day=H.day_of(T0), now=T0 - 10)
+    br, inner = mk(tmp_path, clk, raw=raw)
+    entry(tmp_path)
+    feed(br, clk)
+    assert inner.buys == [] and refusals(br)[-1]["why"] == "lane_daily_stop"
+
+
+def test_am5_shared_daily_ceiling_stays_100m_for_the_dsl_lane():
+    """The DSL lane reads the shared LANE_DAILY_MAX_LAMPORTS; Am.5 raises the floor-only constant."""
+    assert X.LANE_DAILY_MAX_LAMPORTS == 100_000_000 and X.FLOOR_LANE_DAILY_MAX_LAMPORTS == 500_000_000  # Am.6 (Am.5 had 200M)
+
+
+# ------------------------------------------------------------------------------------------------ Amendment 6: stake ceiling 0.25 SOL, budget 2.10 SOL, daily stop 0.50 SOL
+STAKE25 = 250_000_000
+BUDGET21 = 2_100_000_000
+DAILY05 = 500_000_000
+
+
+def _am6_raw(tmp_path, **over):
+    raw = lane_raw(tmp_path)
+    raw["lane"].update(stake_lamports=STAKE25, budget_lamports=BUDGET21, daily_loss_lamports=DAILY05, max_open=16)
+    raw["lane"].update(over)
+    return raw
+
+
+def test_am6_each_ceiling_accepts_the_max_and_refuses_one_lamport_over(tmp_path):
+    cfg, lane, _ = X.make_config(_am6_raw(tmp_path))
+    assert (lane.stake_lamports, lane.budget_lamports, lane.daily_loss_lamports, lane.max_open) == (STAKE25, BUDGET21, DAILY05, 16)
+    assert (cfg.stake_lamports, cfg.total_loss_lamports, cfg.daily_loss_lamports) == (STAKE25, BUDGET21, DAILY05)
+    assert X.FLOOR_LANE_STAKE_BOUNDS_LAMPORTS == (20_000_000, STAKE25) and X.LANE_BUDGET_MAX_LAMPORTS == BUDGET21 and X.FLOOR_LANE_DAILY_MAX_LAMPORTS == DAILY05
+    for k, v in (("stake_lamports", STAKE25 + 1), ("budget_lamports", BUDGET21 + 1), ("daily_loss_lamports", DAILY05 + 1), ("max_open", 17)):
+        with pytest.raises(ValueError):
+            X.make_config(_am6_raw(tmp_path, **{k: v}))
+
+
+def test_am6_ledger_stake_bound_is_the_new_ceiling(tmp_path):
+    lc = H.LaneConfig(tmp_path / "l.jsonl", tmp_path / "STOP", X.LANE_BOT_ID, STAKE25, 16, BUDGET21, DAILY05, X.LANE_MIN_FEE_RESERVE, 60.0)
+    led = X.FloorLaneLedger(lc)
+    view = H.lane_fold([], {}, T0, lc.mark_stale_s, X.LANE_BOT_ID)
+    assert led.evaluate(view, T0, STAKE25) is None
+    assert led.evaluate(view, T0, STAKE25 + 1) == "lane_stake_out_of_bounds"
+
+
+def test_am6_shared_and_dsl_limits_did_not_move():
+    from tools.forge import dsl_lane_executor as D
+    assert X.LANE_DAILY_MAX_LAMPORTS == 100_000_000 and X.LANE_DAILY_DEFAULT_LAMPORTS == 100_000_000
+    assert D.DSL_LANE_STAKE_BOUNDS_LAMPORTS == (20_000_000, 30_000_000) and D.DSL_LANE_BUDGET_MAX_LAMPORTS == 300_000_000
+
+
+def test_am6_presend_admits_8_opens_at_025_and_refuses_the_9th(tmp_path):
+    """Exact arithmetic. RES = 3,860,000; cash = realized - n x stake; realized +15,081,595 (the 10 closed 0.03 trades; it moves with every 0.10 trade, so the install records the live figure).
+    n = 7 open, admitting the 8th:  15,081,595 - 1,750,000,000 - (250,000,000 + 8 x 3,860,000) = -2,015,798,405 > -2,100,000,000 -> allowed.
+    n = 8 open, admitting the 9th:  15,081,595 - 2,000,000,000 - (250,000,000 + 9 x 3,860,000) = -2,269,658,405 <= -2,100,000,000 -> lane_budget_presend. max_open 16 never binds."""
+    lc = H.LaneConfig(tmp_path / "l.jsonl", tmp_path / "STOP", X.LANE_BOT_ID, STAKE25, 16, BUDGET21, DAILY05, X.LANE_MIN_FEE_RESERVE, 60.0)
+    led = X.FloorLaneLedger(lc)
+    assert X.LANE_MIN_FEE_RESERVE == 3_860_000
+    res = {}
+    for n in range(0, 10):
+        view, marks = _view(lc, REALIZED_PLUS - n * STAKE25, [STAKE25] * n, [None] * n)
+        led._marks = marks
+        res[n] = (led.wipe_floor(view, T0) - (STAKE25 + 3_860_000 * (n + 1)), led.evaluate(view, T0, STAKE25))
+    assert res[7] == (-2_015_798_405, None)
+    assert res[8] == (-2_269_658_405, "lane_budget_presend")
+    assert [n for n in range(10) if res[n][1] is None] == list(range(8))  # opens 1..8 admitted, the 9th refused
+
+
+def _am6_floor_bridge(tmp_path, opens, total_loss=BUDGET21):
+    import dataclasses
+    from tools.test_floor_arena_executor import bridge as fbridge
+    br, _ = fbridge(tmp_path, Clock(T0), funded_lamports=1_000_000_000, wallet_floor_count_held_once=True)
+    br.cfg = dataclasses.replace(br.cfg, stake_lamports=STAKE25, total_loss_lamports=total_loss, max_open=100)
+    br.state.orders = {f"o{i}": {"status": "open", "live": False, "stake_lamports": STAKE25} for i in range(opens)}
+    return br
+
+
+def _am6_opens_admitted(tmp_path, bal0, total_loss=BUDGET21):
+    """Opens admitted one after the other by the executor's own floor_problem; each landed open takes stake + rent + send fee from the balance."""
+    step = STAKE25 + F.RENT_RESERVE_LAMPORTS + F.SEND_FEE_LAMPORTS
+    for n in range(40):
+        why = _am6_floor_bridge(tmp_path, n, total_loss).floor_problem(STAKE25, bal0 - n * step)
+        if why is not None:
+            return n, why
+    return 40, None
+
+
+def test_am6_committed_loss_stop_and_wallet_floor_capacity_at_025(tmp_path):
+    wc = STAKE25 + F.SEND_FEE_LAMPORTS + F.RENT_RESERVE_LAMPORTS + F.SELL_RESERVE_LAMPORTS
+    assert wc == 253_860_000
+    assert 8 * wc <= BUDGET21 < 9 * wc  # 2,030,880,000 <= 2,100,000,000 < 2,284,740,000
+    assert _am6_floor_bridge(tmp_path, 0).cfg.wallet_floor_lamports == 750_000_000
+    # huge balance: only committed_loss_stop can refuse; it admits 8 opens and refuses the 9th
+    assert _am6_floor_bridge(tmp_path, 7).floor_problem(STAKE25, 10 ** 12) is None
+    assert _am6_floor_bridge(tmp_path, 8).floor_problem(STAKE25, 10 ** 12) == "committed_loss_stop"
+    # balance 3,160,503,113 (manager's reading 2026-11-12, 0 open assumed): the wallet floor alone admits 9, the budget 8
+    # wallet floor alone (budget out of the way): n = 8 passes (balance left 1,142,423,113 vs need 1,016,660,000), n = 9 fails (890,163,113 vs 1,018,260,000) -> 9 opens
+    assert _am6_opens_admitted(tmp_path, 3_160_503_113, 10 ** 13) == (9, "wallet_floor")
+    # both checks as the executor runs them: the committed stop (8) binds before the wallet floor (9)
+    assert _am6_opens_admitted(tmp_path, 3_160_503_113) == (8, "committed_loss_stop")

@@ -178,7 +178,7 @@ def test_wrong_pool_row_dropped_counted_and_status_additive(runs):
     assert new.migrations_inner_added == 2 and new.migrations_inner_pool_mismatch == 1 and new.migrations_inner_errors == 0
     assert not any(b"sigM4" in v for v in fn.values())
     so, sn = old.status(), new.status()
-    assert set(sn) - set(so) == {"migrations_inner_added", "migrations_inner_errors", "migrations_inner_pool_mismatch"}
+    assert set(sn) - set(so) == {"main_loop_progress_ms", "migrations_inner_added", "migrations_inner_errors", "migrations_inner_pool_mismatch"}
     assert set(so) <= set(sn)
     assert new.decoder_blobs == old.decoder_blobs == ftf.PINNED_DECODER_BLOBS
     assert len(new.pool_cache) == len(old.pool_cache)  # the second pass does not touch the follower's pool cache

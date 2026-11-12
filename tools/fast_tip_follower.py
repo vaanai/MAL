@@ -83,6 +83,9 @@ FEED = "helius_getblock_tip"
 TIP_SOURCE = "tip"
 SKIP_CODES = frozenset({-32007, -32009})
 HEARTBEAT_S = 15.0
+# The status thread keeps status.json fresh while the main loop is blocked in a fetch/retry/breaker
+# pause, but only while the main loop made progress within this many seconds; a longer stall goes stale.
+MAIN_STALL_MAX_S = 120.0
 PRECREATE_LEAD_S = 5  # create next hour's files at about :59:55
 MAX_FETCH_WORKERS = 16
 METRIC_WINDOW = 200
@@ -366,7 +369,13 @@ class TipFollower:
         summary_every_s: float = 60.0,
         log: Callable[[str], None] | None = None,
         trade_event_v: bool = False,
+        mono: Callable[[], float] = time.monotonic,
     ) -> None:
+        self._mono = mono
+        self._progress_mono = mono()
+        self._progress_ms = int(time.time() * 1000)
+        self._write_lock = threading.Lock()
+        self._hb_thread: threading.Thread | None = None
         self.out_dir = out_dir
         self.trade_event_v = bool(trade_event_v)
         self.event_v_stamped = 0
@@ -575,6 +584,7 @@ class TipFollower:
             self._pending_skips.clear()
         self.last_done = slot
         self._checkpoint(None)
+        self._mark_progress()
 
     def _verify_skips(self, block: Mapping[str, Any]) -> None:
         """Every slot between two fetched blocks is skipped, so the later block's parentSlot
@@ -811,6 +821,7 @@ class TipFollower:
         tip, done = self.tip, self.last_done
         return {
             "ts_ms": self.clock_ms(),
+            "main_loop_progress_ms": self._progress_ms,
             "tip_slot": tip,
             "last_done_slot": done,
             "lag_slots": (tip - done) if tip is not None and done is not None else None,
@@ -844,11 +855,42 @@ class TipFollower:
             "decoder_blobs_pinned": self.decoder_blobs == PINNED_DECODER_BLOBS,
         }
 
+    def _mark_progress(self) -> None:
+        self._progress_mono = self._mono()
+        self._progress_ms = int(time.time() * 1000)
+
+    def _write_status(self) -> None:
+        with self._write_lock:
+            _atomic_json(self.status_path, self.status())
+
+    def status_thread_beat(self) -> bool:
+        """One status-thread tick: rewrite status.json unless the main loop stalled > MAIN_STALL_MAX_S."""
+        if self._mono() - self._progress_mono > MAIN_STALL_MAX_S:
+            return False
+        try:
+            self._write_status()
+        except Exception:  # a racing counter read must not kill the thread; next tick retries
+            return False
+        return True
+
+    def start_status_thread(self) -> None:
+        # Own event (not run()'s stop object): run() sets it on exit; the thread is a daemon regardless.
+        self._hb_stop = threading.Event()
+        hb_stop = self._hb_stop
+
+        def loop() -> None:
+            while not hb_stop.wait(HEARTBEAT_S):
+                self.status_thread_beat()
+
+        self._hb_thread = threading.Thread(target=loop, name="tip-follower-status", daemon=True)
+        self._hb_thread.start()
+
     def heartbeat(self, force: bool = False) -> None:
         now = time.monotonic()
+        self._mark_progress()
         if force or now - self._last_beat >= HEARTBEAT_S:
             self._last_beat = now
-            _atomic_json(self.status_path, self.status())
+            self._write_status()
         if now - self._last_summary >= self.summary_every_s:
             self._last_summary = now
             st = self.status()
@@ -975,30 +1017,35 @@ class TipFollower:
     def run(self, stop: threading.Event, max_keep_days: int = 3, idle_s: float = 0.4) -> None:
         last_retain = 0.0
         fail_wait = idle_s
-        while not stop.is_set():
-            self.precreate()
-            try:
-                n = self.step()
-                fail_wait = idle_s
-            except TransientError as exc:
-                self.retries += 1
-                self._log_limited("tip", f"tip poll failed: {type(exc).__name__}")
-                if exc.rate_limited:
-                    self._consec_429 += 1
-                    if self._consec_429 >= self.breaker_after:
-                        self.breaker_trips += 1
-                        fail_wait = max(fail_wait, self.breaker_pause_s)
-                        self._consec_429 = 0
-                stop.wait(fail_wait)
-                fail_wait = min(30.0, fail_wait * 2)
+        self.start_status_thread()
+        try:
+            while not stop.is_set():
+                self.precreate()
+                try:
+                    n = self.step()
+                    fail_wait = idle_s
+                except TransientError as exc:
+                    self.retries += 1
+                    self._log_limited("tip", f"tip poll failed: {type(exc).__name__}")
+                    if exc.rate_limited:
+                        self._consec_429 += 1
+                        if self._consec_429 >= self.breaker_after:
+                            self.breaker_trips += 1
+                            fail_wait = max(fail_wait, self.breaker_pause_s)
+                            self._consec_429 = 0
+                    stop.wait(fail_wait)
+                    fail_wait = min(30.0, fail_wait * 2)
+                    self.heartbeat()
+                    continue
                 self.heartbeat()
-                continue
-            self.heartbeat()
-            if time.monotonic() - last_retain > 3600:
-                last_retain = time.monotonic()
-                self._log(f"retention removed {self.retain(max_keep_days)} files")
-            if n == 0 and not self._futs:
-                stop.wait(idle_s)
+                if time.monotonic() - last_retain > 3600:
+                    last_retain = time.monotonic()
+                    self._log(f"retention removed {self.retain(max_keep_days)} files")
+                if n == 0 and not self._futs:
+                    stop.wait(idle_s)
+        finally:
+            # always stop the status thread, also when the loop raises: a crashed follower must go stale
+            self._hb_stop.set()
         self.close_pool()
         self.writer.close()
         self.cwriter.close()
