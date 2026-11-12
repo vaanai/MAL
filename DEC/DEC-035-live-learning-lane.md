@@ -162,7 +162,7 @@ Before the ask, all of these hold, and the manager records them in the state fil
   - So the pre-send allows **11 opens**. Test `test_am5_presend_allows_the_11th_open_at_010_and_refuses_the_12th`.
 - **`committed_loss_stop`** (realized loss floored at 0, so gains give no room): 11 × 103,860,000 = 1,142,460,000 ≤ 1,200,000,000 < 12 × 103,860,000 = 1,246,320,000. Also **11 opens**.
 - **Wallet floor** (funded 1,000,000,000, held-once: floor = max(0.05, funded − 0.25) = 750,000,000). Each landed open takes about 102,260,000 (stake + rent + send fee) from the balance. The next open needs 100,000,000 + 160,000 + 2,100,000 + (n + 1) × 1,600,000 + 750,000,000.
-  - Balance 1,119,500,000 (now, 0 open assumed): opens allowed 3 (n = 0, 1, 2 pass; n = 3 needs 856,060,000 + 3 × 102,260,000 more than the balance leaves). A balance 1.1195 SOL is the manager's reading to be re-recorded before install.
+  - Balance 1,119,500,000 (now, 0 open assumed; re-record it before install): **3 opens**. n = 2 passes (balance left 914,980,000 against a need of 857,060,000); n = 3 fails (812,720,000 against 858,660,000).
   - Balance about 3,119,500,000 (after a 2 SOL top-up): the floor allows 22, above the 16 cap and above 11, so it does not bind.
 - **Which binds first.** Before the top-up the wallet floor binds, at 3 opens (as Amendment 4 item 3 found at 3 to 5). After the top-up the pre-send and `committed_loss_stop` tie at 11; `max_open` 16 never binds at 0.10 SOL. Each −0.1039 SOL of realized lane cash removes about one open from the pre-send.
 - These counts are structural arithmetic, not a forecast of how many entries the host triggers. Test `test_am5_committed_loss_stop_ties_at_11_and_wallet_floor_binds_at_3_then_not`.
