@@ -1,8 +1,24 @@
 {
  "schema_version": "console.v1",
- "updated_utc": "2026-11-09T14:50:00Z",
+ "updated_utc": "2026-11-12T21:30:00Z",
  "review_windows": [],
  "events": [
+  {
+   "id": "manager23-takeover-1112",
+   "kind": "record",
+   "atUtc": "2026-11-12T21:25:00Z",
+   "approx": true,
+   "title": "manager23 takes over from manager22 (2026-11-12T21:25Z)",
+   "detail": "The owner asked for a handoff to try a different model on MAL work. Handoff doc docs/HANDOFF.md merged as a7299105 (#1322). No book has cleared the promotion gate."
+  },
+  {
+   "id": "floor-lane-1-state-1112",
+   "kind": "record",
+   "atUtc": "2026-11-12T21:25:00Z",
+   "approx": true,
+   "title": "FLOOR floor-lane-1 at stake 0.10 since 2026-11-12T00:46:04.584Z: 0 closed, 1 open at 0.10",
+   "detail": "Lifetime realized +0.015081595 SOL from 10 closed trades at 0.03 stake (live, small sample, no gate read). Wallet 3,058,829,273 lamports at about 21:2xZ. DEC-035 Amendment 6 (stake ceiling 0.25, budget 2.10, daily stop 0.50) is merged as 8dec3a3b and not installed; its install is gated on the first 20 closed trades at 0.10 being >= 0 after fees, with a fills check at the 10th and the 20th. No book has cleared the promotion gate."
+  },
   {
    "id": "floor-lane-1-live-1108",
    "kind": "decision",

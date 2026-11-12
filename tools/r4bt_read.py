@@ -54,6 +54,7 @@ from tools import arena_am6_cut as C
 from tools import arena_am6_exclusions as X
 from tools import arena_am6_read as AM6
 from tools import arena_score as S
+from tools import r4bt_bots as B
 from tools import r4bt_gate as G
 from tools import r4bt_price as P
 from tools.arena_paper import Ledger, load_registry, utc_day
@@ -214,6 +215,8 @@ def read(*, ledger_root: str, registry: str, health_texts: Sequence[str], health
     if e is None or e.get("deciding_stake") != P.DECIDING_STAKE or e.get("model_ids") != []:
         raise G.Refused(f"{bot}: not registered with deciding_stake 0.25 and no models")
     clock = int(e["clock_start_ms"])
+    if bot != B.DEFAULT_BOT_ID:
+        B.check_clock(bot, clock)  # a1 is unchanged; any other bot must carry the table's clock (an unknown id refuses)
     cfg_pin = {k: v for k, v in P.pinned_config(feed_delay_slots=feed_delay_slots, k_rounding=k_rounding).as_dict().items()}
     bnd = P.load_boundary(boundary_file, boundary_sha256, clock, arm)
     b_ms = int(bnd["boundary_ms"])
@@ -315,6 +318,7 @@ def v_all(cells):
 def build_parser() -> argparse.ArgumentParser:
     ap = argparse.ArgumentParser(description="r4-b-T read wrapper (the book's one read).")
     ap.add_argument("--i-am-the-read", action="store_true")
+    ap.add_argument("--bot-id", default=B.DEFAULT_BOT_ID, help="a registered r4-b-T bot id of tools/r4bt_bots.py (default r4bt-a1)")
     for a in ("ledger-root", "registry", "restarts", "boundary-file", "boundary-sha256", "arena-paper-sha256", "arena-score-sha256"):
         ap.add_argument("--" + a, required=True)
     ap.add_argument("--health", required=True, action="append")
@@ -345,7 +349,7 @@ def main(argv: Sequence[str] | None = None, *, now_ms: int | None = None, ancest
                           pins={"tools/arena_paper.py": a.arena_paper_sha256, "tools/arena_score.py": a.arena_score_sha256}, feed_delay_slots=a.feed_delay_slots,
                           k_rounding=a.k_rounding, n_books=a.n_books, c=a.c, i_am_the_read=a.i_am_the_read, pricer_report=a.pricer_report,
                           pricer_report_sha256=a.pricer_report_sha256, v_audit_ids=a.v_audit_ids, v_audit_ids_sha256=a.v_audit_ids_sha256, record=a.record,
-                          reads_dir=a.reads_dir, now_ms=now_ms, ancestor=ancestor)
+                          reads_dir=a.reads_dir, now_ms=now_ms, ancestor=ancestor, bot=a.bot_id)
     except Exception as e:  # noqa: BLE001 - every failure is a refusal (exit 2), never a traceback
         print(f"r4bt_read: REFUSED: {e}", file=sys.stderr)
         return 2
