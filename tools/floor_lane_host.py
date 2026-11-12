@@ -174,7 +174,7 @@ def _link_or_copy(src: Path, dst: Path) -> None:
         shutil.copy2(src, dst)
 
 
-def _atomic_write(path: Path, obj: Any) -> None:
+def _atomic_write(path: Path, obj: Any, fsync_dir: bool = False) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp = path.with_name(path.name + ".tmp")
     fd = os.open(str(tmp), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o644)
@@ -184,6 +184,12 @@ def _atomic_write(path: Path, obj: Any) -> None:
     finally:
         os.close(fd)
     os.replace(tmp, path)
+    if fsync_dir:  # the end marks only: the rename itself must be durable before the table pickle is written
+        dfd = os.open(str(path.parent), os.O_RDONLY)
+        try:
+            os.fsync(dfd)
+        finally:
+            os.close(dfd)
 
 
 def _is_int(x: Any) -> bool:
@@ -249,6 +255,7 @@ class LaneHost(HostV2):
         self._noloss: dict[str, dict[str, Any]] = {}  # (prog, kind, from_ms, to_ms) -> the captured raw writer status rows (memory only: a span reloaded from a checkpoint has none)
         self._now0: int | None = None  # lane_start's instant
         self._prev_end = "unknown"
+        self._in_step = False
         self._rebuild: tuple[int, int] | None = None  # (to_ms, rows) of the table rebuild the process ran before lane_start
         self._hook0 = 0
         self._ignored: list[dict[str, Any]] = []  # v2: the no-loss spans the last judge() did not count
@@ -384,7 +391,7 @@ class LaneHost(HostV2):
             body["guard"] = {"status_span_no_loss": self.status_span_no_loss, "cheap_restart": self.cheap_restart}
             if ended is not None:
                 body["ended"] = ended  # "exception": run() ended by an exception / fatal (the pool table was then pickled with a row that was updated but maybe not decided); "end": run() returned
-        _atomic_write(self.ckpt_path, body)
+        _atomic_write(self.ckpt_path, body, fsync_dir=ended is not None)
 
     def lane_start(self, now_ms: int) -> dict[str, Any]:
         """Load the checkpoint, add the downtime as a host_down span, refuse a checkpoint that does not belong to this book or whose log is shorter than it says."""
@@ -410,7 +417,7 @@ class LaneHost(HostV2):
             self.lane_gaps.append(self._down_span)
         info.update({"checkpoint": True, "hwm_ms": hwm, "down_ms": max(0, int(now_ms) - hwm), "carried_gaps": len(self.lane_gaps), "blocked_pools": len(self.blocked)})
         self._ck_hwm, self._now0 = hwm, int(now_ms)
-        # how the previous process ended: "exception" (run() ended by an exception or fatal), "end", "signal" (a flagged checkpoint without the mark: killed, no finally ran), "unknown"
+        # how the previous process ended: "in_doubt" (a non-periodic table save began and the run end was not recorded), "exception" (run() ended by an exception or fatal), "end", "signal" (a flagged checkpoint without the mark: killed, no finally ran), "unknown"
         # (written by a host without the flags; the manager records that it was stopped by signal with no fatal before cheap_restart is switched on: runbook step 1)
         self._prev_end = str(ck["ended"]) if isinstance(ck.get("ended"), str) else ("signal" if "guard" in ck else "unknown")
         info["prev_end"] = self._prev_end
@@ -435,7 +442,7 @@ class LaneHost(HostV2):
         sh: dict[str, Any] = {"hwm_ms": hwm, "from_ms": frm, "warm_start_ms": warm_start, "rebuild": self._rebuild, "rows": 0, "buys": 0, "pools": {}, "fallback": None,
                               "active": False, "failed": None}
         if down is not None:
-            if self._prev_end == "exception":
+            if self._prev_end in ("exception", "in_doubt"):
                 # QP BLOCKER (PR 1332): after an in-process exception both finally blocks pickle a table that already holds the row being decided; the restart skips it, so the shadow
                 # cannot see a Buy whose decision never reached the log. Nothing is known about that row: keep the v1 refuse-all.
                 sh["fallback"] = "unclean_exit"
@@ -534,8 +541,21 @@ class LaneHost(HostV2):
             self._set_fatal(e)
         sh["logged"] = True
 
+    def save_table(self) -> None:
+        """QP re-ruling (PR 1332, case iv). The pool table pickle may hold a row whose decision never reached the log (an exception while deciding it, then run()'s finally blocks). So
+        any save OUTSIDE the periodic one in step() first writes `"ended": "in_doubt"` to the lane checkpoint (atomic, fsynced); if that write fails no pickle is written and the older
+        periodic one stays. The restart falls back to the 24 h refuse-all on in_doubt. run()'s finally then overwrites the mark with end / exception. Only with cheap_restart on: with
+        it off no field is added and the path is main's."""
+        if self.cheap_restart and not self._in_step and self._last_T:
+            self.checkpoint(self._last_T, "in_doubt")
+        super().save_table()
+
     def step(self, T: int) -> None:
-        super().step(T)
+        self._in_step = True
+        try:
+            super().step(T)  # HostV2.step saves the table periodically: that save is the one that is never ahead of the log
+        finally:
+            self._in_step = False
         self._last_T = T
         if T - self._last_lane_ckpt >= CKPT_EVERY_MS:
             self._last_lane_ckpt = T

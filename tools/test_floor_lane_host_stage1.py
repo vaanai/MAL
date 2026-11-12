@@ -44,6 +44,7 @@ def phase_a(tmp, rows, to=H0 + 31 * HOUR, **flags):
     a.resume()
     last = _live_phase(a, H0, to)
     a.save_table()
+    a.checkpoint(a._last_T)  # a non-periodic save marks the checkpoint in_doubt; a periodic pickle + checkpoint (the state a SIGTERM leaves) carries no mark
     return eng, last
 
 
@@ -377,7 +378,6 @@ def test_a_clean_end_or_a_signal_stop_keeps_the_cheap_restart_and_a_v1_checkpoin
     a.run(H0, H0 + 31 * HOUR)
     ck = json.loads((tmp_path / "rules" / "lane" / "checkpoint.json").read_text())
     assert ck["ended"] == "end"
-    a.save_table()
     _, info = restart(tmp_path, rows, FakeEngine(tmp_path / "rules"), cheap_restart=True, run_to=H0 + 37 * HOUR)
     assert info["prev_end"] == "end" and restart_row(tmp_path)["shadow_complete"] is True
     d = tmp_path / "v1"
@@ -419,3 +419,63 @@ def test_the_captured_status_rows_are_pruned_beyond_the_longest_lookback(tmp_pat
     late = H0 + (H.LOOKBACK_MAX_S + 10) * 1000 + H.BLOCK_MS
     h._on_row(status_row(late, late + 30_000))
     assert len(h._noloss) == 1 and H._span_key(old) not in h._noloss
+
+
+def _ckpt(tmp):
+    return tmp / "rules" / "lane" / "checkpoint.json"
+
+
+def test_case_iv_the_final_lane_write_fails_after_the_pickle_the_in_doubt_mark_forces_refuse_all(tmp_path):
+    """QP case (iv): the entry append for Q fails, run()'s finally saves the (ahead) table, then the final lane checkpoint write fails. The in_doubt mark was written first."""
+    rows = world()
+    a = lane_host(tmp_path, rows, live=False, cheap_restart=True)
+    orig_append, orig_ck = a.log.append, a.checkpoint
+
+    def failing(bot, ms, body):
+        if body.get("kind") == "entry":
+            raise OSError("disk full")
+        return orig_append(bot, ms, body)
+
+    def ck(T, ended=None):
+        if ended in ("exception", "end"):
+            raise OSError("lane dir fault")
+        return orig_ck(T, ended)
+
+    a.log.append, a.checkpoint = failing, ck
+    with pytest.raises((H.R.HostFatal, OSError)):  # the final-write OSError replaces the fatal in the finally
+        a.run(H0, H0 + 40 * HOUR)
+    assert json.loads(_ckpt(tmp_path).read_text())["ended"] == "in_doubt"
+    _, info = restart(tmp_path, rows, FakeEngine(tmp_path / "rules"), cheap_restart=True, run_to=H0 + 40 * HOUR)
+    rs = restart_row(tmp_path)
+    assert info["prev_end"] == "in_doubt" and rs["fallback"] == "unclean_exit" and rs["shadow_complete"] is False
+    assert "entry" not in [r["kind"] for r in log_rows(tmp_path)]  # Q (39 h) is refused, not entered
+
+
+def test_a_failed_in_doubt_write_writes_no_pickle_and_the_restart_stays_cheap(tmp_path):
+    rows = world()
+    eng, _ = phase_a(tmp_path, rows, cheap_restart=True)
+    pkl = tmp_path / "rules" / "pooltable" / "pooltable.pkl"
+    ck_before = _ckpt(tmp_path).read_bytes()
+    import hashlib
+    m0 = hashlib.md5(pkl.read_bytes()).hexdigest()
+    a = lane_host(tmp_path, rows, live=True, engine=eng, cheap_restart=True)
+    a.lane_start(H0 + 31 * HOUR)
+    a.table.note_exit("Q", 1)  # a new pickle would differ
+    a.checkpoint = lambda T, ended=None: (_ for _ in ()).throw(OSError("lane dir fault"))
+    with pytest.raises(OSError):
+        a.save_table()
+    assert hashlib.md5(pkl.read_bytes()).hexdigest() == m0 and _ckpt(tmp_path).read_bytes() == ck_before
+    _, info = restart(tmp_path, rows, eng, cheap_restart=True, run_to=H0 + 37 * HOUR)
+    assert info["prev_end"] == "signal" and restart_row(tmp_path)["shadow_complete"] is True
+
+
+def test_with_the_flags_off_a_non_periodic_save_adds_no_field_and_no_checkpoint_write(tmp_path):
+    rows = world()
+    a = lane_host(tmp_path, rows, live=True)
+    Clocked(a)
+    a.resume()
+    _live_phase(a, H0, H0 + 2 * HOUR)
+    before = _ckpt(tmp_path).read_bytes()
+    a.save_table()
+    after = _ckpt(tmp_path).read_bytes()
+    assert after == before and b"ended" not in after and b"guard" not in after
