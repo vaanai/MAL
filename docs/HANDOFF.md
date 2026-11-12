@@ -2,7 +2,7 @@
 
 **Update 2026-11-12T22:5xZ (manager23):**
 - manager23 took over 21:25Z; state file `/data/mal/hunt-1008/ops/manager23/state-manager23.md`; crons `/data/mal/hunt-1008/ops/manager23/crons-manager23.json`.
-- New fixed steps: 2026-11-13 10:37Z r4bt-a2 dry host install (`docs/runbooks/r4bt-a2-dry-host.md`); daily 00:23Z floor-forward-ab job; FLOOR host stage 1 install not before 2026-11-14T01:00Z (QP ruling condition 1).
+- New fixed steps: 2026-11-13 10:37Z r4bt-a2 dry host install (`docs/runbooks/r4bt-a2-dry-host.md`); daily 00:23Z floor-forward-ab job; FLOOR host stage 1 install per QP ruling condition 1: not before C (2026-11-13T00:00:00Z); at or after R (2026-11-14T01:00:00Z) unless zero open positions have an entry before C; not inside the 11-15 tip hand-off window.
 - The section 4 owed-list items done today: records batch #1323, variants scripts #1324, DEC-035 nits #1328.
 
 The owner asked for this handoff in chat on 2026-11-12 at about 20:5xZ, because they want to try a different model on MAL work. It replaces the manager21 → manager22 handoff (#1309).

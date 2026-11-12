@@ -8,16 +8,16 @@
    "kind": "decision",
    "atUtc": "2026-11-12T22:39:00Z",
    "approx": true,
-   "title": "r4bt-a2 registered as a PAPER book (DEC-031 Amendment 30, merged f090d5a8, #1325)",
-   "detail": "The frozen r4-b hourly top-10 book, re-registered on the repaired fast-0 tip feed. Paper only, never scored forward; no money at risk. Author forecast: P(trade-level CI90 lower bound > 0) = 0.165, about 1 in 6; all earlier evidence is in-sample. Dry host planned start 2026-11-13T12:05Z (latest 2026-11-15T12:05Z); P0 days 2026-11-16, 11-17, 11-18; clock 2026-11-20T00:00Z; screen read by 2026-11-27T01:01Z. Any live step would need about 2.5 SOL beside FLOOR, new DEC work and the owner's word. No book has cleared the promotion gate."
+   "title": "DEC-031 Amendment 30 merged (f090d5a8, #1325): rules for the PAPER successor r4bt-a2, registered only after a P0 PASS",
+   "detail": "The frozen r4-b hourly top-10 book on the repaired fast-0 tip feed. r4bt-a2 is NOT yet registered: the registration record is written only after a P0 PASS on 2026-11-16, 11-17, 11-18 (count job 2026-11-19T00:10Z); a P0 miss ends the line. Paper only, never scored forward; no money at risk. Author forecast: P(trade-level CI90 lower bound > 0) = 0.165 (about 1 in 6); all earlier evidence is in-sample. Dry host planned start 2026-11-13T12:05Z (latest 2026-11-15T12:05Z); If registered by 2026-11-19T23:59:59Z the clock is 2026-11-20T00:00:00Z, and the screen read comes by 2026-11-27T01:01:00Z (arithmetic, not a promise). Any live step would need about 2.5 SOL beside FLOOR, new DEC work and the owner's word. No book has cleared the promotion gate."
   },
   {
    "id": "floor-host-stage1-pr1332-1112",
-   "kind": "job",
+   "kind": "record",
    "atUtc": "2026-11-12T22:22:00Z",
    "approx": true,
    "title": "FLOOR host stage 1: PR #1332 open (not installed)",
-   "detail": "A config-gated change, off by default, to the FLOOR host so that a feed hiccup that loses no slot (as on 11-12: 763 ms, missed_slots 0) no longer shuts entries for hours, and so that a restart is cheap. QP ruling: OK WITH CONDITIONS. Install earliest 2026-11-14T01:00Z unless no earlier position is open; it needs DEC-035 Amendment 7, a replay proof and Helm. Nothing is live yet."
+   "detail": "A config-gated change, off by default, to the FLOOR host so that a feed hiccup that loses no slot (as on 11-12: 763 ms, missed_slots 0) no longer shuts entries for hours, and so that a restart is cheap. QP ruling: OK WITH CONDITIONS. Install timing (QP ruling condition 1): \"Not before C = 2026-11-13T00:00:00Z. At or after R = 2026-11-14T01:00:00Z, unless the lane report at the stop instant shows zero open positions whose entry is before C (then any time after C). Not inside the 11-15 tip hand-off window (HANDOFF). The stop and start instants go into LAB_STATE, the manager state file and the MiScusi notebook.\" Also: it needs DEC-035 Amendment 7, a replay proof and Helm. Nothing is live yet."
   },
   {
    "id": "dec035-am6-erratum2-1112",
