@@ -446,6 +446,10 @@ class LaneHost(HostV2):
                 # QP BLOCKER (PR 1332): after an in-process exception both finally blocks pickle a table that already holds the row being decided; the restart skips it, so the shadow
                 # cannot see a Buy whose decision never reached the log. Nothing is known about that row: keep the v1 refuse-all.
                 sh["fallback"] = "unclean_exit"
+            elif self._prev_end == "unknown":
+                # QP option (b): a checkpoint not written with cheap_restart on has no in_doubt protection and no machine-readable record of how that process ended, so the FIRST
+                # cheap-restart start from it refuses all pools (24 h). The checkpoint this run writes is flagged: cheap restarts begin with the restart after that.
+                sh["fallback"] = "unknown_prev_end"
             elif warm_start > frm - SHADOW_MARGIN_MS:
                 sh["fallback"] = "downtime_exceeds_warmup"  # the warm-up replay does not start before the last lane checkpoint: rows of the downtime may be unseen
             elif self._rebuild is None:

@@ -385,7 +385,10 @@ def test_a_clean_end_or_a_signal_stop_keeps_the_cheap_restart_and_a_v1_checkpoin
     ck1 = json.loads((d / "rules" / "lane" / "checkpoint.json").read_text())
     assert "ended" not in ck1 and "guard" not in ck1
     _, info1 = restart(d, rows, eng, cheap_restart=True, run_to=H0 + 37 * HOUR)
-    assert info1["prev_end"] == "unknown" and restart_row(d)["shadow_complete"] is True
+    assert info1["prev_end"] == "unknown" and info1["shadow_fallback"] == "unknown_prev_end"
+    rs1 = restart_row(d)
+    assert rs1["shadow_complete"] is False and rs1["fallback"] == "unknown_prev_end"  # the first start from a v1 checkpoint refuses all pools (24 h)
+    assert "entry" not in kinds(d / "rules")
 
 
 def test_a_failed_restart_evidence_write_is_a_hostfatal_not_a_bare_halt(tmp_path):
@@ -502,5 +505,7 @@ def test_a_checkpoint_written_without_cheap_restart_reads_unknown_not_signal(tmp
         a.run(H0, H0 + 40 * HOUR)
     c = json.loads(_ckpt(tmp_path).read_text())
     assert c["guard"] == {"status_span_no_loss": True, "cheap_restart": False} and "ended" not in c
-    _, info = restart(tmp_path, rows, FakeEngine(tmp_path / "rules"), cheap_restart=True, status_span_no_loss=True, run_to=H0 + 34 * HOUR)
-    assert info["prev_end"] == "unknown" and restart_row(tmp_path)["prev_end"] == "unknown"
+    _, info = restart(tmp_path, rows, FakeEngine(tmp_path / "rules"), cheap_restart=True, status_span_no_loss=True, run_to=H0 + 40 * HOUR)
+    rs = restart_row(tmp_path)
+    assert info["prev_end"] == "unknown" and rs["prev_end"] == "unknown" and rs["fallback"] == "unknown_prev_end" and rs["shadow_complete"] is False
+    assert "entry" not in [r["kind"] for r in log_rows(tmp_path)]  # Q (39 h), which the reference holds from 32 h, is refused
