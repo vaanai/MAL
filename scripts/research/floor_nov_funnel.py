@@ -146,4 +146,5 @@ def main():
     print("done", json.dumps(res["floor_option_crosscheck"]))
 
 
-main()
+if __name__ == "__main__":
+    main()
