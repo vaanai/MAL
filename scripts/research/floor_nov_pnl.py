@@ -3,8 +3,10 @@
 with first-come caps K. Entry-day = UTC day of the entry decision. Phases: pre (< 2026-11-07T18Z), cutover (18Z hour, excluded), post (>= 19Z). Counts/aggregates only.
 Usage: floor_nov_pnl.py LEDGER_DIR OUT_JSON [RULE=total] [LAT=1p9] [--send-lamports 160000 [--ledger-send 1673840]]
 Rent correction (manager22 erratum, 2026-11-12): the first replay charged send = 1,673,840 lamports per send, of which 1,513,840 is refundable token-ATA rent. With
---send-lamports S the reader adds back (ledger_send - S) per send actually paid: 2 sends for a filled trade (buy + sell), 1 for a guarded trade (the lost buy). A ledger
-already priced at S needs no flag. Also writes entries_by_day: n_entries (open rows), n_priced, n_unpriced (no trade row, i.e. engine exclusion, normally feed_gap),
+--send-lamports S the reader restates a ledger priced at ledger_send to S, D = ledger_send - S, following tools/arena_stack.py fail_legs / arena_paper.book_fail_legs:
+a FILLED leg is (1-f)*(proceeds - stake - 2*send) - f*send, so the leg moves by (2-f)*D (flat f = 0.15; press f = p, the row's calc[lat].by_rule[rule].p_press_provisional);
+a guarded or stranded/invalid row bypasses the blend and pays one send, so it moves by D. Not exact when the stranded test (proceeds < send) flips between the two
+sends: re-pricing with floor_nov_paper.py --send 160000 is exact. A ledger already priced at S needs no flag. Also writes entries_by_day: n_entries (open rows), n_priced, n_unpriced (no trade row, i.e. engine exclusion, normally feed_gap),
 total SOL and ex-top-3 SOL per UTC entry day, per stake and leg (cutover hour NOT excluded there). NOTE: pooled sol_per_day uses fixed 11-03..11-11 day denominators; use entries_by_day for other windows.
 """
 import argparse, glob, json, sys, statistics, collections
@@ -33,9 +35,23 @@ def stats(pn, stake):
             "top3_sol": sum(srt[:3]) / 1e9}
 
 
-def send_addback(state, delta):
-    """lamports to add back to a leg net when a ledger priced at send L is restated to send L - delta"""
-    return {"filled": 2 * delta, "guarded": delta}.get(state, 0)
+FAIL_FLAT = 0.15
+
+
+def send_addback(state, delta, model="flat", p_press=None):
+    """lamports to add back to a leg net when a ledger priced at send L is restated to send L - delta (see module docstring)"""
+    if not delta:
+        return 0
+    if state != "filled":
+        return delta  # guarded / stranded / entry_invalid / exit_invalid: one send paid, no fail blend
+    f = FAIL_FLAT if model == "flat" else p_press
+    if f is None:
+        raise ValueError("press leg needs the row's p_press_provisional")
+    return (2 - f) * delta
+
+
+def _p(r, rule, lat):
+    return r.get("calc", {}).get(lat, {}).get("by_rule", {}).get(rule, {}).get("p_press_provisional")
 
 
 def entries_by_day(opens, pos, rule, lat, send_delta):
@@ -53,7 +69,7 @@ def entries_by_day(opens, pos, rule, lat, send_delta):
                     if r is None or day(p["t0"]) != d:
                         continue
                     leg = r["legs"][rule][f"{model}_{lat}"]
-                    nets.append(leg["net_lamports"] + send_addback(leg["state"], send_delta))
+                    nets.append(leg["net_lamports"] + send_addback(leg["state"], send_delta, model, _p(r, rule, lat)))
                 srt = sorted(nets, reverse=True)
                 blk[d] = {"n_entries": n_ent, "n_priced": len(nets), "n_unpriced": n_ent - len(nets), "total_sol": sum(nets) / 1e9,
                           "ex_top3_sol": sum(srt[3:]) / 1e9 if len(nets) > 3 else (0.0 if nets else None)}
@@ -105,7 +121,7 @@ def main(argv=None):
                 if r is None:
                     continue
                 leg = r["legs"][rule][f"{model}_{lat}"]
-                rows.append({"t0": p["t0"], "t1": p["t1"], "reason": p["reason"], "net": leg["net_lamports"] + send_addback(leg["state"], send_delta), "state": leg["state"], "ph": phase(p["t0"]), "day": day(p["t0"])})
+                rows.append({"t0": p["t0"], "t1": p["t1"], "reason": p["reason"], "net": leg["net_lamports"] + send_addback(leg["state"], send_delta, model, _p(r, rule, lat)), "state": leg["state"], "ph": phase(p["t0"]), "day": day(p["t0"])})
             blk = {"per_day": {}, "pooled": {}}
             for d in sorted({x["day"] for x in rows}):
                 sub = [x for x in rows if x["day"] == d and x["ph"] != "cutover"] if d != "2026-11-07" else None

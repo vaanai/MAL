@@ -25,6 +25,8 @@ def parse_hour(s):
 
 def link(a):
     end = parse_hour(a.end_hour)
+    if end >= datetime.now(timezone.utc).replace(minute=0, second=0, microsecond=0):
+        raise SystemExit("refusing: end hour %s is the current or a future UTC hour (not closed)" % a.end_hour)
     os.makedirs(a.out, exist_ok=True)
     missing = []
     for h in hours(end):

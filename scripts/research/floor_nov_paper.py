@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """floor_nov_paper: paper replay of l1-floor-v2 (HostV2, tools/arena_rules_v2) over a closed tip-tape slice, priced at stakes 0.10 and 0.25 with the kit's fee stack
-(arena_stack_v2 fields) and send = 1,673,840 lamports (the live fixed send cost). PAPER only; scratch registry and ledger under --root (outside /data/mal/arena).
+(arena_stack_v2 fields) and send = 160,000 lamports per send by default (p155 + base; the earlier 1,673,840 included 1,513,840 of refundable token-ATA rent and over-charged). PAPER only; scratch registry and ledger under --root (outside /data/mal/arena).
 No table seed: the pool table is built from the slice itself (pools that graduated before the slice start are missing, disclosed in the report).
-Usage: floor_nov_paper.py --root R --tape-dir T --from-ms A --to-ms B [--send 1673840]
+Usage: floor_nov_paper.py --root R --tape-dir T --from-ms A --to-ms B [--send 160000]
 """
 import argparse, dataclasses, sys
 from pathlib import Path
@@ -22,7 +22,7 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--root", required=True); ap.add_argument("--tape-dir", required=True)
     ap.add_argument("--from-ms", type=int, required=True); ap.add_argument("--to-ms", type=int, required=True)
-    ap.add_argument("--send", type=int, default=1_673_840)
+    ap.add_argument("--send", type=int, default=160_000)
     ap.add_argument("--set", nargs="*", default=[], help="variant overrides on tools.arena_rule_l1 module constants, NAME=value (e.g. Q_STAR=0.75e9 AGE_LO=43200); the file is not edited")
     a = ap.parse_args()
     from tools import arena_rule_l1 as _L
@@ -47,4 +47,5 @@ def main():
     print(canon({"done": host.status()}), flush=True)
 
 
-main()
+if __name__ == "__main__":
+    main()

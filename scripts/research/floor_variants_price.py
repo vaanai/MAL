@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """floor_variants_price: price a variant replay ledger and the positions it ADDS vs a base replay ledger (same send). Keys positions by (pool, entry decision_ms); 'added' =
 variant positions whose pool+entry time is absent from base. Counts/aggregates only. Legs: flat_1p9 and press_1p9 (total rule), stakes 0.10 and 0.25.
+Note: reads each ledger at whatever send it was priced at (no rent correction); compare only ledgers priced at the same send.
 Usage: floor_variants_price.py VARIANT_LEDGER BASE_LEDGER OUT_JSON   (ledger dir = .../paper-X/ledger)
 """
 import glob, json, sys, statistics
