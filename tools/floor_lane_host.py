@@ -452,6 +452,9 @@ class LaneHost(HostV2):
 
     def _on_row(self, row: dict) -> None:
         if self.status_span_no_loss and captured_no_loss_row(row):
+            horizon = int(row["to_ms"]) - LOOKBACK_MAX_S * 1000 - BLOCK_MS  # a span older than the longest lookback + block can never match a judge() window again
+            for k in [k for k, v in self._noloss.items() if int(v["to_ms"]) < horizon]:
+                del self._noloss[k]
             self._noloss[_span_key(row)] = {k: row.get(k) for k in ("src", "prog", "kind", "reason", "from_ms", "to_ms", "from_slot", "to_slot", "missed_slots", "silent_ms")}
         sh = self._shadow
         if sh is None or not sh["active"]:
@@ -552,7 +555,11 @@ class LaneHost(HostV2):
         if down is not None and self.cfg.live:
             down["to_ms"] = max(int(down["to_ms"]), int(self.now_fn()) + 10_000)
         if self.cheap_restart and self._shadow is not None and not self._shadow.get("logged"):
-            self._shadow_report(t_from)
+            try:
+                self._shadow_report(t_from)
+            except R._Halt:  # a failed evidence-row write: the same fatal path as any decision-log failure (HostFatal, exit 2), not a bare _Halt
+                self._raise_fatal()
+                raise
 
     def run(self, t_from: int, t_to: int, sleep: Callable[[float], None] = time.sleep) -> None:
         self.begin_live(t_from)

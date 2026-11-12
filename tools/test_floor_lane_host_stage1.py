@@ -386,3 +386,36 @@ def test_a_clean_end_or_a_signal_stop_keeps_the_cheap_restart_and_a_v1_checkpoin
     assert "ended" not in ck1 and "guard" not in ck1
     _, info1 = restart(d, rows, eng, cheap_restart=True, run_to=H0 + 37 * HOUR)
     assert info1["prev_end"] == "unknown" and restart_row(d)["shadow_complete"] is True
+
+
+def test_a_failed_restart_evidence_write_is_a_hostfatal_not_a_bare_halt(tmp_path):
+    rows = world()
+    eng, _ = phase_a(tmp_path, rows, cheap_restart=True)
+    b = lane_host(tmp_path, rows, live=True, engine=eng, cheap_restart=True)
+    Clocked(b)
+    b.note_rebuild(H0, 0)
+    b.lane_start(H0 + 33 * HOUR)
+    b.resume()
+    orig = b.log.append
+
+    def failing(bot, ms, body):
+        if body.get("kind") == H.KIND_RESTART_SHADOW:
+            raise OSError("disk full")
+        return orig(bot, ms, body)
+
+    b.log.append = failing
+    b.cfg.stale_row_ms = 10 ** 9
+    with pytest.raises(H.R.HostFatal):
+        b.run(H0 + 33 * HOUR, H0 + 34 * HOUR)
+    ck = json.loads((tmp_path / "rules" / "lane" / "checkpoint.json").read_text())
+    assert ck["ended"] == "exception"
+
+
+def test_the_captured_status_rows_are_pruned_beyond_the_longest_lookback(tmp_path):
+    h = lane_host(tmp_path, [], status_span_no_loss=True)
+    old = status_row(H0, H0 + 30_000)
+    h._on_row(old)
+    assert len(h._noloss) == 1
+    late = H0 + (H.LOOKBACK_MAX_S + 10) * 1000 + H.BLOCK_MS
+    h._on_row(status_row(late, late + 30_000))
+    assert len(h._noloss) == 1 and H._span_key(old) not in h._noloss

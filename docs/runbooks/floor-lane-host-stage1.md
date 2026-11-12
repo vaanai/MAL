@@ -21,7 +21,7 @@ The writer's span row does not say which status code caused it. Turn the flag on
 - Refusals by a shadow block read `pool_blocked_after_restart_shadow`; by a rebuilt block `pool_blocked_after_refusal_row`.
 - The start row's `binding` gains `guard: {status_span_no_loss, cheap_restart}` only when a flag is on. The lane checkpoint gains the same optional `guard` field; the schema name stays `floor_lane_host_ckpt_v1`.
 
-Extra rows interleave with entries and exits, so the decision-log chain (seq, hash) of later rows differs from a flag-off run; the entry and exit content does not.
+Extra rows interleave with entries and exits, so the decision-log chain (seq, hash) of later rows differs from a flag-off run. With a flag on the host also makes more entries by design (refused -> entered only); the rows v1 writes for the same trigger are unchanged in content.
 
 ## Rollback
 Remove the keys (or set them false) and restart the host with the old config. A flagged checkpoint loads (extra fields ignored); its `shadow_complete` host_down spans are treated as unflagged, so every pool is refused for BLOCK_MS after them (conservative).
