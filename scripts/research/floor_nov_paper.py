@@ -41,9 +41,7 @@ def main():
     root = Path(a.root); root.mkdir(parents=True, exist_ok=True)
     # the ledger is registered under the pinned FROZEN_SHA; a variant must not pass for the frozen rule, so the header says so (the reader prints it)
     hdr = {"variant": overrides, "frozen_rule": not overrides, "registered_frozen_sha_is_not_the_rule": bool(overrides), "send": a.send}
-    (root / "ledger").mkdir(exist_ok=True)
-    for d in (root, root / "ledger"):
-        (d / "variant.json").write_text(json.dumps(hdr, indent=1, sort_keys=True) + "\n")
+    (root / "variant.json").write_text(json.dumps(hdr, indent=1, sort_keys=True) + "\n")  # in --root, not in ledger/ (the engine owns that dir)
     ledger, registry = str(root / "ledger"), str(root / "bots.json")
     rules = load_rules_v2([H.BOT_ID])
     scratch_register(registry, a.from_ms)

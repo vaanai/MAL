@@ -7,7 +7,7 @@ Rent correction (manager22 erratum, 2026-11-12): the first replay charged send =
 a FILLED leg is (1-f)*(proceeds - stake - 2*send) - f*send, so the leg moves by (2-f)*D (flat f = 0.15; press f = p, the row's calc[lat].by_rule[rule].p_press_provisional);
 a guarded or stranded/invalid row bypasses the blend and pays one send, so it moves by D. Not exact when the stranded test (proceeds < send) flips between the two
 sends: re-pricing with floor_nov_paper.py --send 160000 is exact. A ledger already priced at S needs no flag. Also writes entries_by_day (a day with any open_at_tape_end entry is INCOMPLETE: counts only, no total; --to-ms adds the exit-completeness bound) and positions (for pool pairing):
-total SOL and ex-top-3 SOL per UTC entry day, per stake and leg (cutover hour NOT excluded there). NOTE: pooled sol_per_day uses fixed 11-03..11-11 day denominators; use entries_by_day for other windows.
+total SOL and ex-top-3 SOL (None when n<=3) per UTC entry day, complete days only, per stake and leg (the 11-07T18Z cut-over hour IS excluded there, as in the funnel report). NOTE: pooled sol_per_day uses fixed 11-03..11-11 day denominators; use entries_by_day for other windows.
 """
 import argparse, glob, json, sys, statistics, collections
 from datetime import datetime, timezone
