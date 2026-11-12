@@ -23,7 +23,14 @@ def main():
     ap.add_argument("--root", required=True); ap.add_argument("--tape-dir", required=True)
     ap.add_argument("--from-ms", type=int, required=True); ap.add_argument("--to-ms", type=int, required=True)
     ap.add_argument("--send", type=int, default=1_673_840)
+    ap.add_argument("--set", nargs="*", default=[], help="variant overrides on tools.arena_rule_l1 module constants, NAME=value (e.g. Q_STAR=0.75e9 AGE_LO=43200); the file is not edited")
     a = ap.parse_args()
+    from tools import arena_rule_l1 as _L
+    for kv in a.set:
+        k, v = kv.split("=", 1)
+        assert hasattr(_L, k) and k in ("Q_STAR", "AGE_LO", "AGE_HI", "VOL_MIN_LAMPORTS", "R6_MAX"), k
+        setattr(_L, k, float(v) if k != "AGE_LO" and k != "AGE_HI" else int(float(v)))
+        print("override", k, getattr(_L, k), flush=True)
     if R._inside(a.root, R.ARENA_OUTPUT_ROOT):
         raise SystemExit("refusing to write inside the arena output root")
     root = Path(a.root); root.mkdir(parents=True, exist_ok=True)
