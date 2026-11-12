@@ -650,3 +650,4 @@ Changelog line to add with it:
 *(Empty until registration. The last section of this file; nothing follows it. The manager appends one line per commit, in the form `EXP027_KEY: value (appended YYYY-MM-DDTHH:MMZ)`, dated with `date -u`, from the merge record, the count file and the job records only. Mechanism and read-tool checks: section 0.5.)*
 EXP027_MERGE_INSTANT: 2026-10-18T02:07:36Z (appended 2026-10-18T02:14Z)
 EXP027_W0: 2026-10-18T03 (appended 2026-10-18T02:17Z)
+EXP027_DEADLINE_ND: NOT_DECIDABLE at 2026-11-09T03:00Z, no read started (EXP-027 §4.3, §7.1 items 3 and 6; cause fixed 2026-10-20T07:11:27Z by the ledger ND determination); check-window /data/mal/exp027-nd/check-window-2026-11-12-late.txt@a316bf1aa2be66ec2ae23e71eadac597da6130a859d7fcdda26675b82d59e4b0 (appended 2026-11-12T21:51Z)
