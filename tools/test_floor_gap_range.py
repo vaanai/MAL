@@ -82,4 +82,4 @@ def test_reader_groups_on_engine_ledger(tmp_path):
     R.main(str(tmp_path / "ledger"), str(tmp_path / "o.json"))
     r = json.load(open(tmp_path / "o.json"))
     assert r["counts"]["overlap_n"] == 1 and r["counts"]["A_n"] == 0
-    assert r["groups"]["0.1:flat"]["B"]["pooled"]["K=16"]["n"] == 1 or r["groups"]["0.1:flat"]["B"]["per_day"]
+    assert r["groups"]["0.25:flat"]["B"]["pooled"]["K=16"]["n"] == 1 and r["groups"]["0.25:flat"]["C_ts"]["pooled"]["K=16"]["n"] == 1
