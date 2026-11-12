@@ -271,3 +271,28 @@ A "no" on (b) or (c): the lane stays at 0.10 SOL, nothing is installed, and the 
 2. In "Why the daily stop is 0.50", the drop of the marked P&L at the fill comes from the pool fees on both legs plus the rent and buy fee held in cash until the close, not from price impact (QP nit). The word is corrected in that sentence only; the "Price impact" section is unchanged.
 3. Precondition (b): the realized sum over the 20 trades counts every lane-ledger row of those 20 positions, plus the fee rows of failed or guarded buys whose send falls between 2026-11-12T00:46:04.584Z and the exit instant of the 20th trade (REVIEWER minor 1, QP nit). Failed or guarded buys still do not count toward the 20.
 4. In "Worst case", the fills-vs-model check does not catch rows missing from the lane ledger: it compares fills with the model. Only the wallet floor bounds those (REVIEWER minor 2). Read "The wallet floor (0.75 SOL) and the fills-vs-model check watch those" with this correction.
+
+**Erratum 2 (2026-11-12, rent add-back in the November paper figures was overstated; found by the T0 review of PR #1324; figures only, no decision, limit, code or install condition changes).** Cause: the "Evidence the manager had" replay figures add back token-ATA rent as 2 × 1,513,840 lamports per filled trade, but the flat and pressure legs already carry the fail blend (`tools/arena_stack.py` `fail_legs`), so the right add-back is (2 − f) × 1,513,840 per filled trade (flat f = 0.15; pressure f = the row's `p_press_provisional`) and 1 × 1,513,840 per guarded or stranded trade (`scripts/research/floor_nov_pnl.py --send-lamports 160000`, merged 0982c931). Every total in the evidence bullet was too high. Old figures were re-derived from the same ledger by the corrected reader with the old add-back put back (2 × per filled trade, 1 × per guarded trade); they equal the amendment's quoted digits, so each row below is a like-for-like old → corrected pair. All rows are the 0.25 stake, flat leg, first-come cap K = 16 (uncapped, n 50), unless stated; the "post" rows are the post-deploy subset (11-07T19Z onward, same cell). Digits are the reader's, not rounded up: SOL to 6 decimals, percent to 4.
+
+| Quoted figure | Amendment 6 (old) | Corrected |
+| --- | --- | --- |
+| n | 50 | 50 |
+| mean | +5.66% (5.6577) | +5.57% (5.5705) |
+| median | −2.21% (−2.2085) | −2.30% (−2.2993) |
+| total SOL | +0.7072 (0.707207) | +0.6963 (0.696308) |
+| ex top 3 SOL | +0.1988 (0.198778) | +0.1886 (0.188559) |
+| positive entry-day buckets | 6 of 8 | 6 of 8 (unchanged) |
+| combined 11-07 SOL | −0.0096 (−0.009575) | −0.0118 (−0.011846) |
+| UTC days positive | 6 of 7 | 6 of 7 (unchanged) |
+| post-deploy n | 17 | 17 |
+| post-deploy total SOL | +0.3106 (0.310571) | +0.3067 (0.306711) |
+| post-deploy ex top 3 SOL | −0.1035 (−0.103473) | −0.1067 (−0.106652) |
+| post-deploy ex top 3 SOL, pressure leg | −0.0970 (−0.097002) | −0.1011 (−0.101139) |
+
+The post-deploy ex-top-3 stays negative, and the median stays negative. Not re-derived: the 0.10 cells and the K = 3 and K = 8 cells are not quoted in this DEC and are not restated here; none of the amendment's other figures came from this replay. The amendment's decision, limits and gate are unchanged: the first 20 closed 0.10 trades must be ≥ 0 after all fees (b), the fills check must read yes at trade 10 and at trade 20 (c), and preconditions (a) to (f) stand as written. The figures remain in-sample, paper, n 50 priced with 29 of 79 entries unpriced (feed_gap), and not a gate read. Original text above is not edited.
+
+Review nits from #1318 and #1319, carried as wording only:
+1. 11-07 rounding (QP nit on #1318, "The combined 11-07 figure is −0.009575 SOL. That rounds to −0.0096, not −0.0095"): already applied by Erratum 1 item 1; the figure is now superseded by the corrected −0.0118 above.
+2. "Impact" wording (QP nit on #1318, "so 'impact' is not the right word"): already applied by Erratum 1 item 2; no further change.
+3. Precondition (b) window (REVIEWER nit on #1319, "Suggest inclusive at both ends, so a failed buy sent in the same ms as the 20th exit is charged"): the window in Erratum 1 item 3 is inclusive at both ends, [2026-11-12T00:46:04.584Z, exit instant of the 20th trade].
+4. Provenance of "about 0.007 SOL per position" (REVIEWER nit on #1319, "the number is not derived from the cause now named"): the figure is the round-trip impact estimate of the "Price impact" section (2 × 0.25² / 18.25 = 0.00685; 8 × 0.00685 = 0.0548 for 8 open), taken from the REVIEWER comment on #1318. It was not derived from pool fees plus rent and buy fee, and no fee derivation has been made. Read "about 0.007" and "about 0.055" in "Why the daily stop is 0.50" as that impact estimate. The sentence's cause (pool fees plus rent and buy fee) stays as Erratum 1 item 2 set it. The magnitude is small against the 0.50 stop, and the rationale does not rest on the exact number.
