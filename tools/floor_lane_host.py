@@ -19,6 +19,9 @@ WHAT IS NEW AND WHAT IS NOT
     logged (rule sha, pool, mint, trigger slot / ms, reason, the span). The lookback default is 6 h = the rule's own dependence window (previous print within 6 h, spot ratio against
     the print 6 h back); it can be raised to 24 h (the 24 h volume) and never lowered below 6 h. The bridge ignores unknown row kinds, so the refusal is evidence, not an order.
     Exits are not gated: a take-profit missed in a gap is not guessed; the executor's own 24 h deadline clock sells.
+  * STAGE 1 (config flags `status_span_no_loss`, `cheap_restart`, both default false = the guard exactly as above): a status pause span of the tip writer that lost no row is not
+    data loss; a restart runs the frozen rule silently over the downtime and blocks only the pools it would Buy instead of every pool; blocks are rebuilt from refusal rows.
+    Only ever turns refusals into entries. docs/runbooks/floor-lane-host-stage1.md.
   * SUBSET. Every lane entry is an entry of the paper rule at the same trigger; the guard only drops Buys. A dropped Buy on pool P (gap, or a restart that lost the paper view) blocks P
     until trigger + BLOCK_MS = 24 h + 1.9 s + 60 s cooldown + 1 s tick + 5 s margin (extended by every later refused Buy on P), persisted in the checkpoint; a restart blocks every pool the log shows open; a host_down span refuses all pools
     for 24 h + 1.9 s. A missing checkpoint beside an existing decision log refuses to start. `run` refuses a dirty or unknown checkout and records this file's sha256 in the start row.
