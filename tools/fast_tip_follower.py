@@ -1018,31 +1018,34 @@ class TipFollower:
         last_retain = 0.0
         fail_wait = idle_s
         self.start_status_thread()
-        while not stop.is_set():
-            self.precreate()
-            try:
-                n = self.step()
-                fail_wait = idle_s
-            except TransientError as exc:
-                self.retries += 1
-                self._log_limited("tip", f"tip poll failed: {type(exc).__name__}")
-                if exc.rate_limited:
-                    self._consec_429 += 1
-                    if self._consec_429 >= self.breaker_after:
-                        self.breaker_trips += 1
-                        fail_wait = max(fail_wait, self.breaker_pause_s)
-                        self._consec_429 = 0
-                stop.wait(fail_wait)
-                fail_wait = min(30.0, fail_wait * 2)
+        try:
+            while not stop.is_set():
+                self.precreate()
+                try:
+                    n = self.step()
+                    fail_wait = idle_s
+                except TransientError as exc:
+                    self.retries += 1
+                    self._log_limited("tip", f"tip poll failed: {type(exc).__name__}")
+                    if exc.rate_limited:
+                        self._consec_429 += 1
+                        if self._consec_429 >= self.breaker_after:
+                            self.breaker_trips += 1
+                            fail_wait = max(fail_wait, self.breaker_pause_s)
+                            self._consec_429 = 0
+                    stop.wait(fail_wait)
+                    fail_wait = min(30.0, fail_wait * 2)
+                    self.heartbeat()
+                    continue
                 self.heartbeat()
-                continue
-            self.heartbeat()
-            if time.monotonic() - last_retain > 3600:
-                last_retain = time.monotonic()
-                self._log(f"retention removed {self.retain(max_keep_days)} files")
-            if n == 0 and not self._futs:
-                stop.wait(idle_s)
-        self._hb_stop.set()
+                if time.monotonic() - last_retain > 3600:
+                    last_retain = time.monotonic()
+                    self._log(f"retention removed {self.retain(max_keep_days)} files")
+                if n == 0 and not self._futs:
+                    stop.wait(idle_s)
+        finally:
+            # always stop the status thread, also when the loop raises: a crashed follower must go stale
+            self._hb_stop.set()
         self.close_pool()
         self.writer.close()
         self.cwriter.close()
