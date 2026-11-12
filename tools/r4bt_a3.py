@@ -48,6 +48,7 @@ import time
 from pathlib import Path
 from typing import Any, Mapping, Sequence
 
+from tools import r4bt_bots as B
 from tools import r4bt_gate as G
 from tools.a3_redeploy_check import ALL_HALT_FLAGS, BOOST_FLAGS, CheckError, _norm_flags, pins_diff
 from tools.arena_paper import ArenaRefused, load_registry, stop_bot
@@ -275,6 +276,7 @@ def main(argv: Sequence[str] | None = None, *, now_ms: int | None = None) -> int
     a_.add_argument("--registry", required=True)
     a_.add_argument("--arena-registry", default=None)
     a_.add_argument("--applied-log", required=True)
+    a_.add_argument("--bot-id", default=B.DEFAULT_BOT_ID, help="a registered r4-b-T bot id of tools/r4bt_bots.py (default r4bt-a1)")
     a = ap.parse_args(argv)
     now = int(time.time() * 1000) if now_ms is None else int(now_ms)
     try:
@@ -293,7 +295,8 @@ def main(argv: Sequence[str] | None = None, *, now_ms: int | None = None) -> int
                 Path(a.out).write_text(text + "\n")
             print(text)
             return 11 if v["verdict"] == "ERROR" else 0
-        res = apply(json.loads(Path(a.verdict).read_text()), a.registry, a.applied_log, arena_registry=a.arena_registry, now_ms=now)
+        B.spec(a.bot_id)  # an unknown bot id refuses before anything is read
+        res = apply(json.loads(Path(a.verdict).read_text()), a.registry, a.applied_log, arena_registry=a.arena_registry, now_ms=now, bot=a.bot_id)
         print(json.dumps(res, sort_keys=True))
         return 0
     except (G.Refused, ValueError, OSError) as e:
