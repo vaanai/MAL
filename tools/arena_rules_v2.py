@@ -47,7 +47,7 @@ from tools.arena_pool_table import PoolTable
 from tools.arena_stack_v2 import check_ledger_send, stack_config_for
 from tools.arena_state import WARM_MIN_DEFAULT, ArenaState
 
-RULE_MODULES_V2 = {"l1-floor-v2": "tools.arena_rule_l1"}
+RULE_MODULES_V2 = {"l1-floor-v2": "tools.arena_rule_l1", "g4v1-a1": "tools.arena_rule_g4v1"}
 CHECKPOINT_EVERY_MS = 600_000
 SWEEP_EVERY_MS = 3_600_000
 ENGINE_TRIM_EVERY_MS = 300_000  # ArenaEngine.trim_history() cadence (tick time), the same 5 tape minutes the HV4 runner uses
@@ -90,8 +90,12 @@ class HostV2(R.Host):
         super().__init__(cfg, rules, state, engine, now_fn, binding)
         self.table_path = Path(table_path) if table_path else Path(cfg.root) / "pooltable" / "pooltable.pkl"
         mode = modes.pop()
+        tcls = {getattr(r, "table_cls", PoolTable) for r in rules}  # a rule may ask for a PoolTable subclass (g4v1-a1: pre-trade prices); default: the base table, as for l1-floor-v2
+        if len(tcls) != 1:
+            raise R.HostError("HostV2 hosts rules that declare ONE table class")
+        tcls = tcls.pop()
         if table is None:
-            table = PoolTable.load(self.table_path) if self.table_path.exists() else PoolTable(mode)
+            table = tcls.load(self.table_path) if self.table_path.exists() else tcls(mode)
         if table.mode != mode:
             raise R.HostError(f"the pool table checkpoint is mode {table.mode!r}, the rule wants {mode!r}")
         self.table = table
