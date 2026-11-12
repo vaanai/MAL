@@ -248,6 +248,7 @@ class LaneHost(HostV2):
         self.status_span_no_loss, self.cheap_restart = bool(status_span_no_loss), bool(cheap_restart)
         self._noloss: dict[str, dict[str, Any]] = {}  # (prog, kind, from_ms, to_ms) -> the captured raw writer status rows (memory only: a span reloaded from a checkpoint has none)
         self._now0: int | None = None  # lane_start's instant
+        self._prev_end = "unknown"
         self._rebuild: tuple[int, int] | None = None  # (to_ms, rows) of the table rebuild the process ran before lane_start
         self._hook0 = 0
         self._ignored: list[dict[str, Any]] = []  # v2: the no-loss spans the last judge() did not count
@@ -370,7 +371,7 @@ class LaneHost(HostV2):
         return {**res, "blocked_pools": len(self.blocked)}
 
     # -- checkpoint
-    def checkpoint(self, T: int) -> None:
+    def checkpoint(self, T: int, ended: str | None = None) -> None:
         head, seq = self.log.head(self.rules[0].bot_id)
         keep_from = T - LOOKBACK_MAX_S * 1000
         persisted = [s for s in self.spans(keep_from, T) if s.get("kind") != "host_down"]
@@ -381,6 +382,8 @@ class LaneHost(HostV2):
                 "gaps": sorted(uniq.values(), key=lambda s: (s["from_ms"], s["to_ms"], str(s.get("kind")))), "gap_refusals": self.gap_refusals, "blocked": blocked}
         if self.status_span_no_loss or self.cheap_restart:  # additive optional field, schema name unchanged: a host without the flags ignores it and then treats every host_down span as unflagged
             body["guard"] = {"status_span_no_loss": self.status_span_no_loss, "cheap_restart": self.cheap_restart}
+            if ended is not None:
+                body["ended"] = ended  # "exception": run() ended by an exception / fatal (the pool table was then pickled with a row that was updated but maybe not decided); "end": run() returned
         _atomic_write(self.ckpt_path, body)
 
     def lane_start(self, now_ms: int) -> dict[str, Any]:
@@ -407,6 +410,10 @@ class LaneHost(HostV2):
             self.lane_gaps.append(self._down_span)
         info.update({"checkpoint": True, "hwm_ms": hwm, "down_ms": max(0, int(now_ms) - hwm), "carried_gaps": len(self.lane_gaps), "blocked_pools": len(self.blocked)})
         self._ck_hwm, self._now0 = hwm, int(now_ms)
+        # how the previous process ended: "exception" (run() ended by an exception or fatal), "end", "signal" (a flagged checkpoint without the mark: killed, no finally ran), "unknown"
+        # (written by a host without the flags; the manager records that it was stopped by signal with no fatal before cheap_restart is switched on: runbook step 1)
+        self._prev_end = str(ck["ended"]) if isinstance(ck.get("ended"), str) else ("signal" if "guard" in ck else "unknown")
+        info["prev_end"] = self._prev_end
         self._hook0 = int(self.counters.get("hook_errors", 0))
         if self.cheap_restart:
             self._shadow_init(hwm, info)
@@ -428,7 +435,11 @@ class LaneHost(HostV2):
         sh: dict[str, Any] = {"hwm_ms": hwm, "from_ms": frm, "warm_start_ms": warm_start, "rebuild": self._rebuild, "rows": 0, "buys": 0, "pools": {}, "fallback": None,
                               "active": False, "failed": None}
         if down is not None:
-            if warm_start > frm - SHADOW_MARGIN_MS:
+            if self._prev_end == "exception":
+                # QP BLOCKER (PR 1332): after an in-process exception both finally blocks pickle a table that already holds the row being decided; the restart skips it, so the shadow
+                # cannot see a Buy whose decision never reached the log. Nothing is known about that row: keep the v1 refuse-all.
+                sh["fallback"] = "unclean_exit"
+            elif warm_start > frm - SHADOW_MARGIN_MS:
                 sh["fallback"] = "downtime_exceeds_warmup"  # the warm-up replay does not start before the last lane checkpoint: rows of the downtime may be unseen
             elif self._rebuild is None:
                 sh["fallback"] = "rebuild_unknown"
@@ -511,7 +522,7 @@ class LaneHost(HostV2):
             by_why[str(b.get("why"))] = by_why.get(str(b.get("why")), 0) + 1
         body = {"kind": KIND_RESTART_SHADOW, "cheap_restart": True, "status_span_no_loss": self.status_span_no_loss, "rule_sha": FROZEN_SHA, "hwm_ms": sh["hwm_ms"], "down_from_ms": down["from_ms"] if down else None,
                 "down_to_ms": down["to_ms"] if down else None, "warm_start_ms": sh["warm_start_ms"], "shadow_from_ms": sh["from_ms"], "rebuild_to_ms": (sh["rebuild"] or [None])[0], "rebuild_rows": (sh["rebuild"] or [None, None])[1],
-                "shadow_complete": complete, "fallback": sh["fallback"], "n_shadow_rows": sh["rows"], "n_shadow_buys": sh["buys"], "n_shadow_pools": len(sh["pools"]),
+                "shadow_complete": complete, "fallback": sh["fallback"], "prev_end": self._prev_end, "n_shadow_rows": sh["rows"], "n_shadow_buys": sh["buys"], "n_shadow_pools": len(sh["pools"]),
                 "shadow_pools": sorted(sh["pools"])[:50], "blocked_pools": len(self.blocked), "blocked_by_why": dict(sorted(by_why.items())),
                 "reblocked_from_refusal_rows": self._reblock["reblocked"], "refusal_rows_unparseable": self._reblock["unparseable"]}
         try:
@@ -545,11 +556,13 @@ class LaneHost(HostV2):
 
     def run(self, t_from: int, t_to: int, sleep: Callable[[float], None] = time.sleep) -> None:
         self.begin_live(t_from)
+        ended = "exception"
         try:
             super().run(t_from, t_to, sleep)
+            ended = "end"
         finally:
             if self._last_T:
-                self.checkpoint(self._last_T)
+                self.checkpoint(self._last_T, ended)
 
 
 def build_rules(table_mode: str | None, lookback_s: int, host_ref: list) -> list[Rule]:

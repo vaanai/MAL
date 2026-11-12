@@ -30,3 +30,13 @@ Remove the keys (or set them false) and restart the host with the old config. A 
 - A row that was table-updated but not yet decided at the instant of a kill -9 (microseconds) is neither in the log nor shadowed (the table is past it); v1 covered it with host_down. Open question for QP.
 - Positions open at a restart lose the host take-profit (resume_reopen), as in v1.
 - The proof (P0-P2) on real tape has not been run.
+
+## Previous-process end mark and the deploy restart (QP BLOCKER on PR 1332)
+After an in-process exception (for example a decision-log write failure on a Buy row) `run()`'s `finally` blocks pickle a pool table that already holds the row being decided, and the restart skips it, so the shadow cannot see that Buy. Therefore `LaneHost.run` writes `"ended": "exception"` (or `"end"` on a normal return) into the final lane checkpoint when a flag is on, and the cheap restart falls back to the 24 h refuse-all (`fallback: unclean_exit`) on `"exception"`. A kill (SIGKILL/SIGTERM; no handler, no `finally`) leaves a flagged checkpoint without the mark: `prev_end: "signal"`, cheap restart allowed (the pickle then predates the in-flight row, so the warm-up re-applies and shadows it). `prev_end` is in `lane_start` info and in the `lane_restart_shadow` row (`exception`, `end`, `signal`, `unknown`).
+
+Fail-closed choice: only an explicit `"exception"` mark falls back. A checkpoint written by a host without the flags carries neither `guard` nor `ended` (`prev_end: "unknown"`); the code cannot tell how that process ended.
+
+Numbered steps for the manager before the first start with `cheap_restart: true` from a v1-written checkpoint:
+1. Record from the v1 host's journal that it stopped by signal with no fatal / HostFatal / traceback (counts only). If it did not, or this cannot be shown, start the first time with the flags off (or accept the 24 h refuse-all by leaving `cheap_restart` false) and switch on at a later restart.
+2. Record that statement in LAB_STATE with the stop and start instants.
+3. Only then set `cheap_restart` true and restart; check the `lane_restart_shadow` row (`prev_end`, `fallback`, `shadow_complete`).

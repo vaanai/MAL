@@ -95,7 +95,9 @@ def test_cheap_restart_blocks_only_the_pool_the_reference_bought_during_the_down
     ref = [r for r in log if r["kind"] == H.KIND_GAP_REFUSED]
     assert [(r["pool"], r["reason"]) for r in ref] == [("Q", "pool_blocked_after_restart_shadow")]  # Q's second trigger (39 h) is held by the reference's position
     assert eng_buys == ["Z"]  # (vi) the shadow never reaches the engine, and logs nothing: the only rows are the entry, the refusal and the start evidence
-    assert sorted(set(kinds(tmp_path / "rules")) - {"start"}) == sorted({"entry", H.KIND_GAP_REFUSED, H.KIND_RESTART_SHADOW, "order_filled"} & set(kinds(tmp_path / "rules"))) or True
+    assert set(kinds(tmp_path / "rules")) <= {"start", "entry", H.KIND_GAP_REFUSED, H.KIND_RESTART_SHADOW}  # nothing else was written: the shadow logs no row of its own
+    assert [r["kind"] for r in log if r.get("pool") == "Q"] == [H.KIND_GAP_REFUSED]  # Q has only the 39 h refusal: no shadow entry, no shadow row
+    assert rs["prev_end"] == "signal"
     assert all(r["kind"] != "entry" or r["pool"] != "Q" for r in log)
     ck = json.loads((tmp_path / "rules" / "lane" / "checkpoint.json").read_text())
     assert ck["schema"] == H.CKPT_SCHEMA and ck["guard"] == {"status_span_no_loss": False, "cheap_restart": True}
@@ -190,7 +192,6 @@ def test_the_shadow_leaves_the_pool_table_byte_equal(tmp_path):
         eng, _ = phase_a(d, rows, cheap_restart=flag)
         b, _ = restart(d, rows, eng, cheap_restart=flag, run_to=H0 + 34 * HOUR)
         d_ = b.table.to_dict()
-        d_.pop("marks", None)
         pk[name] = pickle.dumps(d_, protocol=4)
     assert pk["on"] == pk["off"]
 
@@ -342,3 +343,46 @@ def test_config_flags_are_booleans_and_default_false():
     assert H._cfg_flag({}, "cheap_restart") is False and H._cfg_flag({"cheap_restart": True}, "cheap_restart") is True
     with pytest.raises(H.R.HostError):
         H._cfg_flag({"cheap_restart": 1}, "cheap_restart")
+
+
+# ------------------------------------------------------------------------------------------------ QP BLOCKER (PR 1332): an in-process exception
+def test_an_exception_while_deciding_a_buy_makes_the_restart_refuse_every_pool(tmp_path):
+    """QP reproduction: the entry append for Q (the reference's trigger at 32 h) fails; run()'s two finally blocks pickle a table that already holds the row. Without the mark
+    the restart skips that row, the shadow sees no Buy, and Q would enter at 39 h while the reference holds it. With it the host falls back to the 24 h refuse-all."""
+    rows = world()
+    a = lane_host(tmp_path, rows, live=False, cheap_restart=True)
+    orig = a.log.append
+
+    def failing(bot, ms, body):
+        if body.get("kind") == "entry":
+            raise OSError("disk full")
+        return orig(bot, ms, body)
+
+    a.log.append = failing
+    with pytest.raises(H.R.HostFatal):
+        a.run(H0, H0 + 40 * HOUR)
+    ck = json.loads((tmp_path / "rules" / "lane" / "checkpoint.json").read_text())
+    assert ck["ended"] == "exception"
+    _, info = restart(tmp_path, rows, FakeEngine(tmp_path / "rules"), cheap_restart=True, run_to=H0 + 40 * HOUR)
+    rs = restart_row(tmp_path)
+    assert info["prev_end"] == "exception" and rs["fallback"] == "unclean_exit" and rs["shadow_complete"] is False and rs["prev_end"] == "exception"
+    log = log_rows(tmp_path)
+    assert "entry" not in [r["kind"] for r in log]  # neither Q (39 h) nor Z (36 h): host_down refuses all pools, as v1
+    assert {r["pool"] for r in log if r["kind"] == H.KIND_GAP_REFUSED} == {"Z", "Q"}
+
+
+def test_a_clean_end_or_a_signal_stop_keeps_the_cheap_restart_and_a_v1_checkpoint_is_unknown(tmp_path):
+    rows = world()
+    a = lane_host(tmp_path, rows, live=False, cheap_restart=True)
+    a.run(H0, H0 + 31 * HOUR)
+    ck = json.loads((tmp_path / "rules" / "lane" / "checkpoint.json").read_text())
+    assert ck["ended"] == "end"
+    a.save_table()
+    _, info = restart(tmp_path, rows, FakeEngine(tmp_path / "rules"), cheap_restart=True, run_to=H0 + 37 * HOUR)
+    assert info["prev_end"] == "end" and restart_row(tmp_path)["shadow_complete"] is True
+    d = tmp_path / "v1"
+    eng, _ = phase_a(d, rows)  # a v1 host (no flags) wrote the checkpoint: no `guard`, no `ended`
+    ck1 = json.loads((d / "rules" / "lane" / "checkpoint.json").read_text())
+    assert "ended" not in ck1 and "guard" not in ck1
+    _, info1 = restart(d, rows, eng, cheap_restart=True, run_to=H0 + 37 * HOUR)
+    assert info1["prev_end"] == "unknown" and restart_row(d)["shadow_complete"] is True
