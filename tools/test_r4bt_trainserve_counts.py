@@ -66,6 +66,9 @@ def test_train_counts_and_no_ids(tmp):
     assert (b["complete_rows"], b["migration_rows"], b["other_types"]) == (5, 4, 1)
     assert (b["complete_mints_uncensored"], b["complete_mints_censored"], b["covered_mints"]) == (4, 1, 2)
     assert b["coverage"] == 0.5 and b["row_ratio"] == 0.8
+    assert (b["drive_mints_no_migration_row"], b["drive_mints_mig_pool_not_pda"], b["drive_mints_mig_quote_not_wsol"], b["migration_mints_without_complete"]) == (0, 1, 1, 0)
+    assert (b["migration_rows_no_pool"], b["migration_rows_no_quote"]) == (0, 0) and b["view_sha256_file_sha256"] is None
+    assert "not established" in json.loads(out.read_text())["limits"] or "not per-mint" in json.loads(out.read_text())["limits"]
     txt = out.read_text()
     for banned in ("M1", "M2", "M5", "P_M", "WRONG", str(B0)):
         assert banned not in txt
@@ -128,7 +131,7 @@ def test_test_flag_refused_in_miscusi_job(tmp, monkeypatch):
     block(root)
     monkeypatch.setenv("MISCUSI_JOB_ID", "j1")
     assert run(["train", "--allow-test-path", "--out", str(tmp / "o.json"), str(root)]) == 2
-    assert run(["serve", "--allow-test-path", "--counts", str(tmp / "c.jsonl"), "--out", str(tmp / "o.json")]) == 2
+    assert run(["serve", "--allow-test-path", "--counts", str(tmp / "c.jsonl"), "--through", "2026-11-08", "--out", str(tmp / "o.json")]) == 2
 
 
 def crow(hour, dc, dp, cc=None, pc=None):
@@ -149,10 +152,12 @@ def write_counts(p, rows):
     Path(p).write_text("".join(json.dumps(r) + "\n" for r in rows))
 
 
-def serve(tmp, rows):
+def serve(tmp, rows, through="2026-11-08"):
     p, out = tmp / "c.jsonl", tmp / "o.json"
     write_counts(p, rows)
-    rc = run(["serve", "--allow-test-path", "--counts", str(p), "--out", str(out)])
+    if out.exists():
+        out.unlink()
+    rc = run(["serve", "--allow-test-path", "--counts", str(p), "--through", through, "--out", str(out)])
     return rc, (json.loads(out.read_text()) if out.exists() else None)
 
 
@@ -228,13 +233,13 @@ def test_serve_refusals(tmp):
     out = tmp / "o.json"
     p = tmp / "c.jsonl"
     write_counts(p, [crow("2026-11-08T00", 1, 1), crow("2026-11-08T00", 2, 2)])
-    assert run(["serve", "--allow-test-path", "--counts", str(p), "--out", str(out)]) == 2  # duplicate hour
+    assert run(["serve", "--allow-test-path", "--counts", str(p), "--through", "2026-11-08", "--out", str(out)]) == 2  # duplicate hour
     write_counts(p, [{"hour": "2026-11-08T00"}])
-    assert run(["serve", "--allow-test-path", "--counts", str(p), "--out", str(out)]) == 2  # no rows{}
+    assert run(["serve", "--allow-test-path", "--counts", str(p), "--through", "2026-11-08", "--out", str(out)]) == 2  # no rows{}
     p.write_text("not json\n")
-    assert run(["serve", "--allow-test-path", "--counts", str(p), "--out", str(out)]) == 2  # parse error is exit 2, not a traceback
-    assert run(["serve", "--counts", str(p), "--out", str(out)]) == 2  # off-allowlist without the flag
-    assert run(["serve", "--allow-test-path", "--counts", str(tmp / "fresh-0808.jsonl"), "--out", str(out)]) == 2
+    assert run(["serve", "--allow-test-path", "--counts", str(p), "--through", "2026-11-08", "--out", str(out)]) == 2  # parse error is exit 2, not a traceback
+    assert run(["serve", "--counts", str(p), "--through", "2026-11-08", "--out", str(out)]) == 2  # off-allowlist without the flag
+    assert run(["serve", "--allow-test-path", "--counts", str(tmp / "fresh-0808.jsonl"), "--through", "2026-11-08", "--out", str(out)]) == 2
     assert not out.exists()
 
 
@@ -297,3 +302,69 @@ def test_blob_id_matches_git():
     git = subprocess.run(["git", "hash-object", m.__file__], capture_output=True, text=True)
     if git.returncode == 0:
         assert git.stdout.strip() == m.blob_id()
+
+
+def test_train_subset_of_allowed_roots_refused():
+    out = tempfile.mkdtemp(prefix="r4t")
+    try:
+        o = Path(out) / "o.json"
+        two = list(m.ALLOWED_TRAIN[:2])
+        assert run(["train", "--out", str(o)] + two) == 2 and not o.exists()
+        assert run(["train", "--out", str(o)] + two + [two[0]]) == 2 and not o.exists()
+    finally:
+        shutil.rmtree(out)
+
+
+def test_train_layout_miss_refused(tmp):
+    out = tmp / "o.json"
+    for key in ("pool", "quote_mint"):
+        root = tmp / ("blk_" + key)
+        rows = [mig("L%d" % i, B0 + 5) for i in range(3)]
+        for r in rows:
+            del r[key]
+        write_hour(root, 0, [comp("L%d" % i, B0 + i) for i in range(3)] + rows)
+        write_hour(root, 6, [])
+        assert run(["train", "--allow-test-path", "--out", str(out), str(root)]) == 2 and not out.exists()
+    root = tmp / "blk_nomig"
+    write_hour(root, 0, [comp("L1", B0)])
+    assert run(["train", "--allow-test-path", "--out", str(out), str(root)]) == 2 and not out.exists()
+
+
+def test_train_no_migration_row_count_and_view_hash(tmp):
+    root = tmp / "blk"
+    write_hour(root, 0, [comp("N1", B0), comp("N2", B0 + 1), mig("N1", B0 + 2), mig("N9", B0 + 3)])
+    write_hour(root, 6, [])
+    (root / "VIEW.sha256").write_text("abc\n")
+    out = tmp / "o.json"
+    assert run(["train", "--allow-test-path", "--out", str(out), str(root)]) == 0
+    b = json.loads(out.read_text())["blocks"]["blk"]
+    assert (b["drive_mints_no_migration_row"], b["migration_mints_without_complete"], b["coverage"]) == (1, 1, 0.5)
+    assert b["view_sha256_file_sha256"] == __import__("hashlib").sha256(b"abc\n").hexdigest()
+
+
+def test_out_never_overwritten(tmp):
+    rows = full_day("2026-11-08", 10, 10, cum=False)
+    assert serve(tmp, rows)[0] == 0
+    out = tmp / "o.json"
+    before = out.read_text()
+    assert run(["serve", "--allow-test-path", "--counts", str(tmp / "c.jsonl"), "--through", "2026-11-08", "--out", str(out)]) == 2
+    assert out.read_text() == before
+    root = tmp / "blk"
+    block(root)
+    assert run(["train", "--allow-test-path", "--out", str(out), str(root)]) == 2 and out.read_text() == before
+
+
+def test_serve_fixed_day_set(tmp):
+    rows = full_day("2026-11-08", 10, 10, cum=False) + full_day("2026-11-09", 10, 10, cum=False)
+    rc, r = serve(tmp, rows, through="2026-11-08")
+    assert r["counted_days"] == ["2026-11-08"] and [x["counted"] for x in r["days"]] == [True, False] and "limits" in r
+    rc, r = serve(tmp, rows, through="2026-11-09")
+    assert r["counted_days"] == ["2026-11-08", "2026-11-09"] and r["serve_verdict"] == "PASS"
+    rc, r = serve(tmp, rows, through="2026-11-10")  # a counted day missing from the log -> DISCLOSE, never silently dropped
+    assert r["counted_days"][-1] == "2026-11-10" and r["serve_verdict"] == "DISCLOSE"
+    rc, r = serve(tmp, rows, through="2026-11-07")  # before the first full day
+    assert rc == 2 and r is None
+    rc, r = serve(tmp, rows, through="2999-01-01")  # not a past day
+    assert rc == 2 and r is None
+    rows2 = full_day("2026-11-08", 10, 10, cum=False)[:-1]  # 23 hours: not full -> DISCLOSE
+    assert serve(tmp, rows2)[1]["serve_verdict"] == "DISCLOSE"
