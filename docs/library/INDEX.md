@@ -28,7 +28,7 @@ As of 2026-10-20T08:26:00Z. One row per idea in [`ideas.jsonl`](ideas.jsonl). Th
 | Status | Library | Inbox of 2026-10-13 | Owner ideas |
 | --- | --- | --- | --- |
 | `live-canary` | 1 | 0 | 0 |
-| `forward-test` | 2 | 0 | 0 |
+| `forward-test` | 3 | 0 | 0 |
 | `explored-survivor-unconfirmed` | 10 | 0 | 0 |
 | `parked` | 13 | 3 | 0 |
 | `shelved` | 2 | 2 | 0 |
@@ -36,9 +36,9 @@ As of 2026-10-20T08:26:00Z. One row per idea in [`ideas.jsonl`](ideas.jsonl). Th
 | `desk-read` | 3 | 52 | 0 |
 | `explored-no-survivor` | 56 | 18 | 2 |
 | `dead-as-frozen` | 77 | 9 | 0 |
-| **all** | 209 | 112 | 2 |
+| **all** | 210 | 112 | 2 |
 
-The file holds 573 rows: the 323 above and 55 rows kept only as duplicates of another row (listed at the end).
+The file holds 574 rows: the 324 above and 55 rows kept only as duplicates of another row (listed at the end).
 
 ## Live and in forward test
 
@@ -47,6 +47,7 @@ The file holds 573 rows: the 323 above and 55 rows kept only as duplicates of an
 | `lib-c-K1` | H5 BOOSTFLOOR v1: drained-pool buy into BOOST, exit at 330 s | `live-canary` | 2026-10-13: live at T0 (0.02 SOL) since 09:44:43Z after the structure stop of 07:14:44Z; 13 attempts and 13 sells landed at 18:49Z (job #938). Canary label: execution measurement; EXP-024 ended NOT_DECIDABLE on 2026-10-13 with no look read; not a book. Gate code (PR #614) and watch tool (PR #635) merged with the switch OFF; nothing installed or enabled. H5 has not cleared the promotion gate. canary STOPPED since … | Gate evidence should come from a forward, pre-registered read (walk-2 / October), not from the h5-flows report (library K1 caveat). |
 | `lib-c-Q1.EXP-022` | EXP-022 CAP-PICK (Part 1 pre-registration) | `forward-test` | 2026-10-13: no outcome has been read. The counted window is walk 2, from 2026-10-16T01Z. Owed before it: the declaration of which daily structure run is the P2 run (the last one before 2026-10-16T01Z) and the walk-2 submit. The first look is scheduled for 2026-10-23. | Look dates 10-23T01, 10-30T01 and 11-06T01 (LAB_STATE line 108). A fail leads to A12, the cost wind-down, pre-agreed by the owner (audit O6). |
 | `lib-c-Q1.EXP-025` | EXP-025 C1-NF post-graduation momentum (two looks) | `forward-test` | 2026-10-13: no outcome has been read. Look 1 is scheduled for 2026-10-17T03Z on the event-V re-walk (job #433). The owner shelved the C1-NF book itself on 2026-10-12 as a regime watch; the registered read still runs as written. | Look 1 end 2026-10-17T00; count end 2026-10-24T00 (library Q1). |
+| `r4bt-tip` | r4-b-T: frozen r4-b hourly top-10 PumpSwap book on the fast-0 getBlock tip feed (arena … | `forward-test` | Same frozen r4-b rule as lib-c-O2 (itself a duplicate of lib-b-D5); this row tracks its arena re-registration on the tip feed. | re-registered as r4bt-a2, paper, P0 days 2026-11-16, 2026-11-17, 2026-11-18 (floor: mean >= 2.0 a day, no day at 0); count job 2026-11-19T00:10Z; W' (frozen_sha) … |
 
 ## Survivors on exploration data, not confirmed
 
