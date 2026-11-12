@@ -1,8 +1,32 @@
 {
  "schema_version": "console.v1",
- "updated_utc": "2026-11-12T21:30:00Z",
+ "updated_utc": "2026-11-12T22:50:00Z",
  "review_windows": [],
  "events": [
+  {
+   "id": "dec031-am30-r4bt-a2-1112",
+   "kind": "decision",
+   "atUtc": "2026-11-12T22:39:00Z",
+   "approx": true,
+   "title": "r4bt-a2 registered as a PAPER book (DEC-031 Amendment 30, merged f090d5a8, #1325)",
+   "detail": "The frozen r4-b hourly top-10 book, re-registered on the repaired fast-0 tip feed. Paper only, never scored forward; no money at risk. Author forecast: P(trade-level CI90 lower bound > 0) = 0.165, about 1 in 6; all earlier evidence is in-sample. Dry host planned start 2026-11-13T12:05Z (latest 2026-11-15T12:05Z); P0 days 2026-11-16, 11-17, 11-18; clock 2026-11-20T00:00Z; screen read by 2026-11-27T01:01Z. Any live step would need about 2.5 SOL beside FLOOR, new DEC work and the owner's word. No book has cleared the promotion gate."
+  },
+  {
+   "id": "floor-host-stage1-pr1332-1112",
+   "kind": "job",
+   "atUtc": "2026-11-12T22:22:00Z",
+   "approx": true,
+   "title": "FLOOR host stage 1: PR #1332 open (not installed)",
+   "detail": "A config-gated change, off by default, to the FLOOR host so that a feed hiccup that loses no slot (as on 11-12: 763 ms, missed_slots 0) no longer shuts entries for hours, and so that a restart is cheap. QP ruling: OK WITH CONDITIONS. Install earliest 2026-11-14T01:00Z unless no earlier position is open; it needs DEC-035 Amendment 7, a replay proof and Helm. Nothing is live yet."
+  },
+  {
+   "id": "dec035-am6-erratum2-1112",
+   "kind": "record",
+   "atUtc": "2026-11-12T22:01:00Z",
+   "approx": true,
+   "title": "DEC-035 Amendment 6 Erratum 2 (c829fcc6, #1328): November paper figures corrected downward",
+   "detail": "Token-account rent was added back too generously. 0.25 stake, flat leg, K = 16, n 50 (paper, in-sample, 29 of 79 entries unpriced): mean +5.6577% to +5.5705%; total +0.707207 to +0.696308 SOL; ex-top-3 +0.198778 to +0.188559 SOL. Decision, limits and gate unchanged. Post-deploy ex-top-3 stays negative (-0.106652 SOL). Not a gate read."
+  },
   {
    "id": "manager23-takeover-1112",
    "kind": "record",
@@ -17,7 +41,7 @@
    "atUtc": "2026-11-12T21:25:00Z",
    "approx": true,
    "title": "FLOOR floor-lane-1 at stake 0.10 since 2026-11-12T00:46:04.584Z: 0 closed, 1 open at 0.10",
-   "detail": "Lifetime realized +0.015081595 SOL from 10 closed trades at 0.03 stake (live, small sample, no gate read). Wallet 3,058,829,273 lamports at about 21:2xZ. DEC-035 Amendment 6 (stake ceiling 0.25, budget 2.10, daily stop 0.50) is merged as 8dec3a3b and not installed; its install is gated on the first 20 closed trades at 0.10 being >= 0 after fees, with a fills check at the 10th and the 20th. No book has cleared the promotion gate."
+   "detail": "Lifetime realized +0.015081595 SOL from 10 closed trades at 0.03 stake (live, small sample, no gate read). Wallet 3,058,829,273 lamports at about 21:2xZ. DEC-035 Amendment 6 (stake ceiling 0.25, budget 2.10, daily stop 0.50) is merged as 8dec3a3b and not installed; its install is gated on all its preconditions (a) to (f), including the first 20 closed trades at 0.10 being >= 0 after fees (b) and a fills check at the 10th and the 20th (c). No book has cleared the promotion gate."
   },
   {
    "id": "floor-lane-1-live-1108",
@@ -1946,6 +1970,12 @@
   }
  ],
  "for_you": [
+  {
+   "id": "fy-20261112-r4bt-a2-paper",
+   "from": "claude",
+   "text": "Does your 11-12 ask to stack strategies cover a new PAPER book (r4bt-a2)? Proceeding unless you say no. It is paper only, no money at risk.",
+   "atUtc": "2026-11-12T22:50:00Z"
+  },
   {
    "id": "fy-20261106-helm-direct-yes",
    "from": "claude",
