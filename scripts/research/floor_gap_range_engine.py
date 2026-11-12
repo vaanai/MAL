@@ -21,7 +21,6 @@ class GapRangeEngine(ArenaEngine):
         self.gap_exclusion, self.ts_variant = gap_exclusion, ts_variant
         self._ov = {}        # position_id -> list of [t_lo, t_hi] of overlapping data_loss gaps
         self._shadows = []   # [due_ms, shadow_id]
-        self.ts_unfired = 0
 
     def _holes(self, pos, src, need):
         t_lo, t_hi, s_lo, s_hi = self._span(pos, need, src)
@@ -91,6 +90,6 @@ class GapRangeEngine(ArenaEngine):
             self.pending.setdefault(sh.pool, []).append(sid)
             self._try_pending(sh.pool, final=False)
 
-    def flush(self):
-        super().flush()
-        self.ts_unfired = len(self._shadows)
+    def ts_open(self):
+        """shadows not yet priced at the end of the tape (not yet due, or due but pending): reported by the replay, never silently dropped"""
+        return sum(1 for pid in self.positions if pid.endswith("-ts"))

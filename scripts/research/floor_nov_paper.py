@@ -47,7 +47,7 @@ def main():
     host = HostV2(hc, rules, state, engine)
     print(canon({"resumed": host.resume(), "send": cfg.send, "stakes": cfg.stakes_sol}), flush=True)
     host.run(a.from_ms, a.to_ms)
-    print(canon({"done": host.status(), "ts_unfired": engine.ts_unfired}), flush=True)
+    print(canon({"done": host.status(), "ts_shadows_unpriced": engine.ts_open(), "excluded_feed_gap": engine.counters.get("excluded_feed_gap", 0)}), flush=True)
 
 
 main()
