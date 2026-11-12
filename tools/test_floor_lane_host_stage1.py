@@ -479,3 +479,28 @@ def test_with_the_flags_off_a_non_periodic_save_adds_no_field_and_no_checkpoint_
     a.save_table()
     after = _ckpt(tmp_path).read_bytes()
     assert after == before and b"ended" not in after and b"guard" not in after
+
+
+def test_a_checkpoint_written_without_cheap_restart_reads_unknown_not_signal(tmp_path):
+    """QP BLOCKER (d483cc3c): a run with only status_span_no_loss writes `guard` but has no in_doubt protection; its checkpoint must not read as a signal stop."""
+    rows = world()
+    a = lane_host(tmp_path, rows, live=False, status_span_no_loss=True)
+    orig_append, orig_ck = a.log.append, a.checkpoint
+
+    def failing(bot, ms, body):
+        if body.get("kind") == "entry":
+            raise OSError("disk full")
+        return orig_append(bot, ms, body)
+
+    def ck(T, ended=None):
+        if ended is not None:
+            raise OSError("lane dir fault")
+        return orig_ck(T, ended)
+
+    a.log.append, a.checkpoint = failing, ck
+    with pytest.raises((H.R.HostFatal, OSError)):
+        a.run(H0, H0 + 40 * HOUR)
+    c = json.loads(_ckpt(tmp_path).read_text())
+    assert c["guard"] == {"status_span_no_loss": True, "cheap_restart": False} and "ended" not in c
+    _, info = restart(tmp_path, rows, FakeEngine(tmp_path / "rules"), cheap_restart=True, status_span_no_loss=True, run_to=H0 + 34 * HOUR)
+    assert info["prev_end"] == "unknown" and restart_row(tmp_path)["prev_end"] == "unknown"

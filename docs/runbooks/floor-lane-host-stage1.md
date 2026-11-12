@@ -36,9 +36,9 @@ After an in-process exception (for example a decision-log write failure on a Buy
 
 `in_doubt` (QP case iv): with `cheap_restart` on, any table save OUTSIDE the periodic one in `step()` (the finally saves of `HostV2.run`, a direct call) first writes `"ended": "in_doubt"` to the lane checkpoint (atomic, fsynced, directory fsynced); if that write fails no pickle is written. `run()`'s finally then overwrites it with `end` or `exception`. The restart falls back to the 24 h refuse-all (`unclean_exit`) on `exception` or `in_doubt`. With the flags off nothing is added and `save_table` is main's.
 
-A checkpoint written by a host without the flags carries neither `guard` nor `ended` (`prev_end: "unknown"`); the code cannot tell how that process ended, and the v1 code has the same finally-pickle path.
+A checkpoint not written with `cheap_restart: true` (no `guard`, or `guard.cheap_restart` false) reads `prev_end: "unknown"`; `signal` is read only from a checkpoint whose `guard.cheap_restart` is true; the code cannot tell how that process ended, and the v1 code has the same finally-pickle path.
 
-Numbered steps for the manager before the first start with `cheap_restart: true` from a v1-written checkpoint:
+Numbered steps for the manager before the first start with `cheap_restart: true` from ANY checkpoint not written with `cheap_restart: true` (a v1 host, or a run with only `status_span_no_loss` on; both read `prev_end: unknown`, because only a cheap_restart run has the `in_doubt` protection):
 1. The manager record (counts only) must show that the v1 host's main process was terminated by a signal (systemd `code=killed`, `status=15/TERM` or `9/KILL`), NOT an exit status of 2 (the exception path of `main`), and that run's journal has no `floor_lane_host: HostFatal|HostError|LogChainError` line and no Traceback. Without that record the first start keeps `cheap_restart` false (flags off, 24 h refuse-all) and `cheap_restart` is switched on at a later restart, which then reads a flagged checkpoint.
 2. Record that statement in LAB_STATE with the stop and start instants.
 3. Only then set `cheap_restart` true and restart; check the `lane_restart_shadow` row (`prev_end`, `fallback`, `shadow_complete`).

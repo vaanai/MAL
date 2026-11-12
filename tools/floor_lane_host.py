@@ -417,9 +417,9 @@ class LaneHost(HostV2):
             self.lane_gaps.append(self._down_span)
         info.update({"checkpoint": True, "hwm_ms": hwm, "down_ms": max(0, int(now_ms) - hwm), "carried_gaps": len(self.lane_gaps), "blocked_pools": len(self.blocked)})
         self._ck_hwm, self._now0 = hwm, int(now_ms)
-        # how the previous process ended: "in_doubt" (a non-periodic table save began and the run end was not recorded), "exception" (run() ended by an exception or fatal), "end", "signal" (a flagged checkpoint without the mark: killed, no finally ran), "unknown"
+        # how the previous process ended: "in_doubt" (a non-periodic table save began and the run end was not recorded), "exception" (run() ended by an exception or fatal), "end", "signal" (a checkpoint written with cheap_restart on, without the mark: killed, no finally ran), "unknown"
         # (written by a host without the flags; the manager records that it was stopped by signal with no fatal before cheap_restart is switched on: runbook step 1)
-        self._prev_end = str(ck["ended"]) if isinstance(ck.get("ended"), str) else ("signal" if "guard" in ck else "unknown")
+        self._prev_end = str(ck["ended"]) if isinstance(ck.get("ended"), str) else ("signal" if (ck.get("guard") or {}).get("cheap_restart") is True else "unknown")
         info["prev_end"] = self._prev_end
         self._hook0 = int(self.counters.get("hook_errors", 0))
         if self.cheap_restart:
