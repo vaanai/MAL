@@ -30,6 +30,7 @@ import hashlib
 import json
 import os
 import sys
+from contextlib import contextmanager
 from pathlib import Path
 from types import SimpleNamespace as NS
 from typing import Any
@@ -639,6 +640,28 @@ def drill_halt(D: Drill) -> dict:
             "exits_after_halt": sells_after, "open_at_end": open_at_end, "run_complete_rows": len(rows(run, "SCAN", "run_complete"))}
 
 
+# Drill-only equivalence switch for the HV6 fixes A/B/C sha (2026-10-30): puts back, in this process only, the two values fixes A and B changed on purpose
+# (entry/re-check max_tokens 400/120, BOARD_SIZE 24: the 8cd8fe54 values), so a drill at the new sha can be compared md5 for md5 with its 8cd8fe54 run.
+LEGACY_MAX_TOKENS = {"entry": 400, "recheck": 120}
+LEGACY_BOARD_SIZE = 24
+
+
+@contextmanager
+def legacy_constants(on: bool):
+    if not on:
+        yield
+        return
+    saved_tokens, saved_board = dict(A.MAX_TOKENS), H.BOARD_SIZE
+    A.MAX_TOKENS.update(LEGACY_MAX_TOKENS)
+    H.BOARD_SIZE = LEGACY_BOARD_SIZE
+    try:
+        yield
+    finally:
+        A.MAX_TOKENS.clear()
+        A.MAX_TOKENS.update(saved_tokens)
+        H.BOARD_SIZE = saved_board
+
+
 DRILLS = (("md5", drill_md5), ("leakage", drill_leakage), ("chain", drill_chain), ("restart", drill_restart), ("order", drill_order), ("regime", drill_regime),
           ("version", drill_version), ("version_restart", drill_version_restart), ("probe_restart", drill_probe_restart), ("halt", drill_halt))
 
@@ -648,22 +671,25 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--drill-id", required=True, help="a new directory name under <HV6_ROOT>/drill/")
     ap.add_argument("--sha", required=True, help="the git sha under test (recorded, used as the frozen sha)")
     ap.add_argument("--only", default=None, help="comma list of drills")
+    ap.add_argument("--legacy-constants", choices=("on", "off"), default="off", help="drill-only: max_tokens 400/120 and board 24 (the 8cd8fe54 values)")
     a = ap.parse_args(argv)
     only = set(a.only.split(",")) if a.only else None
+    legacy = a.legacy_constants == "on"
     D = Drill(a.drill_id, a.sha)
     out({"item6": "start", "sha": a.sha, "tape": "synthetic", "real_arena_hours": 0, "chain": "fake", "model": "StubModel", "api_calls": 0,
-         "sim_day": utc_day(T0), "sim_window_min": [(START - T0) // MIN, (END - T0) // MIN], "forbidden_from": "2026-10-25T00:00Z"})
+         "sim_day": utc_day(T0), "sim_window_min": [(START - T0) // MIN, (END - T0) // MIN], "forbidden_from": "2026-10-25T00:00Z", "legacy_constants": legacy})
     fails = 0
-    for name, fn in DRILLS:
-        if only and name not in only:
-            continue
-        try:
-            r = fn(D)
-        except Exception as e:  # noqa: BLE001 - class name only, never the message (it could hold a path or a row)
-            r = {"drill": name, "result": "FAIL", "error_class": type(e).__name__}
-        fails += r["result"] != "PASS"
-        out(r)
-    out({"item6": "end", "fails": fails, "result": "PASS" if fails == 0 else "FAIL"})
+    with legacy_constants(legacy):
+        for name, fn in DRILLS:
+            if only and name not in only:
+                continue
+            try:
+                r = fn(D)
+            except Exception as e:  # noqa: BLE001 - class name only, never the message (it could hold a path or a row)
+                r = {"drill": name, "result": "FAIL", "error_class": type(e).__name__}
+            fails += r["result"] != "PASS"
+            out(r)
+    out({"item6": "end", "fails": fails, "result": "PASS" if fails == 0 else "FAIL", "legacy_constants": legacy})
     return 1 if fails else 0
 
 

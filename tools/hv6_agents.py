@@ -21,10 +21,13 @@ bundle and reply parser, the 10-match rule on playbook/knob changes, the release
 """
 from __future__ import annotations
 
+import dataclasses
 import json
 import math
 import os
 import re
+import threading
+from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Mapping, Sequence
@@ -35,7 +38,7 @@ from tools import hv4_prompts as p4
 from tools import hv5_prompts as p5
 from tools import hv5_validate as v5
 from tools import hv4_validate as v4
-from tools.haiku_caller import DEFAULT_MODEL, Ledger, LedgerError
+from tools.haiku_caller import DEFAULT_MODEL, MAX_ATTEMPTS, PRICES, Ledger, LedgerError, worst_case_cost
 from tools.hv4_arms import (DEGRADE_STEPS, ENTRY_MAX_CARDS, ENTRY_MAX_CARDS_DEGRADED, MAX_TOKENS, SIZES, PersonaSpec)  # noqa: F401
 from tools.hv4_model import ModelReply, refusal_reply  # noqa: F401
 from tools.hv4_prompts import PromptError, Request  # noqa: F401
@@ -74,7 +77,15 @@ X_ENTRIES_PER_H = 2
 # done). They are not X's exit and not a plan the model inherits (a model BUY writes all four plan keys).
 SKIP_PRICING_PLAN = dict(GEN_SPEC.plan_defaults)
 # max_tokens per call kind: HV4's table has no `regime` key. 1,200 is the DESIGN section 6 assumed output size of a regime review.
-MAX_TOKENS = {**MAX_TOKENS, "regime": 1200}
+# Fix A (smoke #1806, 2026-10-28): HV4's entry 400 and re-check 120 truncate HV6 replies. A reply item costs 112-165 output tokens in the 62 complete smoke
+# replies (structure only: a bare JSON array, keys id/action/why, the ~44-char base58 id and the `why` fill most of it); all 32 4-card replies and 2 of 8
+# 3-card replies stopped at exactly 400 (34 of 96, all PARSE_ERROR). A BUY item adds size/conviction/plan and a WATCH item a predicate of up to 4 terms. HV6 sizes both kinds
+# at TOKENS_PER_ITEM_MAX per item (about 1.8x the largest item seen) x CARDS_PER_CALL (4) = 1,200. A re-check carries up to 4 positions per call and an EXIT
+# or TIGHTEN item has a `why` too, so 120 would cut it the same way (NOT measured: the smoke opened no position, so no re-check ran). HV6-only: tools/hv4_arms.MAX_TOKENS (HV4's frozen table) is untouched, and the entry
+# and re-check builders below set the value on the request. review (4000) and regime (1200) are unchanged (they are in the bundle spec).
+TOKENS_PER_ITEM_MAX = 300
+ITEMS_PER_CALL_MAX = ENTRY_MAX_CARDS  # 4 (hv4_arms); = hv6_cards.CARDS_PER_CALL, pinned equal by a test
+MAX_TOKENS = {**MAX_TOKENS, "entry": TOKENS_PER_ITEM_MAX * ITEMS_PER_CALL_MAX, "recheck": TOKENS_PER_ITEM_MAX * ITEMS_PER_CALL_MAX, "regime": 1200}
 
 
 def knob_names() -> tuple[str, ...]:
@@ -259,8 +270,11 @@ class BudgetGuard:
 
     Layout under root (production DEFAULT_ROOT): ledgers/<LEDGER>/<day>.jsonl, state/<day>/GEN.jsonl, cache/<LEDGER>/. The effective
     budget handed to the caller is min(ledger cap, day spent + month headroom, day spent + global headroom), so the caller's own
-    reserve-then-settle check enforces all three. Across ledgers there is no global lock: two calls in flight at once may each see
-    the same headroom and overshoot by at most the sum of their worst-case reserves (a fraction of a cent each)."""
+    reserve-then-settle check enforces all three. Across ledgers there is no file lock; inside ONE process (the runner, whose live arm calls run at once
+    since fix B) every call holds its worst case in an in-flight table (`inflight`, entered before preflight and left after the call), and preflight takes
+    the OTHER calls' holds off the global and month headroom. Two calls in flight can then never both spend the same headroom: whichever preflights second
+    sees the first's hold (double counted with its ledger reserve while both exist, which only denies earlier). With one call at a time the table is empty
+    and preflight is exactly the pre-fix-B arithmetic. Separate processes (the nightly reviewers) are not covered, as before."""
 
     def __init__(self, root, *, global_cap_usd: float = GLOBAL_DAY_CAP_USD, month_limit_usd: float = MONTH_GUARD_USD,
                  min_call_usd: float = MIN_CALL_USD):
@@ -274,6 +288,36 @@ class BudgetGuard:
         self.global_cap_usd = float(global_cap_usd)
         self.month_limit_usd = float(month_limit_usd)
         self.min_call_usd = float(min_call_usd)
+        self._hold_lock = threading.Lock()
+        self._holds: dict[int, float] = {}
+        self._hold_seq = 0
+        self._tls = threading.local()
+
+    # in-flight holds (fix B: concurrent arm calls in one process)
+    @contextmanager
+    def inflight(self, usd: float):
+        """Hold `usd` (a call's worst case) for the duration of one model call made by this thread. Enter BEFORE preflight."""
+        amount = float(usd)
+        if not math.isfinite(amount) or amount < 0:
+            raise ValueError("an in-flight hold must be a finite amount >= 0")
+        with self._hold_lock:
+            self._hold_seq += 1
+            hid = self._hold_seq
+            self._holds[hid] = amount
+        prev = getattr(self._tls, "hold", None)
+        self._tls.hold = hid
+        try:
+            yield hid
+        finally:
+            self._tls.hold = prev
+            with self._hold_lock:
+                self._holds.pop(hid, None)
+
+    def others_inflight_usd(self) -> float:
+        """The worst cases held by calls in flight in OTHER threads of this process (0.0 with one call at a time)."""
+        me = getattr(self._tls, "hold", None)
+        with self._hold_lock:
+            return math.fsum(v for k, v in self._holds.items() if k != me)
 
     # paths and spend
     def ledger_path(self, ledger: str, day: str) -> Path:
@@ -413,12 +457,13 @@ class BudgetGuard:
             if group is not None:
                 self.halt_group(now_ms, "ledger_unreadable")      # the four LLM arms and X stop together (T8)
             return deny("ledger_unreadable")      # fail closed
-        month_room = self.month_limit_usd - month_spent
+        others = self.others_inflight_usd()  # fix B: calls in flight in other threads (0.0 when calls run one at a time)
+        month_room = self.month_limit_usd - month_spent - others
         if month_room < self.min_call_usd:
             if group is not None:
                 self.halt_group(now_ms, "month_guard")
             return deny("month_guard", month_limited=True)
-        global_room = self.global_cap_usd - total_spent
+        global_room = self.global_cap_usd - total_spent - others
         if global_room < self.min_call_usd:
             if group is not None:
                 self.halt_group(now_ms, "global_day_cap")
@@ -455,7 +500,23 @@ class BudgetGuard:
 
 
 # ---------------------------------------------------------------------------------------------------------------- models
-class StubModel(m4.StubModel):
+def call_worst_case_usd(req: Request, model: str = MODEL_ID) -> float:
+    """The most one call can reserve: haiku_caller's worst case of one attempt (input bound + max_tokens at the output rate) times MAX_ATTEMPTS."""
+    return worst_case_cost(req.body(model), PRICES[model]) * MAX_ATTEMPTS
+
+
+class _HeldCalls:
+    """Fix B: every call of an HV6 model holds its worst case in the guard's in-flight table while it runs (see BudgetGuard.inflight)."""
+
+    def complete(self, req: Request, now_ms: int) -> ModelReply:
+        g = getattr(self, "guard", None)
+        if g is None or not hasattr(g, "inflight"):
+            return super().complete(req, now_ms)
+        with g.inflight(call_worst_case_usd(req, MODEL_ID)):
+            return super().complete(req, now_ms)
+
+
+class StubModel(_HeldCalls, m4.StubModel):
     """A scripted model for tests: no network, no key. With a hv6 BudgetGuard it takes the same preflight as the real path."""
 
     def __init__(self, script=None, *, guard: BudgetGuard | None = None, cost_usd: float = 0.0, latency_ms: int = 50):
@@ -463,7 +524,7 @@ class StubModel(m4.StubModel):
         self.model = MODEL_ID
 
 
-class CallerModel(m4.CallerModel):
+class CallerModel(_HeldCalls, m4.CallerModel):
     """The one real path (tools.haiku_caller.HaikuCaller, budget-stopped, replay cache). Tests inject caller_cls; none calls the API."""
 
     def __init__(self, guard: BudgetGuard, **kw):
@@ -509,7 +570,14 @@ def build_entry_request(arm: str, playbook: p4.Playbook, cards, seq: int, *, max
     _check_llm_arm(arm, playbook)
     cards = p4.check_cards(cards, max_cards=min(max_cards, ENTRY_MAX_CARDS))
     check_min_age(cards)
-    return p5._build(arm, "entry", PERSONA, playbook, cards, seq, {})
+    return _hv6_max_tokens(p5._build(arm, "entry", PERSONA, playbook, cards, seq, {}))
+
+
+def _hv6_max_tokens(req: Request) -> Request:
+    """The request with HV6's own max_tokens for its kind (fix A); hv5_prompts builds it with HV4's table. Validated again by building the body."""
+    out = dataclasses.replace(req, max_tokens=MAX_TOKENS[req.kind])
+    out.body()
+    return out
 
 
 def build_recheck_request(arm: str, playbook: p4.Playbook, positions, cards, seq: int) -> Request:
@@ -521,7 +589,7 @@ def build_recheck_request(arm: str, playbook: p4.Playbook, positions, cards, seq
         raise PromptError("positions and cards must have the same ids in the same order")
     for p in positions:
         p4.check_strings(p)
-    return p5._build(arm, "recheck", PERSONA, playbook, cards, seq, {"POSITIONS": p4._lines(positions)}, items=list(positions))
+    return _hv6_max_tokens(p5._build(arm, "recheck", PERSONA, playbook, cards, seq, {"POSITIONS": p4._lines(positions)}, items=list(positions)))
 
 
 # ---------------------------------------------------------------------------------------------------------------- validators
