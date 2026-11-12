@@ -1,6 +1,6 @@
-# MAL manager handoff: manager22 → next manager (written 2026-11-12T21:2xZ, from `date -u`)
+# MAL manager handoff: manager22 → next manager (written 2026-11-12T20:5xZ–21:1xZ, from `date -u`)
 
-The owner asked for this handoff in chat on 2026-11-12 at about 21:0xZ, because they want to try a different model on MAL work. It replaces the manager21 → manager22 handoff (#1309).
+The owner asked for this handoff in chat on 2026-11-12 at about 20:5xZ, because they want to try a different model on MAL work. It replaces the manager21 → manager22 handoff (#1309).
 
 **Read in this order:**
 1. `CLAUDE.md`
@@ -62,8 +62,18 @@ The owner asked for this handoff in chat on 2026-11-12 at about 21:0xZ, because 
 - **The gate, decided once:**
   - Take the **first 20 closed 0.10 trades** since 2026-11-12T00:46:04.584Z, in lane-ledger exit order.
   - Their realized P&L must be **≥ 0 after all fees**. This counts every lane-ledger row of those 20 positions, plus failed-buy fee rows up to and including the 20th exit instant.
-  - **`tools.floor_fills_vs_model --ref 320cccc5` must print `FILLS_MATCH_MODEL yes` at trade 10 and at trade 20.**
-- **If the gate passes:** write a HELM-ASK for the Am.6 install: stake 2.5e8, budget 2.1e9, daily 5e8, pin 8dec3a3b. Use `/data/mal/hunt-1008/ops/manager22/HELM-ASK-1112-1.DRAFT.md` as the template.
+  - **The fills check must print `FILLS_MATCH_MODEL yes` at trade 10 and at trade 20.** Run it as a manager job on fast-0 (sudo; it reads `/var/lib/mal-live`):
+
+    `sudo -n $HOME/mal-venvs/r4b/bin/python -m tools.floor_fills_vs_model --config /etc/mal-floor-lane/live-320cccc5f2ec81d40d18f8991f11b15d29b52f74.json --since 2026-11-12T00:46:04.584Z`
+
+    The tool has no `--ref` argument. Without `--since` it would also count the ten 0.03 trades.
+  - **The other install preconditions, (a) to (f) of Am.6, must also hold.** Among them:
+    - (d) the listed unit tests pass at the merge sha;
+    - (e) the lane STOP file and the wallet-wide STOP and HALT files are absent, and lane cash and the open count are recorded;
+    - (f) the wallet balance is recorded, and the wallet-floor capacity at that balance is at least 8 (otherwise the lower number goes in the ask).
+
+    Read Am.6 in full before writing the ask.
+- **If the gate passes:** write a HELM-ASK for the Am.6 install: stake 2.5e8, budget 2.1e9, daily 5e8, pin 8dec3a3b. Use `/data/mal/hunt-1008/ops/manager22/HELM-ASK-1112-1.DRAFT.md` for its format only. The new config must start from the **Am.5 live config** `live-320cccc5….json` (sha256 aa6c355f…), not the older fc6a config named in that draft, and change only the stake, budget and daily stop.
 - **If it fails:** stay at 0.10 and tell the owner. The only re-decision is at 40 trades, and only with the owner's word.
 - **After an install:** run the fills check at the 10th 0.25 trade. If it says no, write the lane STOP and revert to the Am.5 config.
 
@@ -76,6 +86,7 @@ The owner asked for this handoff in chat on 2026-11-12 at about 21:0xZ, because 
   ```
 
   then `miscusi-agent job log <seq>`.
+- **The bridge-event filter in the script starts at `ts_ms` 1794419100000 (11-11T17:45Z).** As the log grows, raise that constant to the current day.
 - It prints:
   - the lane report;
   - both unit PIDs;
@@ -102,9 +113,9 @@ Session crons are in `/data/mal/hunt-1008/ops/manager22/crons-manager22.json`. R
 | hourly :17 | HELM-REPLY-*, PR verdicts, miscusi_inbox, the FLOOR hourly job (§1), wallet; one state line |
 | **11-13 ~14:06** | Open trade e3b7cc9de20e65bd exits (time stop) at the latest; count it toward the 20 |
 | **11-13 09:13** | Successor for **#1952 watchdog** (ends ~11-14T04Z). Recover the A3 #1896/#1898 commands **without** job_status (notebook n_KAyq8dRg6ZzKRQ). |
-| **11-14 01:00 (R)** | **EXP-029 read, procedural FAIL** (Erratum 1g). The event was the 0.10 install at 2026-11-12T00:46:04.584Z, so C = 11-13T00:00Z and R = C + 25 h. Run the read once, at or after R:<ul><li>the four §4 tests on trades in [S = 11-09T06:00Z, C), pooled and split by stake (0.03 / 0.10);</li><li>the pre-S sends listed separately (§3 item 4);</li><li>the report labelled **FAIL (procedural)**, never a market verdict;</li><li>QP before merge;</li><li>quote the Erratum 1e MAJOR 1 disclosure and the QP ruling.</li></ul>This step is **not** in the cron file; add it. |
+| **11-14 01:00 (R)** | **EXP-029 read, procedural FAIL** (Erratum 1g). The event was the 0.10 install at 2026-11-12T00:46:04.584Z, so C = 11-13T00:00Z and R = C + 25 h. Run the read once, at or after R:<ul><li>the four §4 tests on trades in [S = 11-09T06:00Z, C), pooled and split by stake (0.03 / 0.10);</li><li>the pre-S sends listed separately (Erratum 1, item 4);</li><li>the report labelled **FAIL (procedural)**, never a market verdict;</li><li>QP before merge;</li><li>quote the Erratum 1e MAJOR 1 disclosure and the QP ruling.</li></ul>manager22 added this step to `crons-manager22.json` at the handoff (no cron covered it before). |
 | 11-14 12:00 | Host check #2348 (pin) runs; read its exit code |
-| **11-15 06:41** | **Tip hand-off check** (`docs/runbooks/tip-writer-handoff.md` §5/§6). Writer #2033 hits its limit ~06:08Z and push #2039 ~06:23Z. The gates (#2501, deadline 08:08Z; #2502, deadline 08:23Z) release the queued successors (#2503 writer, #2504 push). Confirm:<ul><li>the gates exited 0;</li><li>the successors are running, resumed and caught_up, with no REFUSED;</li><li>a counts-only FLOOR host gap check.</li></ul>Expect one writer-restart hour. If a gate exits 4 or 5, follow the runbook by hand. |
+| **11-15 06:41** | **Tip hand-off check** (`docs/runbooks/tip-writer-handoff.md` §5/§6). Writer #2033 hits its limit ~06:09Z and push #2039 ~06:24Z (limit 335 h, from the job list elapsed time; the runbook's "~07Z" is approximate). The gates (#2501, deadline 08:08Z; #2502, deadline 08:23Z) release the queued successors (#2503 writer, #2504 push). Confirm:<ul><li>the gates exited 0;</li><li>the successors are running, resumed and caught_up, with no REFUSED;</li><li>a counts-only FLOOR host gap check.</li></ul>Expect one writer-restart hour. If a gate exits 4 or 5, follow the runbook by hand. |
 | ~11-15 23:30 – 11-16 00:15 | #2055 pool_cache and #2064 hour-health staging reach their limits. They do tip health; start successors only if something FLOOR-side reads them. |
 | 11-16 03:23 | vault1.0 out-of-sample paper check (§3); cron dd71b2fc |
 | 11-16 06:13 | HELM-ASK-1108-1 reset window opens (06:00Z to 11-21T00Z). Nudge Helm. Use the **current** pin and config; only the one state field changes (ADDENDUM-1). |
@@ -129,7 +140,11 @@ MiScusi refuses job limits above 14 days. `after` fires only on exit 0, never on
     - a second host and executor (floor-lane-2) under a DEC-035 amendment;
     - QP.
   - Decide only after ≥ 7 out-of-sample days (cron 11-16 03:23).
-- **The Nov funnel and drought analysis:** `ops/reports/2026-11-12/floor-nov-funnel.md`. The paper replay gives about +5.7% per trade, rent-corrected. The owner's target is about $9/day (≈0.108 SOL/day at $83.6/SOL); 0.25 SOL with K = 8–16 is the planned path.
+- **The Nov funnel and drought analysis:** `ops/reports/2026-11-12/floor-nov-funnel.md`. The rent-corrected November paper replay (flat leg, K = 16, 0.25 stake, n 50) gives a mean of +5.66% per trade. That figure is **in-sample**:
+  - the median trade is −2.21%;
+  - the subset after the deploy is −0.1035 SOL with the top 3 removed (Am.6 carries these caveats).
+
+  Never quote the mean without them. The owner's target is about $9/day (≈0.108 SOL/day at $83.6/SOL); 0.25 SOL with K = 8–16 is the planned path.
 - **All other lines are off:**
   - EXP-012 shadow: no regime to catch (11-09 study).
   - Haiku forge: stopped 11-09, about $60 of API budget left. The $200/month cap resets monthly.
