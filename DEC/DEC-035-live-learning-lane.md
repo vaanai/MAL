@@ -127,3 +127,66 @@ Before the ask, all of these hold, and the manager records them in the state fil
 **Scaling past this step.** Above 0.10 SOL, or above a 0.60 SOL budget, requires the owner's word in a new amendment, with its stake and a price-impact estimate (§6).
 
 **Unchanged.** Keys, STOP/HALT, A3 pauses, the shared lane ledger and lock, the host, the rule `l1-floor-v2` and its exits, §4, §5, §7, and every other lane bot's limits. The DSL lane keeps 0.03 / 0.30 / 8 (`DSL_LANE_*` constants); the stopped H5 lane executors keep theirs.
+
+## Amendment 5 (2026-11-12): floor-lane-1 lifetime budget 1.20 SOL, daily stop 0.20 SOL; stake unchanged
+**Decider.** Vaan (owner).
+
+**The question.** Manager22 asked the owner in chat, 2026-11-12 ~01:0xZ, in these exact words:
+> "How much total loss are you willing to risk on the scaled-up lane? I'd suggest about 1.2 SOL, with the daily stop raised to 0.2 SOL, once the new capital lands. That one number decides how many positions we can hold."
+
+**The answer.** The owner answered in chat at ~01:1xZ. The manager's state file (`/data/mal/hunt-1008/ops/manager22/state-manager22.md`, line "2026-11-12T01:14:36Z OWNER DECISION") records it at 01:14:36Z; that is the write time of the state line, and the answer came shortly before it.
+> "As for what you need from me, I think we can go with what you suggest, and obviously we're hoping to be profitable, and not hit that point lol. Otherwise good job with the replay and digging into what's happening to make sure everything is solid, I'm going to try and get this 2 sol tonight. And you just keep things moving"
+
+**How the manager reads it.**
+- "What you suggest" is the 1.2 SOL total lane loss limit and the 0.2 SOL daily stop.
+- The 1.2 SOL counts from lane start, with the 0.03 and the 0.10 history included. It is not 1.2 more, and it never resets.
+- The 0.20 SOL daily stop applies to both arms (marked and cost-basis) of the item 4 daily stop.
+- "I'm going to try and get this 2 sol tonight" makes the top-up a condition: this applies once the owner's top-up is on chain, not before. The owner's hope that the lane is profitable is the owner's hope, not evidence.
+
+**Scope of the override.** As in Amendment 4, it overrides §6 ("only through the promotion gate") for this step and for floor-lane-1 only. It does not lower the promotion gate (CLAUDE.md): **floor-lane-1 has not cleared the gate**, and nothing in this amendment says it makes money.
+
+**Change** (floor-lane-1 only):
+1. **Budget:** item 1 reads −1.20 SOL in place of −0.60 SOL; code ceiling `LANE_BUDGET_MAX_LAMPORTS` 1,200,000,000 (`tools/floor_lane_executor.py`).
+2. **Daily stop:** item 4 reads 0.20 SOL in place of 0.10 SOL; code ceiling `FLOOR_LANE_DAILY_MAX_LAMPORTS` 200,000,000, used by the floor-lane-1 config validation only. The shared `LANE_DAILY_MAX_LAMPORTS` stays 100,000,000 because the DSL lane (`tools/forge/dsl_lane_executor.py`, a pinned blob that is not changed) reads it as its default and its ceiling. `LANE_BUDGET_MAX_LAMPORTS` is read by floor-lane-1 validation alone (the DSL lane has `DSL_LANE_BUDGET_MAX_LAMPORTS`, 300,000,000). The default for a config without `daily_loss_lamports` stays 100,000,000 (new `LANE_DAILY_DEFAULT_LAMPORTS`, as the budget default stays 300,000,000); `tools/lane_daily_report.py` uses that default when run without `--config`.
+3. **No inner clamp.** The other places that carry a 0.60 or 0.10 SOL figure for this lane were checked:
+   - the probe `Limits` clamp (loss cap 350,000,000): the port sets `loss_cap_lamports` to `cfg.total_loss_lamports`, so 1.20 SOL passes (test `test_am5_port_lifts_probe_loss_cap_to_1200m`);
+   - the DEC-032 C0 table in `floor_arena_executor.tier_limits` (daily 100,000,000, total 200,000,000, min() with config): the lane's own `tier_limits` returns the lane values (test `test_am5_tier_limits_carry_the_lane_values_not_the_c0_table`);
+   - `committed_loss_stop` and `total_loss_lamports` read `cfg.total_loss_lamports` = the lane budget;
+   - `lane_daily_report` takes the budget and daily values from the lane config when `--config` is given;
+   - the stake bounds stay [0.02, 0.10] SOL and `LANE_MAX_OPEN` stays 16.
+
+**Capacity at 0.10 SOL** (reserve 3,860,000 = rent 2,100,000 + send fee 160,000 + sell reserve 1,600,000; per-position worst case 103,860,000):
+- **Pre-send (item 1, Am.3 full-wipe bound).** Lane cash = realized − n × 0.10 SOL with n filled opens; realized +15,081,595 (the 10 closed trades, HELM-REPLY-1111-1).
+  - Admitting the 11th (n = 10): 15,081,595 − 1,000,000,000 − (100,000,000 + 11 × 3,860,000) = −1,127,378,405, inside −1,200,000,000: allowed.
+  - Admitting the 12th (n = 11): 15,081,595 − 1,100,000,000 − (100,000,000 + 12 × 3,860,000) = −1,231,238,405, past −1,200,000,000: `lane_budget_presend`.
+  - So the pre-send allows **11 opens**. Test `test_am5_presend_allows_the_11th_open_at_010_and_refuses_the_12th`.
+- **`committed_loss_stop`** (realized loss floored at 0, so gains give no room): 11 × 103,860,000 = 1,142,460,000 ≤ 1,200,000,000 < 12 × 103,860,000 = 1,246,320,000. Also **11 opens**.
+- **Wallet floor** (funded 1,000,000,000, held-once: floor = max(0.05, funded − 0.25) = 750,000,000). Each landed open takes about 102,260,000 (stake + rent + send fee) from the balance. The next open needs 100,000,000 + 160,000 + 2,100,000 + (n + 1) × 1,600,000 + 750,000,000.
+  - Balance 1,119,513,796 (the manager's reading, 0 open assumed; re-record it before install): **3 opens**. n = 2 passes (balance left 914,993,796 against a need of 857,060,000); n = 3 fails (812,733,796 against 858,660,000).
+  - Balance about 3,119,500,000 (after a 2 SOL top-up): the floor allows 22, above the 16 cap and above 11, so it does not bind.
+- **Which binds first.** Before the top-up the wallet floor binds, at 3 opens (as Amendment 4 item 3 found at 3 to 5). After the top-up the pre-send and `committed_loss_stop` tie at 11; `max_open` 16 never binds at 0.10 SOL. Each −0.1039 SOL of realized lane cash removes about one open from the pre-send.
+- These counts are structural arithmetic, not a forecast of how many entries the host triggers. Test `test_am5_committed_loss_stop_ties_at_11_and_wallet_floor_binds_at_3_then_not`.
+
+**Consequences.**
+- **Daily stop:** it is checked before an entry only (Am.4 item 6, restated), so one UTC day can lose more than 0.20 SOL. The bound is min(remaining lifetime room, about 0.20 SOL already lost that day plus 11 × 0.1039 SOL of positions admitted after it). The remaining lifetime room cannot exceed 1.2 SOL plus realized gains, about 1.215 SOL now (1,200,000,000 + realized 15,081,595), and lifetime P&L never goes past −1.20 SOL. The stop fires at −0.20 SOL, not before (tests `test_am5_daily_stop_fires_at_minus_200m_not_before`, `test_am5_daily_stop_via_the_bridge_at_minus_200m`).
+- **Quote gaps:** a quote gap over 60 s, or an executor restart (which empties the marks), with even one open 0.10 position trips the marked arm until marks are fresh again (Am.4 item 6 restated). At 0.20 the marked arm needs a larger loss to trip, but a stale mark still counts 0.
+- **Budget stop:** at −1.20 SOL lifetime the lane STOP file is written, as for any lane budget stop.
+
+**Price impact (§6).** The stake stays 0.10 SOL, so per-trade impact is as in Amendment 4 item 7. More concurrent positions are in distinct pools (one open per pool), so they do not add impact to each other; they add exposure.
+
+**Bot id.** floor-lane-1 keeps its bot_id and ledger. The change is to two lane ceilings and the config; no decision logic and no host rule changes.
+
+**EXP-029.** Read of Erratum 1g (EXP/EXP-029-floor-lane-1-gate-read-prereg.md, line 289): the owner's 0.10 step-up ended the gate read as a procedural FAIL at the install instant, 2026-11-12T00:46:04.584Z (HELM-REPLY-1111-1), and any later registration keeps S = 2026-11-09T06:00:00Z and every trade since. This amendment changes no stake, so it adds no FAIL-end event of its own, and the read is already ended. The Erratum 1g descriptive tests run on the trades until 2026-11-13T00Z, so an install before then is noted in that read's report; this is a note, not an erratum. No EXP-029 erratum is written. The Erratum 1g rule 3 (no second look) is unchanged.
+
+**Install.** One HELM-ASK covers the merge sha of this PR, the changed blobs (`tools/floor_lane_executor.py`, `tools/lane_daily_report.py`; `tools/forge/dsl_lane_executor.py` is not changed and keeps blob 8cbc81a5) and a new live config. It is identical to `live-fc6ab6b2579655be792f8d12864ab209b8434d0d.json` except `budget_lamports` 1,200,000,000 and `daily_loss_lamports` 200,000,000 (`funded_lamports` stays 1,000,000,000, so the wallet floor stays 0.75 SOL; stake 100,000,000; max_open 16; `wallet_floor_count_held_once` true). Helm restarts the executor only; the decision host is never restarted. Until Helm installs it, the live lane keeps 0.60 / 0.10.
+
+Before the ask, all of these hold, and the manager records them in the state file:
+- (a) QP OK and REVIEWER APPROVE at the exact head of this PR;
+- (b) the owner's top-up is visible on chain, and the balance is recorded;
+- (c) the unit tests pass at the merge sha (every test file that imports `floor_lane_executor`, plus the arena executor tests: `test_floor_lane_executor`, `test_floor_arena_executor`, `test_floor_risk_accounting`, `test_floor_lane_mark_refresh`, `test_lane_daily_report`, `test_floor_fills_vs_model`, `test_forge_dsl_lane_executor`);
+- (d) the lane STOP file is absent, and lane cash and the number of open positions (0 or more) are recorded;
+- (e) if at least 10 trades at 0.10 SOL have closed by then, `tools.floor_fills_vs_model` prints `FILLS_MATCH_MODEL yes` on them. If fewer have closed, the check runs at the 10th closed 0.10 trade, and a "no" stops new entries through the lane STOP file.
+
+**Scaling past this step.** A stake above 0.10 SOL, or a budget above 1.20 SOL, requires the owner's word in a new amendment, with its stake and a price-impact estimate (§6).
+
+**Unchanged.** Keys, STOP/HALT, A3 pauses, the shared lane ledger and lock, the host, the rule `l1-floor-v2` and its exits, the stake bounds [0.02, 0.10], `LANE_MAX_OPEN` 16, `FUNDED_MAX_LAMPORTS`, §4, §5, §7, and every other lane bot's limits. `tools/h5_lane_executor.py` and the DSL lane (`DSL_LANE_*`: 0.03 / 0.30 / 8) keep their constants; the stopped H5 lane executors keep theirs.
