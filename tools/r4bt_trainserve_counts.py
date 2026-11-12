@@ -5,13 +5,15 @@
 
 PASS RULE (fixed in writing before any run; manager decision 2026-11-12), printed verbatim in the output header: RULE below.
 
-train: ROOT must be exactly one of the three allowlisted exploration blocks (ALLOWED_TRAIN). Assumed layout (cannot be checked without opening data; refused with exit 2 if it does
-  not hold): ROOT/migrations/migrations-<YYYY-MM-DDTHH>.jsonl[.zst], or ROOT/w*/migrations/... for explore-0814; each line a JSON row with `type` in {complete, migration} and
-  fields mint, block_time, pool, quote_mint. Coverage = distinct complete mints (block_time < block end - 3 h) having a migration row with pool == canonical pool(mint) and
-  quote_mint == WSOL, anywhere in the block; mints are held in memory only and never printed.
-serve: reads only the writer's counts log; a day's complete / pool_create count is the sum of the hourly differences of adapter_cumulative.rows_complete / rows_pool_create,
-  each difference attributed to the UTC date of the `hour` key of the LATER row (the row that closes the hour); a counter that drops (writer restart) restarts from 0 so that
-  row's delta is its own value; the first row of the log has no predecessor and yields no delta; a day is full only with 24 hour-deltas; full days from 2026-11-08 only.
+train: ROOT must be exactly one of the three allowlisted exploration blocks (ALLOWED_TRAIN); no symlink anywhere below it. Assumed layout (cannot be checked without opening data; exit 2
+  if it does not hold): ROOT/migrations/migrations-<YYYY-MM-DDTHH>.jsonl[.zst], or ROOT/w*/migrations/... for explore-0814; each line a JSON row with `type` in {complete, migration}
+  and mint, block_time, pool, quote_mint (slot, tx_index, event_index optional). VERDICT coverage = distinct complete mints (block_time < block end - 3 h) whose complete-row quote is WSOL
+  or absent (serve needs quote == WSOL, tools/r4b_live.py:1027) that have a migration whose EARLIEST rows give pool == canonical pool(mint) and quote == WSOL (the engine's rule,
+  tools/r4b_live.py:735-744, key (slot, tx_index, event_index, file order)); counts for "any matching row", for all complete mints and for the known-non-WSOL mints are printed beside it.
+serve: a day's complete / pool_create count is the sum over its hours of rows{}["pumpfun|complete"] / rows{}["pumpswap|pool_create"] (a missing key is 0), by UTC date of the row's `hour`
+  key (the only method that reproduces the QP ruling's pre-deploy days); and DRIVES the verdict. Cross-check: adapter_cumulative.rows_complete|rows_pool_create hourly differences
+  (counter drop = restart, delta is the new value; a missing key = not available for that row, never 0). If the two methods disagree on a day's PASS/DISCLOSE the day is DISCLOSE.
+  Full day = 24 distinct hours; counted days are full and >= 2026-11-08.
 Seals: never fresh-08*, exp011-*, forward-*, walk2, sealed, tape-, and fresh-0903 is NOT allowed. No tape, no ledger, no ssh, no network.
 """
 
@@ -37,6 +39,7 @@ FIRST_FULL_DAY = "2026-11-08"  # first full UTC day after the deploy at 2026-11-
 WSOL = "So11111111111111111111111111111111111111112"
 CENSOR_S = 3 * 3600
 FORBIDDEN = ("fresh-08", "exp011-", "forward-", "walk2", "sealed", "tape-")
+INF = float("inf")
 
 
 class Refuse(Exception):
@@ -66,13 +69,29 @@ def test_mode(args):
 
 def jsonl(path):
     if path.endswith(".zst"):
-        p = subprocess.Popen(["zstd", "-dc", path], stdout=subprocess.PIPE)
-        yield from p.stdout
-        if p.wait() != 0:
+        try:
+            p = subprocess.Popen(["zstd", "-dc", path], stdout=subprocess.PIPE)
+        except OSError:
+            raise Refuse("cannot run zstd")
+        try:
+            yield from p.stdout
+        finally:
+            if p.poll() is None:
+                p.kill()
+            rc = p.wait()
+        if rc > 0:
             raise Refuse("zstd failed on an input file")
     else:
         with open(path, "rb") as fh:
             yield from fh
+
+
+def plain(path):
+    """No symlink in the path below the (already realpath'd) root, and a clean name."""
+    if os.path.realpath(path) != os.path.abspath(path):
+        raise Refuse("symlink below an allowed root")
+    check_name(path)
+    return path
 
 
 def hour_files(root):
@@ -80,7 +99,8 @@ def hour_files(root):
     for sub in [root] + [os.path.join(root, d) for d in sorted(os.listdir(root)) if d.startswith("w") and os.path.isdir(os.path.join(root, d))]:
         md = os.path.join(sub, "migrations")
         if os.path.isdir(md):
-            out += [os.path.join(md, f) for f in sorted(os.listdir(md)) if f.startswith("migrations-") and (f.endswith(".jsonl.zst") or f.endswith(".jsonl"))]
+            plain(sub), plain(md)
+            out += [plain(os.path.join(md, f)) for f in sorted(os.listdir(md)) if f.startswith("migrations-") and (f.endswith(".jsonl.zst") or f.endswith(".jsonl"))]
     return out
 
 
@@ -97,6 +117,12 @@ def ratio(a, b):
     return a / b if b else None
 
 
+def okey(r, seq):
+    """tools/r4b_live.py:735-744 ordering: (slot, tx_index, event_index, arrival)."""
+    f = lambda k, d: d if r.get(k) is None else int(r[k])  # noqa: E731
+    return (f("slot", INF), f("tx_index", -1), f("event_index", -1), seq)
+
+
 def train_block(root, pda_fn):
     files = hour_files(root)
     if not files:
@@ -104,8 +130,9 @@ def train_block(root, pda_fn):
     t0 = min(file_hour(f) for f in files)
     t1 = max(file_hour(f) for f in files) + dt.timedelta(hours=1)
     s0, s1 = int(t0.timestamp()), int(t1.timestamp())
-    cmin, mig_ok, mig_mints, pda = {}, set(), set(), {}
-    rows = collections.Counter()
+    cst = {}  # mint -> [complete block_time (min), complete quote or None]
+    mst = {}  # mint -> [pool_key, pool, quote_key, quote, n_rows, any_ok]
+    rows, pda, seq = collections.Counter(), {}, 0
     perday = collections.defaultdict(collections.Counter)
     for f in files:
         for line in jsonl(f):
@@ -113,24 +140,37 @@ def train_block(root, pda_fn):
                 continue
             try:
                 r = json.loads(line)
-            except ValueError:
-                raise Refuse("unparseable row (layout assumption failed)")
-            typ, mint, bt = r.get("type"), r.get("mint"), r.get("block_time")
-            if typ not in ("complete", "migration"):
-                rows["other_types"] += 1
-                continue
-            if not isinstance(mint, str) or not isinstance(bt, int):
-                rows["null_mint_or_block_time_rows"] += 1
-                continue
-            d = day_of(bt)
-            if typ == "complete":
-                rows["complete_rows"] += 1
-                perday[d]["complete_rows"] += 1
-                cmin[mint] = min(bt, cmin.get(mint, bt))
-            else:
+                typ, mint, bt = r.get("type"), r.get("mint"), r.get("block_time")
+                seq += 1
+                if typ not in ("complete", "migration"):
+                    rows["other_types"] += 1
+                    continue
+                if not isinstance(mint, str):
+                    rows["null_mint_rows"] += 1
+                    continue
+                if typ == "complete":
+                    if not isinstance(bt, int):
+                        rows["complete_rows_no_block_time"] += 1
+                        continue
+                    rows["complete_rows"] += 1
+                    perday[day_of(bt)]["complete_rows"] += 1
+                    v = cst.setdefault(mint, [bt, r.get("quote_mint")])
+                    v[0] = min(v[0], bt)
+                    if v[1] is None:
+                        v[1] = r.get("quote_mint")
+                    continue
                 rows["migration_rows"] += 1
-                perday[d]["migration_rows"] += 1
-                mig_mints.add(mint)
+                if isinstance(bt, int):
+                    perday[day_of(bt)]["migration_rows"] += 1
+                else:
+                    rows["migration_rows_no_block_time"] += 1
+                k = okey(r, seq)
+                m = mst.setdefault(mint, [None, None, None, None, 0, False])
+                m[4] += 1
+                if r.get("pool") is not None and (m[0] is None or k < m[0]):
+                    m[0], m[1] = k, str(r["pool"])
+                if r.get("quote_mint") is not None and (m[2] is None or k < m[2]):
+                    m[2], m[3] = k, str(r["quote_mint"])
                 if r.get("quote_mint") == WSOL and r.get("pool") is not None:
                     if mint not in pda:
                         try:
@@ -139,25 +179,42 @@ def train_block(root, pda_fn):
                             pda[mint] = None
                             rows["pda_errors"] += 1
                     if pda[mint] is not None and str(r["pool"]) == pda[mint]:
-                        mig_ok.add(mint)
+                        m[5] = True
+            except (ValueError, TypeError, AttributeError):
+                raise Refuse("unparseable row (layout assumption failed)")
     if not rows["complete_rows"]:
         raise Refuse("no complete rows in block %s (layout assumption failed)" % os.path.basename(root))
-    keep = [m for m, bt in cmin.items() if bt < s1 - CENSOR_S]
-    covered = sum(1 for m in keep if m in mig_ok)
-    for m, bt in cmin.items():
-        d = day_of(bt)
-        perday[d]["censored" if bt >= s1 - CENSOR_S else "complete_mints"] += 1
-        if bt < s1 - CENSOR_S and m in mig_ok:
-            perday[d]["covered_mints"] += 1
+    cens = s1 - CENSOR_S
+
+    def earliest_ok(mint):
+        m = mst.get(mint)
+        return bool(m) and m[3] == WSOL and m[1] is not None and pda.get(mint) is not None and m[1] == pda[mint]
+
+    keep = {m: v for m, v in cst.items() if v[0] < cens}
+    drive = [m for m, v in keep.items() if v[1] in (None, WSOL)]
+    for m, v in cst.items():
+        d = perday[day_of(v[0])]
+        d["censored" if v[0] >= cens else "complete_mints"] += 1
+        if v[0] < cens and v[1] in (None, WSOL):
+            d["drive_mints"] += 1
+            d["covered_mints"] += earliest_ok(m)
+    cov = sum(earliest_ok(m) for m in drive)
     days = []
     for d in sorted(perday):
         c = perday[d]
         ds = int(dt.datetime.strptime(d, "%Y-%m-%d").replace(tzinfo=dt.timezone.utc).timestamp())
-        days.append({"date": d, "partial": not (ds >= s0 and ds + 86400 <= s1), **{k: c[k] for k in ("complete_rows", "migration_rows", "complete_mints", "covered_mints", "censored")},
-                     "row_ratio": ratio(c["migration_rows"], c["complete_rows"]), "coverage": ratio(c["covered_mints"], c["complete_mints"])})
-    return {"hour_files": len(files), "block_start_utc": t0.isoformat(), "block_end_utc": t1.isoformat(), **{k: rows[k] for k in ("complete_rows", "migration_rows", "other_types", "pda_errors",
-            "null_mint_or_block_time_rows")}, "complete_mints_uncensored": len(keep), "complete_mints_censored": len(cmin) - len(keep), "covered_mints": covered,
-            "migration_mints": len(mig_mints), "coverage": ratio(covered, len(keep)), "row_ratio": ratio(rows["migration_rows"], rows["complete_rows"]), "per_date": days}
+        days.append({"date": d, "partial": not (ds >= s0 and ds + 86400 <= s1), **{k: c[k] for k in ("complete_rows", "migration_rows", "complete_mints", "drive_mints", "covered_mints", "censored")},
+                     "row_ratio": ratio(c["migration_rows"], c["complete_rows"]), "coverage": ratio(c["covered_mints"], c["drive_mints"])})
+    return {"hour_files": len(files), "block_start_utc": t0.isoformat(), "block_end_utc": t1.isoformat(),
+            **{k: rows[k] for k in ("complete_rows", "migration_rows", "migration_rows_no_block_time", "complete_rows_no_block_time", "null_mint_rows", "other_types", "pda_errors")},
+            "complete_mints_uncensored": len(keep), "complete_mints_censored": len(cst) - len(keep),
+            "complete_mints_quote_wsol": sum(v[1] == WSOL for v in keep.values()), "complete_mints_quote_absent": sum(v[1] is None for v in keep.values()),
+            "complete_mints_quote_other": sum(v[1] not in (None, WSOL) for v in keep.values()),
+            "verdict_denominator_mints": len(drive), "covered_mints": cov, "coverage": ratio(cov, len(drive)),
+            "covered_mints_any_matching_row": sum(1 for m in drive if mst.get(m) and mst[m][5]),
+            "coverage_all_complete_mints": ratio(sum(earliest_ok(m) for m in keep), len(keep)),
+            "mints_with_multiple_migration_rows": sum(1 for v in mst.values() if v[4] > 1), "migration_mints": len(mst),
+            "row_ratio": ratio(rows["migration_rows"], rows["complete_rows"]), "per_date": days}
 
 
 def cmd_train(args):
@@ -175,8 +232,8 @@ def cmd_train(args):
         pda_fn = args.pda_fn
     blocks = {os.path.basename(r): train_block(r, pda_fn) for r in roots}
     ok = all(b["coverage"] is not None and b["coverage"] >= TRAIN_MIN for b in blocks.values())
-    return {"schema": "r4bt_trainserve_train_v1", "rule": RULE, "script_git_blob": blob_id(), "inputs": [os.path.basename(r) for r in roots], "blocks": blocks,
-            "train_verdict": "PASS" if ok else "DISCLOSE"}
+    return {"schema": "r4bt_trainserve_train_v2", "rule": RULE, "script_git_blob": blob_id(), "inputs": [os.path.basename(r) for r in roots], "blocks": blocks,
+            "verdict_coverage": "earliest migration row (engine rule) over complete mints with complete-row quote WSOL or absent", "train_verdict": "PASS" if ok else "DISCLOSE"}
 
 
 def cmd_serve(args):
@@ -185,36 +242,51 @@ def cmd_serve(args):
     check_name(path)
     if not tm and os.path.realpath(path) != ALLOWED_COUNTS:
         raise Refuse("path not on the serve allowlist")
-    prev, seen, hours = None, set(), collections.defaultdict(dict)
-    rowsum = collections.defaultdict(lambda: [0, 0])
-    for line in jsonl(path):
-        if not line.strip():
-            continue
-        r = json.loads(line)
-        h, ad, rw = r.get("hour"), r.get("adapter_cumulative"), r.get("rows") or {}
-        if not isinstance(h, str) or not isinstance(ad, dict) or "rows_complete" not in ad or "rows_pool_create" not in ad:
-            raise Refuse("counts row without hour / adapter_cumulative.rows_complete|rows_pool_create (layout assumption failed)")
-        if h in seen:
-            raise Refuse("duplicate hour in counts log")
-        seen.add(h)
-        cur = (int(ad["rows_complete"]), int(ad["rows_pool_create"]))
-        d = h[:10]
-        rs = rowsum[d]
-        rs[0] += int(rw.get("pumpfun|complete", 0))
-        rs[1] += int(rw.get("pumpswap|pool_create", 0))
-        if prev is not None:
-            hours[d][h] = tuple(c - p if c >= p else c for c, p in zip(cur, prev))  # a drop = counter reset: new baseline 0
-        prev = cur
+    prev, seen = None, set()
+    hrs = collections.defaultdict(set)
+    rsum = collections.defaultdict(lambda: [0, 0])
+    dsum = collections.defaultdict(lambda: [0, 0, 0])  # delta complete, delta pool_create, hours with a delta
+    try:
+        for line in jsonl(path):
+            if not line.strip():
+                continue
+            r = json.loads(line)
+            h, rw, ad = r.get("hour"), r.get("rows"), r.get("adapter_cumulative")
+            if not isinstance(h, str) or not isinstance(rw, dict):
+                raise Refuse("counts row without hour / rows (layout assumption failed)")
+            if h in seen:
+                raise Refuse("duplicate hour in counts log")
+            seen.add(h)
+            d = h[:10]
+            hrs[d].add(h)
+            rsum[d][0] += int(rw.get("pumpfun|complete", 0))
+            rsum[d][1] += int(rw.get("pumpswap|pool_create", 0))
+            cur = None
+            if isinstance(ad, dict) and "rows_complete" in ad and "rows_pool_create" in ad:
+                cur = (int(ad["rows_complete"]), int(ad["rows_pool_create"]))
+            if cur is not None and prev is not None:
+                x = dsum[d]
+                x[0] += cur[0] - prev[0] if cur[0] >= prev[0] else cur[0]
+                x[1] += cur[1] - prev[1] if cur[1] >= prev[1] else cur[1]
+                x[2] += 1
+            prev = cur
+    except (ValueError, TypeError, AttributeError):
+        raise Refuse("unparseable counts row (layout assumption failed)")
     days = []
-    for d in sorted(hours):
-        v = hours[d].values()
-        c, p = sum(x[0] for x in v), sum(x[1] for x in v)
-        full, post = len(hours[d]) == 24, d >= FIRST_FULL_DAY
-        days.append({"date": d, "hours": len(hours[d]), "full": full, "post_deploy": post, "counted": full and post, "partial": not full, "complete": c, "pool_create": p,
-                     "ratio": ratio(p, c), "rows_sum_complete": rowsum[d][0], "rows_sum_pool_create": rowsum[d][1]})
+    for d in sorted(hrs):
+        full, post = len(hrs[d]) == 24, d >= FIRST_FULL_DAY
+        c, p = rsum[d]
+        rr = ratio(p, c)
+        x = dsum[d]
+        xr = ratio(x[1], x[0]) if x[2] == len(hrs[d]) else None  # cross-check only if every hour of the day has a delta
+        v_rows = rr is not None and rr >= SERVE_MIN
+        disagree = xr is not None and (xr >= SERVE_MIN) != v_rows
+        days.append({"date": d, "hours": len(hrs[d]), "full": full, "post_deploy": post, "counted": full and post, "partial": not full, "complete": c, "pool_create": p, "ratio": rr,
+                     "day_pass": v_rows and not disagree, "cross_check_hours_with_delta": x[2], "cross_check_incomplete": xr is None, "cross_check_complete": x[0] if xr is not None else None,
+                     "cross_check_pool_create": x[1] if xr is not None else None, "cross_check_ratio": xr, "methods_disagree": disagree})
     counted = [x for x in days if x["counted"]]
-    ok = bool(counted) and all(x["ratio"] is not None and x["ratio"] >= SERVE_MIN for x in counted)
-    return {"schema": "r4bt_trainserve_serve_v1", "rule": RULE, "script_git_blob": blob_id(), "inputs": [os.path.basename(path)], "first_full_day": FIRST_FULL_DAY, "days": days,
+    ok = bool(counted) and all(x["day_pass"] for x in counted)
+    return {"schema": "r4bt_trainserve_serve_v2", "rule": RULE, "script_git_blob": blob_id(), "inputs": [os.path.basename(path)], "first_full_day": FIRST_FULL_DAY, "days": days,
             "serve_verdict": "PASS" if ok else "DISCLOSE"}
 
 
@@ -233,6 +305,9 @@ def main(argv=None, pda_fn=None):
         res = a.fn(a)
     except Refuse as e:
         print("REFUSED: %s" % e, file=sys.stderr)
+        return 2
+    except (OSError, ValueError, TypeError, KeyError) as e:
+        print("REFUSED: %s while reading inputs" % type(e).__name__, file=sys.stderr)
         return 2
     tmp = a.out + ".tmp"
     with open(tmp, "w") as fh:
