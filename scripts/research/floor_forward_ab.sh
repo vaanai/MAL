@@ -26,7 +26,7 @@ wait $P1 || R1=$?
 wait $P2 || R2=$?
 echo "base exit $R1, vault exit $R2"
 [ "$R1" = 0 ] && [ "$R2" = 0 ] || exit 1
-"$PY" scripts/research/floor_nov_pnl.py "$WORK/base/ledger" "$WORK/pnl-base.json" total 1p9
-"$PY" scripts/research/floor_nov_pnl.py "$WORK/vault/ledger" "$WORK/pnl-vault.json" total 1p9
+"$PY" scripts/research/floor_nov_pnl.py "$WORK/base/ledger" "$WORK/pnl-base.json" total 1p9 --to-ms "$TO_MS"
+"$PY" scripts/research/floor_nov_pnl.py "$WORK/vault/ledger" "$WORK/pnl-vault.json" total 1p9 --to-ms "$TO_MS"
 "$PY" scripts/research/floor_forward_ab.py table --base "$WORK/pnl-base.json" --variant "$WORK/pnl-vault.json" --out-json "$WORK/ab.json" --out-md "$WORK/ab.md" --end-hour "$END_HOUR"
 echo "done: $WORK/ab.md"

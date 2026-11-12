@@ -80,7 +80,7 @@ def test_reader_end_to_end_matches_direct_pricing_per_day_totals():
         for model in ("flat", "press"):
             for stake in ("0.1", "0.25"):
                 day = r["entries_by_day"][f"{stake}:{model}"]["2026-11-05"]
-                assert (day["n_entries"], day["n_priced"], day["n_unpriced"]) == (3, 3, 0)
+                assert (day["n_entries"], day["n_closed"], day["n_open_at_tape_end"]) == (3, 3, 0)
                 assert abs(day["total_sol"] * 1e9 - sum(x[model] for x in new.values())) < 1e-2
 
 
@@ -95,7 +95,7 @@ def test_no_flag_leaves_nets_alone_and_target_send_needs_none():
         assert json.load(open(d + "/o.json"))["send_delta_lamports"] == 0
 
 
-def test_unfilled_leg_counts_as_unpriced_entry():
+def test_unfilled_leg_counts_as_open_at_tape_end_not_feed_gap():
     old = price(CFG)
     with tempfile.TemporaryDirectory() as d:
         led = mk_ledger(d, old)
@@ -103,4 +103,5 @@ def test_unfilled_leg_counts_as_unpriced_entry():
         f.write_text(f.read_text() + json.dumps({"kind": "open", "position_id": "x", "pool": "x", "decision_ms": {"entry": ms(5, 22)}}) + "\n")
         P.main([led, d + "/o.json"])
         day = json.load(open(d + "/o.json"))["entries_by_day"]["0.1:flat"]["2026-11-05"]
-        assert (day["n_entries"], day["n_priced"], day["n_unpriced"]) == (4, 3, 1)
+        assert (day["n_entries"], day["n_closed"], day["n_excluded_feed_gap"], day["n_open_at_tape_end"]) == (4, 3, 0, 1)
+        assert day["complete"] is False and day["total_sol"] is None

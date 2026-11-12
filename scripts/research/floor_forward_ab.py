@@ -2,10 +2,12 @@
 """floor_forward_ab helpers (used by floor_forward_ab.sh). PAPER, in-sample/forward research; not a gate read.
   link  --end-hour 2026-11-12T20 --out DIR [--copy-dir D] [--live-dir D]   symlink every closed tape hour 2026-11-02T01..end-hour into DIR; prints to-ms
   table --base PNL.json --variant PNL.json --out-json F --out-md F --end-hour H [--forward-from 2026-11-12]
-Days >= --forward-from are FORWARD (after the vault1.0 variant was chosen on 11-03..11-11); earlier days are IN-SAMPLE.
+Days >= --forward-from are FORWARD (counted only when COMPLETE: see floor_nov_pnl.complete_bound_ms) (after the vault1.0 variant was chosen on 11-03..11-11); earlier days are IN-SAMPLE.
 """
 import argparse, json, os
 from datetime import datetime, timedelta, timezone
+
+from floor_tape_paths import require_ok
 
 START = datetime(2026, 11, 2, 1, tzinfo=timezone.utc)
 COPY_DIR = "/data2/mal/scratch/floor-nov-funnel/tapecopy"
@@ -27,6 +29,8 @@ def link(a):
     end = parse_hour(a.end_hour)
     if end >= datetime.now(timezone.utc).replace(minute=0, second=0, microsecond=0):
         raise SystemExit("refusing: end hour %s is the current or a future UTC hour (not closed)" % a.end_hour)
+    for d in (a.copy_dir, a.live_dir):
+        require_ok(d)
     os.makedirs(a.out, exist_ok=True)
     missing = []
     for h in hours(end):
@@ -43,30 +47,122 @@ def link(a):
     print(int((end + timedelta(hours=1)).timestamp() * 1000))
 
 
+HEADER = ("paper; days < 2026-11-12 are IN-SAMPLE for the variant choice; FORWARD days count only when COMPLETE; nothing here is a gate read; "
+          "the delta is not paired unless the paired table says so")
+
+
+def day_set(forward_from, d):
+    return "FORWARD" if d >= forward_from else "IN-SAMPLE"
+
+
+def _nets(pos, key, days=None):
+    return [p["net"][key] for p in pos if p["status"][key.split(":")[0]] == "closed" and (days is None or p["day"] in days)]
+
+
+def arm_stats(pos, stake, model, days):
+    """pooled figures of one arm over the given (complete) days; ex-top-3 is per arm (None when n <= 3)"""
+    key = f"{stake}:{model}"
+    ps = [p for p in pos if p["day"] in days]
+    nets = sorted(_nets(ps, key), reverse=True)
+    st = [p["status"][stake] for p in ps]
+    return {"n_entries": len(ps), "n_closed": len(nets), "n_excluded_feed_gap": st.count("excluded_feed_gap"), "n_open_at_tape_end": st.count("open_at_tape_end"),
+            "total_sol": sum(nets) / 1e9, "mean_sol": (sum(nets) / len(nets) / 1e9) if nets else None, "ex_top3_sol_per_arm": (sum(nets[3:]) / 1e9) if len(nets) > 3 else None}
+
+
+def pair(bpos, vpos, stake, model, days):
+    """pool-paired grouping over `days` (entry days). Entries are keyed (pool, entry day); within a key, same entry instant first (group `same`), the rest matched in
+    time order (group `retimed`), leftovers are `base_only` / `variant_only`. Each group: n, and per arm n_priced and total_sol (closed positions only)."""
+    key = f"{stake}:{model}"
+    grp = {g: {"n": 0, "base": {"n_priced": 0, "total_sol": 0.0}, "vault1.0": {"n_priced": 0, "total_sol": 0.0}} for g in ("same", "retimed", "base_only", "variant_only")}
+
+    def add(g, bp, vp):
+        grp[g]["n"] += 1
+        for arm, p in (("base", bp), ("vault1.0", vp)):
+            if p is not None and p["status"][stake] == "closed":
+                grp[g][arm]["n_priced"] += 1
+                grp[g][arm]["total_sol"] += p["net"][key] / 1e9
+
+    by = {}
+    for arm, pos in (("b", bpos), ("v", vpos)):
+        for p in pos:
+            if p["day"] in days:
+                by.setdefault((p["pool"], p["day"]), {"b": [], "v": []})[arm].append(p)
+    for k in sorted(by):
+        bl, vl = sorted(by[k]["b"], key=lambda p: p["t0"]), sorted(by[k]["v"], key=lambda p: p["t0"])
+        for bp in list(bl):
+            m = next((vp for vp in vl if vp["t0"] == bp["t0"]), None)
+            if m is not None:
+                add("same", bp, m); bl.remove(bp); vl.remove(m)
+        for bp, vp in zip(bl, vl):
+            add("retimed", bp, vp)
+        for bp in bl[len(vl):]:
+            add("base_only", bp, None)
+        for vp in vl[len(bl):]:
+            add("variant_only", None, vp)
+    return grp
+
+
+def _f(x):
+    return "n/a" if x is None else "%.6f" % x
+
+
 def table(a):
     b, v = json.load(open(a.base)), json.load(open(a.variant))
-    res = {"end_hour": a.end_hour, "forward_from": a.forward_from, "note": "paper, in-sample/forward research, not a gate read; send 160000 per send; n_unpriced = engine exclusion (feed_gap)", "legs": {}}
-    md = ["# FLOOR forward A/B: base vs vault1.0 (Q_STAR 1.0e9), paper, ending hour %s" % a.end_hour, "",
-          "Days >= %s are FORWARD (out-of-sample for the variant choice); earlier days IN-SAMPLE. Paper only; not a gate read. 11-03..11-09 under-count pools (pool table starts empty at 11-02T01)." % a.forward_from, ""]
+    hb, hv = b.get("header") or {}, v.get("header") or {}
+    res = {"end_hour": a.end_hour, "forward_from": a.forward_from, "header": HEADER, "arms": {"base": hb, "vault1.0": hv},
+           "cutover_hour": "2026-11-07T18Z excluded from every entry day (as in ops/reports/2026-11-12/floor-nov-funnel.md)",
+           "note": "paper; send 160000 per send; open_at_tape_end = no exit decision by the end of the tape (right-censored), never a feed gap; n_excluded_feed_gap = engine exclusion", "legs": {}}
+    md = ["# FLOOR forward A/B: base vs vault1.0 (Q_STAR 1.0e9), paper, ending hour %s" % a.end_hour, "", "> " + HEADER, "",
+          "- Days >= %s are FORWARD (after the variant was chosen on tape 11-02T01..11-11T23); earlier days IN-SAMPLE. 11-03..11-09 under-count pools (pool table starts empty at 11-02T01)." % a.forward_from,
+          "- The 2026-11-07T18Z tip-follower cut-over hour is EXCLUDED from every entry day (consistent with the funnel report); the A/B still spans pre- and post-deploy hours.",
+          "- A day is COMPLETE only if every position entered that day has an exit decision or an engine exclusion (no open_at_tape_end, and tape end >= last entry + 24 h time stop + 1 s tick + 1.55 s exit-leg window). "
+          "FLOOR has no stop-loss, so recent entries stay open until TP 1.5x or 24 h; an INCOMPLETE day prints counts only, no total, mean, ex-top-3 or delta.",
+          "- base arm: variant=%s frozen_rule=%s; vault arm: variant=%s frozen_rule=%s (both ledgers are registered under the pinned FROZEN_SHA; the vault arm is NOT the frozen rule)." % (
+              hb.get("variant"), hb.get("frozen_rule"), hv.get("variant"), hv.get("frozen_rule")), ""]
     for key in sorted(b["entries_by_day"]):
-        stake, leg = key.split(":")
-        bd, vd = b["entries_by_day"][key], v["entries_by_day"][key]
-        rows = []
-        md += ["## stake %s, %s leg" % (stake, leg), "",
-               "| day | set | base n_ent | base n_priced | base n_unpr | base SOL | base ex-top3 | vault n_ent | vault n_priced | vault n_unpr | vault SOL | vault ex-top3 | delta n_ent | delta SOL | delta ex-top3 |",
-               "|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|"]
-        z = {"n_entries": 0, "n_priced": 0, "n_unpriced": 0, "total_sol": 0.0, "ex_top3_sol": 0.0}
+        stake, model = key.split(":")
+        bd, vd, bpos, vpos = b["entries_by_day"][key], v["entries_by_day"][key], b.get("positions", []), v.get("positions", [])
+        md += ["## stake %s, %s leg" % (stake, model), "",
+               "| day | set | status | base entries/closed/excl-feed-gap/open | vault entries/closed/excl-feed-gap/open | base SOL | base ex-top3 (per arm) | vault SOL | vault ex-top3 (per arm) | delta entries | delta SOL (not paired) |",
+               "|---|---|---|---|---|---|---|---|---|---|---|"]
+        z = {"n_entries": 0, "n_closed": 0, "n_excluded_feed_gap": 0, "n_open_at_tape_end": 0, "total_sol": 0.0, "ex_top3_sol": None, "complete": True}
+        rows, complete_days = [], []
         for d in sorted(set(bd) | set(vd)):
             x, y = bd.get(d, z), vd.get(d, z)
-            ex = lambda r: r["ex_top3_sol"] if r["ex_top3_sol"] is not None else 0.0
-            row = {"day": d, "set": "FORWARD" if d >= a.forward_from else "IN-SAMPLE", "base": x, "vault1.0": y,
-                   "delta": {"n_entries": y["n_entries"] - x["n_entries"], "total_sol": y["total_sol"] - x["total_sol"], "ex_top3_sol": ex(y) - ex(x)}}
+            ok = bool(x["complete"] and y["complete"])
+            if ok:
+                complete_days.append(d)
+            cnt = lambda r: "%d/%d/%d/%d" % (r["n_entries"], r["n_closed"], r["n_excluded_feed_gap"], r["n_open_at_tape_end"])
+            row = {"day": d, "set": day_set(a.forward_from, d), "complete": ok, "base": {k: x[k] for k in ("n_entries", "n_closed", "n_excluded_feed_gap", "n_open_at_tape_end")},
+                   "vault1.0": {k: y[k] for k in ("n_entries", "n_closed", "n_excluded_feed_gap", "n_open_at_tape_end")}}
+            if ok:
+                row["base"].update(total_sol=x["total_sol"], ex_top3_sol=x["ex_top3_sol"]); row["vault1.0"].update(total_sol=y["total_sol"], ex_top3_sol=y["ex_top3_sol"])
+                row["delta"] = {"n_entries": y["n_entries"] - x["n_entries"], "total_sol": y["total_sol"] - x["total_sol"]}
+                md.append("| %s | %s | complete | %s | %s | %s | %s | %s | %s | %+d | %+.6f |" % (d, row["set"], cnt(x), cnt(y), _f(x["total_sol"]), _f(x["ex_top3_sol"]), _f(y["total_sol"]), _f(y["ex_top3_sol"]),
+                                                                                                    row["delta"]["n_entries"], row["delta"]["total_sol"]))
+            else:
+                md.append("| %s | %s | **INCOMPLETE** | %s | %s | - | - | - | - | - | - |" % (d, row["set"], cnt(x), cnt(y)))
             rows.append(row)
-            md.append("| %s | %s | %d | %d | %d | %.6f | %.6f | %d | %d | %d | %.6f | %.6f | %+d | %+.6f | %+.6f |" % (
-                d, row["set"], x["n_entries"], x["n_priced"], x["n_unpriced"], x["total_sol"], ex(x), y["n_entries"], y["n_priced"], y["n_unpriced"], y["total_sol"], ex(y),
-                row["delta"]["n_entries"], row["delta"]["total_sol"], row["delta"]["ex_top3_sol"]))
-        res["legs"][key] = rows
         md.append("")
+        sets = {"IN-SAMPLE": [d for d in complete_days if d < a.forward_from], "FORWARD": [d for d in complete_days if d >= a.forward_from]}
+        pooled, paired = {}, {}
+        for name, days in sets.items():
+            ds = set(days)
+            pooled[name] = {"n_complete_days": len(days), "days": days, "base": arm_stats(bpos, stake, model, ds), "vault1.0": arm_stats(vpos, stake, model, ds)}
+            paired[name] = pair(bpos, vpos, stake, model, ds)
+            n_fwd = [r["day"] for r in rows if r["set"] == name]
+            md += ["### pooled %s: %d complete day(s) of %d (%s)" % (name, len(days), len(n_fwd), ", ".join(days) or "none"), "",
+                   "| arm | entries | closed | excl-feed-gap | open | total SOL | mean SOL/closed | ex-top3 SOL (per arm) |", "|---|---|---|---|---|---|---|---|"]
+            for arm in ("base", "vault1.0"):
+                r = pooled[name][arm]
+                md.append("| %s | %d | %d | %d | %d | %s | %s | %s |" % (arm, r["n_entries"], r["n_closed"], r["n_excluded_feed_gap"], r["n_open_at_tape_end"], _f(r["total_sol"]), _f(r["mean_sol"]), _f(r["ex_top3_sol_per_arm"])))
+            md += ["", "### pool-paired delta, %s complete days (matched by pool and entry day; delta of totals below = vault minus base)" % name, "",
+                   "| group | n | base priced n | base SOL | vault priced n | vault SOL |", "|---|---|---|---|---|---|"]
+            for g, lab in (("same", "in both arms, same entry instant"), ("retimed", "in both arms, re-timed entry"), ("base_only", "only in base"), ("variant_only", "only in vault1.0")):
+                r = paired[name][g]
+                md.append("| %s | %d | %d | %.6f | %d | %.6f |" % (lab, r["n"], r["base"]["n_priced"], r["base"]["total_sol"], r["vault1.0"]["n_priced"], r["vault1.0"]["total_sol"]))
+            md.append("")
+        res["legs"][key] = {"days": rows, "pooled": pooled, "paired": paired}
     json.dump(res, open(a.out_json, "w"), indent=1)
     open(a.out_md, "w").write("\n".join(md) + "\n")
 
