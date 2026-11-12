@@ -135,7 +135,7 @@ def main(argv: Sequence[str] | None = None, *, now_ms: int | None = None, ancest
             as_of_ms=a.as_of_ms, boundary_file=a.boundary_file, boundary_sha256=a.boundary_sha256, exp027_record=a.exp027_record, exp027_record_sha256=a.exp027_record_sha256,
             pins={"tools/arena_paper.py": a.arena_paper_sha256, "tools/arena_score.py": a.arena_score_sha256}, feed_delay_slots=a.feed_delay_slots, k_rounding=a.k_rounding,
             n_books=a.n_books, c=a.c, i_am_the_read=a.i_am_the_read, pricer_report=a.pricer_report, pricer_report_sha256=a.pricer_report_sha256, v_audit_ids=a.v_audit_ids,
-            v_audit_ids_sha256=a.v_audit_ids_sha256, now_ms=now_ms, ancestor=ancestor)
+            v_audit_ids_sha256=a.v_audit_ids_sha256, now_ms=now_ms, ancestor=ancestor, bot=a.bot_id)
     except Exception as e:  # noqa: BLE001 - every failure is a refusal (exit 2), never a traceback
         print(f"r4bt_read_confirm: REFUSED: {e}", file=sys.stderr)
         return 2
