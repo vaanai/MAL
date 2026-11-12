@@ -50,6 +50,9 @@ PERSONA = "GEN"
 GROUP = "GEN"
 PACKAGE_DIR = Path(__file__).resolve().parent
 PLAYBOOK_DIR = PACKAGE_DIR / "hv6_playbooks"
+# Seed playbook per release (docs/research/hv6/V61-PROMPT.md). v6.0 = tools/hv6_playbooks (untouched). v6.1 = tools/hv6_playbooks_v61: the v6.0 seed with
+# one MEASURED DIRECTIONS clause replaced (QP-RULING-1026-entry-rate (c)); bot ids hv6.1-<arm> from hv6_review.bot_id. Closed map: any other release is refused.
+SEED_DIRS = {"v6.0": PLAYBOOK_DIR, "v6.1": PACKAGE_DIR / "hv6_playbooks_v61"}
 MIN_AGE_H = 2.0                      # DESIGN section 8 item 5: a hard code check refuses any card under 2 h
 
 # ---------------------------------------------------------------------------------------------------------------- persona spec
@@ -472,11 +475,15 @@ class CallerModel(m4.CallerModel):
 
 
 # ---------------------------------------------------------------------------------------------------------------- playbook and requests
-def load_playbook(version: str = "v0") -> p4.Playbook:
+def load_playbook(version: str = "v0", release: str = "v6.0") -> p4.Playbook:
+    """The GEN playbook file of `version` in `release`'s seed dir. The default release is v6.0, so every existing caller reads v6.0's bytes."""
     if not re.fullmatch(r"v[0-9]{1,3}", version):
         raise PromptError("unknown playbook version")
+    directory = SEED_DIRS.get(release) if isinstance(release, str) else None
+    if directory is None:
+        raise PromptError("unknown release")
     try:
-        text = (PLAYBOOK_DIR / f"{PERSONA}_{version}.txt").read_text(encoding="utf-8")
+        text = (directory / f"{PERSONA}_{version}.txt").read_text(encoding="utf-8")
     except OSError:
         raise PromptError(f"playbook {PERSONA}/{version} cannot be read") from None
     return p4.playbook_from_text(PERSONA, version, text)
