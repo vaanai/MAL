@@ -993,3 +993,72 @@ def test_stamp_keeps_old_unsigned_single_v_in_both_flag_states(tmp_path, event_v
         f._stamp_virtual(rows)
         assert rows[0]["virtual_quote_reserve"] == old and type(rows[0]["virtual_quote_reserve"]) is int
         assert "virtual_quote_reserve" not in rows[1]
+
+
+# ---- status thread: fresh status while the main loop is blocked in a fetch, stale on a real hang
+class _Wall:
+    def __init__(self) -> None:
+        self.ms = 1_790_318_933_000
+
+    def clock_ms(self) -> int:
+        return self.ms
+
+    def mono(self) -> float:
+        return self.ms / 1000.0
+
+
+def _status_age_ms(tmp_path, w):
+    st = json.loads((tmp_path / "state" / "status.json").read_text())
+    return w.ms - st["ts_ms"], st
+
+
+def test_status_stays_fresh_while_fetch_blocks_45s(tmp_path):
+    w = _Wall()
+    rpc = Rpc(tip=3)
+    f = _follower(tmp_path, rpc, clock=w.clock_ms, mono=w.mono)
+    f.heartbeat(force=True)
+    orig = rpc.fetch
+    ages = []
+
+    def slow_fetch(slot):
+        for _ in range(3):  # 45 s blocked in the fetch, status thread ticks every HEARTBEAT_S
+            w.ms += int(ftf.HEARTBEAT_S * 1000)
+            assert f.status_thread_beat() is True
+            ages.append(_status_age_ms(tmp_path, w)[0])
+        return orig(slot)
+
+    f.fetch = slow_fetch
+    f.process_slot(1)
+    assert ages and max(ages) < 30_000
+    assert "main_loop_progress_ms" in _status_age_ms(tmp_path, w)[1]
+
+
+def test_status_goes_stale_when_main_loop_stalls_past_max(tmp_path):
+    w = _Wall()
+    f = _follower(tmp_path, Rpc(tip=3), clock=w.clock_ms, mono=w.mono)
+    f.heartbeat(force=True)
+    wrote = []
+    for _ in range(int(2 * ftf.MAIN_STALL_MAX_S / ftf.HEARTBEAT_S)):
+        w.ms += int(ftf.HEARTBEAT_S * 1000)
+        wrote.append(f.status_thread_beat())
+    assert wrote[0] is True and wrote[-1] is False
+    age, _ = _status_age_ms(tmp_path, w)
+    assert age > 30_000
+    # the main loop recovering makes the thread refresh again
+    f.heartbeat(force=True)
+    assert f.status_thread_beat() is True
+
+
+def test_run_starts_daemon_status_thread(tmp_path):
+    f = _follower(tmp_path, Rpc(tip=3))
+    stop = threading.Event()
+    orig = f.step
+
+    def step():
+        n = orig()
+        stop.set()
+        return n
+
+    f.step = step
+    f.run(stop)
+    assert f._hb_thread is not None and f._hb_thread.daemon
