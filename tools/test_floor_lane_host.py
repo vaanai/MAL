@@ -616,3 +616,33 @@ def test_block_covers_the_time_exit_and_the_sixty_second_cooldown(tmp_path):
     for t in (exit_decision, exit_decision + 30_000, exit_decision + L.COOLDOWN_MS, exit_decision + L.COOLDOWN_MS + 5_000):
         assert h.judge(t, "Q") is not None, t - exit_decision  # the paper rule's earliest re-entry is exit_decision + 60 s
     assert h.judge(t1 + H.BLOCK_MS, "Q") is None and h.judge(t1 + H.BLOCK_MS - 1, "Q") is not None
+
+
+# ------------------------------------------------------------------------------------------------ guard v1 byte equivalence (golden from main before the stage-1 change)
+def _scenario_bytes(tmp_path, **host_kw):
+    """Gaps + a restart on a synthetic tape: pool Q gets a gap-refused trigger, a gap-blocked re-trigger, then the host crashes at 31 h and restarts at 33 h. Returns the md5
+    of every decision-log file byte-for-byte plus the lane checkpoint."""
+    t1 = H0 + 30 * HOUR + 900_000
+    rows = sorted(two_trigger_rows() + [gap_row(t1 - 2 * HOUR, t1 - 2 * HOUR + 30_000), gap_row(t1 - 600_000, t1 - 590_000, kind="status", prog="all")], key=lambda r: r["t_recv_ms"])
+    eng = FakeEngine(tmp_path / "rules")
+    a = lane_host(tmp_path, rows, live=True, engine=eng, **host_kw)
+    Clocked(a)
+    a.resume()
+    _live_phase(a, H0, H0 + 31 * HOUR)
+    b = lane_host(tmp_path, rows, live=True, engine=eng, **host_kw)
+    Clocked(b)
+    b.lane_start(H0 + 33 * HOUR)
+    b.resume()
+    _live_phase(b, H0 + 33 * HOUR, H0 + 40 * HOUR)
+    h = hashlib.md5()
+    for f in sorted((tmp_path / "rules" / "decisions").rglob("*.jsonl")):
+        h.update(f.read_bytes())
+    h.update((tmp_path / "rules" / "lane" / "checkpoint.json").read_bytes())
+    return h.hexdigest()
+
+
+GOLDEN_V1_SCENARIO_MD5 = "aba8b479bc9f1841f70fe4dffb288d2d"
+
+
+def test_default_config_is_byte_identical_to_main_on_a_tape_with_gaps_and_a_restart(tmp_path):
+    assert _scenario_bytes(tmp_path) == GOLDEN_V1_SCENARIO_MD5
