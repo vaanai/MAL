@@ -28,17 +28,17 @@ As of 2026-10-20T08:26:00Z. One row per idea in [`ideas.jsonl`](ideas.jsonl). Th
 | Status | Library | Inbox of 2026-10-13 | Owner ideas |
 | --- | --- | --- | --- |
 | `live-canary` | 1 | 0 | 0 |
-| `forward-test` | 3 | 0 | 0 |
+| `forward-test` | 4 | 0 | 0 |
 | `explored-survivor-unconfirmed` | 10 | 0 | 0 |
 | `parked` | 13 | 3 | 0 |
 | `shelved` | 2 | 2 | 0 |
-| `untested` | 45 | 28 | 0 |
-| `desk-read` | 3 | 52 | 0 |
+| `untested` | 46 | 28 | 0 |
+| `desk-read` | 4 | 52 | 0 |
 | `explored-no-survivor` | 56 | 18 | 2 |
 | `dead-as-frozen` | 77 | 9 | 0 |
-| **all** | 210 | 112 | 2 |
+| **all** | 213 | 112 | 2 |
 
-The file holds 574 rows: the 324 above and 55 rows kept only as duplicates of another row (listed at the end).
+The file holds 577 rows: the 327 above and 55 rows kept only as duplicates of another row (listed at the end).
 
 ## Live and in forward test
 
@@ -48,6 +48,7 @@ The file holds 574 rows: the 324 above and 55 rows kept only as duplicates of an
 | `lib-c-Q1.EXP-022` | EXP-022 CAP-PICK (Part 1 pre-registration) | `forward-test` | 2026-10-13: no outcome has been read. The counted window is walk 2, from 2026-10-16T01Z. Owed before it: the declaration of which daily structure run is the P2 run (the last one before 2026-10-16T01Z) and the walk-2 submit. The first look is scheduled for 2026-10-23. | Look dates 10-23T01, 10-30T01 and 11-06T01 (LAB_STATE line 108). A fail leads to A12, the cost wind-down, pre-agreed by the owner (audit O6). |
 | `lib-c-Q1.EXP-025` | EXP-025 C1-NF post-graduation momentum (two looks) | `forward-test` | 2026-10-13: no outcome has been read. Look 1 is scheduled for 2026-10-17T03Z on the event-V re-walk (job #433). The owner shelved the C1-NF book itself on 2026-10-12 as a regime watch; the registered read still runs as written. | Look 1 end 2026-10-17T00; count end 2026-10-24T00 (library Q1). |
 | `r4bt-tip` | r4-b-T: frozen r4-b hourly top-10 PumpSwap book on the fast-0 getBlock tip feed (arena … | `forward-test` | Same frozen r4-b rule as lib-c-O2 (itself a duplicate of lib-b-D5); this row tracks its arena re-registration on the tip feed. | re-registered as r4bt-a2, paper, P0 days 2026-11-16, 2026-11-17, 2026-11-18 (floor: mean >= 2.0 a day, no day at 0); count job 2026-11-19T00:10Z; W' (frozen_sha) … |
+| `floor-vault-1p0-forward-ab` | FLOOR vault <= 1.0 SOL: forward paper A/B of base vs vault 1.0 (Q_STAR 1.0e9 override of … | `forward-test` | Not stopped. Forward paper A/B is running; nobody has read a complete forward day as a result. | Daily floor-forward-ab job; the decision only after at least 7 complete forward days. |
 
 ## Survivors on exploration data, not confirmed
 
@@ -138,6 +139,8 @@ Each of these was positive on data the lab had already seen and has no clean for
 | `p31-relayer-program-flows` | Relayer-program sell flows (FLASHX8D..., Gygj9QQb... via MAyhSmzX..., AgmLJBMD... via … | P31 forced-flow census (2026-10-25) | Count signatures per day of Gygj9QQb... (one getSignaturesForAddress page) to size the paging; if feasible, join to fresh-0903 and test timing structure, counts only. |
 | `p31-creator-claim-then-sell` | Creator-fee claim followed by an immediate sell | P31 forced-flow census (2026-10-25) | Count claim txs for a sample of 200 fresh-0903 creators via getSignaturesForAddress on the creator vault (cost: 200 calls) and the share followed by a sell within 60 s. |
 | `latency-brief-1026` | Latency brief: why 'entry time' keeps growing, and whether cutting it helps (desk compile) | latency (desk compile, 2026-10-26) | None as a lane. Do not re-open a speed question without naming what is new against hunt23-speed-1 and eh1030-paid-speed-track. |
+| `floor-gap-guard-cheap-restart` | FLOOR gap guard v2 and cheap restart (ops lever on the live FLOOR host; stage 1: flags … | FLOOR execution (ops lever) | #1332 verdicts, then DEC-035 Amendment 7, the md5 replay proof job, a HELM-ASK, and one host restart. |
+| `stack-sweep-1112-floor-clones` | Library sweep 2026-11-12: FLOOR clones on other venues and pool classes | library sweep (desk read) | None; the r4-b follow-up is the r4bt-tip row. |
 
 ## Owner ideas
 
