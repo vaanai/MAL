@@ -113,15 +113,18 @@ def test_board_no_identifying_fields_and_labels():
     rows = golden_rows((0.10, 0.25, 0.5, 1.0))
     b, md = board_of(rows, rows, ms(14, 6))
     for s in walk(b):
-        assert not any(w in s.lower() for w in ("pool", "mint", "sig")), s
+        assert s == AB.EXTRAPOLATION_NOTE or not any(w in s.lower() for w in ("pool", "mint", "sig")), s
     assert "POOL_" not in md and "MINT_" not in md
     assert b["schema"] == "open_sim_board.v1" and b["live"] is None and b["recon"]["status"] == "NOT COMPARABLE"
     assert b["banner"] == "open simulation, paper, not a gate read; no book has cleared the promotion gate"
     assert b["n_books_watched"] == 8 and [x["id"] for x in b["books"][:4]] == ["D0-0.10", "D0-0.25", "D0-0.50", "D0-1.00"]
     lab = {x["stake_sol"]: x["impact_label"] for x in b["books"]}
-    assert lab == {0.1: "model; live fills exist", 0.25: "model; live check pending", 0.5: "model only, extrapolated; not for steering", 1.0: "model only, extrapolated; not for steering"}
+    assert lab == {0.1: "model; live fills exist, not reconciled (recon NOT COMPARABLE)", 0.25: "model; live check pending", 0.5: "model only, extrapolated; not for steering", 1.0: "model only, extrapolated; not for steering"}
     assert b["tape_through_utc"] == "2026-11-14T06:00:00Z" and b["sim_version"].startswith("v0")
-    assert "N books are watched daily; the best-looking one overstates. Days before 2026-11-12 are in-sample for the wider rule." in md
+    cav = "8 book rows are watched daily (2 rules x 4 stakes); the vault1.0 rule was itself picked from a variant search on 2026-11-03..11-11. The best-looking row overstates; treat it as shrunk. Days before 2026-11-12 are in-sample for the wider rule."
+    assert cav in md and b["caveat"] == cav and AB.EXTRAPOLATION_NOTE in md and b["extrapolation_note"] == AB.EXTRAPOLATION_NOTE
+    assert all(("extrapolation_note" in x) == (x["stake_sol"] >= 0.5) for x in b["books"])
+    assert "Forward counts only trades entered on or after 2026-11-12" in md and "90 min" in md
     assert "model only, extrapolated; not for steering" in md and "EXIT (close) UTC day" in md and md.index("open simulation") < md.index("| book |")
     assert set(b["books"][0]) >= {"summary", "per_day", "trades", "open", "impact_label", "stake_sol"}
     assert set(b["books"][0]["summary"]) == {"today", "d7", "forward_all", "incl_backfill"}
@@ -138,20 +141,50 @@ def test_board_close_day_booking_in_sample_open_and_forward_completeness():
     assert pd["2026-11-06"]["in_sample"] is True and pd["2026-11-12"]["in_sample"] is False
     assert pd["2026-11-13"]["n"] == 1 and abs(pd["2026-11-13"]["net_sol_flat"] - (-3e-3)) < 1e-12
     tr_ = {t["tid"]: t for t in d25["trades"]}
-    assert [t["tid"] for t in d25["trades"]] == ["T0001", "T0002", "T0003", "T0004", "T0005"]
-    assert tr_["T0001"]["in_sample"] is True and tr_["T0004"]["in_sample"] is False and tr_["T0004"]["exit_reason"] == "time_stop"
-    assert abs(tr_["T0001"]["ret_pct"] - 2.0) < 1e-9
+    assert [t["tid"] for t in d25["trades"]] == ["P00001", "P00002", "P00003", "P00004", "P00005"]
+    assert tr_["P00001"]["in_sample"] is True and tr_["P00004"]["in_sample"] is False and tr_["P00004"]["exit_reason"] == "time_stop"
+    assert abs(tr_["P00001"]["ret_pct"] - 2.0) < 1e-9
     f = d25["summary"]["forward_all"]
     assert f["n_closed"] == 2 and abs(f["net_sol_flat"] - (7e-3 - 3e-3 + 0)) < 1e-12 and f["days"] == 2 and f["days_pos"] == 1 and f["tp_count"] == 1 and f["time_count"] == 1
     assert d25["summary"]["today"]["day"] == "2026-11-13" and d25["summary"]["today"]["n_closed"] == 1
-    assert d25["summary"]["incl_backfill"]["n_closed"] == 5 and d25["summary"]["incl_backfill"]["n_open"] == 1
-    assert [o["tid"] for o in d25["open"]] == ["O0001"] and abs(d25["open"][0]["age_h"] - 28.0) < 1e-9 and d25["open"][0]["entry_utc"] == "2026-11-13T02:00:00Z"
+    assert d25["summary"]["incl_backfill"]["n_closed"] == 5 and d25["summary"]["incl_backfill"]["n_open_at_tape_end"] == 1
+    assert [o["tid"] for o in d25["open"]] == ["P00007"] and abs(d25["open"][0]["age_h"] - 28.0) < 1e-9 and d25["open"][0]["entry_utc"] == "2026-11-13T02:00:00Z"
     # tape ends mid 11-13: 11-13 is an incomplete day and its close is in no window; 11-12 is the newest complete day
     b2, _ = board_of(rows, rows, ms(13, 9))
     s2 = [x for x in b2["books"] if x["id"] == "D0-0.25"][0]
     assert s2["summary"]["today"]["day"] == "2026-11-12"
     assert s2["summary"]["forward_all"]["days"] == 1 and s2["summary"]["forward_all"]["n_closed"] == 1 and "2026-11-13" not in {r["day"] for r in s2["per_day"]}
     assert s2["summary"]["incl_backfill"]["n_closed"] == 4
+
+
+def book(b, bid="D0-0.25"):
+    return [x for x in b["books"] if x["id"] == bid][0]
+
+
+def test_ids_stable_across_reruns():
+    m = [op("m", ms(11, 1))]
+    run1 = golden_rows() + m
+    run2 = golden_rows() + m + [tr("m", s, 1_000_000, ms(11, 1), ms(11, 5), "tp_1.5x") for s in (0.10, 0.25)]
+    x1, x2 = book(board_of(run1, run1, ms(14, 6))[0]), book(board_of(run2, run2, ms(14, 6))[0])
+    ids1 = {t["entry_utc"]: t["tid"] for t in x1["trades"] + x1["open"]}
+    ids2 = {t["entry_utc"]: t["tid"] for t in x2["trades"] + x2["open"]}
+    assert "2026-11-11T01:00:00Z" in ids1 and ids1["2026-11-11T01:00:00Z"] == ids2["2026-11-11T01:00:00Z"]
+    assert all(ids2[k] == v for k, v in ids1.items())
+
+
+def test_partial_day_not_complete_without_book_lag():
+    rows = golden_rows()
+    assert book(board_of(rows, rows, ms(14, 0))[0])["summary"]["today"]["day"] == "2026-11-12"
+    assert book(board_of(rows, rows, ms(14, 2))[0])["summary"]["today"]["day"] == "2026-11-13"
+
+
+def test_forward_all_only_entries_on_or_after_forward_from():
+    rows = golden_rows() + [op("x", ms(11, 3))] + [tr("x", s, 3_000_000, ms(11, 3), ms(12, 3), "time_stop") for s in (0.10, 0.25)]
+    b, _ = board_of(rows, rows, ms(14, 6))
+    s = book(b)["summary"]
+    assert s["incl_backfill"]["n_closed"] == 6 and s["incl_backfill"]["n_in_sample"] == 4
+    assert s["forward_all"]["n_closed"] == 2 and s["forward_all"]["n_in_sample"] == 0 and s["forward_all"]["n_in_sample_entries_excluded"] == 1
+    assert {r["day"]: r for r in book(b)["per_day"]}["2026-11-12"]["n_in_sample"] == 1
 
 
 def test_board_refuses_unbounded_pnl_and_table_ignores_extra_stakes():
