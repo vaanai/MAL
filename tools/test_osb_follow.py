@@ -24,7 +24,8 @@ S0 = 26  # the book starts 26 h into the tape: the earlier hours are seed + warm
 START = T0 + S0 * HOUR
 START_HOUR = "2026-11-02T02"
 SEED = "2026-10-22T00"  # >= 201 h before START_HOUR; seeds the table from fixture hours 0 .. 20 (to the warm-up start)
-RT = dict(_table_mode="first_print")
+EK = dict(sps_fn=lambda: 0.4)  # the fixture is too sparse for the engine slot clock; its slots run at 0.4 s
+RT = dict(_table_mode="first_print", _engine_kw=EK)
 
 
 @pytest.fixture(autouse=True)
@@ -95,11 +96,20 @@ def one_shot(tmp, m, n=N_HOURS, run="oneshot"):
     link(tmp / "src", tmp / "tape", sorted(p.name for p in (tmp / "src").glob("tape-*")), n)
     restore = O.apply_overrides(m["rule_overrides"])
     try:
-        host, eng, cfg = O.build_book(m, tmp / run, table_mode="first_print")
+        host, eng, cfg = O.build_book(m, tmp / run, table_mode="first_print", engine_kw=EK)
         host.run(START, T0 + n * HOUR)
     finally:
         restore()
     return tmp / run
+
+
+def tree_diff(a, b):
+    """first differing ledger row's keys, for a readable assertion message"""
+    ra, rb = O.ledger_rows(a), O.ledger_rows(b)
+    for i, (u, v) in enumerate(zip(ra, rb)):
+        if u != v:
+            return "row %d %s: differing keys %s" % (i, u[0], sorted(k for k in set(u[1]) | set(v[1]) if u[1].get(k) != v[1].get(k)))
+    return "row counts %d vs %d" % (len(ra), len(rb))
 
 
 def test_chunked_follow_equals_one_single_replay(world):
@@ -112,8 +122,8 @@ def test_chunked_follow_equals_one_single_replay(world):
     n_ent, n_ex = sum(r["kind"] == "entry" for r in rows), sum(r["kind"] == "exit" for r in rows)
     assert n_ent >= 3 and n_ex >= 3  # non-vacuous: entries and time/take-profit exits happened in the window
     assert O.decision_md5(follow_dir) == O.decision_md5(ref)
-    assert any((ref / "ledger").rglob("*.jsonl")) and any((follow_dir / "ledger").rglob("*.jsonl"))
-    assert O.tree_md5(follow_dir / "ledger") == O.tree_md5(ref / "ledger")
+    assert any(r["kind"] in ("open", "trade") for _, r in O.ledger_rows(ref / "ledger"))  # priced rows exist: the ledger comparison is not empty
+    assert O.tree_md5(follow_dir / "ledger") == O.tree_md5(ref / "ledger"), tree_diff(follow_dir / "ledger", ref / "ledger")
     st = json.loads((tmp / "out" / "status.json").read_text())
     assert st["last_hour"] == "2026-11-03T11" and st["decision_md5"] == O.decision_md5(ref) and st["manifest_sha256"] == (tmp / "out" / "manifest.sha256").read_text().strip()
     assert st["n_entries"] == n_ent and st["n_exits"] == n_ex and st["active"] is True
@@ -130,7 +140,7 @@ def test_once_with_all_hours_present_equals_the_same_replay(world):
     assert run_once(tmp, mp) == 0
     ref = one_shot(tmp, m, 48)
     assert O.decision_md5((tmp / "out" / "book").resolve()) == O.decision_md5(ref)
-    assert O.tree_md5((tmp / "out" / "book").resolve() / "ledger") == O.tree_md5(ref / "ledger")
+    assert O.tree_md5((tmp / "out" / "book").resolve() / "ledger") == O.tree_md5(ref / "ledger"), tree_diff((tmp / "out" / "book").resolve() / "ledger", ref / "ledger")
 
 
 def test_changed_manifest_is_refused_and_the_same_one_resumes(world):
@@ -209,7 +219,7 @@ def test_unknown_override_in_a_manifest_is_refused(world):
 def test_stakes_reach_the_engine_and_send_too(world):
     tmp, src, names = world
     mp, m = manifest(tmp, stakes_sol=[0.10, 0.25, 0.5, 1.0], send_lamports=123_456)
-    host, eng, cfg = O.build_book(O.load_manifest(mp), tmp / "b", table_mode="first_print")
+    host, eng, cfg = O.build_book(O.load_manifest(mp), tmp / "b", table_mode="first_print", engine_kw=EK)
     assert eng.cfg.stakes_sol == (0.10, 0.25, 0.5, 1.0) and eng.cfg.send == 123_456 and cfg is eng.cfg
     assert isinstance(host, H.LaneHost)
 
@@ -223,7 +233,7 @@ def test_hostv2_book_has_no_lane_guard(world):
     assert type(host).__name__ == "HostV2" and eng.gap_exclusion is False
 
 
-@pytest.mark.parametrize("bad", [{"seed_from_hour": "2026-10-24T00"}, {"host": "other"}, {"stakes_sol": []}, {"extra": 1}, {"lane": {"nope": 1}}, {"book_id": "a b"}])
+@pytest.mark.parametrize("bad", [{"seed_from_hour": "2026-10-30T00"}, {"host": "other"}, {"stakes_sol": []}, {"extra": 1}, {"lane": {"nope": 1}}, {"book_id": "a b"}])
 def test_bad_manifests_are_refused(world, bad):
     tmp, src, names = world
     mp, m = manifest(tmp, **bad)

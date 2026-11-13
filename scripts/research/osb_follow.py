@@ -162,8 +162,8 @@ def hour_file(tape_dir, ms):
 
 
 # ------------------------------------------------------------------------------------------------------------------------------ book
-def build_book(m, run_dir, *, table_mode=None):
-    """Seed + construct (nothing run yet). -> (host, engine, cfg). table_mode: tests only (synthetic tapes have no create/complete rows)."""
+def build_book(m, run_dir, *, table_mode=None, engine_kw=None):
+    """Seed + construct (nothing run yet). -> (host, engine, cfg). table_mode, engine_kw: tests only (synthetic tapes have no create/complete rows and too few rows for the engine's slot clock)."""
     start_ms = H.parse_hour(m["start_hour"])
     run_dir = Path(run_dir)
     run_dir.mkdir(parents=True, exist_ok=True)
@@ -173,7 +173,7 @@ def build_book(m, run_dir, *, table_mode=None):
                                                        "book_id": m["book_id"], "host": m["host"]}, indent=1, sort_keys=True) + "\n")
     scratch_register(registry, start_ms)
     cfg = dataclasses.replace(stack_config_for(2, R.DEFAULT_FEED_DELAY_SLOTS), send=m["send_lamports"], stakes_sol=tuple(float(x) for x in m["stakes_sol"]))
-    engine = GapRangeEngine(ledger, registry, cfg=cfg, gap_exclusion=(m.get("gap_exclusion", "on") == "on"))
+    engine = GapRangeEngine(ledger, registry, cfg=cfg, gap_exclusion=(m.get("gap_exclusion", "on") == "on"), **(engine_kw or {}))
     warm_ms = start_ms - WARM_MIN_DEFAULT * R.MIN_MS
     if m["host"] == "lane":
         lane = m.get("lane", {})
@@ -202,13 +202,25 @@ def count_rows(run_dir):
     return {"n_decision_rows": len(rows), "n_entries": sum(1 for r in rows if r.get("kind") == "entry"), "n_exits": sum(1 for r in rows if r.get("kind") == "exit")}
 
 
-def tree_md5(d):
-    """md5 over (relative name, bytes) of every file under d, sorted (the ledger md5 the tests compare)."""
-    h = hashlib.md5()
+PROCESS_KEYS = ("engine_id", "trade_id")  # per-process identity the engine writes into every ledger row (random engine id and the id derived from it); not part of a decision or a price
+
+
+def ledger_rows(d):
+    """[(relative file, row)] of every ledger row under d, sorted by file, `start` rows (pid, wall clock) dropped and PROCESS_KEYS removed."""
     d = Path(d)
+    out = []
     for f in sorted(p for p in d.rglob("*") if p.is_file()):
-        h.update(str(f.relative_to(d)).encode() + b"\0" + f.read_bytes())
-    return h.hexdigest()
+        for ln in f.read_bytes().splitlines():
+            if ln.strip():
+                r = json.loads(ln)
+                if r.get("kind") != "start":
+                    out.append((f.parent.name + "/" + f.name, {k: v for k, v in r.items() if k not in PROCESS_KEYS}))
+    return out
+
+
+def tree_md5(d):
+    """md5 of the ledger projection (ledger_rows, canonical JSON): what 'equal ledger md5' means in the equivalence proof."""
+    return hashlib.md5(canon(ledger_rows(d)).encode()).hexdigest()
 
 
 def read_stored(out_root):
@@ -242,10 +254,10 @@ def _flip(out_root, run_dir):
 
 
 # ------------------------------------------------------------------------------------------------------------------------------ follow
-def follow(manifest_path, once=False, max_hours=None, *, sleep_fn=time.sleep, _roots=None, _table_mode=None):
-    """-> exit code. _roots / _table_mode are test-only (the CLI does not expose them)."""
+def follow(manifest_path, once=False, max_hours=None, *, sleep_fn=time.sleep, _roots=None, _table_mode=None, _engine_kw=None):
+    """-> exit code. _roots / _table_mode / _engine_kw are test-only (the CLI does not expose them)."""
     try:
-        return _follow(manifest_path, once, max_hours, sleep_fn, _roots or (OSB_ROOT,), _table_mode)
+        return _follow(manifest_path, once, max_hours, sleep_fn, _roots or (OSB_ROOT,), _table_mode, _engine_kw)
     except Refused as e:
         print("osb_follow: refused: %s" % e, file=sys.stderr)
         return EXIT_REFUSED
@@ -257,7 +269,7 @@ def follow(manifest_path, once=False, max_hours=None, *, sleep_fn=time.sleep, _r
         return EXIT_REFUSED
 
 
-def _follow(manifest_path, once, max_hours, sleep_fn, roots, table_mode):
+def _follow(manifest_path, once, max_hours, sleep_fn, roots, table_mode, engine_kw=None):
     m = load_manifest(manifest_path)
     guard_paths(m, roots)
     TP.require_ok(m["tape_dir"], roots)
@@ -275,7 +287,7 @@ def _follow(manifest_path, once, max_hours, sleep_fn, roots, table_mode):
     try:
         stored = read_stored(out_root)
         run_dir = _next_run_dir(out_root)
-        host, engine, cfg = build_book(m, run_dir, table_mode=table_mode)
+        host, engine, cfg = build_book(m, run_dir, table_mode=table_mode, engine_kw=engine_kw)
         verified = not stored  # nothing stored: this run is the book from its first hour
         if verified:
             _flip(out_root, run_dir)
