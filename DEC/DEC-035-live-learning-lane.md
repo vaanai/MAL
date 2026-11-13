@@ -297,6 +297,66 @@ Review nits from #1318 and #1319, carried as wording only:
 3. Precondition (b) window (REVIEWER nit on #1319, "Suggest inclusive at both ends, so a failed buy sent in the same ms as the 20th exit is charged"): the window in Erratum 1 item 3 is inclusive at both ends, [2026-11-12T00:46:04.584Z, exit instant of the 20th trade].
 4. Provenance of "about 0.007 SOL per position" (REVIEWER nit on #1319, "the number is not derived from the cause now named"): the figure is the round-trip impact estimate of the "Price impact" section (2 × 0.25² / 18.25 = 0.00685; 8 × 0.00685 = 0.0548 for 8 open), taken from the REVIEWER comment on #1318. It was not derived from pool fees plus rent and buy fee, and no fee derivation has been made. Read "about 0.007" and "about 0.055" in "Why the daily stop is 0.50" as that impact estimate. The sentence's cause (pool fees plus rent and buy fee) stays as Erratum 1 item 2 set it. The magnitude is small against the 0.50 stop, and the rationale does not rest on the exact number.
 
+**Erratum 3 (2026-11-13, the 29 November positions that Amendment 6 and Errata 1 and 2 leave unpriced have been priced through their feed holes; figures only, no decision, limit, code or install condition changes).** Sources: PR #1336 (merged 3b0a5c38); job #2527 at 829d90db; result file `/data2/mal/scratch/floor-gap-range/gap.json`, sha256 `31757d8abf106ce3c7389958f2e5c175c03a1ff2ccbbd905d114f58ae1038b66` (copy at `/data/mal/hunt-1008/ops/reports/2026-11-13/job2527/gap.json`); report `/data/mal/hunt-1008/ops/reports/2026-11-12/floor-gap-range.md`, section "Result"; the three QP VERDICT comments on #1336 (8a63b731, 2cee4c0f, 60d203d3, all OK). Paper, in-sample, send 160,000 lamports, the rent-corrected reading of Erratum 2. Group A is the 50 normally priced positions of Amendment 6 and Erratum 2 (its 0.10 flat K = 16 total 0.2715999931 and 0.25 flat K = 16 total 0.6963075077 equal the Erratum 2 figures). Group B is the 29 entries that the engine excluded for feed gaps, priced through the holes as if the holes were absent. A+B is all 79.
+
+1. **The sentence from the QP on #1336, verbatim:** "Erratum (QP on #1336): the n 50 November paper figures leave out 29 positions (entered 2026-11-09 and 11-10) that the engine excluded for feed gaps; priced through the holes (paper, in-sample, job #2527, send 160,000), they sum to -0.6951137523 SOL at 0.25 flat (-0.2845396379 at 0.10 flat), making the 79-position uncapped total +0.0011937554 SOL at 0.25 flat (-0.0129396448 at 0.10 flat); one of the 29 (-0.25219928 SOL at 0.25) is a strand-rule total loss on a 0.13% k fall, not an observed drain, and without it the 79-position total is +0.2533930354 SOL at 0.25 flat."
+2. **Counts (gap.json `counts`).** 29 = 24 entered 2026-11-09 plus 5 entered 2026-11-10. All 29 exit at the 24 h time stop (`overlap_time_exit` 29), which is the host tick at the entry decision plus the hold; none shows a take-profit print (`overlap_tp_exit` 0). "0 take-profits" means that no take-profit print was visible: a crossing inside a hole is seen at the first print after it, or never, so hidden take-profits are not excluded. 26 of the 29 exits use the pool's last known print (`derived_last`; 41 of the 50 in group A do too). If a pool traded inside a hole and printed nothing afterwards, that exit state is stale; this is the main unmeasured risk in group B.
+3. **Table** (pooled, from `groups[...]["pooled"]` in gap.json; first-come cap K, "uncapped" is K = None; cut-over hour 2026-11-07T18Z excluded; mean and median in percent of stake to 4 decimals, SOL to 6 decimals; the exact digits are in gap.json). The cap runs within each group, so the K = 8 and K = 16 rows of A+B are not the sum of the A and B rows.
+
+| stake, leg | group | cap | n | mean % | median % | total SOL | ex-top-3 SOL |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| 0.25 flat | A (n 50) | K=8 | 39 | 7.3939 | -2.2222 | 0.720907 | 0.213159 |
+| 0.25 flat | A (n 50) | K=16 | 50 | 5.5705 | -2.2993 | 0.696308 | 0.188559 |
+| 0.25 flat | A (n 50) | uncapped | 50 | 5.5705 | -2.2993 | 0.696308 | 0.188559 |
+| 0.25 flat | B (the 29) | K=8 | 12 | -8.6142 | -3.4554 | -0.258427 | -0.246690 |
+| 0.25 flat | B (the 29) | K=16 | 20 | -12.7405 | -4.6264 | -0.637026 | -0.651204 |
+| 0.25 flat | B (the 29) | uncapped | 29 | -9.5878 | -2.8830 | -0.695114 | -0.709292 |
+| 0.25 flat | A+B | K=8 | 48 | 5.1254 | -2.3019 | 0.615043 | 0.107295 |
+| 0.25 flat | A+B | K=16 | 67 | 2.4597 | -2.4207 | 0.412001 | -0.095747 |
+| 0.25 flat | A+B | uncapped | 79 | 0.0060 | -2.4220 | 0.001194 | -0.506554 |
+| 0.25 pressure | A (n 50) | K=8 | 39 | 6.9542 | -2.1069 | 0.678034 | 0.197015 |
+| 0.25 pressure | A (n 50) | K=16 | 50 | 5.2290 | -2.1808 | 0.653625 | 0.172607 |
+| 0.25 pressure | A (n 50) | uncapped | 50 | 5.2290 | -2.1808 | 0.653625 | 0.172607 |
+| 0.25 pressure | B (the 29) | K=8 | 12 | -8.1285 | -3.2770 | -0.243854 | -0.232708 |
+| 0.25 pressure | B (the 29) | K=16 | 20 | -12.3011 | -4.1836 | -0.615053 | -0.628447 |
+| 0.25 pressure | B (the 29) | uncapped | 29 | -9.2436 | -2.7343 | -0.670161 | -0.683555 |
+| 0.25 pressure | A+B | K=8 | 48 | 4.8139 | -2.1842 | 0.577668 | 0.096650 |
+| 0.25 pressure | A+B | K=16 | 67 | 2.2998 | -2.2948 | 0.385217 | -0.095802 |
+| 0.25 pressure | A+B | uncapped | 79 | -0.0837 | -2.2980 | -0.016536 | -0.497554 |
+| 0.10 flat | A (n 50) | K=8 | 39 | 7.2636 | -2.3971 | 0.283282 | 0.079850 |
+| 0.10 flat | A (n 50) | K=16 | 50 | 5.4320 | -2.4745 | 0.271600 | 0.068169 |
+| 0.10 flat | A (n 50) | uncapped | 50 | 5.4320 | -2.4745 | 0.271600 | 0.068169 |
+| 0.10 flat | B (the 29) | K=8 | 12 | -8.8014 | -3.6350 | -0.105617 | -0.100476 |
+| 0.10 flat | B (the 29) | K=16 | 20 | -12.9859 | -4.8097 | -0.259717 | -0.264985 |
+| 0.10 flat | B (the 29) | uncapped | 29 | -9.8117 | -3.0606 | -0.284540 | -0.289807 |
+| 0.10 flat | A+B | K=8 | 48 | 4.9854 | -2.4772 | 0.239301 | 0.035870 |
+| 0.10 flat | A+B | K=16 | 67 | 2.3098 | -2.5964 | 0.154760 | -0.048671 |
+| 0.10 flat | A+B | uncapped | 79 | -0.1638 | -2.5977 | -0.012940 | -0.216371 |
+
+4. **Sensitivity to one position, FU8vnN6g (position 97a12683585ec423), from the QP on #1336.** It is a pricing-rule total loss, not a drained pool: entry 2026-11-09T12:33:53.180Z, time-stop exit decision 2026-11-10T12:33:56Z, state `derived_last`. The strand rule (`exit_invalid`) prices it at stake plus send plus stranded rent: -252,199,280 lamports at 0.25 (-100.88%). k fell 0.13% (k_x / k_e = 0.998700) against a tolerance of 0.1%. The exit price was 1.25 times the entry price, and under the other pricing rule (sc, no strand class) the same row is `filled` at +44,452,068 lamports at 0.25 (+17.78%). The ledger cannot say whether the k fall is real or an artefact of a stale `derived_last` state. It is the only strand among the 79. Uncapped, n 79, 0.25 flat, total / ex-top-3 SOL: (i) as priced +0.0011937554 / -0.5065542767; (ii) -100% exactly +0.0033930354 / -0.5043549967; (iii) left out (n 78) +0.2533930354 / -0.2543549967; (iv) other-rule price +0.2978451033 / -0.2099029288. K = 8 and K = 16 are unchanged, because the position is capped out of both. At the pressure leg, 0.25 uncapped: (i) -0.0165358669, (iii) 0.2356634131, (iv) 0.2777319049.
+5. **Statements of Amendment 6 and Errata 1 and 2 that this bears on.** Judged strictly from the numbers above. Amendment 6 quotes the 0.25 flat K = 16 cell, n 50; with group B added the same cell has n 67 (K = 16 admits 20 of the 29) and the uncapped cell has n 79. Amendment 6 gives no SOL/day figure, so none is judged.
+   - "n 50" (evidence bullet): holds as the count of the priced positions; it is not the count of entries (79).
+   - "mean +5.66%" (corrected in Erratum 2 to +5.57%, 5.5705): with the 29, the mean is +2.4597% at K = 16 and +0.0060% uncapped. It remains positive in both, and is no longer +5.57%.
+   - "median −2.21%" (Erratum 2: −2.30%): with the 29, −2.4207% at K = 16 and −2.4220% uncapped. It stays negative.
+   - "total +0.7072 SOL" (Erratum 2: +0.6963): no longer holds for all entries; with the 29 it is +0.412001 at K = 16 and +0.001194 uncapped, and +0.615043 at K = 8.
+   - "ex top 3 +0.1988 SOL" (Erratum 2: +0.1886) and "the positive pooled ex-top-3": no longer holds at K = 16 (−0.095747) or uncapped (−0.506554); at K = 8 it is +0.107295.
+   - Amendment 6's sentence "The positive pooled ex-top-3 comes from the pre-deploy rows together with the post-deploy rows" no longer applies: with the 29 the pooled ex-top-3 is negative at K = 16 and uncapped.
+   - "the ex-top-3 total is a fraction of the total": cannot be said with the 29 at K = 16 or uncapped, because the ex-top-3 total is negative while the total is positive.
+   - "6 of 8 entry-day buckets positive … 6 of 7 UTC days positive": no longer holds. With the 29, 5 of 8 UTC entry days are positive (2026-11-03, 04, 05, 06, 08); 11-07 (−0.011846), 11-09 (−0.517911, 28 positions) and 11-10 (−0.030893, 5 positions) are negative. With 11-07 split at the deploy, as in Amendment 6, it is 5 of 9 buckets. Basis: the day counts use gap.json `groups["0.25:flat"]["A+B"]["per_day"]`, whose rows are uncapped; the 11-07 split (−0.005090 before the deploy, −0.006756 after) is not in gap.json and comes from job #2527's paper ledger.
+   - "Caveat, the regime the live host runs in: the post-deploy subset … n 17, total +0.3106 SOL, ex top 3 −0.1035 SOL (pressure leg −0.0970)" (Erratum 2: +0.3067, −0.1067, −0.1011): all 29 entered after the deploy. These figures are not in gap.json. They were recomputed by the QP on #1338 from job #2527's paper ledger (`/data2/mal/scratch/floor-gap-range/run/ledger`), with the first-come cap applied within the post-deploy entries, as `floor_nov_pnl.py` does for its pooled "post" scope (that method reproduces Erratum 2's post-deploy n 17, +0.306711 / −0.106652 flat and −0.101139 pressure). Post-deploy, with the 29, 0.25, total / ex-top-3 SOL:
+
+     | post-deploy, with the 29 | flat | pressure |
+     | --- | --- | --- |
+     | K=8 (n 22) | −0.132716 / −0.285101 | −0.126435 / −0.270170 |
+     | K=16 (n 34) | +0.022404 / −0.390959 | +0.021440 / −0.369547 |
+     | uncapped (n 46) | −0.388403 / −0.801766 | −0.380313 / −0.771300 |
+
+     The caveat's negative ex-top-3 holds at every cap and is larger; the total is +0.022404 at K = 16 (the quoted cell) and negative at K = 8 and uncapped.
+   - "29 feed-gap positions are unpriced": no longer true of the research record; they are priced through the holes here, with the limits in item 6. It remains true of the n 50 figures.
+   - "In-sample, not a gate read": holds, and holds for the 79.
+6. **Limits.** In-sample paper research; not a gate read. The holes are priced as if absent (as if no data were missing). One burst day carries 24 of the 29 (2026-11-09). No executor cap, wallet floor, gap guard or live fills enter any figure. 26 of the 29 exits use a last known print; hidden take-profits are not excluded. One position decides the sign of the uncapped 0.25 flat total (item 4). Nothing here says the book is or is not profitable. The amendment's decision, limits (stake 0.25, budget 2.10, daily 0.50) and install gate are unchanged by this erratum: the first 20 closed 0.10 trades must be ≥ 0 after all fees (b); the fills check must read yes at trade 10 and at trade 20 (c); preconditions (a) to (f) stand as written. The gate is a live-fills gate, and no figure in this erratum is a gate read.
+7. **Two wording minors left from the Erratum 2 reviews (#1328).** (a) Erratum 2 labels nits 3 and 4 "REVIEWER nit on #1319"; both quoted sentences are from the QP verdict on #1319 (QP VERDICT @c0171251, Nits 1 and 2), not the REVIEWER verdict. Read them as "QP nit on #1319". The formula 2 × 0.25² / 18.25 = 0.00685 is written out in the QP verdict on #1318 at 82dec346; the REVIEWER comment on #1318 gives only "about 0.007". (b) Erratum 2 item 4 and "Why the daily stop is 0.50" name the cause of the marked P&L drop at the fill (pool fees plus rent and buy fee), while the number "about 0.007 SOL per position" (and "about 0.055 SOL with 8 open") is the round-trip impact estimate of the "Price impact" section. The number is not a measured or derived value of that cause. This DEC gives no derived figure for it; the 0.50 stop does not rest on the number.
+
 ## Amendment 7 (2026-11-13): floor-lane-1 decision host "stage 1" install (cheap restart on; the deploy restart is a 24 h refuse-all; `status_span_no_loss` stays off)
 Written 2026-11-13T00:1xZ (`date -u` 00:16:13Z) by manager23; revised 2026-11-13T00:2xZ (`date -u` 00:26:07Z) after QP NOT OK and the REVIEWER MINORs at 8db68744 on PR #1335. Nothing in this amendment says floor-lane-1 makes money, and **floor-lane-1 has not cleared the promotion gate**.
 
