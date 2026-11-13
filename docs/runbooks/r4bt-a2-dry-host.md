@@ -67,6 +67,8 @@ Pass shape (structure only):
 
 **Do not run `r4bt_attempts.py count` or `p0` on the dry host before the J4 instant, and do not look at entry counts in any other way.** No entry count of an r4bt-a2 host is printed, read or cited before 2026-11-19T00:10Z.
 
+**The preview's output is the one path where this ban gives way (DEC-031 Amendment 31 item 4).** The ban on printing, reading or citing an r4bt-a2 entry count before 2026-11-19T00:10Z gives way for the r4-b preview's output only. It stands for every other path, including the copier's status file and any listing of declog or declog-copy file sizes (day names and byte lengths are entry-count proxies; Amendment 31 Erratum 2 item 3).
+
 **Am.30 item 7 (verbatim):** "A stop, non-start or non-run of the item 6 host or of the P0 count job, decided after any per-day entry count of an r4bt-a2 host was seen, is scored as the P0 miss kill line (item 14), not as an operational NOT_DECIDABLE. Only a cause recorded from names, timings or job state, with no entry count cited, is operational."
 
 Do not open declog rows, `out/`, `host.log` or the sidecar beyond names, counts and timings.
@@ -116,3 +118,31 @@ Registration by 2026-11-19T23:59:59Z gives clock 2026-11-20T00:00:00Z (179513280
   - the real-layout twin run;
   - the owner's word.
 - The paper book models 0.25 SOL × 10 = 2.5 SOL peak open. No SOL is involved.
+
+## 8. Preview (DEC-031 Amendment 31, Errata 1 and 2) and the registered pricer's paths (Amendment 30 Errata 2 and 3)
+
+Sources: DEC-031 Amendment 31 Erratum 1 item 2 and Erratum 2, Amendment 30 Errata 2 and 3, and the header comments of `scripts/ops/r4b_price_keeper.sh` and `scripts/ops/r4b_declog_copy.sh`. No command below is invented: where a job form is not in those headers, it is not given here.
+
+**Three manager MiScusi jobs, each from a clean detached tree at its pinned commit. Agents never run them.**
+
+| Job | Host | When | Form |
+|---|---|---|---|
+| r4-b price keeper | mal-research-0 | links closed hv7 hours from 2026-11-15T22; start by 2026-11-16T12Z | `scripts/ops/r4b_price_keeper.sh` (see its header comment; suggested job in it: mem 64 MB, 0.1 CPU, no time limit). Exit 5 (a missing hour, or the receiver silent for over 72 h) ends the job after a full pass; the manager restarts it after fixing the cause. The missing-hour alert runs from its start (Amendment 30 Erratum 2). |
+| declog copier | mal-fast-0 | before the preview's first run | `scripts/ops/r4b_declog_copy.sh` with `--series <change_id>=<declog dir>` flags (see its header comment; suggested job in it: mem 128 MB, 0.2 CPU, no time limit). **Exactly ONE copier job at a time: it takes no lock.** An r4bt-a3 series needs `--quiet-until <its own P0 count instant, ISO Z>`. |
+| r4-b preview pricer | mal-research-0 | daily at 03:20Z with `as_of` = that day 00:00Z; first run 2026-11-17 | see `scripts/research/r4b-preview.sh` once PR #1370 merges. |
+
+The schedule (03:20Z, `as_of` = that day 00:00Z) is not enforced in code. A run whose `as_of` is before 2026-11-19T00:10Z is fine under Amendment 31 item 4, because the preview's output is the one path where the entry-count ban gives way (section 3).
+
+**Owed before the preview's first run (all):**
+- the smoke judgement of the Amendment 30 item 6 host (Amendment 30 item 13 (e)), written and notebooked and not revised afterwards;
+- d, measured once over [2026-11-15T00:00Z, 2026-11-16T00:00Z) of the 60 s sampler with the pinned d tool, and notebooked (Amendment 31 Erratum 1 item 3); the preview and r4bt-a2's registration use that one value;
+- the second P0 notebook entry, before 2026-11-16T00:00:00Z (section 4 and Amendment 31 item 4);
+- the declaration notebook entry, "r4-b preview declared <instant> (Amendment 31)" (Amendment 31 item 3);
+- the copier and preview pins recorded (the keeper's pin is #1367 `50469181a6ce4820c8890d0157bf2809fa50e7d3`);
+- the SEALS-BRIEF lines (Amendment 31 Erratum 1 item 6, Erratum 2 item 4).
+
+**The registered pricer's paths (J12; Amendment 30 Errata 2 and 3).** These replace J12's price path and declog root; J12 is otherwise unchanged.
+- `--tape-dir` is the keeper dir `/data2/mal/scratch/r4b-price-keep`.
+- `--declog-root` is the declog copy `/data2/mal/r4b-preview/declog-copy/<change_id>/`. Both are on mal-research-0, so the registered pricer runs there. The registration record pins both paths.
+- Before pricing, the `zst_sha` pre-check of Amendment 30 Erratum 3 item 1 runs as its own pinned step. `tools/r4bt_price.py` is not edited. A failed check means the pricer is not run.
+- Read-time copier procedure (Amendment 30 Erratum 3 item 2): after the host stops or the last needed day has closed, one copier pass with `--loop 0`; every needed day `unchanged`; only then the `r4bt_attempts day-sha` list from the originals on fast-0. Every copied day file must equal that list, or the pricer refuses.
