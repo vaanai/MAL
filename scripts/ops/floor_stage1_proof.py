@@ -39,6 +39,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -475,6 +476,7 @@ def run_p2(a, out: str, tape: str, seed_ms) -> dict:
     frm, to, step = a.from_ms, a.to_ms, a.step_ms
     warm = WARM_MIN_DEFAULT
     tm = "first_print" if a.test_mode else None
+    head_sha = git("rev-parse", "HEAD") if not a.test_mode else "a" * 40
     work = os.path.join(out, "p2")
     os.makedirs(work)
     reg = os.path.join(work, "bots.json")
@@ -519,7 +521,7 @@ def run_p2(a, out: str, tape: str, seed_ms) -> dict:
     engA = FakeEngine(Path(aroot))
 
     def lane(root, eng, clk, now0, **flags):
-        h = H.make_lane_host(root=root, ledger_root=os.path.join(root, "ledger"), registry=reg, tape_dir=tape, clock_start_ms=frm, live=True, binding=None, start_ms=now0 - warm * 60_000,
+        h = H.make_lane_host(root=root, ledger_root=os.path.join(root, "ledger"), registry=reg, tape_dir=tape, clock_start_ms=frm, live=True, binding=H.lane_binding(H.verify_pins(), hb={"git_sha": head_sha, "dirty": False}, guard={"status_span_no_loss": bool(flags.get("status_span_no_loss")), "cheap_restart": bool(flags.get("cheap_restart"))}), start_ms=now0 - warm * 60_000,
                              table_mode=tm, engine=eng, now_fn=lambda: clk[0], warm_min=warm, **flags)
         if step > 5_000:
             h.cfg.stale_row_ms = 10 ** 9
@@ -551,7 +553,8 @@ def run_p2(a, out: str, tape: str, seed_ms) -> dict:
         clk = [now]
         B = lane(croot, eng, clk, now, cheap_restart=True)
         ws = now - warm * 60_000
-        n = rebuild_table(B.table, tape, ws)
+        t_start = time.monotonic()
+        n = rebuild_table(B.table, tape, ws)  # exactly main run's rebuild with a checkpoint and no --since-hour
         B.note_rebuild(ws, n)
         B.lane_start(now)
         B.resume()
@@ -565,17 +568,70 @@ def run_p2(a, out: str, tape: str, seed_ms) -> dict:
             rec["seq_post"] = B.log.head(BOT)[1]
             rec["buys_post"] = sum(1 for c in eng.calls if c[0] == "buy")
             rec["blocked_pools"] = set(B.blocked)
+            rec["start_s"] = round(time.monotonic() - t_start, 3)
 
         B.catch_up = cu
         start = max(frm, now)
         B.run(start - start % 1000, start + horizon, sleep=lambda s, clk=clk: clk.__setitem__(0, clk[0] + max(20, int(s * 1000))))
         m = p2_case_metrics(name, ref_rows, T, D, B, read_rows(croot), rec, eng, expect, now)
         m["D_s"] = D // 1000
+        m["start_duration_s_INFO"] = rec.get("start_s")
+        m["table_rebuild_rows_INFO"] = n
         res["cases"].append(m)
+        if name == "e_unknown_v1_checkpoint":
+            res["f"] = run_f(B, eng, croot, lane, tape, rebuild_table, now + horizon, step, warm, frm)
         shutil.rmtree(os.path.join(croot, "ledger"), ignore_errors=True)
+    # fail-closed: a decision log without its lane checkpoint refuses to start (main run without --since-hour and without a checkpoint)
+    mroot = os.path.join(work, "nockpt")
+    shutil.copytree(aroot, mroot)
+    os.remove(os.path.join(mroot, "lane", "checkpoint.json"))
+    M = lane(mroot, FakeEngine(Path(mroot)), [T], T, cheap_restart=True)
+    try:
+        M.lane_start(T + 300_000)
+        refused = False
+    except R.HostError:
+        refused = True
+    res["missing_checkpoint_refuses"] = refused
     res["t_ms"] = T
-    res["pass"] = all(c["pass"] for c in res["cases"])
+    res["pass"] = all(c["pass"] for c in res["cases"]) and refused and res.get("f", {}).get("pass", False)
     return res
+
+
+def run_f(B1, eng, croot, lane, tape, rebuild_table, end1, step, warm, frm) -> dict:
+    """QP case (f), a continuation of the v1-checkpoint case: restart 1 (unknown_prev_end, refuse-all) ended cleanly at end1; restart 2 inside 24 h still refuses every pool because
+    the old host_down span is unflagged; restart 3, after that span aged out, is cheap. `refuses` = the host's own judge() for a pool with no block of its own, 5 s after the start."""
+    from tools import floor_lane_host as FH
+
+    def restart(now, name):
+        clk = [now]
+        H_ = lane(croot, eng, clk, now, cheap_restart=True)
+        ws = now - warm * 60_000
+        n = rebuild_table(H_.table, tape, ws)
+        H_.note_rebuild(ws, n)
+        info = H_.lane_start(now)
+        H_.resume()
+        H_.begin_live(now)
+        H_.catch_up(now - now % step)
+        j = H_.judge(now + 5_000, "probe-pool-without-a-block")
+        rs = [r for r in read_rows(croot) if r.get("kind") == "lane_restart_shadow"][-1]
+        d = {"case": name, "prev_end": rs.get("prev_end"), "fallback": rs.get("fallback") or "none", "shadow_complete": bool(rs.get("shadow_complete")), "old_unflagged_span_refuses_every_pool": j is not None}
+        return H_, clk, d
+
+    now2 = _align(end1 + 600_000, step)
+    H2, clk2, d2 = restart(now2, "f2_restart_inside_24h_of_unflagged_span")
+    unfl = [g for g in H2.lane_gaps if g.get("kind") == "host_down" and not g.get("shadow_complete")]
+    aged = max((g["to_ms"] for g in unfl), default=now2) + FH.BLOCK_MS + 2 * step
+    t = now2
+    while t < aged:  # a clean run, then a kill (no finally): the checkpoint says `signal`
+        clk2[0] = t + 100
+        H2.step(t)
+        t += step
+    now3 = _align(t + 300_000, step)
+    H3, clk3, d3 = restart(now3, "f3_restart_after_the_span_aged_out")
+    d3["n_unflagged_spans_in_checkpoint"] = len(unfl)
+    d2["pass"] = d2["old_unflagged_span_refuses_every_pool"] is True
+    d3["pass"] = d3["old_unflagged_span_refuses_every_pool"] is False and d3["shadow_complete"] is True and d3["prev_end"] == "signal"
+    return {"f2": d2, "f3": d3, "pass": d2["pass"] and d3["pass"]}
 
 
 # ---------------------------------------------------------------------------------------------------------------- main
@@ -676,6 +732,9 @@ def cmd_p2(a) -> int:
         return EXIT_VACUOUS
     for c in res["cases"]:
         emit("P2-CASE", c)
+    for k in ("f2", "f3"):
+        emit("P2-F", res["f"][k])
+    emit("P2-CHECK", {"missing_checkpoint_refuses": res["missing_checkpoint_refuses"]})
     Path(out, "p2.json").write_text(json.dumps(res, sort_keys=True))
     print("P2 %s" % ("PASS" if res["pass"] else "FAIL"))
     return 0 if res["pass"] else EXIT_FAIL
