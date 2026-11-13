@@ -33,8 +33,8 @@ class Env:
 
     def run(self, *args, **kw):
         out = []
-        argv = ["--src", str(self.src), "--keep", str(self.keep), "--loop", "0"] + list(args)
-        code = K.main(argv, keep_root=str(self.root), backfill_allowed=str(self.roll), out=out.append, **kw)
+        argv = ["--loop", "0"] + list(args)
+        code = K.main(argv, src=str(self.src), keep=str(self.keep), backfill_allowed=str(self.roll), out=out.append, **kw)
         return code, out
 
     def kept(self):
@@ -115,53 +115,125 @@ def test_inode_mismatch_refused(env):
     assert code == 2 and any(t.name in o for o in out)
 
 
-def test_keep_outside_root_and_overlap_refused(env, tmp_path):
+def test_cli_has_no_src_events_keep_or_trust_flags(env):
+    for flag in ("--src", "--events", "--keep", "--backfill-trust-roll"):
+        with pytest.raises(SystemExit) as e:
+            K.main([flag, "x", "--loop", "0"], src=str(env.src), keep=str(env.keep), out=lambda s: None)
+        assert e.value.code == 2
+
+
+def test_other_src_keep_events_refused_when_defaults_apply(env, tmp_path):
     env.tape(env.src, H[0])
     env.log(H[:1])
+    # allow-list = the real constants, which do not exist here: every other dir is refused, nothing is created or linked
+    for kw in ({"src": env.src, "keep": env.keep}, {"src": tmp_path, "keep": env.keep}):
+        with pytest.raises(K.Refuse):
+            K.one_pass(str(kw["src"]), str(kw["keep"]), H[0], events=str(env.events), out=lambda s: None)
+    assert not env.keep.exists()
+    # right src and keep but another events file
+    other = tmp_path / "ev.jsonl"
+    other.write_text("")
+    with pytest.raises(K.Refuse):
+        K.one_pass(str(env.src), str(env.keep), H[0], events=str(other), src_allowed=str(env.src), keep_allowed=str(env.keep), out=lambda s: None)
+    # keep that resolves elsewhere
+    os.symlink(tmp_path / "elsewhere", env.root / "lnk")
+    with pytest.raises(K.Refuse):
+        K.one_pass(str(env.src), str(env.root / "lnk"), H[0], src_allowed=str(env.src), keep_allowed=str(env.keep), out=lambda s: None)
+    # overlap
+    with pytest.raises(K.Refuse):
+        K.one_pass(str(env.root), str(env.keep), H[0], src_allowed=str(env.root), keep_allowed=str(env.keep), out=lambda s: None)
+
+
+def test_symlink_and_non_regular_entries_not_linked(env, tmp_path):
+    target = tmp_path / "sealed-target"
+    target.write_bytes(b"s")
+    os.symlink(target, env.src / ("tape-%s.jsonl" % H[0]))
+    env.tape(env.src, H[1])
+    os.symlink(target, env.roll / ("tape-%s.jsonl" % H[2]))
+    os.mkdir(env.src / ("tape-%s.jsonl" % H[3]))  # a directory with a tape name
+    env.log(H[:4])
+    code, out = env.run("--backfill-src", str(env.roll))
+    assert code == 0
+    assert env.kept() == ["tape-%s.jsonl" % H[1]]
+    st = json.loads((env.keep / ".keeper-status.json").read_text())
+    assert st["skipped"]["not_regular_file"] == 3 and st["not_regular_files"] == ["tape-%s.jsonl" % h for h in (H[0], H[2], H[3])]
+    assert any("not_regular_files" in o for o in out)
+
+
+def test_link_called_without_following_symlinks(env, monkeypatch):
+    env.tape(env.src, H[0])
+    env.log(H[:1])
+    seen = []
+    real = os.link
+    monkeypatch.setattr(os, "link", lambda a, b, **kw: (seen.append(kw), real(a, b, **kw))[1])
+    assert env.run()[0] == 0 and seen == [{"follow_symlinks": False}]
+
+
+def test_refusal_writes_status_and_oserror_does_not_end_loop(env, monkeypatch):
+    t = env.tape(env.src, H[0])
+    env.log(H[:1])
+    env.keep.mkdir()
+    (env.keep / t.name).write_bytes(b"other")
+    assert env.run()[0] == 2
+    st = json.loads((env.keep / ".keeper-status.json").read_text())
+    assert "replaced after verification" in st["refused"] and "pass_utc" in st
+    (env.keep / t.name).unlink()
+    calls = []
+    real = K.one_pass
+
+    def flaky(*a, **kw):
+        calls.append(1)
+        if len(calls) == 1:
+            raise OSError(5, "Input/output error")
+        return real(*a, **kw)
+
+    monkeypatch.setattr(K, "one_pass", flaky)
     out = []
-    assert K.main(["--src", str(env.src), "--keep", str(tmp_path / "elsewhere"), "--loop", "0"], keep_root=str(env.root), out=out.append) == 2
-    assert not (tmp_path / "elsewhere").exists()
-    assert K.main(["--src", str(env.root), "--keep", str(env.keep), "--events", str(env.events), "--loop", "0"], keep_root=str(env.root), out=out.append) == 2
-    # a symlinked keep that resolves outside the root is refused after realpath
-    os.symlink(tmp_path / "elsewhere2", env.root / "lnk")
-    assert K.main(["--src", str(env.src), "--keep", str(env.root / "lnk"), "--loop", "0"], keep_root=str(env.root), out=out.append) == 2
+    code = K.main(["--loop", "1"], src=str(env.src), keep=str(env.keep), sleep=lambda s: None, max_passes=3, out=out.append)
+    assert code == 0 and len(calls) == 3 and any("KEEPER-FAIL pass 1" in o for o in out)
+    assert env.kept() == ["tape-%s.jsonl" % H[0]]
+
+
+def test_five_consecutive_oserrors_exit_4(env, monkeypatch):
+    def bad(*a, **kw):
+        raise OSError(5, "Input/output error")
+
+    monkeypatch.setattr(K, "one_pass", bad)
+    assert K.main(["--loop", "1"], src=str(env.src), keep=str(env.keep), sleep=lambda s: None, max_passes=50, out=lambda s: None) == 4
 
 
 def test_missing_log_exit_3(env):
     assert env.run()[0] == 3
 
 
-def test_backfill_allow_list_and_trust_modes(env, tmp_path):
-    old, new = H[0], H[1]
-    env.tape(env.roll, old)
+def test_backfill_links_logged_hours_only(env, tmp_path):
+    old, gone, new = H[0], H[2], H[1]
     s = env.tape(env.src, new)
     os.link(s, env.roll / s.name)  # as in production: the roll holds hard links of the same inodes
-    env.log([new])  # log no longer lists the old hour
+    env.tape(env.roll, old)  # hv7 dropped it; the log still lists it
+    env.tape(env.roll, gone)  # hv7 dropped it; the log does not list it
+    env.log([old, new])
     other = tmp_path / "other-roll"
     other.mkdir()
     assert env.run("--backfill-src", str(other))[0] == 2  # not the allow-listed path
     code, out = env.run("--backfill-src", str(env.roll))
-    assert code == 0 and env.kept() == ["tape-%s.jsonl" % new]
-    assert json.loads((env.keep / ".keeper-status.json").read_text())["skipped"] == {"backfill_not_in_log": 1}
-    code, out = env.run("--backfill-src", str(env.roll), "--backfill-trust-roll")
     assert code == 0 and env.kept() == ["tape-%s.jsonl" % h for h in (old, new)]
     st = json.loads((env.keep / ".keeper-status.json").read_text())
-    assert st["backfill_trust_roll_linked"] == 1 and any("trust_roll_linked=1" in o for o in out)
+    assert st["backfill_linked"] == 1 and st["backfill_not_in_log_hours"] == [gone] and st["skipped"] == {"backfill_not_in_log": 1}
     assert os.stat(env.keep / ("tape-%s.jsonl" % old)).st_ino == os.stat(env.roll / ("tape-%s.jsonl" % old)).st_ino
+    assert st["contiguous"] is True and st["missing_hours"] == []
 
 
-def test_backfill_logged_old_hour_links_without_trust(env):
+def test_backfill_not_in_log_hour_never_links(env):
     env.tape(env.roll, H[0])
-    env.log(H[:1])  # hour is in the log but gone from src
-    code, out = env.run("--backfill-src", str(env.roll))
-    assert code == 0 and env.kept() == ["tape-%s.jsonl" % H[0]]
-    assert json.loads((env.keep / ".keeper-status.json").read_text())["backfill_trust_roll_linked"] == 0
+    env.log([])
+    assert env.run("--backfill-src", str(env.roll))[0] == 0 and env.kept() == []
 
 
 def test_backfill_below_from_hour_not_linked(env):
     env.tape(env.roll, "2026-11-01T23")
-    env.log([])
-    assert env.run("--backfill-src", str(env.roll), "--backfill-trust-roll")[0] == 0
+    env.log(["2026-11-01T23"])
+    assert env.run("--backfill-src", str(env.roll))[0] == 0
     assert env.kept() == []
 
 
@@ -197,7 +269,7 @@ def test_loop_runs_n_passes_then_stops(env):
     env.log(H[:1])
     sleeps = []
     out = []
-    code = K.main(["--src", str(env.src), "--keep", str(env.keep), "--loop", "7"], keep_root=str(env.root), sleep=sleeps.append, max_passes=3, out=out.append)
+    code = K.main(["--loop", "7"], src=str(env.src), keep=str(env.keep), sleep=sleeps.append, max_passes=3, out=out.append)
     assert code == 0 and sleeps == [7, 7] and sum(o.startswith("KEEPER verified_seen") for o in out) == 3
 
 
@@ -207,5 +279,5 @@ def test_loop_ends_on_refusal(env):
     env.keep.mkdir()
     (env.keep / ("tape-%s.jsonl" % H[0])).write_bytes(b"z")
     sleeps = []
-    assert K.main(["--src", str(env.src), "--keep", str(env.keep), "--loop", "7"], keep_root=str(env.root), sleep=sleeps.append, max_passes=3, out=lambda s: None) == 2
+    assert K.main(["--loop", "7"], src=str(env.src), keep=str(env.keep), sleep=sleeps.append, max_passes=3, out=lambda s: None) == 2
     assert sleeps == []
