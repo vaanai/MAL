@@ -147,3 +147,38 @@ def test_flag_off_never_logs_a3_ignored(tmp_path):
     pause, logged = run(br)
     assert pause == "a3_flags:boost_share_low"
     assert all(k != "a3_ignored" for k, _ in logged) and br._a3_ignored == ()
+
+
+def test_on_q3c_kept_cases_still_pause(tmp_path):
+    """QP-RULING-1113-a3-burst-recheck Q3 (c): with the key on, every kept flag and record problem still pauses, also beside an ignored flag."""
+    cases = [
+        ({"pins_changed": SET}, {}, "a3_flags:pins_changed"),
+        ({"pins_changed": UNEVAL, "boost_share_low": SET}, {}, "a3_flags:pins_changed"),
+        ({"pins_changed": OK, "boost_disabled": UNEVAL}, {}, "a3_flags:boost_disabled"),
+        ({"pins_changed": OK, "some_new_flag": UNEVAL}, {}, "a3_flags:some_new_flag"),
+        ({"pins_changed": "garbage", "boost_share_low": SET}, {}, "a3_flags:pins_changed"),
+        ({"pins_changed": {"halt": "yes", "evaluated": True}}, {}, "a3_flags:pins_changed"),
+        ({"pins_changed": OK, "boost_share_low": SET}, {"run_utc": utc(T0 + 3_600_000)}, "a3_record_future"),
+        ({"pins_changed": OK, "boost_share_low": SET}, {"run_utc": utc(T0 - 5 * 86_400_000)}, "a3_record_stale"),
+    ]
+    for i, (flags, kw, want) in enumerate(cases):
+        assert run(mk(sub(tmp_path, i), flags, on=True, **kw))[0] == want, (i, want)
+
+
+def test_on_record_error_pauses(tmp_path, monkeypatch):
+    br = mk(tmp_path, {"pins_changed": OK}, on=True)
+    monkeypatch.setattr(X.h5a, "a3_record_problem", lambda *a, **k: 1 / 0)
+    assert run(br)[0] == "a3_record_error"
+
+
+def test_run_parse_only_json_true_turns_key_on(tmp_path):
+    """B3: run() turns the key on only for JSON true; "true" and 1 leave the start row without the key."""
+    for i, (val, want_on) in enumerate([("true", False), (1, False), (True, True)]):
+        d = sub(tmp_path, i)
+        a3 = a3_file(d, {"pins_changed": OK}, None)
+        raw = lane_raw(d, a3_record_file=str(a3), a3_floor_flag_list=val)
+        write_live_ok(d)
+        assert X.run(raw, live_flag=True, once=True, root_checks=False, port_factory=lambda c: X.FloorLanePort(FakeInner(), c), now_ms=Clock(T0), sleep=lambda s: None) == 0
+        start = [r for r in ledger_rows(d) if r["ev"] == "start"]
+        assert start, i
+        assert ("a3_floor_flag_list" in start[-1]) is want_on, (val, start[-1])
