@@ -15,7 +15,7 @@ unpriced_entries: entries present in the ledger with no priced exit decision: en
 the tape end) are listed in `open`, not counted here. Entries of an incomplete day are never dropped: they sit in day_in_progress / the trade list.
 Exit codes: 0 ok; 2 refused (BOOKS.json, manifest pin, path guard, output guard, forbidden word in the output). Without --follow: one build.
 """
-import argparse, collections, contextlib, hashlib, io, json, os, re, sys, tempfile, time
+import argparse, collections, contextlib, hashlib, io, json, os, re, shutil, subprocess, sys, tempfile, time
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -37,6 +37,9 @@ UNPRICED_SENTENCE = "unpriced = entries in the ledger with no priced exit (engin
 FLOOR_NOT_GRADE = "holds; not decision-grade (recon NOT COMPARABLE): no live step rests on it"
 LIMIT_SENTENCE = "No limit layer (max_open, budget, daily stop) is applied to any book; live results can differ from these rows when a limit binds."
 OUT_ROOTS = ("/data2/mal/scratch/floor-open-sim/board", "~/data/open-sim")
+REAL_SNAP_ROOT = "/data2/mal/scratch/floor-open-sim/board/.tmp"
+SNAP_ROOT = REAL_SNAP_ROOT  # the ledger snapshots live here (tests point it at a tmp dir; under pytest the real path is refused)
+SNAP_MAX_AGE_S = 3600
 STALE_MS = 3 * 3_600_000
 HOUR_MS, DAY_MS, LAG_MS = 3_600_000, AB.DAY_MS, AB.BOOK_LAG_MS
 FORBIDDEN = ("pool", "mint", "signature", "price", "reserve", "slot")
@@ -153,10 +156,35 @@ def snapshot_ledger(run_dir, dest):
     return n
 
 
+def snap_root():
+    if SNAP_ROOT == REAL_SNAP_ROOT and os.environ.get("PYTEST_CURRENT_TEST"):
+        raise RuntimeError("tests must not use the real snapshot root")
+    root = SNAP_ROOT
+    os.makedirs(root, exist_ok=True)
+    os.chmod(root, 0o700)
+    if shutil.which("setfacl"):  # /data2/mal has a default POSIX ACL under which umask is ignored
+        try:
+            subprocess.run(["setfacl", "-b", "-k", root], capture_output=True, timeout=10)
+        except Exception:  # noqa: BLE001 - best effort
+            pass
+    return root
+
+
+def sweep_snapshots(now_s=None):
+    """remove snapshot dirs older than SNAP_MAX_AGE_S (a build killed mid-run leaves one); never raises"""
+    now_s = time.time() if now_s is None else now_s
+    try:
+        for e in os.scandir(SNAP_ROOT):
+            if e.name.startswith("osb-board-") and e.is_dir(follow_symlinks=False) and now_s - e.stat(follow_symlinks=False).st_mtime > SNAP_MAX_AGE_S:
+                shutil.rmtree(e.path, ignore_errors=True)
+    except OSError:
+        pass
+
+
 def price_snapshot(b, run_dir, to_ms):
     """floor_nov_pnl in-process on a snapshot of the active run's ledger"""
     send = str(b["m"]["send_lamports"])
-    with tempfile.TemporaryDirectory(prefix="osb-board-") as d, contextlib.redirect_stdout(io.StringIO()):
+    with tempfile.TemporaryDirectory(prefix="osb-board-", dir=snap_root()) as d, contextlib.redirect_stdout(io.StringIO()):
         led = os.path.join(d, "ledger")
         snapshot_ledger(run_dir, led)
         P.main([led, os.path.join(d, "pnl.json"), "total", "1p9", "--send-lamports", send, "--ledger-send", send, "--to-ms", str(to_ms)])
@@ -342,7 +370,7 @@ def book_row(b, info, srs, control, n_watched):
     except OSError:
         code = None
     row = {"id": m["book_id"], "title": title_of(b), "role": b["role"], "state": info["state"], "params": params_of(m), "stakes_sol": m["stakes_sol"], "start_instant_utc": b["start_utc"],
-           "manifest_sha256": b["sha"], "code_sha256": code, "last_hour": info["last_hour"], "last_hour_end_utc": utc(end) if end is not None else None, "wall_time_utc": status.get("wall_time_utc"),
+           "manifest_sha256": b["sha"], "code_sha256": code, "last_hour": info["last_hour"], "last_hour_end_utc": utc(end) if end is not None else None, "today_day": complete_last_day(end) if end is not None and srs is not None else None, "wall_time_utc": status.get("wall_time_utc"),
            "waiting_for_hour": status.get("waiting_for_hour"), "gap_guard_note": None if params_of(m)["gap_guard"] else NO_GUARD, "booking": "exit (close) UTC day", "rows": []}
     if info.get("error"):
         row["error_class"] = info["error"]
@@ -364,15 +392,23 @@ def book_row(b, info, srs, control, n_watched):
     return row
 
 
-def withheld(idx, role, why):
-    """a book whose output carried a forbidden word: shown as withheld, never fails the board"""
-    return {"id": "book-%d" % (idx + 1), "title": "withheld", "role": role, "state": "ERROR", "error_class": why, "rows": [], "params": {"host": None, "rule_overrides": {}, "gap_exclusion": None, "send_lamports": 0, "start_hour": None}, "last_hour": None, "last_hour_end_utc": None, "gap_guard_note": None,
-            "start_instant_utc": None, "code_sha256": None}
+def withheld(idx, b, why):
+    """a book whose output carried a forbidden word (or that failed to render): shown as withheld, never fails the board. It keeps its real id when that is usable"""
+    bid = re.sub(r"[^A-Za-z0-9_.-]", "", str(b["m"].get("book_id", "")))[:64]
+    try:
+        check_forbidden({"id": bid}, "")
+        if not bid:
+            raise Refusal("empty id")
+    except Refusal:
+        bid = "book-%d" % (idx + 1)
+    return {"id": bid, "title": "withheld", "role": b["role"], "state": "ERROR", "error_class": why, "rows": [], "params": {"host": None, "rule_overrides": {}, "gap_exclusion": None, "send_lamports": 0, "start_hour": None},
+            "last_hour": None, "last_hour_end_utc": None, "gap_guard_note": None, "start_instant_utc": None, "code_sha256": None, "manifest_sha256": None, "stakes_sol": None, "today_day": None}
 
 
 def build(books, live, now_ms, roots=None):
     """one failing book is shown with state ERROR (exception class only) and never stops the others"""
     n_watched = sum(len(b["m"]["stakes_sol"]) for b in books)
+    sweep_snapshots()
     infos = []
     for b in books:
         try:
@@ -388,9 +424,9 @@ def build(books, live, now_ms, roots=None):
             row = book_row(b, info, srs, control, n_watched)
             check_forbidden(row, "")
         except Refusal:
-            row = withheld(i, b["role"], "ForbiddenWord")
+            row = withheld(i, b, "ForbiddenWord")
         except Exception as e:  # noqa: BLE001
-            row = withheld(i, b["role"], type(e).__name__)
+            row = withheld(i, b, type(e).__name__)
         out_books.append(row)
     ends = [i["end"] for _, i, srs in infos if srs is not None and i["end"] is not None]
     here = os.path.dirname(os.path.abspath(__file__))
@@ -440,7 +476,7 @@ def board_md(res):
             md.append("| %s | %s | - | state: %s | - | - | - | - | - | - | n/a | - |" % (bk["id"], bk["role"], bk["state"]))
         for r in bk["rows"]:
             w = r["windows"]
-            md.append("| %s | %s | %.2f | %s | %s | %s | %s | %s | %d | %d | %s | %s |" % (bk["id"], bk["role"] + ("" if bk["state"] == "running" else " " + bk["state"]), r["stake_sol"], r["impact_label"], cell(w["today"]), cell(w["d7"]),
+            md.append("| %s | %s | %.2f | %s | %s | %s | %s | %s | %d | %d | %s | %s |" % (bk["id"], bk["role"] + ("" if bk["state"] == "running" else " " + bk["state"]), r["stake_sol"], r["impact_label"], ("" if bk["state"] == "running" or not bk["today_day"] else "(%s) " % bk["today_day"][5:]) + cell(w["today"]), cell(w["d7"]),
                                                                                     cell(w["forward_all"]), cell(w["incl_backfill"]), len(r["open"]), r["unpriced_entries"], floor_word(r["disclosure"]["floor_holds"], r["disclosure"]["decision_grade"]), cell(w["day_in_progress"])))
     md += ["", "## Books"]
     for bk in res["books"]:
@@ -574,10 +610,10 @@ def main(argv=None, **kw):
     try:
         return run(a, **kw)
     except (Refusal, O.Refused) as e:
-        print("osb_board: refused: %s" % e, file=sys.stderr)
+        print("osb_board: refused: %s" % e, file=sys.stderr, flush=True)
         return 2
     except Exception as e:  # noqa: BLE001
-        print("osb_board: build failed (%s)" % type(e).__name__, file=sys.stderr)
+        print("osb_board: build failed (%s)" % type(e).__name__, file=sys.stderr, flush=True)
         return 1
 
 
