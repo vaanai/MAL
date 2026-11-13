@@ -115,7 +115,11 @@ def test_board_no_identifying_fields_and_labels():
     for s in walk(b):
         assert s == AB.EXTRAPOLATION_NOTE or not any(w in s.lower() for w in ("pool", "mint", "sig")), s
     assert "POOL_" not in md and "MINT_" not in md
-    assert b["schema"] == "open_sim_board.v1" and b["live"] is None and b["recon"]["status"] == "NOT COMPARABLE"
+    assert b["schema"] == "open_sim_board.v1" and b["live"] is None and b["recon"]["status"] == "NOT COMPARABLE: not decision-grade"
+    lbl = "v0 replay, forward-from 2026-11-12 declared 2026-11-12T21:43Z"
+    assert all(x["book_label"] == lbl for x in b["books"]) and ("(" + lbl + ")") in md and "Reconciliation: NOT COMPARABLE: not decision-grade" in md
+    assert {x["stake_sol"]: x["impact_label"] for x in b["books"]} == {0.1: "model; live fills exist, not reconciled (recon NOT COMPARABLE)", 0.25: "model; live check pending", 0.5: "model only, extrapolated; not for steering", 1.0: "model only, extrapolated; not for steering"}
+    assert AB.book_label("2026-11-14") == "v0 replay, forward-from 2026-11-14"
     assert b["banner"] == "open simulation, paper, not a gate read; no book has cleared the promotion gate"
     assert b["n_books_watched"] == 8 and [x["id"] for x in b["books"][:4]] == ["D0-0.10", "D0-0.25", "D0-0.50", "D0-1.00"]
     lab = {x["stake_sol"]: x["impact_label"] for x in b["books"]}
