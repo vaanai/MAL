@@ -146,6 +146,7 @@ def table(a):
           "- The 2026-11-07T18Z tip-follower cut-over hour is EXCLUDED from every entry day (consistent with the funnel report); the A/B still spans pre- and post-deploy hours.",
           "- A day is COMPLETE only if every position entered that day has an exit decision or an engine exclusion (no open_at_tape_end, and tape end >= last entry + 24 h time stop + 1 s tick + 1.55 s exit-leg window). "
           "FLOOR has no stop-loss, so recent entries stay open until TP 1.5x or 24 h; an INCOMPLETE day prints counts only, no total, mean, ex-top-3 or delta.",
+          "- Pairs are matched by pool within one UTC entry day. A re-timed entry that crosses midnight UTC appears as one \"only in base\" row and one \"only in vault1.0\" row on adjacent days and is left out of the like-for-like delta, so the base-only and vault1.0-only counts can include re-timed entries and are not counts of new or lost pools.",
           "- base arm: variant=%s frozen_rule=%s; vault arm: variant=%s frozen_rule=%s (both ledgers are registered under the pinned FROZEN_SHA; the vault arm is NOT the frozen rule)." % (
               hb.get("variant"), hb.get("frozen_rule"), hv.get("variant"), hv.get("frozen_rule")), ""]
     for key in sorted(b["entries_by_day"]):

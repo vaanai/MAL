@@ -1,0 +1,190 @@
+"""floor_gap_range_engine: gap exclusion off prices an overlapped position; default excludes it; marks gap_overlap; time-stop shadow. Synthetic tape, no network."""
+import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "scripts" / "research"))
+import floor_gap_range_engine as G  # noqa: E402
+from tools import arena_rule_l1 as L  # noqa: E402
+from tools.test_arena_paper import SC, V, _tape, register_bot, tms  # noqa: E402,F401
+
+
+def mk(tmp, **kw):
+    reg = tmp / "bots.json"
+    register_bot("botA", "abc1234", 0, reg, now_ms=0)
+    eng = G.GapRangeEngine(tmp / "ledger", reg, SC(strand_rule="total"), sps_fn=lambda: 0.4, code_state_fn=lambda: ("abc1234", False), **kw)
+    eng.now_fn = lambda: eng.hw_ms or 0
+    return eng
+
+
+def drive(eng, with_gap, gap_slot=110):
+    pid = None
+    for r in _tape():
+        eng.on_row(r)
+        if r["slot"] == 100:
+            pid = eng.buy("botA", "P1", None, tms(100), 100)
+        if with_gap and r["slot"] == gap_slot:
+            eng.on_row({"type": "gap", "kind": "silence", "slot": gap_slot, "t_recv_ms": tms(gap_slot), "silent_ms": 800, "data_loss": True, "prog": "pumpswap"})
+        if r["slot"] == 150:
+            eng.sell("botA", pid, 1.0, tms(150), 150)
+    return pid
+
+
+def rows(eng, kind):
+    return [r for r in eng.ledger.read_bot("botA") if r["kind"] == kind]
+
+
+def test_default_excludes_overlapped_and_marks_it(tmp_path):
+    eng = mk(tmp_path, gap_exclusion=True)
+    drive(eng, True)
+    ex = rows(eng, "excluded")
+    assert len(ex) == 3 and {r["exclusion_reason"] for r in ex} == {"feed_gap"} and rows(eng, "trade") == []
+    assert all("gap_overlap" not in r and "gap_holes" not in r for r in ex)  # default = plain engine rows
+
+
+def test_option_off_prices_the_overlapped_position_same_entry(tmp_path):
+    a, b, c = tmp_path / "a", tmp_path / "b", tmp_path / "c"
+    for d in (a, b, c):
+        d.mkdir()
+    on, off, nogap = mk(a, gap_exclusion=True), mk(b, gap_exclusion=False), mk(c, gap_exclusion=False)
+    p_on, p_off, p_ng = drive(on, True), drive(off, True), drive(nogap, False)
+    assert p_on == p_off == p_ng  # same entry (position id is a function of the entry decision)
+    t = rows(off, "trade")
+    assert len(t) == 3 and rows(off, "excluded") == [] and all(r["gap_overlap"] is True for r in t)
+    # priced through the hole equals the same position on a tape with no hole (the prints are identical)
+    clean = rows(nogap, "trade")
+    assert [r["legs"] for r in t] == [r["legs"] for r in clean] and all(r["gap_overlap"] is False and r["gap_holes"] == [] for r in clean)
+
+
+def test_non_overlapped_position_identical_in_both_modes(tmp_path):
+    a, b = tmp_path / "a", tmp_path / "b"
+    a.mkdir(); b.mkdir()
+    on, off = mk(a, gap_exclusion=True), mk(b, gap_exclusion=False)
+    drive(on, False); drive(off, False)
+    assert [r["legs"] for r in rows(on, "trade")] == [r["legs"] for r in rows(off, "trade")] and len(rows(on, "trade")) == 3
+
+
+def test_ts_shadow_scheduled_only_for_overlapped_non_time_exit(tmp_path):
+    eng = mk(tmp_path, gap_exclusion=False, ts_variant=True)
+    pid = drive(eng, True)
+    assert eng.ts_open() == 1 and len(eng._shadows) == 1 and eng._shadows[0][1] == pid + "-ts"
+    assert eng._shadows[0][0] == eng.positions[pid + "-ts"].decision_ms + L.HOLD_MS
+    (tmp_path / "x").mkdir()
+    clean = mk(tmp_path / "x", gap_exclusion=False, ts_variant=True)
+    drive(clean, False)
+    assert clean.ts_open() == 0
+
+
+def test_reader_groups_on_engine_ledger(tmp_path):
+    import json
+    import floor_gap_range as R
+    eng = mk(tmp_path, gap_exclusion=False, ts_variant=True)
+    drive(eng, True)
+    R.main(str(tmp_path / "ledger"), str(tmp_path / "o.json"))
+    r = json.load(open(tmp_path / "o.json"))
+    assert r["counts"]["overlap_n"] == 1 and r["counts"]["A_n"] == 0
+    assert r["groups"]["0.25:flat"]["B"]["pooled"]["K=16"]["n"] == 1 and r["groups"]["0.25:flat"]["C_ts"]["pooled"]["K=16"]["n"] == 1
+
+
+def _strip(r):  # engine_id is a random uuid per engine instance
+    return {k: v for k, v in r.items() if k not in ("gap_overlap", "gap_holes", "engine_id")}
+
+
+def test_default_engine_rows_byte_identical_to_plain_engine(tmp_path):
+    import json
+    from tools.arena_paper import ArenaEngine
+    for with_gap in (False, True):
+        a, b = tmp_path / ("p%d" % with_gap), tmp_path / ("g%d" % with_gap)
+        a.mkdir(); b.mkdir()
+        reg = a / "bots.json"
+        register_bot("botA", "abc1234", 0, reg, now_ms=0)
+        plain = ArenaEngine(a / "ledger", reg, SC(strand_rule="total"), sps_fn=lambda: 0.4, code_state_fn=lambda: ("abc1234", False))
+        plain.now_fn = lambda: plain.hw_ms or 0
+        gr = mk(b, gap_exclusion=True)
+        drive(plain, with_gap); drive(gr, with_gap)
+        for kind in ("open", "trade", "excluded"):
+            pr = [json.dumps(_strip(r), sort_keys=True) for r in plain.ledger.read_bot("botA") if r["kind"] == kind]
+            gg = [json.dumps(_strip(r), sort_keys=True) for r in gr.ledger.read_bot("botA") if r["kind"] == kind]
+            assert pr == gg, (with_gap, kind)
+        # and with the option off, rows equal the plain engine's once the two documented fields are removed (no gap: same priced rows)
+    (tmp_path / "o").mkdir()
+    off = mk(tmp_path / "o", gap_exclusion=False)
+    drive(off, False)
+    pl = tmp_path / "pl"; pl.mkdir()
+    reg = pl / "bots.json"; register_bot("botA", "abc1234", 0, reg, now_ms=0)
+    plain = ArenaEngine(pl / "ledger", reg, SC(strand_rule="total"), sps_fn=lambda: 0.4, code_state_fn=lambda: ("abc1234", False))
+    plain.now_fn = lambda: plain.hw_ms or 0
+    drive(plain, False)
+    t_off = [json.dumps(_strip(r), sort_keys=True) for r in rows(off, "trade")]
+    t_pl = [json.dumps(_strip(r), sort_keys=True) for r in rows(plain, "trade")]
+    assert t_off == t_pl and len(t_pl) == 3
+
+
+SH = Path(__file__).resolve().parent.parent / "scripts" / "research" / "floor_gap_range.sh"
+
+
+def _run_sh(base, work, marker):
+    import os
+    import subprocess
+    stub = base.parent / "stubpy"
+    stub.write_text("#!/bin/sh\necho called >> %s\necho 0\n" % marker)
+    stub.chmod(0o755)
+    env = dict(os.environ, GAP_BASE=str(base), PY=str(stub), END_HOUR="2026-11-11T23")
+    return subprocess.run(["sh", str(SH)] + ([str(work)] if work else []), env=env, capture_output=True, text=True)
+
+
+def test_sh_refuses_existing_result_and_outside_base_without_touching_anything(tmp_path):
+    base = tmp_path / "floor-gap-range"
+    base.mkdir()
+    marker = tmp_path / "marker"
+    (base / "gap.json").write_text("{}")  # a finished result in the base itself (like job #2527)
+    done = base / "old"
+    (done / "run").mkdir(parents=True)
+    (done / "gap.json").write_text("KEEP")
+    (done / "run" / "x").write_text("KEEP")
+    r = _run_sh(base, done, marker)
+    assert r.returncode == 3 and "cannot create" in r.stderr and not marker.exists()
+    assert (done / "gap.json").read_text() == "KEEP" and (done / "run" / "x").read_text() == "KEEP"
+    r = _run_sh(base, base, marker)  # WORK == BASE is not a per-run folder under BASE
+    assert r.returncode == 2 and not marker.exists() and (base / "gap.json").read_text() == "{}"
+    r = _run_sh(base, tmp_path / "elsewhere", marker)
+    assert r.returncode == 2 and "not a folder under" in r.stderr and not marker.exists() and not (tmp_path / "elsewhere").exists()
+    r = _run_sh(base, base / ".." / "elsewhere2", marker)
+    assert r.returncode == 2 and not marker.exists()
+
+
+def test_sh_default_is_a_new_per_run_folder(tmp_path):
+    base = tmp_path / "floor-gap-range"
+    base.mkdir()
+    marker = tmp_path / "marker"
+    r = _run_sh(base, None, marker)  # stub python: every python call just prints 0
+    made = [p for p in base.iterdir() if p.is_dir()]
+    assert len(made) == 1 and made[0].name.startswith("2026-11-11T23-") and marker.exists() and (made[0] / "replay.log").exists(), r.stderr
+    assert not (base / "gap.json").exists()
+    r2 = _run_sh(base, made[0], tmp_path / "m2")
+    assert r2.returncode == 3  # a second run into the same folder is refused
+
+
+def _sha(p):
+    import hashlib
+    return hashlib.sha256(Path(p).read_bytes()).hexdigest()
+
+
+def test_sh_cannot_be_bypassed_with_dotdot_or_symlink(tmp_path):
+    base = tmp_path / "floor-gap-range"
+    base.mkdir()
+    (base / "gap.json").write_text("old")
+    (base / "replay.log").write_text("oldlog")
+    (base / "run").mkdir()
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (base / "lnk").symlink_to(outside)
+    marker = tmp_path / "marker"
+    before = (_sha(base / "gap.json"), _sha(base / "replay.log"))
+    seen_above = set(p.name for p in tmp_path.iterdir() if p.name != "stubpy")
+    for arg in (str(base) + "/x/..", str(base) + "/..", str(base) + "/../", str(base) + "/lnk", str(base) + "/lnk/sub", str(base) + "/./", str(base) + "/a/../b"):
+        r = _run_sh(base, arg, marker)
+        assert r.returncode != 0, (arg, r.stderr)
+        assert not marker.exists(), arg
+        assert (_sha(base / "gap.json"), _sha(base / "replay.log")) == before, arg
+        assert list(outside.iterdir()) == [] and set(p.name for p in tmp_path.iterdir() if p.name != "stubpy") == seen_above, arg
+        assert not (base / "shim").exists() and not (base / "x").exists(), arg
