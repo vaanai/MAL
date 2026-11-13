@@ -104,14 +104,16 @@ This replaces the manager22 handoff (written 2026-11-12T20:5xZ–21:1xZ). manage
 - What it does: with `cheap_restart` true, a later restart blocks only the pools the rule bought during the downtime, instead of refusing every pool for 24 h. The deploy restart itself is NOT cheap (24 h refuse-all, `unknown_prev_end`), and a restart within BLOCK_MS of an unflagged host_down span still refuses all. `status_span_no_loss` stays off.
 - **Install preconditions and their state:**
   - (a) Am.7 merged with verdicts: **done** (86cdca18).
-  - (b) Replay proof P0 and P2 at aa05923f (P1 only before `status_span_no_loss`): **not done.** The harness is PR **#1337**, head `97a5532f2d2c56780362d5a3f1135d4a4b679d19`. The verdicts on the PR are at older heads (at 0ba533f4: REVIEWER APPROVE, QP NOT OK; at 496d6e5a: REVIEWER REQUEST_CHANGES, QP NOT OK). No verdict exists at 97a5532f. P2 needs 32G.
-  - (c) Seals: SEALS-BRIEF line (g) for the proof jobs and the kill-line check job: **not added.** Add it before the proof job, then update the SEALS-BRIEF sha in AGENT-BRIEF-COMMON.
-  - The **kill-line check** (live entry rows after each cheap restart against an unguarded, uninterrupted replay; 0 entries on pools the reference holds) lives on branch `claude/floor-stage1-killcheck`, **not in a PR**. It is required before the first restart that can be cheap.
-  - (d) Unit tests at the merge sha (`tools/test_floor_lane_host_stage1.py`, `tools/test_floor_lane_host.py`; run as a job, QP needed over 600 s): **not recorded.**
-  - (e) STOP and HALT files absent; lane cash and open count recorded; each open position's entry compared with C: **at install.**
-  - (f) Rollback line recorded: **at install.**
-  - **Timing:** not before C = 2026-11-13T00:00:00Z (passed). At or after R = 2026-11-14T01:00:00Z unless the lane report at the stop shows zero open positions entered before C. Not inside the tip hand-off window [2026-11-15T05:00Z, 09:00Z), and not until its three confirmations hold. The host is already down for the disk fault and HELM-ASK-1113-2 restarts it on the current v1 code; Am.7 allows no second host restart within about 24 h of a restart, so when the stage-1 deploy follows is the manager's call.
-  - **Deploy = 24 h refuse-all.** New unit WITHOUT `--since-hour`. Owner word to Helm.
+- **Install preconditions, in order (state 2026-11-13T01:24Z).** The proof harness **#1337 is MERGED as main `4c862bba8e852154ba730c75196832863985fd74`** (QP OK and REVIEWER APPROVE at 97a5532f). The kill-line check was moved out to branch `claude/floor-stage1-killcheck` (not in a PR). Commands and pass lines are in `docs/runbooks/floor-stage1-proof.md`. MINOR owed: print `test_mode=False` in the proof output.
+  1. **DEC-035 Am.7 Erratum 1** (T1, one line, being drafted on branch `claude/dec035-am7-erratum1`): the proof-job SEALS-BRIEF line is added now; the kill-line check job's line before that job's first run and in any case before the first restart that can be cheap. It must be merged BEFORE P0 and P2 run. **Not merged.**
+  2. **SEALS-BRIEF line (g)** for the proof job added (text in `docs/runbooks/floor-stage1-proof.md`) and the brief's sha recorded. **Not done.**
+  3. **Both precounts at `hours_missing=0`.** **Not done.**
+  4. **`P0 PASS` and `P2 PASS`** at the merged sha (P1 only before `status_span_no_loss`); P2 job `--mem 32G` on mal-research-0. **Not done.**
+  5. **Kill-line check PR and its smoke run** before the first restart that can be cheap (branch `claude/floor-stage1-killcheck`; the check compares live entry rows after each cheap restart with an unguarded, uninterrupted replay; 0 entries on pools the reference holds). **Not done.**
+  6. **Timing rule:** not before C = 2026-11-13T00:00:00Z (passed). At or after R = 2026-11-14T01:00:00Z unless the lane report at the stop shows zero open positions entered before C. Not inside the tip hand-off window [2026-11-15T05:00Z, 09:00Z), and not until its three confirmations hold. The host is already down for the disk fault and HELM-ASK-1113-2 restarts it on the current v1 code; Am.7 allows no second host restart within about 24 h of a restart, so when the stage-1 deploy follows is the manager's call.
+  7. **Owner word to Helm**, then the HELM-ASK from `HELM-ASK-stage1.DRAFT.md`.
+  - Also at install (Am.7 (d) to (f)): unit tests at the merge sha (`tools/test_floor_lane_host_stage1.py`, `tools/test_floor_lane_host.py`; run as a job); STOP and HALT files absent, lane cash and open count recorded, each open position's entry compared with C; rollback line recorded.
+  - **Deploy = 24 h refuse-all.** New unit WITHOUT `--since-hour`.
 - `/data/mal/hunt-1008/ops/manager23/HELM-ASK-stage1.DRAFT.md` exists and is **not sent** (placeholders for PR numbers, jobs and the send instant; confirm the decision root against host.json `root` before sending).
 
 **Hourly status.**
@@ -179,7 +181,7 @@ MiScusi refuses job limits above 14 days. `after` fires only on exit 0, never on
 ## 7. Owed (not done)
 - **Durable disk plan for fast-0:** the backfill-fast-b / -c move (26 GB) needs a T1 ledger note; tip retention. The c1nf-ledger move (7 GB) already happened (job #2545).
 - **Watch successor for #2291**, after the host is back (§1). Disk guard successor beyond #2546's limit.
-- **Kill-line check PR** (branch `claude/floor-stage1-killcheck`); proof harness #1337 to a QP OK and reviewer APPROVE at one head; SEALS-BRIEF line (g).
+- **DEC-035 Am.7 Erratum 1** (branch `claude/dec035-am7-erratum1`); **kill-line check PR** (branch `claude/floor-stage1-killcheck`); SEALS-BRIEF line (g); `test_mode=False` print MINOR in the proof output.
 - **`set -f` MINOR** around the symlink-component loop in `scripts/research/floor_gap_range.sh`.
 - **Forward A/B bins** for the landing vault (`land_vault_sol`, `entry_over_mark0`).
 - **Records batch for 11-13**, and the `data/console.json` update for the incident.
@@ -193,7 +195,7 @@ MiScusi refuses job limits above 14 days. `after` fires only on exit 0, never on
 - **Tip:** #2033 writer and #2039 push (end ~11-15T06Z); gates #2501/#2502 with successors #2503/#2504 queued; #2055, #2062, #2064 health jobs.
 - **Guards:** #1952 watchdog; #1896 and #1898 A3 guards (job_list only); #2214 → #2217 structure monitor; #2134 venue tape.
 - **fast-0 limits:** 8 CPU slots; `--mem` required, `--cpus 0.2` for status jobs; jobs run under `sh`. One heavy replay at a time, at most 2 workers; check `systemctl show user-1002.slice -p MemoryCurrent` first.
-- Open PR that matters: #1337 (stage-1 proof harness, head 97a5532f). The others are parked.
+- No open PR matters right now (#1337 merged as 4c862bba). The others are parked.
 
 ## 9. Exact next steps (priority order)
 1. **Get the FLOOR host started via HELM-ASK-1113-2.** Make sure the owner gives Helm the fresh yes (question q_soa9d_aQcYckbg, 04:19Z). Verify the start by the §1 checklist, submit the #2291 successor, record the restart in LAB_STATE.
@@ -201,7 +203,7 @@ MiScusi refuses job limits above 14 days. `after` fires only on exit 0, never on
 3. **11-13 09:13Z:** #1952 watchdog successor. **10:37Z:** r4bt-a2 dry host install (never read an entry count before J4).
 4. **After ~14:06Z:** confirm `e3b7cc9de20e65bd` exited; get the QP ruling on whether the unwound `73a31cf948fba66e` counts toward the Am.6 gate's 20.
 5. **11-14 01:00Z:** the EXP-029 procedural-FAIL read, with the host-down disclosure; QP before merge.
-6. **Stage 1:** get #1337 to QP OK and reviewer APPROVE at one head, add SEALS-BRIEF line (g), PR the kill-line check, then run P0 and P2. Send HELM-ASK-stage1 only after the 24 h refuse-all from step 1 has passed and outside the 11-15 hand-off window.
+6. **Stage 1:** follow the seven ordered preconditions in §3 (Am.7 Erratum 1 first, then SEALS-BRIEF line (g), precounts, P0 and P2, kill-line check PR and smoke run, timing, owner word). Send HELM-ASK-stage1 only after the 24 h refuse-all from step 1 has passed and outside the 11-15 hand-off window.
 7. **11-15 06:41Z** tip hand-off check; successors for #2055 and #2064 before 11-16T00:00Z; 11-17 09:13Z A3 successors.
 8. Records batch for 11-13, the `console.json` incident update, and the durable fast-0 disk plan (§7).
 
