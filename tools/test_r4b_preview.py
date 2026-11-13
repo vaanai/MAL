@@ -58,14 +58,16 @@ def mk_tape(d: Path, first: int, hours: int, pools=(POOL,), step=3000, skip=(), 
     entry selects)."""
     d.mkdir(parents=True, exist_ok=True)
     i = 0
+    cnt = {p: 0 for p in pools}  # one running index per pool: each pool's reserves follow its own trades
     for h in range(hours):
         hs = first + h * HR
         name = P.hour_name(hs)
         lines = []
         for t in range(hs, hs + HR, step):
             for pool in pools:
-                lines.append(T.trade_row(i, t, pool=pool))
-                i += 1
+                lines.append(T.trade_row(cnt[pool], t, pool=pool))
+                cnt[pool] += 1
+            i += 1
             if (t // step) % 4 == 0:
                 lines.append(T.trade_row(i + 100000, t, pool="PB", bonding=True))
         for src in (extra, pre_extra):
@@ -73,6 +75,7 @@ def mk_tape(d: Path, first: int, hours: int, pools=(POOL,), step=3000, skip=(), 
                 lines.extend(src[name])
         if name in skip:
             continue
+        lines.sort(key=lambda r: r.get("t_recv_ms", 0))  # receive order (stable)
         pth = d / f"tape-{name}.jsonl"
         pth.write_text("".join(json.dumps(x, sort_keys=True) + "\n" for x in lines))
         if zst:
@@ -601,9 +604,44 @@ def _a2_world(tmp: Path, monkeypatch, decisions):
     return kw
 
 
+def shaped(pool, t_from, t_to, mult, start_i, step=3000):
+    """Tape rows of one pool whose price level is `mult(t)` x the base level: {hour name: [rows]}."""
+    out: dict = {}
+    for k, t in enumerate(range(t_from, t_to, step)):
+        r = T.trade_row(k, t, pool=pool)
+        r["quote_reserve"] = r["quote_reserve"] * mult(t)
+        r["signature"] = f"sig{pool}{start_i + k}"
+        out.setdefault(P.hour_name(t), []).append(r)
+    return out
+
+
+def _merge(*ds):
+    out: dict = {}
+    for d in ds:
+        for k, v in d.items():
+            out.setdefault(k, []).extend(v)
+    return out
+
+
 def test_quarter_rung_equals_registered_pricer_rows_and_cells(tmp_path, monkeypatch):
+    """Trip kinds in the fixture, each asserted present: filled, guarded (the price jumps 1.6x between the decision spot and the landing print), a strand-class trip under rule total (the price collapses before the exit; its state is exit_invalid, which
+    STRAND_STATES counts as a strand; the literal state `stranded`, proceeds below one send, is not built in this fixture), derived_last (the pool stops printing; its exit is priced past the grace slots), a late print, a restart exit and a feed-gap exclusion.
+    Rows are compared on the same keys for the whole set at once, and the 0.25 rung's per-trade vectors are compared with r4bt_read.deciding_cells (built by the same function
+    on the registered side), with the V-audit set empty and then full (the V band is narrowed so every trade is audited, which makes the rent-charged leg decide)."""
+    monkeypatch.setattr(T, "CLOCK", CLOCK2)  # trade_row's slot base: before any row is built
     t0 = CLOCK2 // 1000
     gap = {"type": "gap", "kind": "backlog_jump", "prog": "pumpswap", "data_loss": True, "slot": 0, "t_recv_ms": CLOCK2 + 3 * HR + 900_000}
+    x6 = CLOCK2 + HR + 300_000 - 1000  # a decision 1 s before a tape row: the jump lands between the guard spot and the landing print
+    x7, e7 = CLOCK2 + HR + 1_200_000 - 1000, CLOCK2 + HR + 3_600_000
+    x8, e8 = CLOCK2 + 30 * 60_000 - 1000, CLOCK2 + 2 * HR + 5 * 60_000
+    end = CLOCK2 + 7 * HR
+    start = CLOCK2 - 3 * HR
+    late_slot = T.trade_row(0, CLOCK2 + HR + 1200, pool="P1")["slot"] - 40
+    late = dict(T.trade_row(777_777, CLOCK2 + HR + 600_000, pool="P1"), slot=late_slot, signature="late-p1")
+    parts = {"p6": shaped("P6", start, end, lambda t: 1.6 if t >= x6 + 1000 else 1.0, 1_000_000),
+             "p7": shaped("P7", start, end, lambda t: 1e-4 if t >= e7 - 30_000 else 1.0, 2_000_000),
+             "p8": shaped("P8", start, x8 + 20_000, lambda t: 1.0, 3_000_000), "gap": {P.hour_name(CLOCK2 + 3 * HR): [gap]}, "late": {P.hour_name(CLOCK2 + HR): [late]}}
+    extra = _merge(*parts.values())
     decisions = [(CLOCK2 + 1200, T.entry_body(order="MP1:%d" % t0, t_mark=t0)), (CLOCK2 + HR + 1200, T.exit_body(order="MP1:%d" % t0)),
                  (CLOCK2 + 2 * HR + 1300, T.entry_body(pool="P2", order="MP2:%d" % (t0 + 7200), t_mark=t0 + 7200)),
                  (CLOCK2 + 3 * HR + 1300, T.exit_body(order="MP2:%d" % (t0 + 7200), reason="restart")),
@@ -612,52 +650,63 @@ def test_quarter_rung_equals_registered_pricer_rows_and_cells(tmp_path, monkeypa
                  (CLOCK2 + 3 * HR + 950_000, T.entry_body(pool="P4", order="MP4:%d" % (t0 + 10800), t_mark=t0 + 10800)),
                  (CLOCK2 + 4 * HR + 700_000, T.exit_body(order="MP4:%d" % (t0 + 10800))),
                  (CLOCK2 + 2 * HR + 100_000, T.entry_body(pool="P5", order="MP5:%d" % (t0 + 7300), t_mark=t0 + 7300)),
-                 (CLOCK2 + 2 * HR + 900_000, T.exit_body(order="MP5:%d" % (t0 + 7300)))]
-    kw = _a2_world(tmp_path, monkeypatch, decisions)
+                 (CLOCK2 + 2 * HR + 900_000, T.exit_body(order="MP5:%d" % (t0 + 7300))),
+                 (x6, T.entry_body(pool="P6", order="MP6:%d" % (t0 + 4000), t_mark=t0 + 4000)), (x6 + 20 * 60_000, T.exit_body(order="MP6:%d" % (t0 + 4000))),
+                 (x7, T.entry_body(pool="P7", order="MP7:%d" % (t0 + 5000), t_mark=t0 + 5000)), (e7, T.exit_body(order="MP7:%d" % (t0 + 5000))),
+                 (x8, T.entry_body(pool="P8", order="MP8:%d" % (t0 + 1800), t_mark=t0 + 1800)), (e8, T.exit_body(order="MP8:%d" % (t0 + 1800)))]
+    kw = _a2_world(tmp_path, monkeypatch, sorted(decisions, key=lambda x: x[0]))
     import shutil
 
-    shutil.rmtree(tmp_path / "tape")  # the world's own tape is replaced by one that carries pools P1..P4
-    mk_tape(tmp_path / "tape", CLOCK2 - 3 * HR, 10, pools=("P1", "P2", "P3", "P4", "P5"), extra={P.hour_name(CLOCK2 + 3 * HR): [gap]})
+    shutil.rmtree(tmp_path / "tape")
+    mk_tape(tmp_path / "tape", start, 10, pools=("P1", "P2", "P3", "P4", "P5"), extra=extra)
     res_a = P.price(**dict(kw, bot_id="r4bt-a2"))
     A = Ledger(tmp_path / "ledger").read_bot("r4bt-a2")
-    # the preview side, on the same decisions and the same tape files
     dl = DecisionLog(tmp_path / "declog")
     rows = [r for r in dl.rows(G.ARM)]
     ents = [dict(r, _cid=DRY) for r in rows if r["kind"] == "entry"]
     exs = [dict(r, _cid=DRY) for r in rows if r["kind"] == "exit"]
     last = max(r["ms"] for r in ents + exs)
-    files = P.tape_hours(tmp_path / "tape", CLOCK2 - 3 * HR, last + P.EXIT_POST_MS, CLOCK2 + 3 * DAY)
+    files = P.tape_hours(tmp_path / "tape", start, last + P.EXIT_POST_MS, CLOCK2 + 3 * DAY)
     rb = V.replay(ents, exs, files, 0, tmp_path / "work", pin_commit=PIN, code_state_fn=lambda: (PIN, False))
     B = rb["rows"]
     keyf = ("calc", "legs", "v_src", "state_src", "decision_ms", "corrected_slot", "exit_reason", "exclusion_reason", "kind", "prog", "effective_slot", "stamp_ms", "call_ms")
 
-    def pick(rows_, bot, stake):
-        out = [r for r in rows_ if r["kind"] in ("trade", "excluded") and r["bot_id"] == bot and r["stake_sol"] == stake]
+    def pick(rows_, bot, stake, kinds=("trade", "excluded")):
+        out = [r for r in rows_ if r["kind"] in kinds and r["bot_id"] == bot and r["stake_sol"] == stake]
         return sorted(out, key=lambda r: (r["decision_ms"]["entry"], r["pool"]))
 
     qa, qb = pick(A, "r4bt-a2", 0.25), pick(B, V.PREVIEW_BOT, 0.25)
-    assert len(qa) == len(qb) == 5
-    for ra, rb_ in zip(qa, qb):
-        for k in keyf:
-            assert ra.get(k) == rb_.get(k), k
-    assert {r["kind"] for r in qa} == {"trade", "excluded"} and "engine_restart" in {r.get("exclusion_reason") for r in qa}
+    assert len(qa) == len(qb) == 8
+    assert [{k: r.get(k) for k in keyf} for r in qa] == [{k: r.get(k) for k in keyf} for r in qb], "the whole 0.25 row set is equal on every compared key"
+    la = sorted(r["gap_overlap"] for r in A if r["kind"] == "late_print")
+    lb = sorted(r["gap_overlap"] for r in B if r["kind"] == "late_print")
+    assert len(la) == len(lb) >= 1 and la == lb
+    states = {r["calc"][lat]["by_rule"]["total"]["state"] for r in qa if r["kind"] == "trade" for lat in ("1p3", "1p9")}
+    assert {"filled", "guarded"} <= states, states
+    assert any(r["calc"][lat]["by_rule"]["total"]["strand"] for r in qa if r["kind"] == "trade" for lat in ("1p3", "1p9")), "the strand class under rule total"
+    assert "derived_last" in {r.get("state_src") for r in qa}
+    assert "engine_restart" in {r.get("exclusion_reason") for r in qa} and "feed_gap" in {r.get("exclusion_reason") for r in qa}
     assert res_a["counts"]["engine_restart_exclusions"] == 1
-    # the four stakes are all priced
     assert {r["stake_sol"] for r in B if r["kind"] in ("trade", "excluded")} == set(V.STAKES)
-    # the deciding cells: the 0.25 rung's rent-0 vectors equal r4bt_read.deciding_cells
     bd = json.loads(Path(kw["boundary_file"]).read_text())["boundary_ms"]
     dec_a = RD.deciding_trades(A, CLOCK2, bd, 0.25)
     dec_b = RD.deciding_trades(B, CUT, 1 << 62, 0.25)
-    assert len(dec_a) == len(dec_b) >= 2
-    want = RD.deciding_cells(dec_a, V.RULES)
-    cells, vec = V.cells_of(dec_b, rb["cfg"], P0)
-    for k in want:
-        assert vec["proportional"][k] == want[k]["x0_sol"], k
-        assert cells["proportional"][k]["rent0"]["total_sol"] == pytest.approx(want[k]["rent0"]["total_sol"], abs=0)
-        assert cells["proportional"][k]["rent0"]["mean_sol"] == want[k]["rent0"]["mean_sol"]
-        assert cells["proportional"][k]["rent_charged"]["total_sol"] == pytest.approx(want[k]["rent_charged"]["total_sol"], abs=0)
-        assert vec["fixed"][k] == want[k]["x0_sol"], "E1 fixed equals proportional at the 0.25 rung"
-    assert V.trade_digest(B) == V.trade_digest(B)
+    assert len(dec_a) == len(dec_b) >= 4
+    for narrow in (False, True):
+        if narrow:
+            monkeypatch.setattr(P, "V_HI", 17.0e9)  # every trade is now a V-audit trade: the rent-charged leg decides
+        aud_a = frozenset(P.v_audit(dec_a, rb["prints"]))
+        aud_b = frozenset(P.v_audit(dec_b, rb["prints"]))
+        assert len(aud_a) == len(aud_b) and (len(aud_a) == len(dec_a)) == narrow and (not aud_a) == (not narrow)  # (position ids differ by bot id)
+        want = RD.deciding_cells(dec_a, V.RULES, aud_a)
+        cells, vec = V.cells_of(dec_b, rb["cfg"], P0, aud_b)
+        for k in want:
+            assert vec["proportional"][k] == want[k]["x0_sol"], (narrow, k)
+            assert vec["fixed"][k] == want[k]["x0_sol"], "E1 fixed equals proportional at the 0.25 rung"
+            for leg in ("rent0", "rent_charged"):
+                for stat in ("total_sol", "mean_sol", "n", "days", "days_pos", "ex_top3_sol", "ex_best_day_sol"):
+                    assert cells["proportional"][k][leg][stat] == want[k][leg][stat], (k, leg, stat)
+            assert cells["proportional"][k]["deciding_like"]["total_sol"] == pytest.approx(sum(want[k]["x0_sol"]), abs=1e-12)
 
 
 # ------------------------------------------------------------------------------------------------------------------------------ static
