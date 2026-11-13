@@ -457,3 +457,84 @@ def test_test_mode_field_and_seed_hour_on_every_output(env, capsys, monkeypatch)
             "--test-mode", "--now-ms", str(H0 + 400 * HOUR)])
     out = capsys.readouterr().out
     assert "test_mode=True" in out and "seed_hour=none" in out and "list_sha256=none" in out
+
+
+# ------------------------------------------------------------------------------------------------ P2-only --seed-relaxed (QP-RULING-1113-floor-stage1-p2-vacuous)
+def test_seed_relaxed_boundary_is_96_h_and_default_stays_201():
+    seed = P.parse_hour("2026-11-03T01")
+    now = P.parse_hour("2026-11-14T00")
+    frm, to = seed + 96 * HOUR, seed + 120 * HOUR
+    P.check_window(frm, to, seed, now, min_h=P.SEED_RELAXED_MIN_H)  # exactly 96 h: accepted
+    with pytest.raises(SystemExit):
+        P.check_window(frm - HOUR, to, seed, now, min_h=P.SEED_RELAXED_MIN_H)  # 95 h: refused
+    with pytest.raises(SystemExit):
+        P.check_window(frm, to, seed, now)  # without the relaxation 96 h is refused
+    assert P.SEED_MIN_H == 201 and P.SEED_RELAXED_MIN_H == 96
+    # the pre-declared windows: 119 h and 143 h from the frozen copy's seed
+    for w, h in ((("2026-11-08T00", "2026-11-10T00"), 119), (("2026-11-09T00", "2026-11-11T00"), 143)):
+        P.check_window(P.parse_hour(w[0]), P.parse_hour(w[1]), seed, now, min_h=P.SEED_RELAXED_MIN_H)
+        assert (P.parse_hour(w[0]) - seed) // HOUR == h
+
+
+def test_seed_relaxed_is_refused_by_p0_and_p1(env, capsys):
+    write_tape(env / "tape", renamed_world())
+    for cmd in ("p0", "p1"):
+        with pytest.raises(SystemExit) as e:
+            P.main(args(env, cmd, H0 + 30 * HOUR, H0 + 33 * HOUR, "o_" + cmd, "--seed-from-hour", hn(H0 - 300 * HOUR), "--seed-relaxed", "--count-only"))
+        assert e.value.code == 2
+        assert "p2 only" in capsys.readouterr().err
+        assert not P.RELAXED
+
+
+def test_seed_relaxed_needs_a_seed(env, capsys):
+    write_tape(env / "tape", renamed_world())
+    with pytest.raises(SystemExit):
+        P.main(args(env, "p2", H0, H0 + 48 * HOUR, "o_ns", "--seed-relaxed", "--count-only"))
+    assert "needs a seed" in capsys.readouterr().err
+
+
+def _p2_relaxed_args(env, seed_h_before, out, *extra):
+    return args(env, "p2", H0, H0 + 48 * HOUR, out, "--seed-from-hour", hn(H0 - seed_h_before * HOUR), *extra)
+
+
+def test_seed_relaxed_95h_refused_96h_accepted_through_main(env, capsys, monkeypatch):
+    write_tape(env / "tape", renamed_world())
+    monkeypatch.setattr(P, "git", lambda *a: "deadbeef")
+    monkeypatch.setattr(P.subprocess, "run", lambda *a, **k: type("R", (), {"stdout": b"x", "returncode": 0})())
+    with pytest.raises(SystemExit):
+        P.main(_p2_relaxed_args(env, 95, "o95", "--seed-relaxed", "--count-only"))
+    err = capsys.readouterr().err
+    assert "less than 96 h" in err and "SEED_RELAXED" in err and "seed_h_before_from=95" in err
+    P.main(_p2_relaxed_args(env, 96, "o96", "--seed-relaxed", "--count-only"))
+    out = capsys.readouterr().out
+    assert "COUNT-ONLY" in out and "SEED_RELAXED" in out and "seed_h_before_from=96" in out and "earliest_valid_from=%s" % hn(H0) in out
+    with pytest.raises(SystemExit):  # without the flag, 96 h is far short of 201 h
+        P.main(_p2_relaxed_args(env, 96, "o96b", "--count-only"))
+    err = capsys.readouterr().err
+    assert "less than 201 h" in err and "SEED_RELAXED" not in err
+    assert not P.RELAXED
+
+
+def test_e2e_p2_seed_relaxed_tags_every_line_and_default_has_no_tag(env, capsys):
+    write_tape(env / "tape", renamed_world())
+    rc = P.main(_p2_relaxed_args(env, 100, "orel", "--seed-relaxed", "--step-ms", "60000", "--horizon-s", "5400"))
+    out = capsys.readouterr().out
+    lines = [ln for ln in out.splitlines() if ln.strip()]
+    assert rc == 0 and lines and lines[-1].startswith("P2 PASS")
+    assert sum(ln.startswith("P2-CASE") for ln in lines) == 9
+    for ln in lines:  # every output line of the run
+        assert "SEED_RELAXED" in ln and "seed_h_before_from=100" in ln, ln
+    # the same run without the flag (seed none, as the default tests): no tag anywhere
+    rc = P.main(args(env, "p2", H0, H0 + 48 * HOUR, "odef", "--step-ms", "60000", "--horizon-s", "5400"))
+    out = capsys.readouterr().out
+    assert rc == 0 and "SEED_RELAXED" not in out and "seed_h_before_from" not in out
+    assert not P.RELAXED
+
+
+def test_pre_declared_text_of_the_ruling_is_in_the_script_header_and_runbook():
+    for w in ("--seed-relaxed", "[2026-11-08T00Z, 2026-11-10T00Z)", "[2026-11-09T00Z, 2026-11-11T00Z)", "tapecopy-1113", "2026-11-03T01", "STOP and ask QP", "MUST NOT",
+              "triggers of pools older than the seed", "AGE_DROP"):
+        assert w in P.__doc__, w
+    doc = (REPO / "docs" / "runbooks" / "floor-stage1-proof.md").read_text()
+    for w in ("--seed-relaxed", "2026-11-08T00Z", "2026-11-09T00Z", "tapecopy-1113", "at the merged commit of this PR", "SEED_RELAXED", "seed_h_before_from", "Must not"):
+        assert w in doc, w
