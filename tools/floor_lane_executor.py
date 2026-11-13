@@ -368,7 +368,7 @@ def take_bot_lock(lane: "H.LaneLedger") -> Any:
 # --- the bridge --------------------------------------------------------------------------------------------------------------------------------------
 
 
-# DEC-035 amendment pending: these A3 halt flags concern the H5 BOOST books only, not rule l1-floor-v2 (used only when config a3_floor_flag_list is true).
+# DEC-035 Amendment 8: these A3 halt flags concern the H5 BOOST books only, not rule l1-floor-v2 (used only when config a3_floor_flag_list is true).
 FLOOR_A3_IGNORED_FLAGS = ("boost_share_low", "boost_last_slice_early", "boost_budget_or_slices_changed")
 
 
