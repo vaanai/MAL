@@ -144,7 +144,7 @@ def test_p0_equal_passes_and_one_flipped_byte_fails(tmp_path):
 
 def test_p2_case_planted_mismatch_fails_and_match_passes():
     refrows = [ent("a", 1_000_000), ex("a", 1_000_000, 9_000_000), ent("b", 1_200_000)]
-    rec = {"seq_pre": 5, "seq_post": 6, "buys_pre": 1, "buys_post": 1, "blocked_pools": {"a": 9_000_000, "b": 9_000_000}, "lane_open_pools": set()}
+    rec = {"seq_pre": 5, "seq_post": 6, "buys_pre": 1, "buys_post": 1, "blocked_pools": {"a": 9_000_000, "b": 2 ** 62}, "lane_open_pools": set()}
     shadow = {"kind": "lane_restart_shadow", "shadow_complete": True, "fallback": None, "prev_end": "signal", "shadow_pools": ["b"]}
     rows = [ent("a", 1_000_000), shadow]  # the lane itself holds a (entered before T)
     m = P.p2_case_metrics("a_5min", refrows, 1_100_000, 300_000, None, rows, rec, None, "none", 1_400_000)
@@ -174,6 +174,15 @@ def test_p2_b2_a_block_that_ends_before_the_reference_exit_fails_and_closed_pool
     assert ok["n_ref_positions_open_in_downtime_uncovered_MUST0"] == 0
     ok2 = P.p2_case_metrics("a_5min", refrows, 1_100_000, 300_000, None, [shadow], dict(base, blocked_pools={"b": 5_000_000}, lane_open_pools={"a"}), None, "none", 1_400_000)
     assert ok2["n_ref_positions_open_in_downtime_uncovered_MUST0"] == 0
+    # QP B3: a block that outlives restart + a 4 h horizon but ends before the reference exit still FAILS (no horizon cap)
+    far = [ent("a", 1_000_000), ex("a", 1_000_000, 90_000_000), ent("b", 1_200_000)]
+    hold = 86_400_000
+    m = P.p2_case_metrics("a_5min", far, 1_100_000, 300_000, None, [ent("a", 1_000_000), shadow], dict(base, blocked_pools={"a": 1_400_000 + 5 * 3_600_000, "b": 2 ** 62}), None, "none", 1_400_000,
+                          hold_ms=hold)
+    assert m["n_ref_positions_open_in_downtime_uncovered_MUST0"] == 1 and m["pass"] is False
+    m = P.p2_case_metrics("a_5min", far, 1_100_000, 300_000, None, [ent("a", 1_000_000), shadow], dict(base, blocked_pools={"a": 1_000_000 + hold + 1_000, "b": 2 ** 62}), None, "none", 1_400_000,
+                          hold_ms=hold)
+    assert m["n_ref_positions_open_in_downtime_uncovered_MUST0"] == 0
 
 
 def test_p0_three_way_and_non_vacuity(tmp_path):
@@ -193,16 +202,12 @@ def test_p0_three_way_and_non_vacuity(tmp_path):
     assert not P.p0_nonvacuous(P.p0_compare(str(tmp_path / "e"), str(tmp_path / "e")))
 
 
-def test_killcheck_counts_live_entries_on_reference_held_pools():
-    ref_rows = [ent("a", 1_000), ex("a", 1_000, 50_000), ent("b", 2_000)]
-    live = [ent("a", 10_000, ms=10_000), ent("c", 11_000), ent("b", 3_000, ms=500), ent("a", 60_000, ms=60_000)]
-    d = P.kill_compare(live, ref_rows, 5_000, 100_000)
-    assert d["n_live_entries"] == 3 and d["n_on_reference_held_pools_MUST0"] == 1 and d["held_order_ids"] == ["id-a-10000"] and d["pass"] is False
-    assert P.kill_compare([ent("c", 11_000)], ref_rows, 5_000, 100_000)["pass"] is True
-
-
 def test_v2_pin_disk_guard_and_tape_source(env, monkeypatch):
     assert P.TAPE_SRC == (P.HV7,)
+    with pytest.raises(SystemExit):  # outside test mode only hv7 is accepted
+        P.check_srcs(["/data2/mal/scratch/floor-nov-funnel/tapecopy"])
+    with pytest.raises(SystemExit):
+        P.check_srcs([P.HV7 + "/../hv7x"])
 
     class A:
         test_mode = False

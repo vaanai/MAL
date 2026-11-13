@@ -121,8 +121,11 @@ def tape_roots() -> tuple:
     return tuple(TP.ALLOWED_ROOTS)
 
 
-def check_srcs(srcs) -> list:
+def check_srcs(srcs, test_mode: bool = False) -> list:
+    """hv7 is the declared source (seals line (g)): outside test mode any other --tape-src is refused (abspath and realpath)."""
     for d in srcs:
+        if not test_mode and (os.path.abspath(d).rstrip("/") != HV7 or os.path.realpath(d).rstrip("/") != os.path.realpath(HV7).rstrip("/")):
+            refuse("--tape-src must be %s (got %s)" % (HV7, d))
         why = TP.refusal(d, roots=tape_roots())
         if why:
             refuse(why)
@@ -189,9 +192,12 @@ def export_tree(sha: str, dest: str) -> str:
     with open(tarf, "wb") as f:
         g = subprocess.run(["git", "-C", str(REPO), "archive", sha, "tools", "observe"], stdout=f, stderr=subprocess.PIPE, timeout=300)
     if g.returncode != 0:
+        os.remove(tarf)
         refuse("git archive %s failed (shallow clone? fetch the history)" % sha)
-    t = subprocess.run(["tar", "-x", "-C", dest, "-f", tarf], capture_output=True, timeout=300)
-    os.remove(tarf)
+    try:
+        t = subprocess.run(["tar", "-x", "-C", dest, "-f", tarf], capture_output=True, timeout=300)
+    finally:
+        os.remove(tarf)
     if t.returncode != 0 or not os.path.exists(os.path.join(dest, "tools", "floor_lane_host.py")):
         refuse("tar of the %s export failed" % sha)
     return dest
@@ -474,7 +480,7 @@ def pick_t(ref_rows: list, frm: int, to: int, d_max_ms: int, horizon_ms: int, d_
     return None
 
 
-def p2_case_metrics(name, ref_rows, T, D, host, rows, rec, eng, expect_fallback, restart_now, horizon_ms: int = 3_600_000) -> dict:
+def p2_case_metrics(name, ref_rows, T, D, host, rows, rec, eng, expect_fallback, restart_now, horizon_ms: int = 0, step_ms: int = 1000, hold_ms: int | None = None) -> dict:
     ref_e = _entries(ref_rows)
     ref_ex = {}
     for r in ref_rows:
@@ -486,8 +492,10 @@ def p2_case_metrics(name, ref_rows, T, D, host, rows, rec, eng, expect_fallback,
     complete = bool(rs.get("shadow_complete"))
     in_dt = {k[0] for k in ref_e if T <= int(k[1]) <= T + D}
     n_in_dt = sum(1 for k in ref_e if T <= int(k[1]) <= T + D)
-    # QP B2: a reference position open in [T, T + D + 10 s] is covered only if, after catch_up, the pool's block lasts to the position's exit (capped at restart + horizon), or the
+    # QP B2: a reference position open in [T, T + D + 10 s] is covered only if, after catch_up, the pool's block lasts to the position's exit (to min(exit, entry + HOLD_MS + one tick)), or the
     # lane holds an OPEN position on that pool at the restart. No "ever entered" term; the existence of a block is not enough.
+    if hold_ms is None:
+        from tools.arena_rule_l1 import HOLD_MS as hold_ms
     blocked_until = rec["blocked_pools"] if isinstance(rec["blocked_pools"], dict) else {p: 2 ** 62 for p in rec["blocked_pools"]}
     lane_open = set(rec.get("lane_open_pools") or ())
     n_open, uncovered = 0, 0
@@ -495,7 +503,7 @@ def p2_case_metrics(name, ref_rows, T, D, host, rows, rec, eng, expect_fallback,
         ex_ms = ref_ex.get(e["order_id"], 2 ** 62)
         if e["ms"] <= T + D + 10_000 and ex_ms >= T:
             n_open += 1
-            need = min(ex_ms, restart_now + horizon_ms)
+            need = min(ex_ms, int(e["ms"]) + hold_ms + step_ms)  # QP B3: to the exit; a position never outlives its decision + HOLD_MS + one tick
             if not (k[0] in lane_open or int((blocked_until.get(k[0]) or 0)) >= need):
                 uncovered += 1
     post = [r for r in rows if r.get("kind") == "entry" and r["ms"] >= restart_now]
@@ -667,13 +675,15 @@ def run_p2(a, out: str, tape: str, seed_ms) -> dict:
         B.catch_up = cu
         start = max(frm, now)
         B.run(start - start % 1000, start + horizon, sleep=lambda s, clk=clk: clk.__setitem__(0, clk[0] + max(20, int(s * 1000))))
-        m = p2_case_metrics(name, ref_rows, T, D, B, read_rows(croot), rec, eng, expect, now, horizon)
+        m = p2_case_metrics(name, ref_rows, T, D, B, read_rows(croot), rec, eng, expect, now, 0, step)
         m["D_s"] = D // 1000
         m["start_duration_s_INFO"] = rec.get("start_s")
         m["table_rebuild_rows_INFO"] = n
         res["cases"].append(m)
         if name == "e_unknown_v1_checkpoint":
-            res["f"] = run_f(B, eng, croot, lane, tape, rebuild_table, now + horizon, step, warm, frm)
+            del B
+            gc.collect()
+            res["f"] = run_f(None, eng, croot, lane, tape, rebuild_table, now + horizon, step, warm, frm)
         shutil.rmtree(os.path.join(croot, "ledger"), ignore_errors=True)
         if name != "e_unknown_v1_checkpoint":
             del B, eng
@@ -723,6 +733,8 @@ def run_f(B1, eng, croot, lane, tape, rebuild_table, end1, step, warm, frm) -> d
         clk2[0] = t + 100
         H2.step(t)
         t += step
+    del H2
+    gc.collect()
     now3 = _align(t + 300_000, step)
     H3, clk3, d3 = restart(now3, "f3_restart_after_the_span_aged_out")
     d3["n_unflagged_spans_in_checkpoint"] = len(unfl)
@@ -737,7 +749,7 @@ def common(a, default_w, p):
     frm = parse_hour(a.from_ ) if a.from_ else parse_hour(default_w[0])
     to = parse_hour(a.to) if a.to else parse_hour(default_w[1])
     a.from_ms, a.to_ms = frm, to
-    srcs = check_srcs(a.tape_src or list(TAPE_SRC))
+    srcs = check_srcs(a.tape_src or list(TAPE_SRC), a.test_mode)
     if a.test_mode and os.environ.get("MAL_ARENA_TEST") != "1":
         refuse("--test-mode needs MAL_ARENA_TEST=1")
     if seed_ms is not None:
@@ -818,48 +830,6 @@ def cmd_p1(a) -> int:
     return 0 if d["pass"] else EXIT_FAIL
 
 
-def kill_compare(live_rows: list, ref_rows: list, restart_ms: int, block_ms: int) -> dict:
-    """Kill-line check (QP point 5): LIVE entry rows in [restart, restart + BLOCK_MS], and how many sit on a pool where the unguarded reference holds a position that is open at the
-    live entry's trigger (the reference entered earlier on that pool and had not exited). Must be 0. Only counts and order ids; pools are matched in-process."""
-    live = [r for r in live_rows if r.get("kind") == "entry" and restart_ms <= int(r.get("ms", -1)) <= restart_ms + block_ms]
-    ref_e = _entries(ref_rows)
-    ref_ex: dict = {}
-    for r in ref_rows:
-        if r.get("kind") == "exit":
-            ref_ex.setdefault(r["order_id"], r["ms"])
-    held = []
-    for r in live:
-        trig = (r.get("meta") or {}).get("signal_t_recv_ms", r["ms"])
-        if any(k[0] == r["pool"] and int(k[1]) < trig and ref_ex.get(e["order_id"], 2 ** 62) > trig for k, e in ref_e.items()):
-            held.append(r["order_id"])
-    return {"n_live_entries": len(live), "n_on_reference_held_pools_MUST0": len(held), "held_order_ids": sorted(held), "n_reference_entries": len(ref_e), "pass": len(held) == 0}
-
-
-def cmd_killcheck(a) -> int:
-    sys.path.insert(0, str(REPO))
-    from tools import floor_lane_host as H
-    rs = a.restart_ms
-    a.from_ = a.from_ or hour_name(rs - rs % HOUR_MS - 25 * HOUR_MS)
-    a.to = a.to or hour_name(((rs + H.BLOCK_MS + HOUR_MS - 1) // HOUR_MS) * HOUR_MS)
-    seed_ms, frm, to, srcs = common(a, W2, "killcheck")
-    if a.count_only:
-        return precount(a, "killcheck", seed_ms, frm, to, srcs)
-    out = check_out(a.out)
-    os.makedirs(out)
-    tape = make_tapelink(out, srcs, seed_ms if seed_ms is not None else frm, to) if not a.test_mode else srcs[0]
-    live_rows = read_rows(a.live_root)  # entry rows only are used
-    work = os.path.join(out, "ref")
-    os.makedirs(work)
-    reg = os.path.join(work, "bots.json")
-    register_scratch(reg, frm, a.test_mode)
-    ref_rows = reference_rows(work, reg, tape, frm, to, a.step_ms, "first_print" if a.test_mode else None, bool(seed_ms is not None or a.test_mode))
-    d = kill_compare(live_rows, ref_rows, rs, H.BLOCK_MS)
-    emit("KILLCHECK", d)
-    Path(out, "killcheck.json").write_text(json.dumps(d, sort_keys=True))
-    print("KILLCHECK %s" % ("PASS" if d["pass"] else "FAIL"))
-    return 0 if d["pass"] else EXIT_FAIL
-
-
 def cmd_p2(a) -> int:
     seed_ms, frm, to, srcs = common(a, W2, "p2")
     if a.count_only:
@@ -886,7 +856,7 @@ def cmd_p2(a) -> int:
 def build_parser() -> argparse.ArgumentParser:
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[0] + "  NOTE: p1 is required only before status_span_no_loss is switched on (a later amendment); the Am.7 install needs p0 and p2.", formatter_class=argparse.RawDescriptionHelpFormatter)
     sub = ap.add_subparsers(dest="cmd", required=True)
-    for name in ("p0", "p1", "p2", "killcheck", "_replay"):
+    for name in ("p0", "p1", "p2", "_replay"):
         p = sub.add_parser(name)
         if name == "_replay":
             p.add_argument("--tools-root", required=True)
@@ -908,10 +878,6 @@ def build_parser() -> argparse.ArgumentParser:
         p.add_argument("--count-only", action="store_true")
         p.add_argument("--test-mode", action="store_true", help="synthetic tapes only (needs MAL_ARENA_TEST=1)")
         p.add_argument("--now-ms", type=int, default=None)
-        if name == "killcheck":
-            p.add_argument("--live-root", required=True, help="the lane root whose decisions/l1-floor-v2/*.jsonl entry rows are read (manager, mal-fast-0, sudo)")
-            p.add_argument("--restart-ms", type=int, required=True)
-            p.add_argument("--step-ms", type=int, default=1000)
         if name == "p2":
             p.add_argument("--t-ms", type=int, default=None)
             p.add_argument("--horizon-s", type=int, default=14_400)
@@ -923,7 +889,7 @@ def main(argv=None) -> int:
     a = build_parser().parse_args(argv)
     if a.cmd == "_replay":
         return child_replay(a)
-    return {"p0": cmd_p0, "p1": cmd_p1, "p2": cmd_p2, "killcheck": cmd_killcheck}[a.cmd](a)
+    return {"p0": cmd_p0, "p1": cmd_p1, "p2": cmd_p2}[a.cmd](a)
 
 
 if __name__ == "__main__":
