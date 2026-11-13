@@ -144,7 +144,7 @@ def test_p0_equal_passes_and_one_flipped_byte_fails(tmp_path):
 
 def test_p2_case_planted_mismatch_fails_and_match_passes():
     refrows = [ent("a", 1_000_000), ex("a", 1_000_000, 9_000_000), ent("b", 1_200_000)]
-    rec = {"seq_pre": 5, "seq_post": 6, "buys_pre": 1, "buys_post": 1, "blocked_pools": set()}
+    rec = {"seq_pre": 5, "seq_post": 6, "buys_pre": 1, "buys_post": 1, "blocked_pools": {"a": 9_000_000, "b": 9_000_000}, "lane_open_pools": set()}
     shadow = {"kind": "lane_restart_shadow", "shadow_complete": True, "fallback": None, "prev_end": "signal", "shadow_pools": ["b"]}
     rows = [ent("a", 1_000_000), shadow]  # the lane itself holds a (entered before T)
     m = P.p2_case_metrics("a_5min", refrows, 1_100_000, 300_000, None, rows, rec, None, "none", 1_400_000)
@@ -161,6 +161,63 @@ def test_p2_case_planted_mismatch_fails_and_match_passes():
     fb = {"kind": "lane_restart_shadow", "shadow_complete": False, "fallback": "unclean_exit", "prev_end": "exception", "shadow_pools": []}
     assert P.p2_case_metrics("c", refrows, 1_100_000, 300_000, None, [ent("a", 1_000_000), fb], rec, None, "unclean_exit", 1_400_000)["pass"] is True
     assert P.p2_case_metrics("c", refrows, 1_100_000, 300_000, None, [ent("a", 1_000_000), fb], rec, None, "none", 1_400_000)["pass"] is False  # wrong fallback
+
+
+def test_p2_b2_a_block_that_ends_before_the_reference_exit_fails_and_closed_pool_history_does_not_cover():
+    refrows = [ent("a", 1_000_000), ex("a", 1_000_000, 9_000_000), ent("b", 1_200_000), ex("b", 1_200_000, 1_300_000)]
+    shadow = {"kind": "lane_restart_shadow", "shadow_complete": True, "fallback": None, "prev_end": "signal", "shadow_pools": []}
+    base = {"seq_pre": 5, "seq_post": 6, "buys_pre": 1, "buys_post": 1, "lane_open_pools": set()}
+    # the old restart block on a ends at 2_000_000, before the reference exit (capped at restart + horizon = 5_000_000): NOT covered, and the lane's old entry on a is no cover
+    m = P.p2_case_metrics("a_5min", refrows, 1_100_000, 300_000, None, [ent("a", 1_000_000), shadow], dict(base, blocked_pools={"a": 2_000_000}), None, "none", 1_400_000)
+    assert m["n_ref_positions_open_in_downtime"] == 2 and m["n_ref_positions_open_in_downtime_uncovered_MUST0"] == 2 and m["pass"] is False
+    ok = P.p2_case_metrics("a_5min", refrows, 1_100_000, 300_000, None, [ent("a", 1_000_000), shadow], dict(base, blocked_pools={"a": 9_000_000, "b": 5_000_000}), None, "none", 1_400_000)
+    assert ok["n_ref_positions_open_in_downtime_uncovered_MUST0"] == 0
+    ok2 = P.p2_case_metrics("a_5min", refrows, 1_100_000, 300_000, None, [shadow], dict(base, blocked_pools={"b": 5_000_000}, lane_open_pools={"a"}), None, "none", 1_400_000)
+    assert ok2["n_ref_positions_open_in_downtime_uncovered_MUST0"] == 0
+
+
+def test_p0_three_way_and_non_vacuity(tmp_path):
+    body = b'{"seq":1,"kind":"entry"}\n'
+    for n in "abc":
+        write_decisions(tmp_path / n, {"2026-11-10.jsonl": body})
+    (tmp_path / "c" / "lane" / "checkpoint.json").write_bytes(b'{"hwm_ms":1,"guard":{"cheap_restart":true},"ended":"end"}')
+    c = P.p0_compare(str(tmp_path / "a"), str(tmp_path / "b"), str(tmp_path / "c"))
+    assert c["checkpoint_equal_on_minus_guard_ended"] and c["files_md5_differ_on"] == 0 and P.p0_pass(c, 0) and P.p0_nonvacuous(c) and c["n_entry"] == 1
+    write_decisions(tmp_path / "d", {"2026-11-10.jsonl": body.replace(b"entry", b"entrz")})
+    (tmp_path / "d" / "lane" / "checkpoint.json").write_bytes(b'{"hwm_ms":1}')
+    c = P.p0_compare(str(tmp_path / "a"), str(tmp_path / "b"), str(tmp_path / "d"))
+    assert c["files_md5_differ_on"] == 1 and not P.p0_pass(c, 0)
+    (tmp_path / "c" / "lane" / "checkpoint.json").write_bytes(b'{"hwm_ms":2,"guard":{},"ended":"end"}')
+    assert not P.p0_pass(P.p0_compare(str(tmp_path / "a"), str(tmp_path / "b"), str(tmp_path / "c")), 0)
+    write_decisions(tmp_path / "e", {"2026-11-10.jsonl": b'{"seq":1,"kind":"start"}\n'})
+    assert not P.p0_nonvacuous(P.p0_compare(str(tmp_path / "e"), str(tmp_path / "e")))
+
+
+def test_killcheck_counts_live_entries_on_reference_held_pools():
+    ref_rows = [ent("a", 1_000), ex("a", 1_000, 50_000), ent("b", 2_000)]
+    live = [ent("a", 10_000, ms=10_000), ent("c", 11_000), ent("b", 3_000, ms=500), ent("a", 60_000, ms=60_000)]
+    d = P.kill_compare(live, ref_rows, 5_000, 100_000)
+    assert d["n_live_entries"] == 3 and d["n_on_reference_held_pools_MUST0"] == 1 and d["held_order_ids"] == ["id-a-10000"] and d["pass"] is False
+    assert P.kill_compare([ent("c", 11_000)], ref_rows, 5_000, 100_000)["pass"] is True
+
+
+def test_v2_pin_disk_guard_and_tape_source(env, monkeypatch):
+    assert P.TAPE_SRC == (P.HV7,)
+
+    class A:
+        test_mode = False
+        merge_sha = "m"
+        host_blob = P.MERGE_HOST_BLOB
+        v1_tree = v2_tree = None
+
+    monkeypatch.setattr(P, "git", lambda *a: "0" * 40 if "floor_lane_host.py" in a[-1] else "deadbeef")
+    with pytest.raises(SystemExit):  # the host blob is not the merge's
+        P.prepare_trees(A, str(env / "scratch" / "x"))
+    (env / "src").mkdir()
+    (env / "src" / "f").write_bytes(b"x" * 1000)
+    with pytest.raises(SystemExit):
+        P.disk_guard(str(env / "src"), 10, str(env), usage=lambda w: type("U", (), {"free": 5000, "total": 10000}))
+    P.disk_guard(str(env / "src"), 2, str(env), usage=lambda w: type("U", (), {"free": 9000, "total": 10000}))
 
 
 def test_pick_t_needs_a_buy_in_the_downtime_and_an_open_position():
@@ -234,7 +291,7 @@ def test_e2e_p0_equal_trees_pass_and_a_status_span_in_w1_refuses(env, capsys):
     write_tape(env / "tape", renamed_world())
     rc = P.main(args(env, "p0", H0 + 6 * HOUR, H0 + 34 * HOUR))
     out = capsys.readouterr().out
-    assert rc == 0 and "P0 PASS" in out and "files_md5_differ=0" in out and "checkpoint_equal=True" in out, out
+    assert rc == 0 and "P0 PASS" in out and "files_md5_differ=0" in out and "files_md5_differ_on=0" in out and "checkpoint_equal_on_minus_guard_ended=True" in out and "checkpoint_equal=True" in out, out
     no_secrets(out)
     res = json.loads((env / "scratch" / "o1" / "p0.json").read_text())
     assert res["files_v1"] >= 1 and res["rows_v1"] == res["rows_v2"] and res["rows_v1"] >= 1  # the Q entry
