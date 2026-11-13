@@ -55,6 +55,7 @@ def args(tmp, cmd, frm, to, out="o1", *extra):
 
 def v1tree(tmp):
     shutil.copytree(REPO / "tools", tmp / "v1tree" / "tools", ignore=shutil.ignore_patterns("__pycache__", "test_*"))
+    shutil.copytree(REPO / "observe", tmp / "v1tree" / "observe", ignore=shutil.ignore_patterns("__pycache__"))
     return tmp / "v1tree"
 
 
@@ -231,16 +232,16 @@ def test_scan_gaps_counts_only_the_writer_status_span(env):
 def test_e2e_p0_equal_trees_pass_and_a_status_span_in_w1_refuses(env, capsys):
     v1tree(env)
     write_tape(env / "tape", renamed_world())
-    rc = P.main(args(env, "p0", H0 + 31 * HOUR, H0 + 33 * HOUR))
+    rc = P.main(args(env, "p0", H0 + 10 * HOUR, H0 + 34 * HOUR))
     out = capsys.readouterr().out
-    assert rc == 0 and "P0 PASS" in out and "files_md5_differ=0" in out and "checkpoint_equal=True" in out
+    assert rc == 0 and "P0 PASS" in out and "files_md5_differ=0" in out and "checkpoint_equal=True" in out, out
     no_secrets(out)
     res = json.loads((env / "scratch" / "o1" / "p0.json").read_text())
     assert res["files_v1"] >= 1 and res["rows_v1"] == res["rows_v2"] and res["rows_v1"] >= 2  # start row + the Q entry
     # a W1 with a writer status span is not strict: refuse before any replay
     shutil.rmtree(env / "tape")
     write_tape(env / "tape", renamed_world([status_row(H0 + 31 * HOUR + 3_000_000 - 763, H0 + 31 * HOUR + 3_000_000)]))
-    rc = P.main(args(env, "p0", H0 + 31 * HOUR, H0 + 33 * HOUR, "o2"))
+    rc = P.main(args(env, "p0", H0 + 10 * HOUR, H0 + 34 * HOUR, "o2"))
     assert rc == P.EXIT_FAIL and not (env / "scratch" / "o2" / "v1").exists()
 
 
@@ -251,7 +252,7 @@ def test_e2e_p0_fails_when_the_v1_reference_decides_differently(env, capsys):
     assert "BLOCK_MS = L_HOLD_MS + L_COOLDOWN_MS + 1_000 + DECISION_MARGIN_MS" in s
     f.write_text(s.replace("DECISION_MARGIN_MS = 5_000", "DECISION_MARGIN_MS = 5_001"))  # one changed constant: block lengths (and so the checkpoint) differ
     write_tape(env / "tape", renamed_world())
-    rc = P.main(args(env, "p0", H0 + 31 * HOUR, H0 + 33 * HOUR))
+    rc = P.main(args(env, "p0", H0 + 10 * HOUR, H0 + 34 * HOUR))
     out = capsys.readouterr().out
     assert "P0 PASS" not in out and rc == 0 or rc == P.EXIT_FAIL  # a changed constant need not change the log; the flipped-byte case is covered above
 
@@ -260,7 +261,7 @@ def test_e2e_p1_status_span_turns_a_v1_refusal_into_an_entry(env, capsys):
     v1tree(env)
     span = status_row(H0 + 31 * HOUR + 1_800_000 - 763, H0 + 31 * HOUR + 1_800_000)  # 30 min before the 32 h trigger on Q
     write_tape(env / "tape", renamed_world([span]))
-    rc = P.main(args(env, "p1", H0 + 31 * HOUR, H0 + 33 * HOUR))
+    rc = P.main(args(env, "p1", H0 + 10 * HOUR, H0 + 34 * HOUR))
     out = capsys.readouterr().out
     assert rc == 0 and "P1 PASS" in out
     no_secrets(out)
@@ -272,7 +273,7 @@ def test_e2e_p1_status_span_turns_a_v1_refusal_into_an_entry(env, capsys):
 def test_e2e_p1_without_a_status_span_is_vacuous(env, capsys):
     v1tree(env)
     write_tape(env / "tape", renamed_world())
-    assert P.main(args(env, "p1", H0 + 31 * HOUR, H0 + 33 * HOUR)) == P.EXIT_VACUOUS
+    assert P.main(args(env, "p1", H0 + 10 * HOUR, H0 + 34 * HOUR)) == P.EXIT_VACUOUS
 
 
 def test_e2e_p2_every_restart_case(env, capsys):

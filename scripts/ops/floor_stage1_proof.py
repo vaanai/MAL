@@ -10,7 +10,7 @@ and R5. PAPER replays only. COUNTS, MD5s AND FLAG WORDS ONLY go to stdout (no po
       -> resume -> run) over tape, with a simulated kill (no finally) at T and a restart at T + D, against the UNGUARDED reference (HostV2 + the frozen rule straight through).
 Each subcommand takes --count-only: walks the inputs, checks the path guard and the git objects, prints file counts and hour coverage only (the project's real-layout precount).
 
-THE v1 REFERENCE. `git archive <merge>^1 tools` into <out>/trees/v1 (the whole tools/ tree of the parent commit, so the pinned files are v1's own too) and `git archive HEAD tools`
+THE v1 REFERENCE. `git archive <merge>^1 tools observe` into <out>/trees/v1 (the whole tools/ tree of the parent commit plus observe/, which tools.arena_paper imports; so the pinned files are v1's own too) and `git archive HEAD tools observe`
 into <out>/trees/v2; HEAD's floor_lane_host.py must be byte-equal to the working file (clean checkout). Each replay is a SUBPROCESS `python -I this_script _replay --tools-root TREE`
 that puts TREE first on sys.path and calls TREE's own `tools.floor_lane_host.main(["replay", ...])`: the pins are verified by TREE's own verify_pins against TREE's own files, no
 module is shared between v1 and v2, and nothing is monkeypatched in the real run. (A second worktree would be the same; an archive leaves no git state behind.)
@@ -180,7 +180,7 @@ def git(*args) -> str:
 
 def export_tree(sha: str, dest: str) -> str:
     os.makedirs(dest, exist_ok=True)
-    p = subprocess.run("git -C %s archive %s tools | tar -x -C %s" % (_q(str(REPO)), _q(sha), _q(dest)), shell=True, capture_output=True, timeout=300)
+    p = subprocess.run("git -C %s archive %s tools observe | tar -x -C %s" % (_q(str(REPO)), _q(sha), _q(dest)), shell=True, capture_output=True, timeout=300)
     if p.returncode != 0 or not os.path.exists(os.path.join(dest, "tools", "floor_lane_host.py")):
         refuse("git archive %s failed (shallow clone? fetch the history)" % sha)
     return dest
