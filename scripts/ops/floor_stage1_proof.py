@@ -15,14 +15,21 @@ into <out>/trees/v2; HEAD's floor_lane_host.py must be byte-equal to the working
 that puts TREE first on sys.path and calls TREE's own `tools.floor_lane_host.main(["replay", ...])`: the pins are verified by TREE's own verify_pins against TREE's own files, no
 module is shared between v1 and v2, and nothing is monkeypatched in the real run. (A second worktree would be the same; an archive leaves no git state behind.)
 
+TAPE SOURCE (precount #2549, 2026-11-13): the research-0 hv7 copy keeps only about 240 closed hours and loses one per hour, so a fixed seed hour (the old 2026-11-02T01) is not reachable
+and a symlink run could lose inputs mid-run. Outside test mode exactly TWO source roots are accepted: the hv7 copy itself, or a FROZEN HARD-LINK copy
+/data2/mal/scratch/floor-stage1-proof/tapecopy-<MMDD>/ made by the manager (same file system, hard links of the hv7 files), which REQUIRES its list file (--tape-list, default
+<copy>.list, lines `name size links`). Before any replay the script verifies, counts only: every needed hour is in the list and present with exactly the listed size; for every needed
+hour still in hv7 the size is equal and the two names are the same inode (QP's per-hour condition for a copy); the list's sha256 is printed in every output.
+SEED: the first closed hour present in the tape source (discovered, not fixed); the host requires seed <= --from - 201 h (SEED_MIN_H); `seed_hour` and `earliest_valid_from` are printed.
+With the frozen copy tapecopy-1113 (2026-11-03T01 .. 2026-11-13T00) the earliest valid --from is 2026-11-11T10Z.
+
 WINDOWS (pre-declared; hour-granular, override with --from / --to as YYYY-MM-DDTHH):
-  seed: every replay seeds the pool table from 2026-11-02T01 (the first hour of the research-0 hv7 copy); the host requires the seed >= 201 h before --from-ms
-        (SEED_MIN_H), so the EARLIEST valid --from is 2026-11-02T01 + 201 h = 2026-11-10T10Z.
-  W1  [2026-11-10T10Z, 2026-11-11T00Z): the earliest reachable start; 14 h, not 24 h (a 24 h window with no gap spans of any kind cannot be known without reading the tape: this
-      script only COUNTS writer status spans in it and refuses if there is one). It holds the backlog_jump holes G2-G8 (not whitelisted by stage 1): both hosts refuse alike there.
-  W2  [2026-11-12T00Z, 2026-11-13T00Z): QP's window. The task's 2026-11-10 day is NOT W2: it is reachable only from 10:00Z, and its holes are tip_gap_backlog_jump spans, which
-      stage 1 does not whitelist, so v2 would equal v1 there (zero v2-only entries = vacuous). 11-12 holds the writer status span.
-  FALLBACK (pre-declared, QP): if the first W2/P2 run is vacuous (exit 3), rerun with `--from 2026-11-11T00 --to 2026-11-13T00` (seed 11-02T01 is valid; hv7 holds the hours). Do not shorten D or the horizon.
+  W1 (P0)  [2026-11-12T00Z, 2026-11-12T15Z): the live host entered once on 11-12 at 14:06Z and the day's one writer status span is at 16:04:39Z, so W1 should hold >= 1 entry and 0 status
+      spans in [from - 365 min, to). The script verifies both (a status span refuses with exit 1; no entry and no refusal exits 3). The old W1 (11-10T10Z..11-11T00Z) is not reachable from
+      the frozen copy's seed.
+  W2 (P1, P2)  [2026-11-12T00Z, 2026-11-13T00Z): QP's window (holds the 11-12 status span for P1).
+  FALLBACK (pre-declared): if the W2/P2 run is vacuous (exit 3), rerun ONCE with `--from 2026-11-11T10 --to 2026-11-13T00` (the earliest valid start from the frozen copy). The earlier
+      fallback from 2026-11-11T00 needs seed 2026-11-02T15 and is NOT reachable. If both are vacuous the manager stops and asks QP: no further window choice. Do not shorten D or the horizon.
   P2  the window of W2 (the reference runs straight through it); T is chosen from the reference's own decisions (a reference Buy inside [T, T+5 min], another position open at T,
       and T + 7 h + horizon inside the window); --t-ms overrides.
 MEMORY / TIME (estimates, not measured): one replay at a time, streaming; the host's own replay peak, <= 8 GB RSS (the pool table of ~8.5 days of seed plus ArenaState); the
@@ -32,6 +39,7 @@ sequentially; p2 runs the reference, phase A, and 9 restart cases of (warm-up 36
 from __future__ import annotations
 
 import argparse
+import re
 import copy
 import gc
 import hashlib
@@ -54,13 +62,15 @@ HOUR_MS = 3_600_000
 HV7 = "/data2/mal/arena-tip-feed/hv7"
 TAPECOPY = "/data2/mal/scratch/floor-nov-funnel/tapecopy"
 OUT_ROOT = "/data2/mal/scratch/floor-stage1-proof"
+FROZEN_PARENT = "/data2/mal/scratch/floor-stage1-proof"
+FROZEN_RE = r"tapecopy-[0-9]{4}"
+FALLBACK_W2 = ("2026-11-11T10", "2026-11-13T00")
 TAPE_SRC = (HV7,)  # hv7 only (Am.7 precondition (c)); the scratch tapecopy is NOT used. 2026-11-02T01 + 201 h = 2026-11-10T10Z is reachable from hv7 alone
 MERGE_HOST_BLOB = "ba7050e1ed3bbf1538a2745f4604110cadb80a7f"  # git blob of tools/floor_lane_host.py at the stage-1 merge aa05923f
 MERGE_SHA = "aa05923fc7d2593c4d70c7c80b2f64dee371d700"
-SEED_HOUR = "2026-11-02T01"
 SEED_MIN_H = 201
 BOT = "l1-floor-v2"
-W1 = ("2026-11-10T10", "2026-11-11T00")
+W1 = ("2026-11-12T00", "2026-11-12T15")
 W2 = ("2026-11-12T00", "2026-11-13T00")
 D_LABELS = ("5min", "2h", "warm-5min", "warm+5min", "7h")
 EXIT_FAIL, EXIT_VACUOUS = 1, 3
@@ -117,19 +127,88 @@ def check_out(out: str) -> str:
     return ap
 
 
+_FROZEN_OK: list = []
+
+
+def is_frozen_root(d: str) -> bool:
+    ap, rp = os.path.abspath(d).rstrip("/"), os.path.realpath(d).rstrip("/")
+    return ap == rp and os.path.dirname(ap) == FROZEN_PARENT and re.fullmatch(FROZEN_RE, os.path.basename(ap)) is not None
+
+
 def tape_roots() -> tuple:
-    return tuple(TP.ALLOWED_ROOTS)
+    return tuple(TP.ALLOWED_ROOTS) + tuple(_FROZEN_OK)
 
 
 def check_srcs(srcs, test_mode: bool = False) -> list:
-    """hv7 is the declared source (seals line (g)): outside test mode any other --tape-src is refused (abspath and realpath)."""
+    """Outside test mode exactly two kinds of root: the hv7 copy, or a frozen hard-link copy /data2/mal/scratch/floor-stage1-proof/tapecopy-<MMDD> (abspath == realpath)."""
     for d in srcs:
-        if not test_mode and (os.path.abspath(d).rstrip("/") != HV7 or os.path.realpath(d).rstrip("/") != os.path.realpath(HV7).rstrip("/")):
-            refuse("--tape-src must be %s (got %s)" % (HV7, d))
+        is_hv7 = os.path.abspath(d).rstrip("/") == HV7 and os.path.realpath(d).rstrip("/") == os.path.realpath(HV7).rstrip("/")
+        if not test_mode and not (is_hv7 or is_frozen_root(d)):
+            refuse("--tape-src must be %s or a frozen copy %s/tapecopy-<MMDD> (got %s)" % (HV7, FROZEN_PARENT, d))
+        if is_frozen_root(d) and d not in _FROZEN_OK:
+            _FROZEN_OK.append(os.path.abspath(d).rstrip("/"))
         why = TP.refusal(d, roots=tape_roots())
         if why:
             refuse(why)
     return list(srcs)
+
+
+def discover_seed(srcs) -> int:
+    """The first closed hour present in the tape source (file names only)."""
+    hrs = []
+    for d in srcs:
+        for n in os.listdir(d):
+            m = re.fullmatch(r"tape-([0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2})\.jsonl\.zst", n)
+            if m:
+                hrs.append(parse_hour(m.group(1)))
+    if not hrs:
+        refuse("no closed tape hour in the tape source")
+    return min(hrs)
+
+
+def verify_frozen(srcs, seed_ms: int, to_ms: int, list_path: str | None = None, hv7_dir: str | None = None) -> dict:
+    """Frozen hard-link copy check (counts only): the list file is required; every needed hour is listed and present with exactly the listed size; for every needed hour still in hv7 the
+    size is equal and the two names are the same inode. Refuses on any mismatch. Returns counts and the list's sha256."""
+    hv7_dir = hv7_dir or HV7
+    out = {"list_sha256": "none", "hours_checked": 0, "hours_same_inode": 0, "hours_no_longer_in_hv7": 0, "size_mismatch_MUST0": 0, "not_same_inode_MUST0": 0, "missing_or_unlisted_MUST0": 0}
+    frozen = [d for d in srcs if is_frozen_root(d)]
+    if not frozen:
+        return out
+    if len(frozen) != 1 or len(srcs) != 1:
+        refuse("a frozen copy is the only tape source of a run")
+    d = frozen[0].rstrip("/")
+    lp = list_path or d + ".list"
+    if not os.path.isfile(lp):
+        refuse("the frozen copy needs its list file: %s" % lp)
+    raw = Path(lp).read_bytes()
+    out["list_sha256"] = hashlib.sha256(raw).hexdigest()
+    listed = {}
+    for ln in raw.decode().splitlines():
+        f = ln.split()
+        if len(f) >= 2 and f[1].isdigit():
+            listed[f[0]] = int(f[1])
+    for h in hour_list(seed_ms, to_ms):
+        name = "tape-%s.jsonl.zst" % h
+        out["hours_checked"] += 1
+        fp = os.path.join(d, name)
+        if name not in listed or not os.path.exists(fp) or os.stat(fp).st_size != listed[name]:
+            out["missing_or_unlisted_MUST0"] += 1
+            continue
+        hp = os.path.join(hv7_dir, name)
+        if not os.path.exists(hp):
+            out["hours_no_longer_in_hv7"] += 1
+            continue
+        a_, b_ = os.stat(fp), os.stat(hp)
+        if a_.st_size != b_.st_size:
+            out["size_mismatch_MUST0"] += 1
+        elif (a_.st_ino, a_.st_dev) != (b_.st_ino, b_.st_dev):
+            out["not_same_inode_MUST0"] += 1
+        else:
+            out["hours_same_inode"] += 1
+    if out["missing_or_unlisted_MUST0"] or out["size_mismatch_MUST0"] or out["not_same_inode_MUST0"]:
+        emit("TAPE-CHECK", out)
+        refuse("frozen copy check failed (see TAPE-CHECK counts)")
+    return out
 
 
 def hour_list(seed_ms: int, to_ms: int) -> list:
@@ -745,17 +824,27 @@ def run_f(B1, eng, croot, lane, tape, rebuild_table, end1, step, warm, frm) -> d
 
 # ---------------------------------------------------------------------------------------------------------------- main
 def common(a, default_w, p):
-    seed_ms = None if a.seed_from_hour == "none" else parse_hour(a.seed_from_hour)
-    frm = parse_hour(a.from_ ) if a.from_ else parse_hour(default_w[0])
+    frm = parse_hour(a.from_) if a.from_ else parse_hour(default_w[0])
     to = parse_hour(a.to) if a.to else parse_hour(default_w[1])
     a.from_ms, a.to_ms = frm, to
     srcs = check_srcs(a.tape_src or list(TAPE_SRC), a.test_mode)
     if a.test_mode and os.environ.get("MAL_ARENA_TEST") != "1":
         refuse("--test-mode needs MAL_ARENA_TEST=1")
+    if a.seed_from_hour == "none":
+        seed_ms = None
+        if not a.test_mode:
+            refuse("--seed-from-hour none is for synthetic tests only")
+    elif a.seed_from_hour == "auto":
+        seed_ms = discover_seed(srcs)
+        a.seed_from_hour = hour_name(seed_ms)
+    else:
+        seed_ms = parse_hour(a.seed_from_hour)
+    a.tape_info = {"test_mode": bool(a.test_mode), "seed_hour": a.seed_from_hour, "earliest_valid_from": hour_name(seed_ms + SEED_MIN_H * HOUR_MS) if seed_ms is not None else "none"}
     if seed_ms is not None:
+        a.tape_info.update(verify_frozen(srcs, seed_ms, to, a.tape_list))
         check_window(frm, to, seed_ms, now_ms=a.now_ms)
-    elif not a.test_mode:
-        refuse("--seed-from-hour none is for synthetic tests only")
+    else:
+        a.tape_info["list_sha256"] = "none"
     return seed_ms, frm, to, srcs
 
 
@@ -769,7 +858,7 @@ def precount(a, cmd, seed_ms, frm, to, srcs) -> int:
     except Exception:  # noqa: BLE001
         blob1, git_ok = "none", False
     emit("COUNT-ONLY", {"cmd": cmd, "window_hours": (to - frm) // HOUR_MS, "seed_h_before_from": ((frm - seed_ms) // HOUR_MS) if seed_ms is not None else "none",
-                        "earliest_valid_from": hour_name(parse_hour(SEED_HOUR) + SEED_MIN_H * HOUR_MS), **cov, "tape_roots_ok": True, "out_ok": True,
+                        **a.tape_info, **cov, "tape_roots_ok": True, "out_ok": True,
                         "v1_parent_resolvable": git_ok, "v1_host_md5": blob1, "v2_host_md5": md5_bytes((REPO / "tools" / "floor_lane_host.py").read_bytes()), "head_is_set": bool(head)})
     return 0 if cov["hours_missing"] == 0 and git_ok else 2
 
@@ -792,7 +881,7 @@ def cmd_p0(a) -> int:
     r3 = run_replay(v2, os.path.join(out, "v2on"), tape, frm, to, sh, {"cheap_restart": True, "status_span_no_loss": True}, a.test_mode)["root"]
     c = p0_compare(r1, r2, r3)
     ok = p0_pass(c, sc["status_spans"])
-    c.update(status_spans_in_w1=sc["status_spans"], host_md5_v1=host_md5(v1), host_md5_v2=host_md5(v2), pass_=ok, nonvacuous=p0_nonvacuous(c))
+    c.update(**a.tape_info, status_spans_in_w1=sc["status_spans"], host_md5_v1=host_md5(v1), host_md5_v2=host_md5(v2), pass_=ok, nonvacuous=p0_nonvacuous(c))
     emit("P0", c)
     Path(out, "p0.json").write_text(json.dumps(c, sort_keys=True))
     if not p0_nonvacuous(c):
@@ -821,6 +910,7 @@ def cmd_p1(a) -> int:
     r2 = run_replay(v2, os.path.join(out, "v2"), tape, frm, to, sh, {"status_span_no_loss": True}, a.test_mode)["root"]
     d = p1_compare(read_rows(r1), read_rows(r2))
     d["status_spans_in_window"] = sc["status_spans"]
+    d.update(a.tape_info)
     emit("P1", d)
     Path(out, "p1.json").write_text(json.dumps(d, sort_keys=True))
     if not d["nonvacuous"]:
@@ -844,6 +934,7 @@ def cmd_p2(a) -> int:
         Path(out, "p2.json").write_text(json.dumps(res, sort_keys=True))
         return EXIT_VACUOUS
     for c in res["cases"]:
+        c.update(a.tape_info)
         emit("P2-CASE", c)
     for k in ("f2", "f3"):
         emit("P2-F", res["f"][k])
@@ -869,7 +960,8 @@ def build_parser() -> argparse.ArgumentParser:
         p.add_argument("--out", required=True, help="a NEW directory under %s" % OUT_ROOT)
         p.add_argument("--from", dest="from_", default=None, help="window start hour YYYY-MM-DDTHH")
         p.add_argument("--to", default=None, help="window end hour (exclusive)")
-        p.add_argument("--seed-from-hour", default=SEED_HOUR)
+        p.add_argument("--seed-from-hour", default="auto", help="auto = the first closed hour present in the tape source")
+        p.add_argument("--tape-list", default=None, help="list file of a frozen copy (default <copy>.list)")
         p.add_argument("--tape-src", action="append", default=None)
         p.add_argument("--merge-sha", default=MERGE_SHA)
         p.add_argument("--host-blob", default=MERGE_HOST_BLOB)

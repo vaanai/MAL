@@ -296,7 +296,7 @@ def test_e2e_p0_equal_trees_pass_and_a_status_span_in_w1_refuses(env, capsys):
     write_tape(env / "tape", renamed_world())
     rc = P.main(args(env, "p0", H0 + 6 * HOUR, H0 + 34 * HOUR))
     out = capsys.readouterr().out
-    assert rc == 0 and "P0 PASS" in out and "files_md5_differ=0" in out and "files_md5_differ_on=0" in out and "checkpoint_equal_on_minus_guard_ended=True" in out and "checkpoint_equal=True" in out, out
+    assert rc == 0 and "P0 PASS" in out and "files_md5_differ=0" in out and "test_mode=True" in out and "seed_hour=none" in out and "files_md5_differ_on=0" in out and "checkpoint_equal_on_minus_guard_ended=True" in out and "checkpoint_equal=True" in out, out
     no_secrets(out)
     res = json.loads((env / "scratch" / "o1" / "p0.json").read_text())
     assert res["files_v1"] >= 1 and res["rows_v1"] == res["rows_v2"] and res["rows_v1"] >= 1  # the Q entry
@@ -351,3 +351,109 @@ def test_e2e_p2_no_reference_buy_is_vacuous(env, capsys):
     write_tape(env / "tape", [r for r in renamed_world() if r["t_recv_ms"] < H0 + 31 * HOUR])  # no drained-pool sell: the reference never buys
     rc = P.main(args(env, "p2", H0, H0 + 48 * HOUR, "o1", "--step-ms", "60000", "--horizon-s", "600"))
     assert rc == P.EXIT_VACUOUS
+
+
+# ------------------------------------------------------------------------------------------------ frozen hard-link copy, discovered seed, windows (precount #2549)
+HOURS = ["2026-11-03T01", "2026-11-03T02", "2026-11-03T03"]
+
+
+def frozen_world(tmp, monkeypatch, drop_from_hv7=(), sizes=None):
+    hv7, fp = tmp / "hv7", tmp / "fp"
+    hv7.mkdir()
+    fp.mkdir()
+    monkeypatch.setattr(P, "HV7", str(hv7))
+    monkeypatch.setattr(P, "FROZEN_PARENT", str(fp))
+    monkeypatch.setattr(P, "_FROZEN_OK", [])
+    monkeypatch.setattr(P.TP, "ALLOWED_ROOTS", (str(tmp / "tape"), str(hv7)))
+    cp = fp / "tapecopy-1113"
+    cp.mkdir()
+    lines = []
+    for i, h in enumerate(HOURS):
+        n = "tape-%s.jsonl.zst" % h
+        (hv7 / n).write_bytes(b"x" * (10 + i))
+        os.link(hv7 / n, cp / n)
+        lines.append("%s %d 2" % (n, (sizes or {}).get(h, 10 + i)))
+    (fp / "tapecopy-1113.list").write_text("\n".join(lines) + "\n")
+    for h in drop_from_hv7:
+        (hv7 / ("tape-%s.jsonl.zst" % h)).unlink()
+    return str(cp), str(fp / "tapecopy-1113.list")
+
+
+def needed():
+    return P.parse_hour(HOURS[0]), P.parse_hour(HOURS[-1]) + HOUR
+
+
+def test_seed_is_the_first_hour_present_and_earliest_from_follows(env, monkeypatch):
+    cp, _ = frozen_world(env, monkeypatch)
+    seed = P.discover_seed([cp])
+    assert hn(seed) == "2026-11-03T01" and hn(seed + P.SEED_MIN_H * HOUR) == "2026-11-11T10"
+    with pytest.raises(SystemExit):  # one hour before the earliest valid start
+        P.check_window(P.parse_hour("2026-11-11T09"), P.parse_hour("2026-11-12T00"), seed, P.parse_hour("2026-11-14T00"))
+    P.check_window(P.parse_hour("2026-11-11T10"), P.parse_hour("2026-11-12T00"), seed, P.parse_hour("2026-11-14T00"))
+    (env / "empty").mkdir()
+    with pytest.raises(SystemExit):
+        P.discover_seed([str(env / "empty")])
+
+
+def test_frozen_copy_verified_with_counts_and_list_sha(env, monkeypatch):
+    cp, lp = frozen_world(env, monkeypatch, drop_from_hv7=[HOURS[0]])
+    P.check_srcs([cp])
+    frm, to = needed()
+    r = P.verify_frozen([cp], frm, to, lp)
+    assert r["hours_checked"] == 3 and r["hours_same_inode"] == 2 and r["hours_no_longer_in_hv7"] == 1 and r["size_mismatch_MUST0"] == 0
+    import hashlib
+    assert r["list_sha256"] == hashlib.sha256(Path(lp).read_bytes()).hexdigest()
+
+
+def test_frozen_copy_refuses_planted_mismatches(env, monkeypatch):
+    frm, to = needed()
+    cp, lp = frozen_world(env, monkeypatch, sizes={HOURS[1]: 999})  # listed size differs from the file
+    with pytest.raises(SystemExit):
+        P.verify_frozen([cp], frm, to, lp)
+    Path(lp).write_text(Path(lp).read_text().replace("999", "11"))
+    P.verify_frozen([cp], frm, to, lp)  # the repaired list passes
+    last = env / "fp" / "tapecopy-1113" / ("tape-%s.jsonl.zst" % HOURS[2])
+    os.remove(last)  # a missing hour
+    with pytest.raises(SystemExit):
+        P.verify_frozen([cp], frm, to, lp)
+    os.link(env / "hv7" / ("tape-%s.jsonl.zst" % HOURS[2]), last)
+    hp = env / "hv7" / ("tape-%s.jsonl.zst" % HOURS[0])  # same size, another inode than hv7's (a copy, not a hard link)
+    data = hp.read_bytes()
+    hp.unlink()
+    hp.write_bytes(data)
+    with pytest.raises(SystemExit):
+        P.verify_frozen([cp], frm, to, lp)
+    hp.write_bytes(data + b"y")  # a different size in hv7
+    with pytest.raises(SystemExit):
+        P.verify_frozen([cp], frm, to, lp)
+    os.remove(lp)  # the list file is required
+    with pytest.raises(SystemExit):
+        P.verify_frozen([cp], frm, to, lp)
+
+
+def test_exactly_two_source_roots_outside_test_mode(env, monkeypatch):
+    cp, _ = frozen_world(env, monkeypatch)
+    assert P.check_srcs([P.HV7]) == [P.HV7] and P.check_srcs([cp]) == [cp]
+    for bad in (str(env / "fp" / "tapecopy-12"), str(env / "fp" / "other"), "/data2/mal/scratch/floor-nov-funnel/tapecopy", str(env / "tape")):
+        with pytest.raises(SystemExit):
+            P.check_srcs([bad])
+    os.symlink(cp, env / "fp" / "tapecopy-9999")  # a symlinked copy is refused (abspath != realpath)
+    with pytest.raises(SystemExit):
+        P.check_srcs([str(env / "fp" / "tapecopy-9999")])
+    with pytest.raises(SystemExit):  # a frozen copy is the only source of a run
+        P.verify_frozen([cp, P.HV7], *needed())
+
+
+def test_pre_declared_windows():
+    assert P.W1 == ("2026-11-12T00", "2026-11-12T15") and P.W2 == ("2026-11-12T00", "2026-11-13T00") and P.FALLBACK_W2 == ("2026-11-11T10", "2026-11-13T00")
+    assert "2026-11-11T10" in P.__doc__ and "asks QP" in P.__doc__
+
+
+def test_test_mode_field_and_seed_hour_on_every_output(env, capsys, monkeypatch):
+    write_tape(env / "tape", renamed_world())
+    monkeypatch.setattr(P, "git", lambda *a: "deadbeef")
+    monkeypatch.setattr(P.subprocess, "run", lambda *a, **k: type("R", (), {"stdout": b"x", "returncode": 0})())
+    P.main(["p0", "--count-only", "--out", str(env / "scratch" / "c"), "--from", hn(H0 + 30 * HOUR), "--to", hn(H0 + 33 * HOUR), "--seed-from-hour", "none", "--tape-src", str(env / "tape"),
+            "--test-mode", "--now-ms", str(H0 + 400 * HOUR)])
+    out = capsys.readouterr().out
+    assert "test_mode=True" in out and "seed_hour=none" in out and "list_sha256=none" in out
