@@ -398,7 +398,19 @@ def code_blob() -> str:
     return h.hexdigest()
 
 
-def selfcheck_compare(got: dict, expected: dict = EXPECTED, tol: dict = TOL) -> bool:
+def require_selfcheck(scf: Path, blob: str) -> None:
+    """The ladder refuses to start without a PASS file written by the same code blob."""
+    try:
+        d = json.loads(Path(scf).read_text())
+    except (OSError, ValueError):
+        raise Refusal(f"no readable self-check PASS file at {scf}; run --self-check first")
+    if d.get("pass") is not True or d.get("code_blob") != blob:
+        raise Refusal(f"self-check file {scf} is not a PASS from this code blob; run --self-check first")
+
+
+def selfcheck_compare(got: dict, expected: dict | None = None, tol: dict | None = None) -> bool:
+    expected = EXPECTED if expected is None else expected
+    tol = TOL if tol is None else tol
     return (got["n"] == expected["n"] and abs(got["mean_pct"] - expected["mean_pct"]) <= tol["mean_pct"] and abs(got["total_sol"] - expected["total_sol"]) <= tol["total_sol"])
 
 
@@ -495,8 +507,7 @@ def main(argv=None, picks_root: str = PICKS_ROOT, cache_root: str = CACHE_ROOT) 
                 return 1
         if outp is None:
             return 0
-        if not scf.exists() or json.loads(scf.read_text()).get("code_blob") != blob or not json.loads(scf.read_text()).get("pass"):
-            raise Refusal(f"no self-check PASS file from this code blob at {scf}; run --self-check first")
+        require_selfcheck(scf, blob)
         P, dropped = prepare(P0, include_exp011=False)
         print(f"exp011-0909 rows dropped, not priced: {dropped}; rows priced: {len(P['T0'])}; oracle-live-0925 is not in the cache and is not priced")
         res = run_ladder(P, stakes, flow=P["_flow"])
