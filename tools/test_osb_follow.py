@@ -16,6 +16,9 @@ from tools.arena_declog import DecisionLog  # noqa: E402
 from tools.arena_rules_testkit import hour_name, write_tape  # noqa: E402
 from tools.test_arena_rule_l1 import H0, HOUR  # noqa: E402
 from tools.test_floor_arena_executor import _host_log_scenarios  # noqa: E402
+from tools.test_floor_lane_host import gap_row, two_trigger_rows  # noqa: E402
+from tools.test_floor_lane_host_stage1 import DROWN, _prints, status_row  # noqa: E402
+from tools.test_arena_rule_l1 import row as trow  # noqa: E402
 import tools.test_arena_rule_l1 as T  # noqa: E402
 
 N_HOURS = 60
@@ -35,23 +38,47 @@ def _env(monkeypatch):
     monkeypatch.setattr(T, "SHA", H.FROZEN_SHA)
 
 
-def shifted_rows(tmp):
+def shifted_rows(tmp, rows=None):
     """_host_log_scenarios rows (3 pools: one take-profit, two time exits), moved onto the calendar hour T0 so the hour keys match start_hour."""
     d = T0 - H0
-    rows = _host_log_scenarios(tmp)
+    rows = _host_log_scenarios(tmp) if rows is None else rows
     for r in rows:
         r["t_recv_ms"] += d
         r["slot"] += d // 400
+        for k in ("from_ms", "to_ms"):
+            if k in r:
+                r[k] += d
         if "event_ts" in r:
             r["event_ts"] += d // 1000
     return rows
 
 
+def gap_rows():
+    """Guard fixture (H0-relative, shifted by shifted_rows): pool Q's drained-pool trigger at 30 h 15 min has a data_loss gap (hour 27, an earlier file) inside its 6 h lookback: refused,
+    pool blocked; Q's second trigger at 38 h is refused as pool_blocked_after_gap. Pool Z triggers at 36 h with only a writer status span (no row lost, hour 35) in its lookback:
+    refused as feed_gap, or with status_span_no_loss an entry_gap_span_ignored row and an entry."""
+    rows = two_trigger_rows()
+    rows.append(gap_row(H0 + 27 * HOUR, H0 + 27 * HOUR + 1_000))
+    _prints(rows, "Z", H0 + 4 * HOUR, H0 + 35 * HOUR + 1_800_000)
+    rows.append(trow(H0 + 36 * HOUR, "Z", "sell", **DROWN))
+    rows.append(status_row(H0 + 35 * HOUR, H0 + 35 * HOUR + 30_000))
+    return sorted(rows, key=lambda r: (r["t_recv_ms"], r.get("pool", "")))
+
+
 @pytest.fixture
 def world(tmp_path):
+    return make_world(tmp_path, shifted_rows(tmp_path))
+
+
+@pytest.fixture
+def gworld(tmp_path):
+    return make_world(tmp_path, shifted_rows(tmp_path, gap_rows()))
+
+
+def make_world(tmp_path, rows):
     """src = every hour file of the fixture (an empty file for a quiet hour); tape = what the keeper has linked so far (empty at first)."""
     src = tmp_path / "src"
-    write_tape(src, shifted_rows(tmp_path))
+    write_tape(src, rows)
     for i in range(N_HOURS):
         (src / hour_name(T0 + i * HOUR)).touch()
     names = sorted(p.name for p in src.glob("tape-*"))
@@ -264,3 +291,163 @@ def test_follow_refuses_a_manifest_outside_the_root_by_default(world):
     mp, _ = manifest(tmp)
     assert O.follow(str(mp), once=True) == 2  # no _roots: the real OSB root applies, tmp is outside it
     assert not (tmp / "out").exists()
+
+
+# ------------------------------------------------------------------------------------------------ round 2 (QP B1-B4, reviewer 1-3, minors)
+KINDS_ALL = ("entry", "exit", "entry_refused_gap", "entry_gap_span_ignored")
+
+
+def all_kinds(d):
+    return [r["kind"] for r in DecisionLog(str(d)).rows(L.BOT_ID)]
+
+
+def equal_runs(follow_dir, ref):
+    assert H.decision_digest(follow_dir, kinds=KINDS_ALL) == H.decision_digest(ref, kinds=KINDS_ALL)
+    assert O.decision_md5(follow_dir) == O.decision_md5(ref)
+    assert O.tree_md5(follow_dir / "ledger") == O.tree_md5(ref / "ledger"), tree_diff(follow_dir / "ledger", ref / "ledger")
+    a = [(r["kind"], r.get("pool"), r.get("reason")) for r in DecisionLog(str(follow_dir)).rows(L.BOT_ID)]
+    assert a == [(r["kind"], r.get("pool"), r.get("reason")) for r in DecisionLog(str(ref)).rows(L.BOT_ID)]  # every decision-row kind, in order
+
+
+def test_gap_guard_chunked_equals_one_shot_flag_off(gworld):
+    tmp, src, names = gworld
+    mp, m = manifest(tmp, rule_overrides=FAST)
+    assert follow_all(tmp, src, names, mp, 50) == 0
+    ref = one_shot(tmp, m, 50)
+    ks = all_kinds(ref)
+    assert ks.count("entry_refused_gap") == 3 and "entry_gap_span_ignored" not in ks  # Q at its trigger, Q's second trigger (pool block), Z's status span (flag off)
+    reasons = [r["reason"] for r in DecisionLog(str(ref)).rows(L.BOT_ID) if r["kind"] == "entry_refused_gap"]
+    assert reasons.count("pool_blocked_after_gap") == 1 and reasons.count("feed_gap") == 2
+    equal_runs((tmp / "out" / "book").resolve(), ref)
+
+
+def test_gap_guard_chunked_equals_one_shot_status_span_no_loss(gworld):
+    tmp, src, names = gworld
+    mp, m = manifest(tmp, rule_overrides=FAST, lane={"gap_lookback_s": 21600, "status_span_no_loss": True, "cheap_restart": False})
+    assert follow_all(tmp, src, names, mp, 50) == 0
+    ref = one_shot(tmp, m, 50)
+    ks = all_kinds(ref)
+    assert ks.count("entry_gap_span_ignored") == 1 and ks.count("entry_refused_gap") == 2 and ks.count("entry") == 1 and "exit" in ks
+    equal_runs((tmp / "out" / "book").resolve(), ref)
+
+
+def test_hostv2_chunked_equals_one_shot(world):
+    tmp, src, names = world
+    mp, m = manifest(tmp, host="hostv2", gap_exclusion="off", rule_overrides=FAST)
+    m.pop("lane")
+    mp.write_text(json.dumps(m))
+    assert follow_all(tmp, src, names, mp, 48) == 0
+    ref = one_shot(tmp, m, 48)
+    assert "entry" in all_kinds(ref) and "entry_refused_gap" not in all_kinds(ref)
+    equal_runs((tmp / "out" / "book").resolve(), ref)
+
+
+def test_code_version_pin_and_ledger_md5_per_hour(world):
+    tmp, src, names = world
+    mp, m = manifest(tmp, rule_overrides=FAST)
+    link(src, tmp / "tape", names, S0 + 6)
+    assert run_once(tmp, mp) == 0
+    out = tmp / "out"
+    assert (out / "code.sha256").read_text().strip() == O.code_sha256()
+    lines = [json.loads(x) for x in (out / "md5-by-hour.jsonl").read_text().splitlines()]
+    assert len(lines) == 6 and all(len(x["ledger_md5"]) == 32 for x in lines)
+    st = json.loads((out / "status.json").read_text())
+    assert st["code_sha256"] == O.code_sha256() and st["ledger_md5"] == lines[-1]["ledger_md5"] and st["seed_from_hour"] == SEED
+    (out / "code.sha256").write_text("0" * 64 + "\n")
+    assert run_once(tmp, mp) == 2 and not (out / "runs" / "0002").exists()
+    (out / "code.sha256").write_text(O.code_sha256() + "\n")
+    lines[3]["ledger_md5"] = "0" * 32
+    f = out / "md5-by-hour.jsonl"
+    f.write_text("".join(json.dumps(x) + "\n" for x in lines))
+    tampered = f.read_text()
+    assert run_once(tmp, mp) == 4 and f.read_text() == tampered and (out / "book").resolve().name == "0001"
+
+
+def test_age_hi_override_needs_a_longer_seed(world):
+    tmp, src, names = world
+    mp, m = manifest(tmp, rule_overrides={"AGE_HI": 300 * 3600})
+    with pytest.raises(O.Refused, match="seed_from_hour"):
+        O.load_manifest(mp)
+    mp, m = manifest(tmp, rule_overrides={"AGE_HI": 300 * 3600}, seed_from_hour="2026-10-20T00")
+    O.load_manifest(mp)
+    mp, m = manifest(tmp, rule_overrides={"AGE_LO": 300 * 3600})
+    with pytest.raises(O.Refused, match="AGE_LO"):
+        O.load_manifest(mp)
+    mp, m = manifest(tmp, rule_overrides={"AGE_LO": 100000.5})
+    with pytest.raises(O.Refused, match="whole"):
+        O.load_manifest(mp)
+    mp, m = manifest(tmp, stakes_sol=[0.25, 0.10])
+    with pytest.raises(O.Refused):
+        O.load_manifest(mp)
+
+
+def test_status_shows_waiting_for_a_missing_hour(world):
+    tmp, src, names = world
+    mp, m = manifest(tmp, rule_overrides=FAST)
+    link(src, tmp / "tape", names, S0 + 1)
+    calls = []
+
+    def sleeper(_s):
+        calls.append(1)
+        if len(calls) == 2:
+            st = json.loads((tmp / "out" / "status.json").read_text())
+            assert st["waiting_for_hour"] == "2026-11-02T03" and st["waiting_since_utc"] and st["last_hour"] == "2026-11-02T02"
+            link(src, tmp / "tape", names, S0 + 2)
+        if len(calls) == 3:
+            raise RuntimeError("stop")
+    with pytest.raises(RuntimeError, match="stop"):
+        O.follow(str(mp), sleep_fn=sleeper, _roots=(str(tmp),), **RT)
+    st = json.loads((tmp / "out" / "status.json").read_text())
+    assert st["last_hour"] == "2026-11-02T03" and st["waiting_for_hour"] == "2026-11-02T04"  # the second hour was processed; the third is now awaited
+
+
+def test_a_second_process_on_the_same_book_is_refused(world):
+    import fcntl
+    tmp, src, names = world
+    mp, m = manifest(tmp, rule_overrides=FAST)
+    (tmp / "out").mkdir()
+    link(src, tmp / "tape", names, S0 + 1)
+    with open(tmp / "out" / ".osb.lock", "a") as fh:
+        fcntl.flock(fh, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        assert run_once(tmp, mp) == 2
+    assert not (tmp / "out" / "runs").exists()
+    assert run_once(tmp, mp) == 0  # the lock was released with the holder
+
+
+def test_a_tape_symlink_resolving_outside_the_root_is_refused(world):
+    tmp, src, names = world
+    mp, m = manifest(tmp, rule_overrides=FAST)
+    outside = tmp.parent / ("outside-" + tmp.name)
+    outside.mkdir()
+    (outside / "x.jsonl").write_text("")
+    link(src, tmp / "tape", names, S0 + 1)
+    (tmp / "tape" / names[S0 + 5]).symlink_to(outside / "x.jsonl")  # ahead of the cursor, never the hour being read
+    assert run_once(tmp, mp) == 2 and not (tmp / "out" / "runs").exists()
+    (tmp / "tape" / names[S0 + 5]).unlink()
+
+    def sleeper(_s):  # a link appears as the next hour while following
+        (tmp / "tape" / names[S0 + 1]).symlink_to(outside / "x.jsonl")
+    assert O.follow(str(mp), sleep_fn=sleeper, _roots=(str(tmp),), **RT) == 2
+
+
+def test_overlapping_tape_and_out_root_are_refused(tmp_path):
+    root = (str(tmp_path),)
+    for t, o in ((tmp_path / "a", tmp_path / "a"), (tmp_path / "a", tmp_path / "a" / "out"), (tmp_path / "a" / "keep", tmp_path / "a")):
+        t.mkdir(parents=True, exist_ok=True)
+        with pytest.raises(O.Refused, match="disjoint"):
+            O.guard_paths({"tape_dir": str(t), "out_root": str(o)}, root)
+
+
+def test_a_torn_last_line_of_md5_by_hour_is_dropped_and_the_restart_goes_on(world, capsys):
+    tmp, src, names = world
+    mp, m = manifest(tmp, rule_overrides=FAST)
+    link(src, tmp / "tape", names, S0 + 5)
+    assert run_once(tmp, mp) == 0
+    f = tmp / "out" / "md5-by-hour.jsonl"
+    good = f.read_text().splitlines()
+    f.write_text("\n".join(good) + '\n{"hour": "2026-11-0')
+    link(src, tmp / "tape", names, S0 + 8)
+    assert run_once(tmp, mp) == 0
+    assert "torn last line" in capsys.readouterr().err
+    lines = [json.loads(x) for x in f.read_text().splitlines()]
+    assert [x["hour"] for x in lines][:5] == [json.loads(x)["hour"] for x in good][:5] and len(lines) == 8
