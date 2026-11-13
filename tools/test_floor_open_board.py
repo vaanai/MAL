@@ -59,3 +59,114 @@ def test_two_stake_pnl_golden():
 
 
 GOLDEN_PNL = "6b758afcd4fb806363fe3353b6ad59a6233de6271269a6778008bae7646de03d"
+
+
+def test_four_stake_ledger_gains_stakes_and_keeps_old_numbers():
+    two, four = run_pnl(golden_rows()), run_pnl(golden_rows((0.10, 0.25, 0.5, 1.0)))
+    assert set(two["entries_by_day"]) == {"0.1:flat", "0.1:press", "0.25:flat", "0.25:press"}
+    assert set(four["entries_by_day"]) == {f"{s}:{m}" for s in ("0.1", "0.25", "0.5", "1.0") for m in ("flat", "press")}
+    for k in two["entries_by_day"]:
+        assert two["entries_by_day"][k] == four["entries_by_day"][k]
+    p = four["positions"][0]
+    assert set(p["net"]) == {f"{s}:{m}" for s in ("0.1", "0.25", "0.5", "1.0") for m in ("flat", "press")} and p["t1"] is not None
+    assert p["exit_reason"]["1.0"] == "tp_1.5x"
+    assert [q for q in four["positions"] if q["pid"] == "o"][0]["t1"] is None
+
+
+def test_stakes_validation():
+    import floor_nov_paper as NP
+    assert NP.parse_stakes("0.10,0.25") == (0.10, 0.25)
+    assert NP.parse_stakes("0.10,0.25,0.5,1.0") == (0.10, 0.25, 0.5, 1.0)
+    for bad in ("0.10", "0.10,0.25,0.3,0.4,0.5,0.6,0.7", "0.25,0.10", "0.10,0.25,0.25", "0.10,0.25,2.5", "0.10,0.25,0", "0.5,1.0", "0.10,0.5", "0.10,0.25,x", "0.10,0.25,-1"):
+        try:
+            NP.parse_stakes(bad)
+        except SystemExit:
+            continue
+        raise AssertionError("accepted " + bad)
+
+
+def board_of(base_rows, var_rows, to_ms=FAR, fwd="2026-11-12"):
+    import types
+    with tempfile.TemporaryDirectory() as d:
+        for n, rows in (("b", base_rows), ("v", var_rows)):
+            o = run_pnl(rows, to_ms)
+            o["header"] = {"variant": {} if n == "b" else {"Q_STAR": 1e9}, "frozen_rule": n == "b"}
+            json.dump(o, open(f"{d}/{n}.json", "w"))
+        a = types.SimpleNamespace(base=d + "/b.json", variant=d + "/v.json", out_json=d + "/o.json", out_md=d + "/o.md", end_hour="2026-11-13T20", forward_from=fwd)
+        AB.board(a, now=datetime(2026, 11, 14, 1, tzinfo=timezone.utc))
+        return json.load(open(d + "/o.json")), open(d + "/o.md").read()
+
+
+def walk(x):
+    if isinstance(x, dict):
+        for k, v in x.items():
+            yield k
+            yield from walk(v)
+    elif isinstance(x, list):
+        for v in x:
+            yield from walk(v)
+    elif isinstance(x, str):
+        yield x
+
+
+def test_board_no_identifying_fields_and_labels():
+    rows = golden_rows((0.10, 0.25, 0.5, 1.0))
+    b, md = board_of(rows, rows, ms(14, 6))
+    for s in walk(b):
+        assert not any(w in s.lower() for w in ("pool", "mint", "sig")), s
+    assert "POOL_" not in md and "MINT_" not in md
+    assert b["schema"] == "open_sim_board.v1" and b["live"] is None and b["recon"]["status"] == "NOT COMPARABLE"
+    assert b["banner"] == "open simulation, paper, not a gate read; no book has cleared the promotion gate"
+    assert b["n_books_watched"] == 8 and [x["id"] for x in b["books"][:4]] == ["D0-0.10", "D0-0.25", "D0-0.50", "D0-1.00"]
+    lab = {x["stake_sol"]: x["impact_label"] for x in b["books"]}
+    assert lab == {0.1: "model; live fills exist", 0.25: "model; live check pending", 0.5: "model only, extrapolated; not for steering", 1.0: "model only, extrapolated; not for steering"}
+    assert b["tape_through_utc"] == "2026-11-14T06:00:00Z" and b["sim_version"].startswith("v0")
+    assert "N books are watched daily; the best-looking one overstates. Days before 2026-11-12 are in-sample for the wider rule." in md
+    assert "model only, extrapolated; not for steering" in md and "EXIT (close) UTC day" in md and md.index("open simulation") < md.index("| book |")
+    assert set(b["books"][0]) >= {"summary", "per_day", "trades", "open", "impact_label", "stake_sol"}
+    assert set(b["books"][0]["summary"]) == {"today", "d7", "forward_all", "incl_backfill"}
+
+
+def test_board_close_day_booking_in_sample_open_and_forward_completeness():
+    rows = golden_rows()
+    # b: entry 11-05T03 time_stop exits 11-06T03; d: entry 11-12T02 time_stop exits 11-13T02; e: entry 11-12T04 tp exits 11-12T06; o open from 11-13T02
+    b, _ = board_of(rows, rows, ms(14, 6))
+    d25 = [x for x in b["books"] if x["id"] == "D0-0.25"][0]
+    pd = {r["day"]: r for r in d25["per_day"]}
+    assert pd["2026-11-06"]["n"] == 1 and abs(pd["2026-11-06"]["net_sol_flat"] - (-4e-3)) < 1e-12  # booked on the exit day, not the 11-05 entry day
+    assert pd["2026-11-05"]["n"] == 1 and abs(pd["2026-11-05"]["net_sol_flat"] - 5e-3) < 1e-12 and pd["2026-11-05"]["in_sample"] is True
+    assert pd["2026-11-06"]["in_sample"] is True and pd["2026-11-12"]["in_sample"] is False
+    assert pd["2026-11-13"]["n"] == 1 and abs(pd["2026-11-13"]["net_sol_flat"] - (-3e-3)) < 1e-12
+    tr_ = {t["tid"]: t for t in d25["trades"]}
+    assert [t["tid"] for t in d25["trades"]] == ["T0001", "T0002", "T0003", "T0004", "T0005"]
+    assert tr_["T0001"]["in_sample"] is True and tr_["T0004"]["in_sample"] is False and tr_["T0004"]["exit_reason"] == "time_stop"
+    assert abs(tr_["T0001"]["ret_pct"] - 2.0) < 1e-9
+    f = d25["summary"]["forward_all"]
+    assert f["n_closed"] == 2 and abs(f["net_sol_flat"] - (7e-3 - 3e-3 + 0)) < 1e-12 and f["days"] == 2 and f["days_pos"] == 1 and f["tp_count"] == 1 and f["time_count"] == 1
+    assert d25["summary"]["today"]["day"] == "2026-11-13" and d25["summary"]["today"]["n_closed"] == 1
+    assert d25["summary"]["incl_backfill"]["n_closed"] == 5 and d25["summary"]["incl_backfill"]["n_open"] == 1
+    assert [o["tid"] for o in d25["open"]] == ["O0001"] and abs(d25["open"][0]["age_h"] - 28.0) < 1e-9 and d25["open"][0]["entry_utc"] == "2026-11-13T02:00:00Z"
+    # tape ends mid 11-13: 11-13 is an incomplete day and its close is in no window; 11-12 is the newest complete day
+    b2, _ = board_of(rows, rows, ms(13, 9))
+    s2 = [x for x in b2["books"] if x["id"] == "D0-0.25"][0]
+    assert s2["summary"]["today"]["day"] == "2026-11-12"
+    assert s2["summary"]["forward_all"]["days"] == 1 and s2["summary"]["forward_all"]["n_closed"] == 1 and "2026-11-13" not in {r["day"] for r in s2["per_day"]}
+    assert s2["summary"]["incl_backfill"]["n_closed"] == 4
+
+
+def test_board_refuses_unbounded_pnl_and_table_ignores_extra_stakes():
+    import types
+    rows = golden_rows((0.10, 0.25, 0.5, 1.0))
+    with tempfile.TemporaryDirectory() as d:
+        o = run_pnl(rows)
+        o["header"] = {}
+        json.dump(o, open(d + "/p.json", "w"))
+        AB.table(types.SimpleNamespace(base=d + "/p.json", variant=d + "/p.json", out_json=d + "/t.json", out_md=d + "/t.md", end_hour="2026-11-19T23", forward_from="2026-11-12"))
+        assert set(json.load(open(d + "/t.json"))["legs"]) == {"0.1:flat", "0.1:press", "0.25:flat", "0.25:press"}
+        o["bound_applied"] = False
+        json.dump(o, open(d + "/p.json", "w"))
+        try:
+            AB.board(types.SimpleNamespace(base=d + "/p.json", variant=d + "/p.json", out_json=d + "/b.json", out_md=d + "/b.md", end_hour="x", forward_from="2026-11-12"))
+        except SystemExit:
+            return
+        raise AssertionError("board accepted an unbounded pnl file")

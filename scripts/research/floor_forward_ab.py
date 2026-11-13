@@ -256,7 +256,7 @@ def table(a):
           "- base arm: variant=%s frozen_rule=%s; vault arm: variant=%s frozen_rule=%s (both ledgers are registered under the pinned FROZEN_SHA; the vault arm is NOT the frozen rule)." % (
               hb.get("variant"), hb.get("frozen_rule"), hv.get("variant"), hv.get("frozen_rule")), ""]
     lbins = {"base": {}, "vault1.0": {}}
-    for key in sorted(b["entries_by_day"]):
+    for key in sorted(k for k in b["entries_by_day"] if k.split(":")[0] in ("0.1", "0.25")):  # the table reads only 0.10 and 0.25, whatever stakes the ledger carries
         stake, model = key.split(":")
         bd, vd, bpos, vpos = b["entries_by_day"][key], v["entries_by_day"][key], b.get("positions", []), v.get("positions", [])
         md += ["## stake %s, %s leg" % (stake, model), "",
