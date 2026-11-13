@@ -3,13 +3,13 @@ says r4-b or r4bt-a2 makes money."""
 from __future__ import annotations
 
 import fcntl
+import hashlib
 import json
 import os
 import re
 import time
 from pathlib import Path
 
-import numpy as np
 import pytest
 
 from tools import arena_paper as AP
@@ -44,8 +44,18 @@ def _disk(monkeypatch):
 
 
 # ------------------------------------------------------------------------------------------------------------------------------ fixtures
-def mk_tape(d: Path, first: int, hours: int, pools=(POOL,), step=3000, skip=(), extra=None, pre_extra=None):
-    """Hourly tape files from `first` (ms). `pre_extra`: {hour_name: [rows]} appended (rows of pools no entry selects)."""
+def keeper_row(d: Path, name: str):
+    z = d / name
+    st = z.stat()
+    row = {"h": name[5:18], "name": name, "zst_bytes": st.st_size, "zst_sha": hashlib.sha256(z.read_bytes()).hexdigest(), "dev": st.st_dev, "inode": st.st_ino,
+           "linked_utc": "2026-11-16T00:00:00Z"}
+    with open(d / V.KEEPER_HOURS, "a") as fh:
+        fh.write(json.dumps(row, sort_keys=True) + "\n")
+
+
+def mk_tape(d: Path, first: int, hours: int, pools=(POOL,), step=3000, skip=(), extra=None, pre_extra=None, zst=True):
+    """Hourly tape files from `first` (ms), `.jsonl.zst` with a keeper row each (as the keeper writes them). `pre_extra`: {hour_name: [rows]} appended (rows of pools no
+    entry selects)."""
     d.mkdir(parents=True, exist_ok=True)
     i = 0
     for h in range(hours):
@@ -63,7 +73,13 @@ def mk_tape(d: Path, first: int, hours: int, pools=(POOL,), step=3000, skip=(), 
                 lines.extend(src[name])
         if name in skip:
             continue
-        (d / f"tape-{name}.jsonl").write_text("".join(json.dumps(x, sort_keys=True) + "\n" for x in lines))
+        pth = d / f"tape-{name}.jsonl"
+        pth.write_text("".join(json.dumps(x, sort_keys=True) + "\n" for x in lines))
+        if zst:
+            import subprocess
+
+            subprocess.run(["zstd", "-q", "-f", "--rm", str(pth)], check=True)
+            keeper_row(d, f"tape-{name}.jsonl.zst")
 
 
 def entry_body(T0, pool=POOL, rank=0, mint=MINT, **kw):
@@ -98,14 +114,14 @@ def world(tmp: Path, dry_rows=None, *, dec_rows=None, hours=9, dry_stop=None, fi
     """A preview world: declog copy, keeper dir, manifest. Default decisions: one entry at mark CUTOFF exited one hour later."""
     if dry_rows is None:
         dry_rows = [(CUT + 1200, entry_body(V.CUTOFF_S)), (CUT + HR + 1200, exit_body(V.CUTOFF_S, V.CUTOFF_S + 3600))]
-    copy, keep, out = tmp / "copy", tmp / "keep", tmp / "out"
+    copy, keep, out, work = tmp / "copy", tmp / "keep", tmp / "out", tmp / "work"
     mk_declog(copy, DRY, dry_rows)
     if dec_rows is not None:
         mk_declog(copy, DEC, dec_rows)
     mk_tape(keep, tape_first, hours, pools=pools, pre_extra=pre_extra, skip=skip)
     mp, msha = mk_manifest(tmp, dry_stop=dry_stop, decision=dec_rows is not None, first_live=first_live)
     as_of = CUT + 2 * HR  # 03:00Z
-    return dict(roots=(copy, keep, out), manifest=str(mp), manifest_sha256=msha, as_of=G.iso(as_of), as_of_ms=as_of, now_ms=as_of + DAY, code_state_fn=lambda: (PIN, False))
+    return dict(roots=(copy, keep, out, work), manifest=str(mp), manifest_sha256=msha, as_of=G.iso(as_of), as_of_ms=as_of, now_ms=as_of + DAY, code_state_fn=lambda: (PIN, False))
 
 
 def run_world(w, **over):
@@ -173,7 +189,7 @@ def test_change_id_allowlist(cid, ok):
 
 # ------------------------------------------------------------------------------------------------------------------------------ guards
 def test_roots_guards(tmp_path):
-    ok = (tmp_path / "c", tmp_path / "k", tmp_path / "o")
+    ok = (tmp_path / "c", tmp_path / "k", tmp_path / "o", tmp_path / "w")
     env = V.make_env(ok)
     for bad in (tmp_path / "x", Path("/data/mal/arena/ledger"), Path("/var/lib/mal/x"), tmp_path / "k" / "sub", tmp_path / "c"):
         with pytest.raises(G.Refused):
@@ -181,12 +197,12 @@ def test_roots_guards(tmp_path):
     for out in ("/data/mal/arena/x", "/var/lib/mal-live/x", "/home/claude/mal-data/r4b-dry/x", "/data2/mal/scratch/r4b-price-keep/o", "/data2/mal/r4b-preview/declog-copy/o",
                 str(tmp_path / "c" / "o"), str(tmp_path / "k")):
         with pytest.raises(G.Refused):
-            V.make_env((tmp_path / "c", tmp_path / "k", out))
+            V.make_env((tmp_path / "c", tmp_path / "k", out, tmp_path / "w"))
     for droot in (tmp_path / "x" / "out", tmp_path / "sidecar.jsonl", tmp_path / "host.log", tmp_path / "m1-start.txt"):
         with pytest.raises(G.Refused):
-            V.make_env((droot, tmp_path / "k", tmp_path / "o"))
+            V.make_env((droot, tmp_path / "k", tmp_path / "o", tmp_path / "w"))
     with pytest.raises(G.Refused):
-        V.make_env(("/data/mal/arena/x", tmp_path / "k", tmp_path / "o"))
+        V.make_env(("/data/mal/arena/x", tmp_path / "k", tmp_path / "o", tmp_path / "w"))
     d = tmp_path / "c" / "r4bt-a2-dry-1113a" / "out"
     d.mkdir(parents=True)
     with pytest.raises(G.Refused):
@@ -199,7 +215,8 @@ def test_roots_guards(tmp_path):
 
 def test_the_constants_default_roots_are_what_the_ruling_names():
     env = V.make_env()
-    assert (str(env.declog_root), str(env.tape_dir), str(env.out_root)) == (V.DECLOG_COPY_ROOT, V.TAPE_DIR, V.OUT_ROOT)
+    assert (str(env.declog_root), str(env.tape_dir), str(env.out_root), str(env.work_root)) == (V.DECLOG_COPY_ROOT, V.TAPE_DIR, V.OUT_ROOT, V.WORK_ROOT)
+    assert V.WORK_ROOT == "/data2/mal/r4b-preview/work"
 
 
 def test_tape_hour_before_the_floor_is_never_opened_and_is_refused(tmp_path, monkeypatch):
@@ -240,7 +257,7 @@ def test_read_chain_prefix_stops_at_as_of_and_never_locks(tmp_path, monkeypatch)
     assert shas2["2026-11-16"] == __import__("hashlib").sha256(f.read_bytes()).hexdigest()
 
 
-def test_torn_tail_and_tail_only_inconsistency_are_tolerated_but_a_mid_break_is_untrusted(tmp_path):
+def test_torn_tail_is_ignored_and_every_chain_break_is_untrusted(tmp_path):
     w = world(tmp_path)
     env = V.make_env(w["roots"])
     f = Path(w["roots"][0]) / DRY / "decisions" / V.ARM / "2026-11-16.jsonl"
@@ -249,9 +266,9 @@ def test_torn_tail_and_tail_only_inconsistency_are_tolerated_but_a_mid_break_is_
     rows, _ = V.read_chain_prefix(env, DRY, CUT + 3 * HR)
     assert len(rows) == 3
     lines = good.split(b"\n")[:-1]
-    f.write_bytes(b"\n".join(lines[:-1]) + b"\n" + lines[-1].replace(b'"rank"', b'"Rank"') + b"\n")  # the very last complete line is inconsistent
-    rows, _ = V.read_chain_prefix(env, DRY, CUT + 3 * HR)
-    assert len(rows) == 2
+    f.write_bytes(b"\n".join(lines[:-1]) + b"\n" + lines[-1].replace(b'"rank"', b'"Rank"') + b"\n")  # the very last complete line is inconsistent: a real break
+    with pytest.raises(V.Untrusted):
+        V.read_chain_prefix(env, DRY, CUT + 3 * HR)
     f.write_bytes(lines[0] + b"\n" + lines[1].replace(b'"rank"', b'"Rank"') + b"\n" + lines[2] + b"\n")  # a break with a line after it
     with pytest.raises(V.Untrusted):
         V.read_chain_prefix(env, DRY, CUT + 3 * HR)
@@ -411,9 +428,9 @@ def test_idempotent_rerun_verify_and_first_output_o_excl(tmp_path, capsys):
     assert run_world(w, verify=True) == 0 and capsys.readouterr().out.strip().endswith("EQUAL")
     (out_dir(w) / "preview.json").unlink()
     (out_dir(w) / "preview.json").write_bytes(b"{}")
-    assert run_world(w, verify=True) == 1 and capsys.readouterr().out.strip().endswith("DIFF")
+    assert run_world(w, verify=True) == 4 and capsys.readouterr().out.strip().endswith("DIFF")
     assert run_world(w) == 2, "an output with other bytes is never overwritten"
-    assert not [p for p in Path(w["roots"][2]).rglob(".work-*")], "the temp ledger is deleted"
+    assert not list(Path(w["roots"][3]).iterdir()), "the temp ledger is deleted"
 
 
 def test_every_refusal_writes_nothing(tmp_path):

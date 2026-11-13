@@ -8,7 +8,7 @@ WHERE IT RUNS AND WHAT IT TOUCHES (Addendum 1, B5). One manager MiScusi job on m
   * its manifest (JSON, pinned by sha256);
   * the declog byte copy `DECLOG_COPY_ROOT/<change_id>/decisions/r4b-exp027/<UTC day>.jsonl` (made by a separate copier job, cut at the last newline);
   * the price keeper `TAPE_DIR` (hard links of closed tape hours, made by a separate keeper job).
-It WRITES ONLY under `OUT_ROOT`. The three roots are constants, overridable only through the test-only `roots=` argument; a read or write outside them is refused, and an
+It WRITES finished outputs ONLY under `OUT_ROOT`; its temporary engine ledger (pool ids) lives ONLY under `WORK_ROOT` (0700, swept at the start of every run, removed at exit). The three roots are constants, overridable only through the test-only `roots=` argument; a read or write outside them is refused, and an
 OUT_ROOT inside /data/mal/arena, a keeper dir, the declog copy, the dry host's root or /var/lib is refused. It re-verifies the hash chain of the copied prefixes on every
 run (exit 3 on a break). It never calls flock (the copier may be mid-write): a torn last line is cut, and a file that is inconsistent only at its very tail is read up to
 the last consistent complete line.
@@ -25,7 +25,7 @@ E1 (B4). The headline is PROPORTIONAL (the engine's `e1_floor_per_005` 384,022 x
 
     python -I tools/r4b_preview.py run --manifest M --manifest-sha256 H --as-of 2026-11-17T00:00:00Z [--verify]
 
-Exit codes: 0 written (or byte-equal to what is there; or --verify EQUAL); 1 --verify DIFF; 2 refused (nothing written); 3 the inputs cannot be trusted.
+Exit codes: 0 written (or byte-equal to what is there; or --verify EQUAL); 4 --verify DIFF; 2 refused (nothing written); 3 the inputs cannot be trusted.
 """
 from __future__ import annotations
 
@@ -79,6 +79,18 @@ PREVIEW_BOT = "r4b-preview"
 DECLOG_COPY_ROOT = "/data2/mal/r4b-preview/declog-copy"
 TAPE_DIR = "/data2/mal/scratch/r4b-price-keep"
 OUT_ROOT = "/data2/mal/r4b-preview/out"
+WORK_ROOT = "/data2/mal/r4b-preview/work"  # the temporary engine ledger and registry (pool ids): sealed, 0700, never under OUT_ROOT
+KEEPER_HOURS = ".keeper-hours.jsonl"
+REGISTERED_BLOBS = {  # git blob ids of the registered modules at W' 3c12c5fddfa67384dca2e306a8bf6c529e85ebfc: the preview refuses to run on any other bytes
+    "tools/r4bt_price.py": "7ed62b1f43ed58da862a56a5bd28a6167136cb39",
+    "tools/arena_paper.py": "5eef156bb617138a4c04fca6779f9ff4c5215b13",
+    "tools/arena_score.py": "f3adcd69c7ef62392eafc511b40d93a0dc31f13c",
+    "tools/r4bt_read.py": "679de3b5622dd7e2bf1deed8cccae079a188f241",
+    "tools/r4bt_gate.py": "2c094ad860c1b838399e4274ca7db3ae837f6d9e",
+    "tools/arena_declog.py": "2baa782db6b93fe1dc225009176b889785a20763",
+    "tools/r4bt_bots.py": "f109187aa8ae18d1cbafb06b6e1b7a2c2174c747",
+}
+REPO_ROOT = Path(__file__).resolve().parent.parent
 HOUR_MS = 3_600_000
 LATS = ("1p3", "1p9")
 LAT_F = {"1p3": 1.3, "1p9": 1.9}
@@ -90,6 +102,7 @@ REFUSED_CHANGE_IDS = (re.compile(r"^dry-long-1101a$"), re.compile(r"^r4bt-a1-"))
 DECLOG_DENY = ("out", "host.log", "m1-start.txt", "sidecar.jsonl")
 NEVER_WRITE = ("/data/mal/arena", "/data2/mal/scratch/r4b-price-keep", "/data2/mal/arena-tip-feed", "/data2/mal/r4b-preview/declog-copy", "/home/claude/mal-data/r4b-dry",
                "/home/claude/mal-data/arena-tipfeed", "/var/lib")
+NEVER_WRITE_WORK = NEVER_WRITE + ("/data2/mal/r4b-preview/out",)
 SHA_RE = G.SHA_RE
 HEX40 = re.compile(r"^[0-9a-f]{40}$")
 DAY_FILE_RE = re.compile(r"^(\d{4}-\d\d-\d\d)\.jsonl$")
@@ -101,6 +114,9 @@ DISCLOSURES = (
     "d is the manifest's single measured value (QP-RULING-1113-open-sims Addendum 1, B3); a different d would be a new series with a new start date",
     "tape hours 2026-11-15T22, 2026-11-15T23 and 2026-11-16T00 feed the engine for pool state only; nothing from them is output (Addendum 1, B1)",
     "the trades listed with a catch-up replay series label are outside every total and statistic",
+    "entry and exit decisions are read from the declog COPY (the copier's per-file sha256s are the cross-check), not from the original declogs",
+    "the preview runs under /data/mal/venv on mal-research-0; the registered pricer's venv is pinned on mal-fast-0, so float equality of the 0.25 rung with the registered read rests on the equality test, not on an identical venv",
+    "the 0.25 rung's deciding_like vector charges rent on V-audit trades as r4bt_read.deciding_cells does; the same rule is applied at every rung",
     "positions with no exit row or still open at as_of are listed and counted and are never priced",
     "the pressure-model intercept is refit per cell on that cell's trades; no confidence interval and no threshold test is computed",
 )
@@ -112,6 +128,7 @@ class Env:
     declog_root: Path
     tape_dir: Path
     out_root: Path
+    work_root: Path
 
     def _under(self, path: str | Path, root: Path, what: str) -> Path:
         p = Path(path).resolve()
@@ -139,13 +156,17 @@ class Env:
     def check_write(self, path: str | Path) -> Path:
         return self._under(path, self.out_root, "a write")
 
+    def check_work(self, path: str | Path) -> Path:
+        return self._under(path, self.work_root, "a work write")
 
-def make_env(roots: tuple[str | Path, str | Path, str | Path] | None = None) -> Env:
-    d, t, o = roots if roots is not None else (DECLOG_COPY_ROOT, TAPE_DIR, OUT_ROOT)
+
+def make_env(roots: tuple[str | Path, str | Path, str | Path, str | Path] | None = None) -> Env:
+    d, t, o, wk = roots if roots is not None else (DECLOG_COPY_ROOT, TAPE_DIR, OUT_ROOT, WORK_ROOT)
     for part in Path(d).parts:
         if part in DECLOG_DENY:
             raise G.Refused(f"the declog root {d} has the component {part!r}: refused")
     dr, tr, orr = G.check_path(d, "the declog copy root"), G.check_path(t, "the tape dir"), G.check_path(o, "OUT_ROOT")
+    wr = G.check_path(wk, "WORK_ROOT")
 
     def inside(a: Path, b: Path) -> bool:
         return a == b or b in a.parents
@@ -154,9 +175,15 @@ def make_env(roots: tuple[str | Path, str | Path, str | Path] | None = None) -> 
         b = Path(bad)
         if inside(orr, b):
             raise G.Refused(f"OUT_ROOT {orr} is inside {bad}: refused")
-    if inside(orr, dr) or inside(orr, tr) or inside(dr, orr) or inside(tr, orr):
-        raise G.Refused("OUT_ROOT, the declog copy and the keeper dir must be three separate trees")
-    return Env(dr, tr, orr)
+    for bad in NEVER_WRITE:
+        if inside(wr, Path(bad)):
+            raise G.Refused(f"WORK_ROOT {wr} is inside {bad}: refused")
+    trees = (dr, tr, orr, wr)
+    for i, a in enumerate(trees):
+        for b in trees[i + 1:]:
+            if inside(a, b) or inside(b, a):
+                raise G.Refused("OUT_ROOT, WORK_ROOT, the declog copy and the keeper dir must be four separate trees")
+    return Env(dr, tr, orr, wr)
 
 
 # ------------------------------------------------------------------------------------------------------------------------------ small helpers
@@ -234,7 +261,7 @@ def load_manifest(path: str | Path, sha256: str) -> dict:
 
 # ------------------------------------------------------------------------------------------------------------------------------ declog copy
 def _read_bytes(path: Path) -> bytes:
-    fd = os.open(str(path), os.O_RDONLY)  # no lock of any kind: the copier may be mid-write
+    fd = os.open(str(path), os.O_RDONLY | os.O_NOFOLLOW)  # no lock of any kind: the copier may be mid-write
     try:
         chunks = []
         while True:
@@ -249,8 +276,7 @@ def _read_bytes(path: Path) -> bytes:
 
 def read_chain_prefix(env: Env, change_id: str, until_ms: int) -> tuple[list[dict], dict[str, str]]:
     """The rows of `<declog copy>/<change_id>/decisions/r4b-exp027/*.jsonl` with ms < until_ms, the hash chain verified over every row read (from genesis; pre-cut-off rows
-    take part in the chain and nothing else). Lock-free, O_RDONLY. Each file is cut at its last newline (a torn tail is ignored). A file inconsistent ONLY at its very last
-    complete line (the last file) stops the read at the last consistent line; any other break is Untrusted. Returns (rows, {day: sha256 of the consumed prefix bytes});
+    take part in the chain and nothing else). Lock-free, O_RDONLY. Each file is cut at its last newline (a torn tail is ignored). Any complete line that fails the chain is Untrusted (the copier cuts at a newline and verifies before installing). Returns (rows, {day: sha256 of the consumed prefix bytes});
     a whole-file sha is never returned (the open day grows)."""
     check_change_id(change_id)
     d = env.check_read_declog(env.declog_root / change_id / "decisions" / ARM)
@@ -268,7 +294,6 @@ def read_chain_prefix(env: Env, change_id: str, until_ms: int) -> tuple[list[dic
         data = _read_bytes(f)
         data = data[: data.rfind(b"\n") + 1]
         lines = data.split(b"\n")[:-1]
-        last_real = max([i for i, ln in enumerate(lines) if ln.strip()], default=-1)
         consumed = 0
         for i, line in enumerate(lines):
             if not line.strip():
@@ -283,11 +308,8 @@ def read_chain_prefix(env: Env, change_id: str, until_ms: int) -> tuple[list[dic
                       and sha256_hex(prev + canon(row)) == sha)
             except (ValueError, KeyError, AttributeError, TypeError):
                 ok = False
-            if not ok:
-                if fi == len(files) - 1 and i == last_real:
-                    stop = True  # inconsistent only at the very tail: the last consistent complete line is the end
-                    break
-                raise Untrusted(f"declog copy chain of {change_id} is broken in {f.name} (not at its tail)")
+            if not ok:  # a complete (newline-terminated) line that fails the chain is a real break, at the tail or anywhere
+                raise Untrusted(f"declog copy chain of {change_id} is broken in {f.name}")
             if row["ms"] >= until_ms:
                 stop = True
                 break
@@ -521,7 +543,7 @@ def _stats(x: np.ndarray, days: Sequence[str], p0: Sequence[str]) -> dict:
     return s
 
 
-def cells_of(trades: Sequence[Mapping], cfg: AP.StackConfig, p0: Sequence[str]) -> tuple[dict, dict]:
+def cells_of(trades: Sequence[Mapping], cfg: AP.StackConfig, p0: Sequence[str], audit: frozenset = frozenset()) -> tuple[dict, dict]:
     """Per stake (one trade list): cells[e1_mode][f'{model}_{lat}_{rule}'] = {rent0, rent_charged} stats, plus per-trade SOL vectors at rent 0 (same keys). Pressure refit per
     cell. The rent-charged leg is r4bt_read.deciding_cells' transform (flat minus 0.85 x rent; pressure minus (1 - p) x rent; filled trips only)."""
     out: dict[str, dict] = {m: {} for m in E1_MODES}
@@ -529,6 +551,7 @@ def cells_of(trades: Sequence[Mapping], cfg: AP.StackConfig, p0: Sequence[str]) 
     if not trades:
         return out, vec
     days = [utc_day(r["decision_ms"]["entry"]) for r in trades]
+    aud = np.array([r.get("position_id") in audit for r in trades], bool)  # V-audit trades DECIDE at the rent-charged leg (r4bt_read.deciding_cells, QP Q4)
     send = float(trades[0]["stack"]["send"])
     sts = [reconstruct_state(r["calc"]) for r in trades]
     for mode in E1_MODES:
@@ -544,11 +567,12 @@ def cells_of(trades: Sequence[Mapping], cfg: AP.StackConfig, p0: Sequence[str]) 
                 x0 = {"flat": flat, "press": press}
                 for model in MODELS:
                     key = f"{model}_{lat}_{rule}"
-                    cell = {"rent0": _stats(x0[model], days, p0), "rent_charged": _stats(x1[model], days, p0)}
+                    xd = np.where(aud, x1[model], x0[model])
+                    cell = {"rent0": _stats(x0[model], days, p0), "rent_charged": _stats(x1[model], days, p0), "deciding_like": _stats(xd, days, p0)}
                     if model == "press":
                         cell["intercept"] = float(c)
                     out[mode][key] = cell
-                    vec[mode][key] = (x0[model] / 1e9).tolist()
+                    vec[mode][key] = (xd / 1e9).tolist()
     return out, vec
 
 
@@ -612,7 +636,8 @@ def build_report(*, manifest: Mapping, as_of_ms: int, cfg: AP.StackConfig, entri
     vecs: dict[float, dict] = {}
     costs: dict[str, Any] = {}
     for s in STAKES:
-        cells[f"{s:g}"], vecs[s] = cells_of(dec_by_stake[s], cfg, p0)
+        aud_s = frozenset(P.v_audit([r for r in dec_by_stake[s]], res["prints"])) if dec_by_stake[s] else frozenset()
+        cells[f"{s:g}"], vecs[s] = cells_of(dec_by_stake[s], cfg, p0, aud_s)
         costs[f"{s:g}"] = decompose(dec_by_stake[s], cfg)
     # ---- counts
     excl = Counter(r.get("exclusion_reason") for r in counted_rows if r["kind"] == "excluded" and r["stake_sol"] == 0.25)
@@ -625,9 +650,10 @@ def build_report(*, manifest: Mapping, as_of_ms: int, cfg: AP.StackConfig, entri
               "cell_partition_by_stake": partition}
     # ---- peaks
     iv = []
+    priced_pids = {r["position_id"] for r in counted_rows if r["kind"] == "trade"}
     for e in entries:
-        if not e["_counted"]:
-            continue
+        if not e["_counted"] or ent_pid.get((e["_cid"], e["order_id"])) not in priced_pids:
+            continue  # peak open counts priced positions only; refused buys are printed separately (counts)
         x = exit_of.get((e["_cid"], e["order_id"]))
         iv.append((e["ms"], x["ms"] if x else as_of_ms))
     obs = peak_open(iv)
@@ -641,7 +667,7 @@ def build_report(*, manifest: Mapping, as_of_ms: int, cfg: AP.StackConfig, entri
         x = exit_of.get(key)
         day = utc_day(e["ms"])
         tr = {"key": f"{e['_cid']}-{series_n[e['_cid']]:05d}", "series": e["_cid"], "role": e["_label"], "counted": bool(e["_counted"]), "entry_mark_utc": G.iso(e["t_mark"] * 1000),
-              "entry_decision_utc": iso_ms(e["ms"]), "rank": e.get("rank"), "exit_mark_utc": G.iso(x["t_mark"] * 1000) if x and _is_int(x.get("t_mark")) else None,
+              "entry_decision_utc": iso_ms(e["ms"]), "rank": (e["rank"] if _is_int(e.get("rank")) else None), "exit_mark_utc": G.iso(x["t_mark"] * 1000) if x and _is_int(x.get("t_mark")) else None,
               "exit_reason": (x.get("reason") if x else None), "hold_hours": (round((x["t_mark"] - e["t_mark"]) / 3600.0, 4) if x and _is_int(x.get("t_mark")) else None),
               "p0": day in p0, "p0_label": P0_LABEL if day in p0 else None, "day": day, "status": None, "rungs": {}}
         if tr["exit_reason"] is not None and not REASON_RE.match(str(tr["exit_reason"])):
@@ -678,7 +704,7 @@ def build_report(*, manifest: Mapping, as_of_ms: int, cfg: AP.StackConfig, entri
                 if rung["fill_state"]:
                     rung["not_in_cells"] = "late_print_gap_or_v_none"
                 continue
-            rung["sol_rent0"] = {m: {k: round(v[i], 9) for k, v in vecs[s][m].items()} for m in E1_MODES}
+            rung["sol_deciding_like"] = {m: {k: round(v[i], 9) for k, v in vecs[s][m].items()} for m in E1_MODES}
     rep = {
         "tool": "r4b_preview", "label": label_for(declared), "e1_label": E1_LABEL, "declared_instant": declared, "as_of": G.iso(as_of_ms), "stakes_sol": list(STAKES), "k": K,
         "cutoff_utc": G.iso(CUTOFF_MS), "tape_floor_utc": G.iso(TAPE_FLOOR_MS), "d_slots": manifest["d"], "d_measurement_sha256": manifest["d_measurement_sha256"],
@@ -702,7 +728,7 @@ def render(rep: Mapping) -> tuple[str, str, str]:
     md = [f"as of {rep['as_of']}; d = {rep['d_slots']} slots (measurement {rep['d_measurement_sha256']}, window {rep['d_window']}); pin {rep['pin_commit']}",
           f"stakes {rep['stakes_sol']}; K {rep['k']}; cut-off {rep['cutoff_utc']}; pool-state tape floor {rep['tape_floor_utc']}; trade rows md5 {rep['trade_rows_md5']}",
           rep["e1_label"], f"E1 headline: proportional (engine); fixed {rep['e1_fixed_lamports']} lamports per filled trip printed beside it in every table"]
-    md += [f"not applied: {x}" for x in rep["disclosures"]]
+    md += [f"disclosed: {x}" for x in rep["disclosures"]]
     md.append("counts " + json.dumps(rep["counts"], sort_keys=True))
     for s, v in rep["peak_open"].items():
         md.append(f"peak open at {s} SOL: nominal K x stake {v['nominal_k_x_stake_sol']} SOL; observed max concurrent {v['observed_max_concurrent']} = {v['observed_peak_sol']} SOL")
@@ -721,7 +747,7 @@ def render(rep: Mapping) -> tuple[str, str, str]:
         line = (f"trade {t['key']} series {t['series']} ({t['role']}; {'counted' if t['counted'] else 'outside totals'}) entry mark {t['entry_mark_utc']} decision {t['entry_decision_utc']} "
                 f"rank {t['rank']} exit mark {t['exit_mark_utc']} reason {t['exit_reason']} hold_h {t['hold_hours']} status {t['status']}")
         for s, rg in sorted(t["rungs"].items()):
-            sol = (rg.get("sol_rent0") or {}).get("proportional", {})
+            sol = (rg.get("sol_deciding_like") or {}).get("proportional", {})
             line += f" | {s}: " + ",".join(f"{k}={sol[k]:.6f}" for k in sorted(sol) if k.endswith("_1p9_total")) + f" state_src {rg.get('state_src')} excl {rg.get('exclusion_reason')}"
         if t["p0"]:
             line += f" | {P0_LABEL}"
@@ -729,23 +755,31 @@ def render(rep: Mapping) -> tuple[str, str, str]:
     md_text = "".join(f"{L} | {x}\n" for x in md)
     days: dict[str, dict] = {}
     for s, modes in rep["cells"].items():
-        for k in ("flat_1p9_total", "press_1p9_total"):
-            c = modes["proportional"].get(k)
-            if not c:
-                continue
-            for day, dv in c["rent0"]["daily"].items():
-                days.setdefault(day, {}).setdefault(s, {})[k] = (dv["n"], dv["sol"], dv["p0"])
+        for mode in E1_MODES:
+            for k in ("flat_1p9_total", "press_1p9_total"):
+                c = modes[mode].get(k)
+                if not c:
+                    continue
+                for day, dv in c["deciding_like"]["daily"].items():
+                    days.setdefault(day, {}).setdefault(s, {})[(mode, k)] = (dv["n"], dv["sol"], dv["p0"])
+    cnt = rep["counts"]
+    tail = f" | no exit row {cnt['no_exit_row']}, open at as_of {cnt['open_at_as_of']}"
     cl = []
     for day in sorted(days):
         parts = []
         p0f = False
         for s in sorted(days[day], key=float):
-            f_, p_ = days[day][s].get("flat_1p9_total"), days[day][s].get("press_1p9_total")
-            parts.append(f"{s} SOL: n {f_[0]} flat {_f(f_[1])} press {_f(p_[1])}")
-            p0f = p0f or f_[2]
-        cl.append(f"{L} | day {day} (rent 0, 1.9 s, rule total, E1 proportional; sol per day): " + "; ".join(parts) + (f" | {P0_LABEL}" if p0f else ""))
+            seg = []
+            n = 0
+            for mode in E1_MODES:
+                f_, p_ = days[day][s].get((mode, "flat_1p9_total")), days[day][s].get((mode, "press_1p9_total"))
+                n = f_[0]
+                p0f = p0f or f_[2]
+                seg.append(f"e1 {mode} flat {_f(f_[1])} press {_f(p_[1])}")
+            parts.append(f"{s} SOL: n {n} " + ", ".join(seg))
+        cl.append(f"{L} | day {day} (1.9 s, rule total, deciding-like leg; sol per day): " + "; ".join(parts) + (f" | {P0_LABEL}" if p0f else "") + tail)
     if not cl:
-        cl.append(f"{L} | as of {rep['as_of']}: no priced day yet")
+        cl.append(f"{L} | as of {rep['as_of']}: no priced day yet" + tail)
     return js, md_text, "\n".join(cl) + "\n"
 
 
@@ -763,6 +797,9 @@ def write_once(env: Env, path: Path, data: bytes) -> bool:
     try:
         os.write(fd, data)
         os.fsync(fd)
+    except BaseException:
+        tmp.unlink(missing_ok=True)
+        raise
     finally:
         os.close(fd)
     try:
@@ -791,7 +828,86 @@ def first_output(env: Env, as_of: str, sha: str, pin: str) -> bool:
 
 
 # ------------------------------------------------------------------------------------------------------------------------------ the run
+def git_blob_id(data: bytes) -> str:
+    return hashlib.sha1(b"blob %d\0" % len(data) + data).hexdigest()
+
+
+def check_registered_modules(repo: Path = REPO_ROOT, table: Mapping[str, str] | None = None) -> None:
+    """The imported registered modules must be byte-identical to W' (git blob ids); any other bytes refuse, naming the file."""
+    for rel, want in (REGISTERED_BLOBS if table is None else table).items():
+        got = git_blob_id((Path(repo) / rel).read_bytes())
+        if got != want:
+            raise G.Refused(f"{rel} is not the registered module (blob {got}, registered {want}): the 0.25 rung would no longer be r4bt-a2's deciding cell")
+
+
+def load_keeper_rows(env: Env) -> tuple[dict, int]:
+    """{hour name: row} from the keeper's append-only `.keeper-hours.jsonl` (the first valid row per hour); unreadable lines are skipped and counted."""
+    p = env.tape_dir / KEEPER_HOURS
+    rows: dict = {}
+    bad = 0
+    try:
+        data = _read_bytes(p)
+    except OSError:
+        return rows, 0
+    for line in data.split(b"\n"):
+        if not line.strip():
+            continue
+        try:
+            r = json.loads(line)
+            ok = (isinstance(r, dict) and isinstance(r.get("h"), str) and isinstance(r.get("name"), str) and _is_int(r.get("zst_bytes")) and isinstance(r.get("zst_sha"), str)
+                  and SHA_RE.match(r["zst_sha"]))
+        except ValueError:
+            ok = False
+        if not ok:
+            bad += 1
+            continue
+        rows.setdefault(r["name"], r)
+    if bad:
+        print(f"r4b_preview: {bad} unreadable line(s) skipped in {KEEPER_HOURS}", file=sys.stderr)
+    return rows, bad
+
+
+def check_keeper_hours(env: Env, files: Sequence[Path]) -> None:
+    """Every hour fed (the pre-roll hours too) must be the `.jsonl.zst` the keeper recorded: size == zst_bytes and sha256 of its bytes == zst_sha, else Untrusted naming the
+    hour only. The hash is streamed (1 MiB chunks) in a pass before any hour is fed."""
+    rows, _ = load_keeper_rows(env)
+    for f in files:
+        env.check_read_tape(f)
+        hour = P.TAPE_RE.match(f.name).group(1)
+        r = rows.get(f.name)
+        if not f.name.endswith(".jsonl.zst") or r is None:
+            raise Untrusted(f"tape hour {hour}: no valid keeper row for a .jsonl.zst file of that name")
+        h = hashlib.sha256()
+        n = 0
+        fd = os.open(str(f), os.O_RDONLY | os.O_NOFOLLOW)
+        try:
+            while True:
+                b = os.read(fd, 1 << 20)
+                if not b:
+                    break
+                h.update(b)
+                n += len(b)
+        finally:
+            os.close(fd)
+        if n != r["zst_bytes"] or h.hexdigest() != r["zst_sha"]:
+            raise Untrusted(f"tape hour {hour}: size or sha256 differs from the keeper's row")
+
+
+def sweep_work(env: Env) -> int:
+    """Empty WORK_ROOT (leftovers of a killed run) before anything else; creates it 0700."""
+    env.work_root.mkdir(parents=True, exist_ok=True)
+    os.chmod(env.work_root, 0o700)
+    n = 0
+    for c in env.work_root.iterdir():
+        shutil.rmtree(c, ignore_errors=True) if c.is_dir() and not c.is_symlink() else c.unlink()
+        n += 1
+    return n
+
+
 def compute(manifest: Mapping, as_of_ms: int, env: Env, *, now_ms: int, code_state_fn: Callable[[], tuple[str | None, bool | None]], keep_bonding: bool = False) -> dict:
+    check_registered_modules()
+    if as_of_ms % HOUR_MS:
+        raise G.Refused("--as-of must be on the hour (the output directory is named by the hour)")
     if as_of_ms < CUTOFF_MS:
         raise G.Refused(f"--as-of {G.iso(as_of_ms)} is before the cut-off {G.iso(CUTOFF_MS)}: nothing is priced")
     if as_of_ms > now_ms:
@@ -822,7 +938,8 @@ def compute(manifest: Mapping, as_of_ms: int, env: Env, *, now_ms: int, code_sta
             pending["open_at_as_of"].append(k)
     tail_hi = as_of_ms + P.EXIT_POST_MS
     files = P.tape_hours(env.tape_dir, TAPE_FLOOR_MS, tail_hi, now_ms)
-    work = env.check_write(env.out_root / f".work-{as_of_ms}-{os.getpid()}")
+    check_keeper_hours(env, files)
+    work = env.check_work(env.work_root / f"work-{as_of_ms}-{os.getpid()}")
     work.mkdir(parents=True, exist_ok=True, mode=0o700)
     try:
         res = replay(priced_entries, exits_all, files, manifest["d"], work, pin_commit=manifest["pin_commit"], code_state_fn=code_state_fn, env=env, keep_bonding=keep_bonding)
@@ -837,6 +954,7 @@ def run(manifest_path: str, manifest_sha256: str, as_of: str, *, roots=None, now
     now = int(time.time() * 1000) if now_ms is None else int(now_ms)
     try:
         env = make_env(roots)
+        swept = sweep_work(env)  # before anything else: leftovers of a killed run hold pool ids
         manifest = load_manifest(manifest_path, manifest_sha256)
         as_of_ms = G.utc_ms(as_of)
         csf = code_state_fn or (lambda: AP.process_code_state(Path(__file__).resolve().parent.parent))
@@ -847,17 +965,20 @@ def run(manifest_path: str, manifest_sha256: str, as_of: str, *, roots=None, now
             old = env.check_write(d / "preview.json")
             same = old.exists() and old.read_bytes() == js.encode()
             print("EQUAL" if same else "DIFF")
-            return 0 if same else 1
+            return 0 if same else 4
+        if not (d / "preview.json").exists():
+            first_output(env, rep["as_of"], hashlib.sha256(js.encode()).hexdigest(), manifest["pin_commit"])  # before the first link: a crash cannot lose the instant
         wrote = [write_once(env, d / "preview.json", js.encode()), write_once(env, d / "preview.md", md.encode()), write_once(env, d / "console.txt", con.encode())]
-        if any(wrote):
-            first_output(env, rep["as_of"], hashlib.sha256(js.encode()).hexdigest(), manifest["pin_commit"])
-        print(json.dumps({"as_of": rep["as_of"], "written": any(wrote), "preview_json_sha256": hashlib.sha256(js.encode()).hexdigest(), "counts": rep["counts"]}, sort_keys=True))
+        print(json.dumps({"as_of": rep["as_of"], "written": any(wrote), "work_leftovers_removed": swept, "preview_json_sha256": hashlib.sha256(js.encode()).hexdigest(), "counts": rep["counts"]}, sort_keys=True))
         return 0
     except G.Refused as e:
         print(f"r4b_preview: REFUSED: {e}", file=sys.stderr)
         return 2
     except Untrusted as e:
         print(f"r4b_preview: UNTRUSTED: {e}", file=sys.stderr)
+        return 3
+    except (OSError, ValueError, KeyError) as e:
+        print(f"r4b_preview: UNTRUSTED: {type(e).__name__}: {str(e)[:200]}", file=sys.stderr)
         return 3
 
 
