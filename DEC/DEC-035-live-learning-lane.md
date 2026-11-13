@@ -555,3 +555,7 @@ Source: the text above is QP's, verbatim, from the QP VERDICT OK on PR #1337 at 
 - The P2 cases, D values, horizon, claims and pass rule are unchanged. SEALS-BRIEF line (g) names the proof script at the merged commit that carries `--seed-relaxed`. Nothing else in Amendment 7 changes.
 
 Source: the text above is QP's, verbatim, from `/data/mal/hunt-1008/ops/QP-RULING-1113-floor-stage1-p2-vacuous.md` (Revision 1, sha256 dc4e1746399440864b9d24aa36ea0a59f86f87944a8238fe0482bca55bd55492), section "Erratum text". Written 2026-11-13T04:3xZ (`date -u` 04:31:13Z); Revision 1 2026-11-13 (QP review of PR #1346).
+
+**Erratum 3 to Amendment 7 (precondition (b): P1).** For this install, which keeps `status_span_no_loss` false (Change item 4), precondition (b) is met by P0 and P2 as set out in Erratum 2. P1 (the `main replay` test with `status_span_no_loss` true on a window that holds a writer status span) is not run for this install; it becomes a precondition of the amendment or erratum that switches `status_span_no_loss` on (Change item 4), which declares its window, seed and tape. Nothing else in Amendment 7 changes.
+
+Source: the text above is QP's, verbatim, from `/data/mal/hunt-1008/ops/QP-RULING-1113-floor-stage1-p2-vacuous.md` (sha256 71062fc6e22ae0b4d58a981416940f5325e05531af202004f4e5c9497ba67f3b), section "Addendum 1" item (1). Written 2026-11-13T07:0xZ (`date -u` 07:07:28Z).
