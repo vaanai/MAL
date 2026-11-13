@@ -55,7 +55,7 @@ class Env:
             if hook := extra.get("after"):
                 hook(mp, args, code)
             return code, 1234, 0.5
-        t = {"roots": (str(self.tmp),), "skip_env": True, "git": lambda: (True, True, "a" * 40), "min_hour": "2000-01-01T00", "cli": cli, "table_mode": "first_print", "engine_kw": RT["_engine_kw"], "min_entries": 3}
+        t = {"roots": (str(self.tmp),), "skip_env": True, "git": lambda: (True, True, "a" * 40), "min_hour": "2000-01-01T00", "cli": cli, "table_mode": "first_print", "engine_kw": RT["_engine_kw"], "min_entries": 3, "any_first": True}
         t.update({k: v for k, v in extra.items() if k != "after"})
         return t
 
@@ -113,7 +113,7 @@ def test_output_carries_none_of_the_forbidden_fields(pass_run, env):
     assert set(rep["manifests"][0]) >= {"legs", "row_counts_by_kind", "md5_by_hour_lines", "L1_digests"} and "_vac" not in rep["manifests"][0]
     for r in rep["manifests"]:
         for lg in r["legs"].values():
-            assert set(lg) == {"exit_codes", "peak_rss_kib", "wall_s"}
+            assert {"exit_codes", "peak_rss_kib", "wall_s"} <= set(lg) <= {"exit_codes", "peak_rss_kib", "wall_s", "rss_scope"}
 
 
 def test_a_perturbed_leg_is_a_fail(env):
@@ -187,3 +187,44 @@ def test_cli_refuses_a_keep_outside_the_real_root_and_the_need_hours_follow_the_
     from tools import arena_rule_l1 as L
     m = {"rule_overrides": {}}
     assert P.need_hours(m) == 201 and P.need_hours({"rule_overrides": {"AGE_HI": 300 * 3600}}) == 301 and L.AGE_HI == 200 * 3600
+
+
+def test_a_symlink_in_keep_is_refused_before_any_leg_and_window_dir_refuses_it_too(env):
+    victim = env.keep / hour_name(S_MS + 2 * HOUR)
+    moved = env.tmp / "victim-moved"
+    victim.rename(moved)
+    victim.symlink_to(moved)
+    try:
+        root = env.proof_root()
+        code, rep, line = P.run_proof([env.mf()], START_HOUR, 4, root, str(env.keep), _test=env.test_kw())
+        assert code == 2 and "not regular" in line and not Path(root).exists()
+        with pytest.raises(P.Refusal):
+            P.window_dir(env.keep, env.tmp / "wd-sym", S_MS, S_MS, 4)
+        assert not any(p.name == victim.name for p in (env.tmp / "wd-sym").iterdir())
+    finally:
+        victim.unlink()
+        moved.rename(victim)
+
+
+def test_book_a_must_be_the_first_manifest(env):
+    t = env.test_kw()
+    t["any_first"] = False
+    code, rep, line = P.run_proof([env.mf()], START_HOUR, 4, env.proof_root(), str(env.keep), _test=t)  # FAST override on the first manifest
+    assert code == 2 and "book A" in line
+
+
+def test_a_failed_l1_stops_the_proof_before_l2_and_l3(env):
+    base = env.test_kw()["cli"]
+    root = env.proof_root()
+
+    def cli(mp, args, log):
+        code, rss, w = base(mp, args, log)
+        return 4, rss, w
+    code, rep, line = P.run_proof([env.mf()], START_HOUR, 4, root, str(env.keep), _test=env.test_kw(cli=cli))
+    assert code == 1 and "L1 exit code [4]" in line and not (Path(root) / "M0" / "L2").exists() and not (Path(root) / "M0" / "L3").exists()
+
+
+def test_a_leg_that_outlives_the_timeout_is_killed(env):
+    mp = env.mf()
+    code, rss, wall = P.cli_subprocess(mp, ["--once"], str(env.tmp / "to.log"), timeout=0.05)
+    assert code == -9 and wall < 30

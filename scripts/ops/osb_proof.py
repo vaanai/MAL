@@ -12,7 +12,7 @@ No P&L, no exit-reason split, no pool id, mint or price is printed or written to
 The tests use the `_test` argument of run_proof (roots, table_mode, engine_kw, leg runner, git check, env check, min hour); the CLI exposes none of them.
 Derived manifests: a copy of the given manifest with `out_root` AND `tape_dir` changed (tape_dir -> the per-leg window dir of hard links; the QP leg text needs "all present hours" to be exactly the window).
 """
-import argparse, collections, hashlib, json, math, os, resource, subprocess, sys, time
+import argparse, collections, functools, hashlib, json, math, os, resource, stat, subprocess, sys, threading, time
 from pathlib import Path
 
 REPO = Path(__file__).resolve().parent.parent.parent
@@ -109,9 +109,15 @@ def prechecks(manifests, start_hour, hours, proof_root, keep, t):
             raise Refusal("manifest %s: seed hours start before %s" % (p, t.get("min_hour", MIN_HOUR)))
         ms.append(m)
     lo = min(H.parse_hour(m["seed_from_hour"]) for m in ms)
+    if not t.get("any_first") and not (ms[0]["host"] == "lane" and not ms[0]["rule_overrides"]):
+        raise Refusal("the first --manifest must be book A (host lane, empty rule_overrides): VACUOUS is judged on it")
     missing = [O.hour_key(x) for x in range(lo, S + hours * HOUR_MS, HOUR_MS) if O.hour_file(keep_p, x) is None]
     if missing:
         raise Refusal("%d hour file(s) missing in keep (first %s, last %s)" % (len(missing), missing[0], missing[-1]))
+    nonreg = [O.hour_key(x) for x in range(lo, S + hours * HOUR_MS, HOUR_MS) if O.hour_file(keep_p, x) is not None and not stat.S_ISREG(os.lstat(O.hour_file(keep_p, x)).st_mode)]
+    if nonreg:
+        raise Refusal("%d seed/window hour file(s) in keep are not regular files (first %s)" % (len(nonreg), nonreg[0]))
+    O.TP.require_files_ok(str(keep_p), roots)
     return ms, S, head
 
 
@@ -122,8 +128,10 @@ def window_dir(keep, dest, lo, S, hours):
     dest.mkdir(parents=True)
     for x in range(lo, S + hours * HOUR_MS, HOUR_MS):
         f = O.hour_file(keep, x)
+        if not stat.S_ISREG(os.lstat(f).st_mode):
+            raise Refusal("hour file is not a regular file: %s" % f.name)
         try:
-            os.link(f, dest / f.name)
+            os.link(f, dest / f.name, follow_symlinks=False)
         except OSError as e:
             raise Refusal("hard link failed for an hour file: %s" % type(e).__name__)
     return dest
@@ -132,16 +140,23 @@ def window_dir(keep, dest, lo, S, hours):
 def derive(m, tape_dir, out_root, path):
     d = dict(m)
     d["tape_dir"], d["out_root"] = str(tape_dir), str(out_root)
+    if {k for k in set(d) | set(m) if d.get(k) != m.get(k)} - {"tape_dir", "out_root"}:
+        raise Refusal("derived manifest differs beyond tape_dir/out_root")
     Path(path).write_text(json.dumps(d, indent=1, sort_keys=True) + "\n")
     return d
 
 
-def cli_subprocess(manifest_path, args, log):
-    """osb_follow.py as a child; -> (exit code, peak RSS KiB of that child, wall s)"""
+def cli_subprocess(manifest_path, args, log, timeout=None):
+    """osb_follow.py as a child; -> (exit code, peak RSS KiB of that child, wall s). A child that outlives `timeout` seconds is killed (exit code -9)."""
     t0 = time.time()
     with open(log, "ab") as fh:
         p = subprocess.Popen([sys.executable, str(REPO / "scripts" / "research" / "osb_follow.py"), str(manifest_path)] + list(args), stdout=fh, stderr=fh, cwd=str(REPO))
+        tm = threading.Timer(timeout, p.kill) if timeout else None
+        if tm:
+            tm.start()
         _, status, ru = os.wait4(p.pid, 0)
+        if tm:
+            tm.cancel()
     return os.waitstatus_to_exitcode(status), ru.ru_maxrss, round(time.time() - t0, 1)
 
 
@@ -179,11 +194,19 @@ def _across_hour(ent, exits):
     return any(isinstance(e.get("ms"), int) and isinstance(ex.get(e.get("order_id")), int) and ex[e["order_id"]] // HOUR_MS != e["ms"] // HOUR_MS for e in ent)
 
 
-def run_manifest(tag, m, orig_path, proof_root, keep, S, hours, t):
+def _read1(p):
+    try:
+        return Path(p).read_text().strip()
+    except OSError:
+        return None
+
+
+def run_manifest(tag, m, orig_path, proof_root, keep, S, hours, t, leg_timeout_s=14400):
     pr = Path(proof_root) / tag
     need_ms = need_hours(m) * HOUR_MS
     tape = window_dir(keep, pr / "tape", S - need_ms, S, hours)
-    cli = t.get("cli") or cli_subprocess
+    cli = t.get("cli") or functools.partial(cli_subprocess, timeout=leg_timeout_s)
+    roots = t.get("roots") or (O.OSB_ROOT,)
     legs = {}
     base = {"book_id": m["book_id"]}
 
@@ -201,9 +224,14 @@ def run_manifest(tag, m, orig_path, proof_root, keep, S, hours, t):
     out1 = pr / "L1" / "out"
     d1, r1 = cli_leg("L1", out1, [["--once"]])
     legs["L1"] = {"exit_codes": [r[0] for r in r1], "peak_rss_kib": max(r[1] for r in r1), "wall_s": round(sum(r[2] for r in r1), 1)}
+    if any(c != 0 for c in legs["L1"]["exit_codes"]):
+        return {"tag": tag, "manifest_sha256": sha256_file(orig_path), "legs": legs, **base,
+                "fails": ["L1 exit code %s (a timeout kill shows -9); L2 and L3 not run" % legs["L1"]["exit_codes"]]}
     # L2
     t0 = time.time()
     d2 = derive(m, tape, pr / "L2" / "out", mpath("L2"))
+    O.guard_paths(d2, roots)  # the driver's own tape checks, as the CLI legs run them at start
+    O.TP.require_files_ok(str(tape), roots)
     run2 = pr / "L2" / "run"
     code2 = 0
     restore = O.apply_overrides(d2["rule_overrides"])
@@ -215,7 +243,7 @@ def run_manifest(tag, m, orig_path, proof_root, keep, S, hours, t):
         base["L2_error"] = type(e).__name__
     finally:
         restore()
-    legs["L2"] = {"exit_codes": [code2], "peak_rss_kib": resource.getrusage(resource.RUSAGE_SELF).ru_maxrss, "wall_s": round(time.time() - t0, 1)}
+    legs["L2"] = {"exit_codes": [code2], "peak_rss_kib": resource.getrusage(resource.RUSAGE_SELF).ru_maxrss, "wall_s": round(time.time() - t0, 1), "rss_scope": "proof process lifetime maximum, not L2 alone"}
     # L3
     out3 = pr / "L3" / "out"
     d3, r3 = cli_leg("L3", out3, [["--max-hours", str(hours // 2)], ["--once"]])
@@ -223,9 +251,11 @@ def run_manifest(tag, m, orig_path, proof_root, keep, S, hours, t):
 
     res = {"tag": tag, "manifest_sha256": sha256_file(orig_path), "derived_manifest_sha256": {"L1": sha256_file(mpath("L1")), "L2": sha256_file(mpath("L2")), "L3": sha256_file(mpath("L3"))},
            "driver_manifest_sha256": O.manifest_sha256(m), "legs": legs, **base}
+    res["code_sha256"] = {"L1": _read1(out1 / "code.sha256"), "L3": _read1(out3 / "code.sha256")}
+    res["osb_follow_file_sha256"] = sha256_file(REPO / "scripts" / "research" / "osb_follow.py")
     fails = []
     if any(c != 0 for lg in legs.values() for c in lg["exit_codes"]):
-        fails.append("exit code")
+        fails.append("exit code (%s)" % ", ".join("%s=%s" % (k, v["exit_codes"]) for k, v in legs.items()))
     dig1 = dig3 = dig2 = None
     try:
         dig1, kinds1 = digests(book_dir(out1))
@@ -259,17 +289,20 @@ def run_manifest(tag, m, orig_path, proof_root, keep, S, hours, t):
     return res
 
 
-def run_proof(manifests, start_hour, hours, proof_root, keep, _test=None):
+def run_proof(manifests, start_hour, hours, proof_root, keep, _test=None, leg_timeout_s=14400):
     """-> (exit code, report dict, final line)"""
     t = _test or {}
+    manifests, proof_root, keep = [str(Path(x).resolve()) for x in manifests], str(Path(proof_root).absolute()), str(Path(keep).absolute())
     try:
         ms, S, head = prechecks(manifests, start_hour, hours, proof_root, keep, t)
         Path(proof_root).mkdir(parents=True)
         out = {"head": head, "start_hour": start_hour, "hours": hours, "manifests": []}
         for i, (m, p) in enumerate(zip(ms, manifests)):
-            out["manifests"].append(run_manifest("M%d" % i, m, p, proof_root, keep, S, hours, t))
+            out["manifests"].append(run_manifest("M%d" % i, m, p, proof_root, keep, S, hours, t, leg_timeout_s))
     except (Refusal, O.Refused) as e:
         return EXIT_REFUSED, None, "OSB-PROOF REFUSED %s" % e
+    except (Exception, SystemExit) as e:  # anything else: a FAIL line with the class name, never a bare traceback
+        return EXIT_FAIL, None, "OSB-PROOF FAIL error=%s" % type(e).__name__
     fails = [f for r in out["manifests"] for f in r["fails"]]
     vac = out["manifests"][0].pop("_vac", None)
     for r in out["manifests"][1:]:
@@ -308,8 +341,9 @@ def main(argv=None):
     ap.add_argument("--hours", type=int, default=48)
     ap.add_argument("--proof-root", required=True)
     ap.add_argument("--keep", required=True)
+    ap.add_argument("--leg-timeout-s", type=int, default=14400, help="kill a CLI leg that runs longer than this (default 4 h); the proof then FAILs")
     a = ap.parse_args(argv)
-    code, rep, line = run_proof(a.manifest, a.start_hour, a.hours, a.proof_root, a.keep)
+    code, rep, line = run_proof(a.manifest, a.start_hour, a.hours, a.proof_root, a.keep, leg_timeout_s=a.leg_timeout_s)
     if rep is not None:
         print(json.dumps(rep, indent=1, sort_keys=True))
         if rep.get("note"):
