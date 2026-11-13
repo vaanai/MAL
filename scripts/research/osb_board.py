@@ -366,7 +366,7 @@ def book_row(b, info, srs, control, n_watched):
 
 def withheld(idx, role, why):
     """a book whose output carried a forbidden word: shown as withheld, never fails the board"""
-    return {"id": "book-%d" % (idx + 1), "title": "withheld", "role": role, "state": "ERROR", "error_class": why, "rows": [], "params": {}, "last_hour": None, "last_hour_end_utc": None, "gap_guard_note": None,
+    return {"id": "book-%d" % (idx + 1), "title": "withheld", "role": role, "state": "ERROR", "error_class": why, "rows": [], "params": {"host": None, "rule_overrides": {}, "gap_exclusion": None, "send_lamports": 0, "start_hour": None}, "last_hour": None, "last_hour_end_utc": None, "gap_guard_note": None,
             "start_instant_utc": None, "code_sha256": None}
 
 

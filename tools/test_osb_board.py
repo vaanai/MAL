@@ -330,3 +330,132 @@ def test_nothing_in_existing_pricing_scripts_changed():
     import subprocess
     r = subprocess.run(["git", "-C", str(ROOT), "diff", "--name-only", "origin/main", "--", "scripts/research/floor_forward_ab.py", "scripts/research/floor_nov_pnl.py", "scripts/research/osb_follow.py"], capture_output=True, text=True)
     assert r.returncode != 0 or r.stdout.strip() == ""
+
+
+# ------------------------------------------------------------------------------------------------ round 2 (QP B1-B3, reviewer B1-B5)
+def books_file_starts(tmp, specs, live=None):
+    p = tmp / "books.json"
+    p.write_text(json.dumps({"books": [{"manifest": str(mp), "role": role, "start_instant_utc": st} for mp, role, st in specs], "live": live}))
+    return p
+
+
+def test_pairing_uses_the_same_entry_window_when_starts_differ(tmp_path):
+    """control started a day earlier: its entries before the variant's start instant are not counted against the variant (QP B1)"""
+    ctl_rows = tp("c1", ms(14, 13), -9_000_000) + tp("c2", ms(15, 13), 1_000_000) + tp("c3", ms(15, 15), 1_000_000)
+    var_rows = tp("v1", ms(15, 13), 2_000_000) + tp("v2", ms(15, 15), 2_000_000)
+    ca, _ = make_book(tmp_path, "A", ctl_rows)
+    cc, _ = make_book(tmp_path, "C", var_rows)
+    bf = books_file_starts(tmp_path, [(ca, "control", "2026-11-14T00:00:00Z"), (cc, "variant", "2026-11-15T10:00:00Z")])
+    rc, out = run(tmp_path, bf)
+    res = load(out)
+    v = row(res, "C", 0.25)
+    pr = v["vs_control"]
+    assert pr["entry_from_utc"] == "2026-11-15T10:00:00Z" and pr["control_n_closed"] == 2 and pr["control_net_sol_flat"] == pytest.approx(0.002) and pr["variant_net_sol_flat"] == pytest.approx(0.004)
+    assert pr["diff_sol_flat"] == pytest.approx(0.002) and v["disclosure"]["control_forward"]["net_sol_flat"] == pytest.approx(0.002) and v["disclosure"]["forward_net_sol_flat"] == pytest.approx(0.004)
+    assert v["disclosure"]["window_basis"].startswith("paired: entries from 2026-11-15T10:00:00Z") and v["disclosure"]["first_forward_day_from_utc"] == "2026-11-15T10:00:00Z"
+    assert row(res, "A", 0.25)["windows"]["forward_all"]["net_sol_flat"] == pytest.approx(-0.007)  # the control's own forward figure keeps its earlier entries
+    assert "(forward from 10:00Z)" in (out / "board.md").read_text()
+
+
+def test_one_bad_book_does_not_blank_the_others_and_follow_continues(tmp_path, capsys):
+    ca, _ = make_book(tmp_path, "A", CONTROL_ROWS)
+    cc, outc = make_book(tmp_path, "C", VARIANT_ROWS)
+    # a half-written last line (no newline) is ignored, the rows before it count
+    led = outc / "runs" / "0001" / "ledger" / "l1-floor-v2" / "trades-x.jsonl"
+    led.write_text(led.read_text() + '{"kind": "trade", "position_id": "v9", "stake_sol": 0.2')
+    rc, out = run(tmp_path, books_file(tmp_path, [(ca, "control"), (cc, "variant")]))
+    res = load(out)
+    assert rc == 0 and [b["state"] for b in res["books"]] == ["running", "running"] and row(res, "C", 0.25)["windows"]["forward_all"]["n_closed"] == 4
+    # a corrupt COMPLETE line breaks that book only: ERROR with the exception class, the board is still written, the follow loop goes on
+    led.write_text(led.read_text() + "\nnot json\n")
+    polls = []
+    rc, out = run(tmp_path, books_file(tmp_path, [(ca, "control"), (cc, "variant")]), "--follow", sleep_fn=polls.append, max_polls=3)
+    res = load(out)
+    assert rc == 0 and [b["state"] for b in res["books"]] == ["running", "ERROR"] and res["books"][1]["error_class"] == "JSONDecodeError" and res["books"][1]["rows"] == []
+    assert len(row(res, "A", 0.25)["trades"]) == 6 and str(tmp_path) not in json.dumps(res)
+
+
+def test_forbidden_word_in_a_title_withholds_that_book_only(tmp_path):
+    ca, _ = make_book(tmp_path, "A", CONTROL_ROWS)
+    cc, _ = make_book(tmp_path, "C", VARIANT_ROWS, title="the mint rule")
+    rc, out = run(tmp_path, books_file(tmp_path, [(ca, "control"), (cc, "variant")], live={"x": "pool"}))
+    res = load(out)
+    assert rc == 0 and res["books"][1]["state"] == "ERROR" and res["books"][1]["error_class"] == "ForbiddenWord" and res["books"][1]["id"] == "book-2" and res["live"] == {"withheld": "forbidden word"}
+    assert len(res["books"][0]["rows"]) == 2 and "mint" not in (out / "board.md").read_text().lower()
+
+
+def test_catching_up_run_does_not_move_the_board_backwards(tmp_path):
+    ca, outa = make_book(tmp_path, "A", CONTROL_ROWS)
+    rc, o1 = run(tmp_path, books_file(tmp_path, [(ca, "control")]))
+    before = row(load(o1), "A", 0.25)
+    # driver restarted: a new run 0002 replays from the start hour; status.json describes it, `book` still points at the old complete run 0001, md5-by-hour keeps the verified hours
+    (outa / "runs" / "0002" / "ledger" / "l1-floor-v2").mkdir(parents=True)
+    (outa / "runs" / "0002" / "ledger" / "l1-floor-v2" / "trades-x.jsonl").write_text(json.dumps(CONTROL_ROWS[0]) + "\n")
+    set_status(outa, ms(14, 13), run="0002", catching_up_to_stored_hours=True, active=False)
+    # set_status rewrote md5-by-hour for the smaller hour: put the verified list back (the driver never shortens it)
+    (outa / "md5-by-hour.jsonl").write_text(json.dumps({"hour": "2026-11-16T05", "end_ms": END, "decision_md5": "d", "ledger_md5": "l"}) + "\n")
+    rc, o2 = run(tmp_path, books_file(tmp_path, [(ca, "control")]))
+    res = load(o2)
+    after = row(res, "A", 0.25)
+    assert res["books"][0]["state"] == "CATCHING UP" and res["tape_through_utc"] == "2026-11-16T06:00:00Z" and res["books"][0]["last_hour"] == "2026-11-16T05"
+    assert after["windows"] == before["windows"] and after["trades"] == before["trades"] and all(o["age_h"] >= 0 for o in after["open"])
+    # after the flip the new run is the active one and the state is normal again
+    os.replace(outa / "runs" / "0002", outa / "runs" / "0002x")
+    (outa / "book").unlink()
+    os.symlink("runs/0001", outa / "book")
+    set_status(outa, END, run="0001")
+    assert load(run(tmp_path, books_file(tmp_path, [(ca, "control")]))[1])["books"][0]["state"] == "running"
+
+
+def test_ledger_rows_after_the_board_hour_are_not_counted(tmp_path):
+    ahead = tp("z1", ms(16, 6, 30), 9_000_000) + tp("z2", ms(16, 5, 30), 7_000_000)  # z1 enters after the tape end; z2 enters before it and exits (2 h later) after it
+    mp, _ = make_book(tmp_path, "A", CONTROL_ROWS + ahead)
+    rc, out = run(tmp_path, books_file(tmp_path, [(mp, "control")]))
+    r = row(load(out), "A", 0.25)
+    assert len(r["trades"]) == 6 and "A-00011" not in {t["tid"] for t in r["trades"]} and sorted(o["tid"] for o in r["open"]) == ["A-00008", "A-00009"] and "A-00010" not in {t["tid"] for t in r["trades"]}
+    assert all(o["age_h"] >= 0 for o in r["open"]) and r["windows"]["day_in_progress"]["n_closed"] == 1 and r["unpriced_entries"] == 1
+
+
+def test_stuck_status_is_rebuilt_and_shows_stale(tmp_path):
+    mp, out = make_book(tmp_path, "A", CONTROL_ROWS)  # wall_time 2026-11-16T06:00:30Z, never updated again
+    clock = [END + 60_000]
+    polls = []
+
+    def sleeper(s):
+        polls.append(s)
+        clock[0] += 20 * 60_000
+    ob = tmp_path / "board"
+    rc = B.main([str(books_file(tmp_path, [(mp, "control")])), "--out-dir", str(ob), "--follow", "--poll-s", "5"], roots=(str(tmp_path),), out_roots=(str(ob),), sleep_fn=sleeper, max_polls=12, clock_ms=lambda: clock[0])
+    assert rc == 0 and load(ob)["books"][0]["state"] == "STALE" and load(ob)["generated_utc"] > "2026-11-16T09:00:00Z"
+    assert "STALE" in (ob / "board.md").read_text()
+
+
+def test_book_link_flipped_between_builds_keeps_ids(tmp_path):
+    mp, out = make_book(tmp_path, "A", CONTROL_ROWS)
+    bf = books_file(tmp_path, [(mp, "control")])
+    r1 = row(load(run(tmp_path, bf)[1]), "A", 0.25)
+    import shutil
+    shutil.copytree(out / "runs" / "0001", out / "runs" / "0002")  # the driver verified a restart: same decisions, new run dir
+    (out / "book").unlink()
+    os.symlink("runs/0002", out / "book")
+    set_status(out, END, run="0002")
+    r2 = row(load(run(tmp_path, bf)[1]), "A", 0.25)
+    assert r1["trades"] == r2["trades"] and r1["open"] == r2["open"] and r1["windows"] == r2["windows"]
+
+
+def test_unpriced_exemption_is_exact():
+    with pytest.raises(B.Refusal):
+        B.check_forbidden({"priced_mark": 1}, "")
+    with pytest.raises(B.Refusal):
+        B.check_forbidden({"a": "repriced"}, "")
+    with pytest.raises(B.Refusal):
+        B.check_forbidden({"unpriced_entries_x": 1}, "")
+    B.check_forbidden({"unpriced_entries": 1}, B.UNPRICED_SENTENCE + B.UNPRICED_HEAD)
+    with pytest.raises(B.Refusal):
+        B.check_forbidden({}, "the price moved")
+
+
+def test_a_variant_that_holds_is_never_a_bare_holds(world):
+    tmp, ca, cc = world
+    md = (run(tmp, books_file(tmp, [(ca, "control"), (cc, "variant")]))[1] / "board.md").read_text()
+    assert all("holds" not in ln or "not decision-grade" in ln or "does not hold" in ln for ln in md.splitlines())
