@@ -56,6 +56,12 @@ def write_host(root: Path, rows=None):
     (d / "2026-11-08.jsonl").write_text("".join(json.dumps(r) + "\n" for r in rows))
 
 
+@pytest.fixture(autouse=True)
+def fixed_marker(tmp_path_factory, monkeypatch):
+    monkeypatch.setattr(E, "MARKER", tmp_path_factory.mktemp("marker") / "ONE-LOOK.done")
+    monkeypatch.setattr(E.time, "sleep", lambda s: None)
+
+
 class World:
     def __init__(self, tmp: Path, rows, tail=b"", bridge=None):
         self.tmp = tmp
@@ -64,17 +70,14 @@ class World:
         write_ledger(self.led, rows, tail)
         write_host(self.host)
         (tmp / "disc.txt").write_text("DISCLOSURE LINE ONE\nline two\n")
-        self.bridge = None
-        if bridge is not None:
-            (tmp / "bl").mkdir()
-            self.bridge = tmp / "bl" / "bridge-log-live.jsonl"
-            self.bridge.write_text("".join(json.dumps(b) + "\n" for b in bridge))
+        (tmp / "bl").mkdir()
+        self.bridge = tmp / "bl" / "bridge-log-live.jsonl"
+        self.bridge.write_text("".join(json.dumps(b) + "\n" for b in (bridge or [])))
 
     def args(self, now=R, **over):
         a = ["--lane-ledger-root", str(self.led), "--host-decisions-root", str(self.host), "--disclosures", str(self.tmp / "disc.txt"),
              "--out-json", str(self.out / "r.json"), "--out-md", str(self.out / "r.md")]
-        if self.bridge:
-            a += ["--bridge-log", str(self.bridge)]
+        a += ["--bridge-log", str(self.bridge)]
         if now is not None:
             a += ["--now-ms", str(now)]
         return a
@@ -276,38 +279,38 @@ def test_refuses_before_R(tmp_path, monkeypatch, capsys):
     w = World(tmp_path, trade_rows(S + 1000, "m1", 31_000_000, 40_000_000))
     assert w.run(monkeypatch, now=R - 1) == 2
     assert "before R" in capsys.readouterr().err
-    assert not (w.out / "r.json.done").exists() and not (w.out / "r.json").exists()
+    assert not E.MARKER.exists() and not (w.out / "r.json").exists()
 
 
 def test_now_ms_refused_without_env(tmp_path, monkeypatch):
     w = World(tmp_path, trade_rows(S + 1000, "m1", 31_000_000, 40_000_000))
     monkeypatch.delenv(E.TEST_NOW_ENV, raising=False)
     assert E.main(w.args(R)) == 2
-    assert not (w.out / "r.json.done").exists()
+    assert not E.MARKER.exists()
 
 
 def test_one_look_marker(tmp_path, monkeypatch):
     w = World(tmp_path, trade_rows(S + 1000, "m1", 31_000_000, 40_000_000))
     assert w.run(monkeypatch) == 0
-    assert (w.out / "r.json.done").exists()
+    assert E.MARKER.exists()
     first = (w.out / "r.json").read_bytes()
     assert w.run(monkeypatch) == 2  # refuses again
     assert (w.out / "r.json").read_bytes() == first
-    assert "one look: this tool writes a marker file next to --out-json and refuses to run again if it exists" in (w.out / "r.md").read_text()
+    assert "one look: this tool writes a marker file at a fixed path and refuses to run again if it exists" in (w.out / "r.md").read_text()
 
 
 def test_failed_run_leaves_no_marker(tmp_path, monkeypatch):
     w = World(tmp_path, trade_rows(S + 1000, "m1", 31_000_000, 40_000_000))
     (w.led / E.LEDGER_NAME).write_text("{not json}\n" + (w.led / E.LEDGER_NAME).read_text())
     assert w.run(monkeypatch) == 2
-    assert not (w.out / "r.json.done").exists()
+    assert not E.MARKER.exists()
 
 
 def test_missing_rows_refused(tmp_path, monkeypatch):
     w = World(tmp_path, trade_rows(S + 1000, "m1", 31_000_000, 40_000_000, bot="other"))
     assert w.run(monkeypatch) == 2  # no floor-lane-1 send_intent
     w2 = World(tmp_path / "b", trade_rows(S + 1000, "m1", 31_000_000, 40_000_000))
-    (w2.led / (E.BACKLOG_PREFIX + BOT)).write_text("{}\n")
+    (w2.led / (E.BACKLOG_PREFIX + BOT)).write_text("{}\n")  # persistent: refused after the retries
     assert w2.run(monkeypatch) == 2  # a non-empty backlog: rows not in the ledger yet
     w3 = World(tmp_path / "c", trade_rows(S + 1000, "m1", 31_000_000, 40_000_000))
     (w3.host / "decisions" / E.ARM / "2026-11-08.jsonl").write_text("")
@@ -348,7 +351,9 @@ def test_readonly_on_inputs(tmp_path, monkeypatch):
 def test_deterministic_bytes(tmp_path, monkeypatch):
     rows = [x for i in range(12) for x in trade_rows(S + i * 7000 + (i % 4) * DAY, f"m{i}", 31_000_000, 20_000_000 + i * 1_500_000)]
     a, b = World(tmp_path / "a", rows), World(tmp_path / "b", rows)
-    assert a.run(monkeypatch) == 0 and b.run(monkeypatch) == 0
+    assert a.run(monkeypatch) == 0
+    E.MARKER.unlink()
+    assert b.run(monkeypatch) == 0
     assert (a.out / "r.json").read_bytes() == (b.out / "r.json").read_bytes()
     assert (a.out / "r.md").read_bytes() == (b.out / "r.md").read_bytes()
 
@@ -379,10 +384,9 @@ def test_no_mint_pool_signature_in_outputs(tmp_path, monkeypatch):
             row("exit", S + 3000, mint, sol_in_lamports=1, signature="SigYYY" + "8" * 40)]
     w = World(tmp_path, rows, bridge=[{"kind": "entry_refused", "why": "lane_full", "ts_ms": S + 10, "mode": "live", "mint": mint, "pool": "PoolQQQ"}])
     assert w.run(monkeypatch) == 0
-    for name in ("r.json", "r.md", "r.json.done"):
-        b = (w.out / name).read_bytes()
+    for b in ((w.out / "r.json").read_bytes(), (w.out / "r.md").read_bytes(), E.MARKER.read_bytes()):
         for s in (mint, "SigZZZ", "SigYYY", "PoolQQQ", "1.23456", "424242"):
-            assert s.encode() not in b, (name, s)
+            assert s.encode() not in b, s
     t = w.rep()["trades"][0]
     assert set(t) == {"order", "send_utc", "trade_day", "stake_lamports", "pnl_lamports", "pnl_sol", "closing_row", "open_at_R", "estimated"} and t["order"] == "abc123"
 
@@ -404,25 +408,197 @@ def test_names_counts_and_lane_full_groups(tmp_path, monkeypatch):
     rows += [row("exit", S + 90_000, "o1", bot="dsl-x", sol_in_lamports=1), row("exit", S + 99_000, "pre", sol_in_lamports=1)]
     rows += [send(S + 300_000, "m2"), row("fill", S + 300_100, "m2", ok=True, sol_out_lamports=7)]
     mk = lambda ts, why="lane_full", mode="live": {"kind": "entry_refused", "why": why, "ts_ms": ts, "mode": mode}
-    bridge = [mk(S + 150), mk(S + 60_000), mk(S + 95_000), mk(S + 400_000), mk(S + 150, mode="dry"), mk(C + 1), mk(S + 5, "limit:max_open"), {"kind": "latch", "latch": "stuck_sell", "ts_ms": S + 7, "mode": "live"}]
+    bridge = [mk(S + 150), mk(S + 60_000), mk(S + 95_000), mk(S + 400_000), mk(S + 150, mode="dry"), mk(C + 1), {"kind": "buy_port_refused", "label": "limit:max_open", "ts_ms": S + 5, "mode": "live", "mint": "x"}, {"kind": "latch", "latch": "stuck_sell", "ts_ms": S + 7, "mode": "live"}]
     w = World(tmp_path, rows, bridge=bridge)
     assert w.run(monkeypatch) == 0
     nm = w.rep()["names"]
     assert nm["bridge"]["lane_full_in_S_C"] == 4
     assert nm["bridge"]["lane_full_groups"] == {"i_other_lane_bot_holds_slot": 2, "ii_only_pre_S_floor_lane_1_holds_slot": 1, "iii_only_in_read_floor_lane_1_positions": 1}
-    assert nm["counts"]["lane_full"] == 4 and nm["bridge"]["entry_refused_by_label_S_R"]["limit:max_open"] == 1
+    assert nm["counts"]["lane_full"] == 4
+    assert nm["bridge"]["refusals_by_window"]["[S, erratum_1e_install)"]["entry_refused"]["lane_full"] == 4
+    assert nm["bridge"]["refusals_by_window"]["[S, erratum_1e_install)"]["buy_port_refused"] == {"limit:max_open": 1}
     assert nm["bridge"]["latch_rows"] == [{"instant_utc": E.iso(S + 7), "latch": "stuck_sell"}]
     assert nm["host_start_rows"] == [{"frozen_sha": "5e12f8f5" + "0" * 32, "host_sha256": "ab" * 32, "instant_utc": E.iso(1794299521000)}]
     assert {b["bot_id"] for b in nm["lane_bots"]} == {BOT, "dsl-x"}
-
-
-def test_no_bridge_log_says_so(tmp_path, monkeypatch):
-    w = World(tmp_path, trade_rows(S + 1000, "m1", 31_000_000, 40_000_000))
-    assert w.run(monkeypatch) == 0
-    assert w.rep()["names"]["counts"]["lane_full"] == "bridge log not provided"
 
 
 def test_per_day_totals_by_trade_day(tmp_path, monkeypatch):
     rows = trade_rows(S + 1000, "m1", 31_000_000, 40_000_000) + trade_rows(S + DAY + 1000, "m2", 31_000_000, 30_000_000)
     rep = assemble(rows)
     assert rep["day_totals"] == {"2026-11-09": {"n": 1, "total_lamports": 9_000_000}, "2026-11-10": {"n": 1, "total_lamports": -1_000_000}}
+
+
+# ------------------------------------------------------------- after review (PR #1375)
+
+def test_bootstrap_hard_coded_value_and_sol_field():
+    r = E.run_tests(mk_trades([5, -3, 8, 1, -7, 2, 9, -1]))["t3_bound"]
+    assert r["lower_90_bound_mean_lamports"] == -1.25 and r["lower_90_bound_mean_sol"] == -1.25e-9
+
+
+def test_marker_path_is_a_fixed_constant():
+    import inspect
+    src = inspect.getsource(E)
+    assert src.count('Path("/home/claude/mal-data/ops/exp029-read/ONE-LOOK.done")') == 1 and "--marker" not in src
+
+
+def test_second_out_json_path_refused_by_fixed_marker(tmp_path, monkeypatch):
+    w = World(tmp_path, trade_rows(S + 1000, "m1", 31_000_000, 40_000_000))
+    assert w.run(monkeypatch) == 0
+    a = w.args()
+    a[a.index("--out-json") + 1] = str(w.out / "other.json")
+    a[a.index("--out-md") + 1] = str(w.out / "other.md")
+    assert E.main(a) == 2
+    assert not (w.out / "other.json").exists()
+
+
+@pytest.mark.parametrize("leftover", ["r.json", "r.md", "r.json.tmp", "r.md.tmp"])
+def test_leftover_output_without_marker_refused(tmp_path, monkeypatch, leftover, capsys):
+    w = World(tmp_path, trade_rows(S + 1000, "m1", 31_000_000, 40_000_000))
+    (w.out / leftover).write_bytes(b"crash leftover")
+    assert w.run(monkeypatch) == 2
+    assert "removes the files by hand" in capsys.readouterr().err
+    assert (w.out / leftover).read_bytes() == b"crash leftover" and not E.MARKER.exists()
+
+
+def test_crash_between_outputs_and_marker_blocks_rerun(tmp_path, monkeypatch):
+    w = World(tmp_path, trade_rows(S + 1000, "m1", 31_000_000, 40_000_000))
+    real = os.open
+
+    def boom(path, flags, *a, **k):
+        if str(path) == str(E.MARKER):
+            raise OSError("disk")
+        return real(path, flags, *a, **k)
+
+    monkeypatch.setattr(E.os, "open", boom)
+    assert w.run(monkeypatch) == 2 and not E.MARKER.exists() and (w.out / "r.md").exists()
+    monkeypatch.setattr(E.os, "open", real)
+    assert w.run(monkeypatch) == 2  # the outputs are there: blocked until removed by hand
+
+
+def test_structure_check(tmp_path, monkeypatch, capsys):
+    rows = trade_rows(S + 1000, "m1", 31_000_000, 40_000_000) + trade_rows(S + 2000, "m2", 5, 7, bot="dsl-x") + [row("snap", S, "x", day="d")]
+    w = World(tmp_path, rows, tail=b'{"torn', bridge=[{"kind": "entry_refused", "why": "lane_full", "ts_ms": S + 5, "mode": "live"}])
+    d = w.host / "decisions" / E.ARM / "2026-11-09.jsonl"
+    d.write_text('{"kind": "entry", "pool": "PoolQQQ"\n{"kind": "entry"}\n')  # an unreadable non-start row: counted, not fatal
+    before = sorted(str(p) for p in tmp_path.rglob("*"))
+    a = ["--structure-check", "--lane-ledger-root", str(w.led), "--host-decisions-root", str(w.host), "--bridge-log", str(w.bridge)]
+    monkeypatch.delenv(E.TEST_NOW_ENV, raising=False)
+    assert E.main(a) == 0  # no R check
+    out = capsys.readouterr().out
+    assert sorted(str(p) for p in tmp_path.rglob("*")) == before and not E.MARKER.exists()
+    assert '"send_intent": 2' in out and "distinct bot_id 2" in out and "parse errors 1 at file index 0" in out and "start rows 1" in out
+    assert "parse errors in file index" in out and "refusal: none" in out and "bridge log 0: rows 1" in out
+    for bad in ("pnl", "P&L", "total", MINT_A, "m1", "m2", "sol_out", "PoolQQQ", "intent:"):
+        assert bad not in out, bad
+
+
+def test_structure_check_reports_refusal(tmp_path, capsys):
+    w = World(tmp_path, trade_rows(S + 1000, "m1", 31_000_000, 40_000_000))
+    (w.led / (E.BACKLOG_PREFIX + BOT)).write_text("{}\n")
+    a = ["--structure-check", "--lane-ledger-root", str(w.led), "--host-decisions-root", str(w.host), "--bridge-log", str(w.bridge)]
+    assert E.main(a) == 2
+    assert "refusal: a lane backlog file is still not empty" in capsys.readouterr().out
+
+
+def test_lane_full_counts_both_sources_and_groups(tmp_path):
+    rows = [send(S - 500, "pre", oid="p"), row("fill", S - 400, "pre", ok=True, sol_out_lamports=1)]
+    br = [{"kind": "entry_refused", "why": "lane_full", "ts_ms": S + 10, "mode": "live"},
+          {"kind": "buy_port_refused", "label": "gate:lane_full", "ts_ms": S + 20, "mode": "live"},
+          {"kind": "buy_port_refused", "label": "gate:lane_full", "ts_ms": S + 30, "mode": "dry"},
+          {"kind": "buy_port_refused", "label": "gate:other", "ts_ms": S + 40, "mode": "live"}]
+    p = tmp_path / "b.jsonl"
+    p.write_text("".join(json.dumps(b) + "\n" for b in br))
+    res = E.read_bridge([p], rows)
+    assert res["lane_full_in_S_C"] == 2 and res["lane_full_sources"] == {"entry_refused_lane_full": 1, "buy_port_refused_gate_lane_full": 1}
+    assert res["lane_full_groups"]["ii_only_pre_S_floor_lane_1_holds_slot"] == 2
+    assert res["lane_full_groups_by_source"]["buy_port_refused"]["ii_only_pre_S_floor_lane_1_holds_slot"] == 1
+
+
+def test_window_edges_and_labels(tmp_path):
+    edges = dict(E.window_edges())
+    assert [n for n, _ in E.window_edges()] == ["live_start", "erratum_1c_install", "S", "erratum_1e_install", "event", "C", "R"]
+    assert E.iso(edges["live_start"]) == "2026-11-08T14:19:43.000Z" and E.iso(edges["erratum_1c_install"]) == "2026-11-09T02:30:21.410Z"
+    assert E.iso(edges["erratum_1e_install"]) == "2026-11-09T14:26:02.000Z" and E.TOPUP_1F_MS is None
+    mk = lambda kind, lab, ts: {"kind": kind, "why" if kind == "entry_refused" else "label": lab, "ts_ms": ts, "mode": "live"}
+    br = [mk("buy_port_refused", "limit:max_open", E.INSTALL_1C_MS - 1), mk("buy_port_refused", "limit:max_open", E.INSTALL_1C_MS), mk("entry_refused", "wallet_floor", S),
+          mk("entry_refused", "wallet_floor", E.INSTALL_1E_MS), mk("buy_port_refused", "limit:sell_stuck", C), mk("entry_refused", "x" * 100, R - 1), mk("entry_refused", "late", R)]
+    p = tmp_path / "b.jsonl"
+    p.write_text("".join(json.dumps(b) + "\n" for b in br))
+    res = E.read_bridge([p, p], [])  # two files read in order
+    assert res["bridge_logs_read"] == 2
+    w = res["refusals_by_window"]
+    assert w["[live_start, erratum_1c_install)"]["buy_port_refused"] == {"limit:max_open": 2}
+    assert w["[erratum_1c_install, S)"]["buy_port_refused"] == {"limit:max_open": 2}
+    assert w["[S, erratum_1e_install)"]["entry_refused"] == {"wallet_floor": 2}
+    assert w["[erratum_1e_install, event)"]["entry_refused"] == {"wallet_floor": 2}
+    assert w["[C, R)"]["buy_port_refused"] == {"limit:sell_stuck": 2} and list(w["[C, R)"]["entry_refused"]) == ["x" * 60]
+    assert res["windows_edges"]["erratum_1f_topup"] == E.NO_INSTANT
+
+
+def test_topup_constant_adds_an_edge(monkeypatch):
+    monkeypatch.setattr(E, "TOPUP_1F_MS", S + 3 * DAY)
+    assert "erratum_1f_topup" in dict(E.window_edges())
+
+
+def test_bridge_log_required_and_repeatable(tmp_path, monkeypatch, capsys):
+    w = World(tmp_path, trade_rows(S + 1000, "m1", 31_000_000, 40_000_000))
+    monkeypatch.setenv(E.TEST_NOW_ENV, "1")
+    a = w.args()
+    i = a.index("--bridge-log")
+    assert E.main(a[:i] + a[i + 2:]) == 2 and "--bridge-log is required" in capsys.readouterr().err
+    b2 = tmp_path / "bl" / "bridge-log-live.jsonl.1"
+    b2.write_text("")
+    assert E.main(a + ["--bridge-log", str(b2)]) == 0
+    assert w.rep()["names"]["bridge"]["bridge_logs_read"] == 2 and "bridge logs read: 2" in (w.out / "r.md").read_text()
+
+
+def test_backlog_retry_then_refuse_or_succeed(tmp_path, monkeypatch):
+    root = tmp_path / "led"
+    write_ledger(root, trade_rows(S + 1000, "m1", 31_000_000, 40_000_000))
+    bl = root / (E.BACKLOG_PREFIX + BOT)
+    bl.write_text("{}\n")
+    sleeps = []
+    monkeypatch.setattr(E.time, "sleep", lambda s: (sleeps.append(s), bl.write_text("") if len(sleeps) == 2 else None))
+    assert len(E.load_ledger(root)[0]) == 3 and len(sleeps) == 2  # drained during the retries
+    bl.write_text("{}\n")
+    sleeps.clear()
+    monkeypatch.setattr(E.time, "sleep", lambda s: sleeps.append(s))
+    with pytest.raises(E.ReadError, match="safe to rerun"):
+        E.load_ledger(root)
+    assert sleeps == [0.2] * 4
+
+
+def test_missing_ts_ms_refused_by_line(tmp_path):
+    rows = trade_rows(S + 1000, "m1", 31_000_000, 40_000_000)
+    del rows[1]["ts_ms"]
+    write_ledger(tmp_path, rows)
+    with pytest.raises(E.ReadError, match=r"file 0 line 2: row has no integer ts_ms"):
+        E.load_ledger(tmp_path)
+
+
+def test_unattributed_rows_and_superseded_trade():
+    rows = [send(S + 1000, "m1"), send(S + 2000, "m1"), row("fill", S + 3000, "m1", ok=True, sol_out_lamports=7), row("exit", S + 4000, "m1", sol_in_lamports=10),
+            row("fee", S + 5000, "m1", sol_out_lamports=3), row("fee", S + 6000, "zz", sol_out_lamports=2)]
+    rep = assemble(rows)
+    assert rep["ledger"]["unattributed_rows_by_ev"] == {"fee": 2} and rep["ledger"]["unattributed_lamports"] == -5 and rep["ledger"]["superseded_trades"] == 1
+    assert [(x["pnl_lamports"], x["open_at_R"]) for x in rep["trades"]] == [(0, True), (3, False)]  # the first trade keeps only its own rows
+
+
+def test_host_unreadable_non_start_line_tolerated_and_bad_start_refused(tmp_path, monkeypatch):
+    w = World(tmp_path, trade_rows(S + 1000, "m1", 31_000_000, 40_000_000))
+    f = w.host / "decisions" / E.ARM / "2026-11-09.jsonl"
+    f.write_text('garbage {{{\n{"kind": "entry"}\n')
+    starts, info = E.read_host_starts(w.host)
+    assert len(starts) == 1 and info["start_rows"] == 1 and info["decision_day_files"] == ["2026-11-08.jsonl", "2026-11-09.jsonl"]
+    f.write_text('{"kind": "start", "frozen_sha": "a"}\n')  # no ms
+    with pytest.raises(E.ReadError, match="no integer ms"):
+        E.read_host_starts(w.host)
+    assert w.run(monkeypatch) == 2
+
+
+def test_unexpected_exception_prints_class_only(tmp_path, monkeypatch, capsys):
+    w = World(tmp_path, trade_rows(S + 1000, "m1", 31_000_000, 40_000_000))
+    monkeypatch.setattr(E, "load_ledger", lambda root: (_ for _ in ()).throw(KeyError("KEYNAME")))
+    assert w.run(monkeypatch) == 2
+    err = capsys.readouterr().err
+    assert "KeyError" in err and "KEYNAME" not in err and not E.MARKER.exists()
