@@ -14,6 +14,13 @@ the root's realpath ends in /declog and is <allowed parent>/<change_id>/declog; 
 Append-only check: before sending, the remote file's byte length and sha256 are fetched; the local prefix of that length must hash to it (and the remote must not be longer), else the file is
 refused loudly (exit 4, nothing sent for it). After a send the remote sha256 and length must equal the local ones (else exit 1).
 
+Log rule (QP B3, DEC-031 Am.31 item 4): before P0_COUNT_INSTANT_S (2026-11-19T00:10:00Z) stdout carries only `R4B-COPY pass <n> start|end exit <code>` lines and failure lines naming the change_id and a
+failure kind; no day name, byte length, sha or state. The per-file records go only to the 0600 status file (dir 0700). After the instant the per-file lines print. `--quiet-until <ISO>` moves the
+instant later (the wrapper sets it for r4bt-a3 series, which need it: a series of an r4bt-a3 host is refused without it); a value earlier than the a2 constant is refused for any a2 series.
+
+Memory: nothing is held whole. The cut point is found by scanning back from the end for the last newline, the prefix is hashed by streaming, and the send streams the prefix from the file;
+the remote side checks length and sha256 of the temp file BEFORE the rename, so a dropped connection can never replace a good file with a truncated one.
+
 Exit codes: 0 pass done; 1 transport or verify failure (retried next pass; 5 consecutive passes = exit 1); 2 refusal; 4 divergence.  --loop SECONDS (default 900; 0 = one pass); --dry-run reads and hashes,
 sends nothing and asks the remote nothing.
 """
@@ -27,6 +34,7 @@ import stat
 import subprocess
 import sys
 import time
+import threading
 from datetime import datetime, timezone
 
 DEST_ROOT = "/data2/mal/r4b-preview/declog-copy"
@@ -39,6 +47,9 @@ CHANGE_ID_RES = (re.compile(r"^r4bt-a2-dry-1113a\Z"), re.compile(r"^r4bt-a2-\d{4
 DAY_RE = re.compile(r"^\d{4}-\d\d-\d\d\.jsonl\Z")
 DENY_COMPONENTS = frozenset({"out", "host.log", "m1-start.txt", "sidecar.jsonl"})
 MAX_CONSEC = 5
+CHUNK = 1 << 20
+P0_COUNT_INSTANT_S = int(datetime(2026, 11, 19, 0, 10, 0, tzinfo=timezone.utc).timestamp())  # Am.31 item 4: no entry-count proxy in any log before this instant
+SHA_RE = re.compile(r"^[0-9a-f]{64}\Z")
 EXIT_OK, EXIT_FAIL, EXIT_REFUSED, EXIT_DIVERGED = 0, 1, 2, 4
 
 
@@ -99,8 +110,8 @@ def list_day_files(real_root):
     """Names only (a directory listing). Raises Refuse for a symlink or non-regular day file."""
     d = os.path.join(real_root, *ARM_SUBDIR)
     try:
-        if stat.S_ISLNK(os.lstat(d).st_mode) or not stat.S_ISDIR(os.lstat(d).st_mode):
-            raise Refuse("arm dir is not a plain directory")
+        if stat.S_ISLNK(os.lstat(d).st_mode) or not stat.S_ISDIR(os.lstat(d).st_mode) or os.path.realpath(d) != d:
+            raise Refuse("arm dir is not a plain directory under the declog root")
     except FileNotFoundError:
         return d, []
     names = []
@@ -108,26 +119,69 @@ def list_day_files(real_root):
         if not DAY_RE.match(n):
             continue  # anything else (out-of-pattern names) is never opened
         if not stat.S_ISREG(os.lstat(os.path.join(d, n)).st_mode):
-            raise Refuse("day file is not a regular file: %s" % n)
+            raise Refuse("a day file is not a regular file")
         names.append(n)
     return d, names
 
 
-def read_prefix(path):
-    """O_RDONLY, no lock, no parse. Returns the bytes up to and including the last newline (b'' if none: a torn tail is never copied)."""
-    fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW)
+def _open_ro(path):
+    return os.open(path, os.O_RDONLY | os.O_NOFOLLOW)  # no lock: a lock could block the host's append
+
+
+def _cut_point(fd):
+    """Length of the prefix ending at the last newline, found by scanning back from the end of the file as it is now (0 if there is none: a torn tail is never copied)."""
+    pos = os.fstat(fd).st_size
+    while pos > 0:
+        start = max(0, pos - CHUNK)
+        b = os.pread(fd, pos - start, start)
+        i = b.rfind(b"\n")
+        if i >= 0:
+            return start + i + 1
+        pos = start
+    return 0
+
+
+def _hash_range(fd, n):
+    h, off = hashlib.sha256(), 0
+    while off < n:
+        b = os.pread(fd, min(CHUNK, n - off), off)
+        if not b:
+            break
+        h.update(b)
+        off += len(b)
+    return h.hexdigest()
+
+
+def prefix_info(path):
+    """(byte length, sha256) of the file's prefix up to its last newline. O_RDONLY, no lock, no parse, never the whole file in memory."""
+    fd = _open_ro(path)
     try:
-        chunks = []
-        while True:
-            b = os.read(fd, 1 << 20)
-            if not b:
-                break
-            chunks.append(b)
+        n = _cut_point(fd)
+        return n, _hash_range(fd, n)
     finally:
         os.close(fd)
-    data = b"".join(chunks)
-    i = data.rfind(b"\n")
-    return data[: i + 1] if i >= 0 else b""
+
+
+def prefix_sha(path, n):
+    fd = _open_ro(path)
+    try:
+        return _hash_range(fd, n)
+    finally:
+        os.close(fd)
+
+
+def iter_prefix(path, n):
+    fd = _open_ro(path)
+    try:
+        off = 0
+        while off < n:
+            b = os.pread(fd, min(CHUNK, n - off), off)
+            if not b:
+                break
+            yield b
+            off += len(b)
+    finally:
+        os.close(fd)
 
 
 # ---------------------------------------------------------------------------------------------------------------- transport
@@ -142,11 +196,15 @@ def _remote_paths(cid, day):
     return d, "%s/%s" % (d, day), "%s/.%s.tmp.$$" % (d, day)
 
 
-def remote_send_cmd(cid, day):
-    """The fixed remote command (validated names only). $$ is the remote shell's pid, left unquoted on purpose."""
+def remote_send_cmd(cid, day, n, sha):
+    """The fixed remote command (validated names only). $$ is the remote shell's pid, left unquoted on purpose. The temp file is checked for byte length AND sha256 before the rename; on any
+    failure it is removed and the shell exits 1, so a cut connection leaves the previous good file untouched."""
+    if isinstance(n, bool) or not isinstance(n, int) or n < 0 or not isinstance(sha, str) or not SHA_RE.match(sha):
+        raise Refuse("length or sha256 not valid")
     d, final, tmp = _remote_paths(cid, day)
-    tmp_q = shlex.quote(tmp[:-2]) + "$$"
-    script = "umask 077; mkdir -p %s && cat > %s && mv %s %s" % (shlex.quote(d), tmp_q, tmp_q, shlex.quote(final))
+    t = shlex.quote(tmp[:-2]) + "$$"
+    script = ("umask 077; mkdir -p %s && cat > %s && [ \"$(wc -c < %s | tr -d ' ')\" = %d ] && [ \"$(sha256sum < %s | cut -d' ' -f1)\" = %s ] && mv %s %s || { rm -f %s; exit 1; }"
+              % (shlex.quote(d), t, t, n, t, sha, t, shlex.quote(final), t))
     return "sh -c " + shlex.quote(script)
 
 
@@ -178,28 +236,52 @@ def ssh_remote_stat(cid, day, host=SSH_HOST, timeout=120, run=subprocess.run):
     return int(m.group(1)), m.group(2)
 
 
-def ssh_send(cid, day, data, host=SSH_HOST, timeout=900, run=subprocess.run):
+def ssh_send(cid, day, path, n, sha, host=SSH_HOST, timeout=900, popen=subprocess.Popen):
+    """Streams the first n bytes of path to the remote command's stdin (never the whole file in memory); the remote verifies length and sha256 before the rename."""
+    argv = build_argv(remote_send_cmd(cid, day, n, sha), host)
     try:
-        r = run(build_argv(remote_send_cmd(cid, day), host), input=data, capture_output=True, timeout=timeout)
-    except (OSError, subprocess.SubprocessError) as e:
+        p = popen(argv, stdin=subprocess.PIPE, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    except OSError as e:
         raise TransportError("send: %s" % type(e).__name__)
-    if r.returncode != 0:
-        raise TransportError("send rc=%d" % r.returncode)
+    timer = threading.Timer(timeout, p.kill)
+    timer.start()
+    try:
+        try:
+            for chunk in iter_prefix(path, n):
+                p.stdin.write(chunk)
+            p.stdin.close()
+        except OSError as e:
+            p.kill()
+            p.wait()
+            raise TransportError("send: %s" % type(e).__name__)
+        rc = p.wait()
+    finally:
+        timer.cancel()
+    if rc != 0:
+        raise TransportError("send rc=%s" % rc)
 
 
 # ---------------------------------------------------------------------------------------------------------------- one pass
-def one_pass(series, send_fn, remote_stat_fn, dry_run=False, out=print):
-    """series: [(change_id, real declog root)] already validated. Returns (code, file records). A divergence ends nothing but the file; the code is the worst of the pass."""
-    recs, code = [], EXIT_OK
+def one_pass(series, send_fn, remote_stat_fn, dry_run=False, out=print, quiet=True):
+    """series: [(change_id, real declog root)] already validated. Returns (code, file records, failures). The per-file records are for the status file; `out` gets per-file lines only when
+    not quiet. Failures are (change_id, kind) pairs, which are safe to print at any time. A divergence ends nothing but the file; the code is the worst of the pass."""
+    recs, fails, code = [], [], EXIT_OK
+
+    def fail(cid, kind, c, detail=None):
+        nonlocal code
+        fails.append((cid, kind))
+        code = EXIT_DIVERGED if EXIT_DIVERGED in (c, code) else EXIT_FAIL
+        if not quiet:
+            out("R4B-COPY %s %s %s" % (kind.upper(), cid, detail or ""))
+
     for cid, root in series:
         d, names = list_day_files(root)
         for day in names:
             try:
-                data = read_prefix(os.path.join(d, day))
-                if not data:
+                path = os.path.join(d, day)
+                n, sha = prefix_info(path)
+                if n == 0:
                     continue
-                sha = hashlib.sha256(data).hexdigest()
-                n = len(data)
                 if dry_run:
                     state = "dry-run"
                 else:
@@ -208,33 +290,33 @@ def one_pass(series, send_fn, remote_stat_fn, dry_run=False, out=print):
                         state = "new"
                     else:
                         rlen, rsha = rem
-                        if rlen > n or hashlib.sha256(data[:rlen]).hexdigest() != rsha:
-                            out("R4B-COPY DIVERGED %s %s: copy and original diverge: stop and ask QP" % (cid, day))
-                            code = max(code, EXIT_DIVERGED)
+                        if rlen > n or prefix_sha(path, rlen) != rsha:
+                            fail(cid, "diverged", EXIT_DIVERGED, "%s: copy and original diverge: stop and ask QP" % day)
                             continue
                         state = "unchanged" if rlen == n else "extended"
                     if state != "unchanged":
-                        send_fn(cid, day, data)
-                        after = remote_stat_fn(cid, day)
-                        if after != (n, sha):
-                            out("R4B-COPY VERIFY-FAIL %s %s" % (cid, day))
-                            code = EXIT_FAIL if code in (EXIT_OK, EXIT_FAIL) else code
+                        send_fn(cid, day, path, n, sha)
+                        if remote_stat_fn(cid, day) != (n, sha):
+                            fail(cid, "verify-fail", EXIT_FAIL, day)
                             continue
             except TransportError as e:
-                out("R4B-COPY TRANSPORT-FAIL %s %s: %s" % (cid, day, e))
-                code = EXIT_FAIL if code in (EXIT_OK, EXIT_FAIL) else code
+                fail(cid, "transport-fail", EXIT_FAIL, "%s: %s" % (day, e))
                 continue
-            rec = {"change_id": cid, "file": day, "bytes": n, "sha256": sha, "state": state}
-            recs.append(rec)
-            out("R4B-COPY %s %s bytes=%d sha256=%s %s" % (cid, day, n, sha, state))
-    return code, recs
+            recs.append({"change_id": cid, "file": day, "bytes": n, "sha256": sha, "state": state})
+            if not quiet:
+                out("R4B-COPY %s %s bytes=%d sha256=%s %s" % (cid, day, n, sha, state))
+    return code, recs, fails
 
 
 def write_status(path, st):
-    os.makedirs(os.path.dirname(path), mode=0o700, exist_ok=True)
+    d = os.path.dirname(path)
+    os.makedirs(d, mode=0o700, exist_ok=True)
+    os.chmod(d, 0o700)
     tmp = path + ".tmp"
-    with open(tmp, "w") as f:
+    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(fd, "w") as f:
         json.dump(st, f, sort_keys=True)
+    os.chmod(tmp, 0o600)
     os.replace(tmp, path)
 
 
@@ -242,15 +324,31 @@ def default_status_path():
     return os.path.join(os.path.expanduser("~"), "mal-data", "r4b-preview-copier", "status.json")
 
 
-def main(argv=None, send_fn=None, remote_stat_fn=None, allowed_parents=ALLOWED_PARENTS, status_path=None, sleep=time.sleep, max_passes=None, out=print):
-    """send_fn, remote_stat_fn, allowed_parents, status_path, sleep, max_passes are injectable for tests; the CLI uses ssh to the research-0 alias."""
+def parse_quiet_until(text, series):
+    if text is None:
+        if any(re.match(r"^r4bt-a3", cid) for cid, _ in series):
+            raise Refuse("an r4bt-a3 series needs --quiet-until (its own P0 count instant)")
+        return P0_COUNT_INSTANT_S
+    try:
+        t = int(datetime.strptime(text, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=timezone.utc).timestamp())
+    except ValueError:
+        raise Refuse("--quiet-until must be YYYY-MM-DDTHH:MM:SSZ")
+    if t < P0_COUNT_INSTANT_S and any(re.match(r"^r4bt-a2", cid) for cid, _ in series):
+        raise Refuse("--quiet-until earlier than the r4bt-a2 P0 count instant")
+    return t
+
+
+def main(argv=None, send_fn=None, remote_stat_fn=None, allowed_parents=ALLOWED_PARENTS, status_path=None, sleep=time.sleep, max_passes=None, out=print, now_fn=time.time):
+    """send_fn, remote_stat_fn, allowed_parents, status_path, sleep, max_passes, now_fn are injectable for tests; the CLI uses ssh to the research-0 alias."""
     ap = argparse.ArgumentParser(description="byte copier of r4bt decision-log prefixes to research-0 (parses no row)")
     ap.add_argument("--series", action="append", default=[], help="<change_id>=<declog root>, repeatable")
     ap.add_argument("--loop", type=int, default=900, help="seconds between passes; 0 = one pass")
     ap.add_argument("--dry-run", action="store_true")
+    ap.add_argument("--quiet-until", default=None, help="YYYY-MM-DDTHH:MM:SSZ; per-file lines stay out of the log before it (default: the r4bt-a2 P0 count instant)")
     a = ap.parse_args(argv)
     try:
         series = parse_series(a.series, allowed_parents)
+        quiet_until = parse_quiet_until(a.quiet_until, series)
     except Refuse as e:
         out("R4B-COPY REFUSE %s" % e)
         return EXIT_REFUSED
@@ -260,18 +358,24 @@ def main(argv=None, send_fn=None, remote_stat_fn=None, allowed_parents=ALLOWED_P
     n = consec = 0
     while True:
         n += 1
+        quiet = now_fn() < quiet_until
+        out("R4B-COPY pass %d start" % n)
         try:
-            code, recs = one_pass(series, send_fn, remote_stat_fn, a.dry_run, out)
+            code, recs, fails = one_pass(series, send_fn, remote_stat_fn, a.dry_run, out, quiet)
         except Refuse as e:
             out("R4B-COPY REFUSE %s" % e)
             return EXIT_REFUSED
         except OSError as e:
             out("R4B-COPY FAIL pass %d: %s" % (n, e.strerror or type(e).__name__))
-            code, recs = EXIT_FAIL, []
+            code, recs, fails = EXIT_FAIL, [], []
+        if quiet:
+            for cid, kind in sorted(set(fails)):
+                out("R4B-COPY %s %s%s" % (kind.upper(), cid, ": copy and original diverge: stop and ask QP" if kind == "diverged" else ""))
         try:
             write_status(spath, {"pass_utc": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"), "dry_run": a.dry_run, "exit": code, "files": recs})
         except OSError:
             out("R4B-COPY status file not written")
+        out("R4B-COPY pass %d end exit %d" % (n, code))
         if code == EXIT_DIVERGED:
             return EXIT_DIVERGED
         consec = consec + 1 if code == EXIT_FAIL else 0
