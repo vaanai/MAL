@@ -17,6 +17,11 @@ H = 3_600_000
 START = "2026-11-14T12:00:00Z"
 
 
+@pytest.fixture(autouse=True)
+def snap_root(tmp_path, monkeypatch):
+    monkeypatch.setattr(B, "SNAP_ROOT", str(tmp_path / "snap"))  # never the real /data2 path
+
+
 def ms(d, h=12, m=0):
     return int(datetime(2026, 11, d, h, m, tzinfo=timezone.utc).timestamp() * 1000)
 
@@ -380,7 +385,7 @@ def test_forbidden_word_in_a_title_withholds_that_book_only(tmp_path):
     cc, _ = make_book(tmp_path, "C", VARIANT_ROWS, title="the mint rule")
     rc, out = run(tmp_path, books_file(tmp_path, [(ca, "control"), (cc, "variant")], live={"x": "pool"}))
     res = load(out)
-    assert rc == 0 and res["books"][1]["state"] == "ERROR" and res["books"][1]["error_class"] == "ForbiddenWord" and res["books"][1]["id"] == "book-2" and res["live"] == {"withheld": "forbidden word"}
+    assert rc == 0 and res["books"][1]["state"] == "ERROR" and res["books"][1]["error_class"] == "ForbiddenWord" and res["books"][1]["id"] == "C" and res["live"] == {"withheld": "forbidden word"}
     assert len(res["books"][0]["rows"]) == 2 and "mint" not in (out / "board.md").read_text().lower()
 
 
@@ -459,3 +464,67 @@ def test_a_variant_that_holds_is_never_a_bare_holds(world):
     tmp, ca, cc = world
     md = (run(tmp, books_file(tmp, [(ca, "control"), (cc, "variant")]))[1] / "board.md").read_text()
     assert all("holds" not in ln or "not decision-grade" in ln or "does not hold" in ln for ln in md.splitlines())
+
+
+# ------------------------------------------------------------------------------------------------ minors round (QP m6-m8, reviewer)
+HEALTHY_DIGEST = "6e2409b7a3cf5d9f3220b02b3dbe450d9acc3f8042c3d90541ee1cfda8f337d9"  # sha256 of the healthy two-book board.json made by the code before this PR (board_version, manifest_sha256, today_day removed)
+
+
+def test_healthy_board_is_unchanged_except_today_day(world):
+    import hashlib
+    tmp, ca, cc = world
+    res = load(run(tmp, books_file(tmp, [(ca, "control"), (cc, "variant")]))[1])
+    assert [b["today_day"] for b in res["books"]] == ["2026-11-15", "2026-11-15"]
+    res.pop("board_version")
+    for b in res["books"]:
+        b.pop("manifest_sha256")
+        b.pop("today_day")
+    assert hashlib.sha256(json.dumps(res, sort_keys=True).encode()).hexdigest() == HEALTHY_DIGEST
+
+
+def test_lagging_book_shows_its_own_day(tmp_path):
+    ca, _ = make_book(tmp_path, "A", CONTROL_ROWS)
+    cc, outc = make_book(tmp_path, "C", VARIANT_ROWS, end_ms=ms(15, 12), wall="2026-11-16T01:00:00+00:00")  # tape end a day behind, stale
+    rc, out = run(tmp_path, books_file(tmp_path, [(ca, "control"), (cc, "variant")]))
+    res = load(out)
+    a, c = res["books"]
+    assert a["today_day"] == "2026-11-15" and c["today_day"] == "2026-11-14" and c["state"] == "STALE"
+    md = (out / "board.md").read_text()
+    assert "| (11-14) +" in md and "| (11-15) +" not in md  # only the lagging book's today carries its own day
+
+
+def test_withheld_row_keeps_id_and_keys(tmp_path):
+    ca, _ = make_book(tmp_path, "A", CONTROL_ROWS)
+    cc, _ = make_book(tmp_path, "Cx", VARIANT_ROWS, title="the mint rule")
+    cp, _ = make_book(tmp_path, "pool-9", VARIANT_ROWS)
+    res = load(run(tmp_path, books_file(tmp_path, [(ca, "control"), (cc, "variant"), (cp, "variant")]))[1])
+    w = res["books"][1]
+    assert w["id"] == "Cx" and w["state"] == "ERROR" and w["manifest_sha256"] is None and w["stakes_sol"] is None and "today_day" in w
+    assert res["books"][2]["id"] == "book-3" and res["books"][2]["error_class"] == "ForbiddenWord"  # the id itself carries a forbidden word
+
+
+def test_snapshots_live_under_the_snapshot_root_are_swept_and_private(tmp_path):
+    B.SNAP_ROOT = str(tmp_path / "snap")
+    old = tmp_path / "snap" / "osb-board-old"
+    new = tmp_path / "snap" / "osb-board-new"
+    old.mkdir(parents=True)
+    new.mkdir()
+    t = time_now() - 2 * 3600
+    os.utime(old, (t, t))
+    ca, _ = make_book(tmp_path, "A", CONTROL_ROWS)
+    assert run(tmp_path, books_file(tmp_path, [(ca, "control")]))[0] == 0
+    assert not old.exists() and new.exists()
+    assert (os.stat(tmp_path / "snap").st_mode & 0o777) == 0o700
+    assert [p.name for p in (tmp_path / "snap").iterdir()] == ["osb-board-new"]  # this build's own snapshot dir is gone
+
+
+def time_now():
+    import time
+    return time.time()
+
+
+def test_real_snapshot_root_is_refused_under_pytest(monkeypatch):
+    monkeypatch.setattr(B, "SNAP_ROOT", B.REAL_SNAP_ROOT)
+    with pytest.raises(RuntimeError):
+        B.snap_root()
+    assert not os.path.exists(B.REAL_SNAP_ROOT)
