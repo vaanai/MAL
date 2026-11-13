@@ -35,7 +35,7 @@ This replaces the manager22 handoff (written 2026-11-12T20:5xZ–21:1xZ). manage
 **The pending ask: `HELM-ASK-1113-2`** (`/data/mal/hunt-1008/push-1016/hunt29/p1/`, written 01:19Z). It is the same start minus `--since-hour`:
 `/usr/local/lib/mal-floor-lane/venv/bin/python -E -s -B -u tools/floor_lane_host.py run --config /etc/mal-floor-lane/host.json`
 - Why it is safe on the live code (tree e89f1536, host sha256 d805085c…): with a checkpoint present, the start calls `rebuild_table` → `PoolTable.rebuild`, which reads the tape in place and skips hour files older than the table's high-water mark (`tools/arena_pool_table.py:331`). The checkpoint (`lane/checkpoint.json`) and `pooltable/pooltable.pkl` are intact from 00:32:50Z (hwm 00:32:49, log_seq 86). Without a checkpoint the start refuses (fail-closed).
-- **Waiting on:** Helm, and the owner's fresh yes in Helm chat. Owner question in MiScusi: **q_soa9d_aQcYckbg, decide by 04:19Z.** No `HELM-REPLY-1113-2` existed when this was written.
+- **Waiting on:** Helm, and the owner's fresh yes in Helm chat. Owner question: MiScusi question key HELM-ASK-1113-2 (id **q_soa9d_aQcYckbg**, from the manager's session; not in the state file), decide by 04:19Z. No `HELM-REPLY-1113-2` existed when this was written.
 
 **The open position.** Order `e3b7cc9de20e65bd` (bought 2026-11-12T14:06:15Z) sells on the executor's own 24 h clock at about **2026-11-13T14:06Z**, with no host take-profit (executor code: "If the host is down at the deadline the bridge sells itself"). Nothing to do there.
 
@@ -56,7 +56,7 @@ This replaces the manager22 handoff (written 2026-11-12T20:5xZ–21:1xZ). manage
 - If `/` falls under 27% at any point, free space before anything else (§2).
 
 ## 2. Do not break these (read first)
-1. **The host `mal-floor-lane-host.service` is restarted only through Helm by HELM-ASK** (DEC-035 Am.7 standing rule: the code and config must be the blobs and sha256 that Am.7, or a later amendment or erratum, installed; each restart is logged in LAB_STATE, the state file and the notebook; none while a kill-line check of the previous restart is pending). Any restart is a data-loss span and, today, a 24 h refuse-all. The executor `mal-floor-lane.service` is also restarted only through Helm.
+1. **The host `mal-floor-lane-host.service` is restarted only through Helm by HELM-ASK** (DEC-035, and Am.7's standing rule once stage 1 is installed; today's restart is on the v1 code, e89f1536 with host.json 60f7a60a, for an operational need). Any restart is a data-loss span and, today, a 24 h refuse-all. The executor `mal-floor-lane.service` is also restarted only through Helm. Once stage 1 is installed, Am.7 adds: the code and config must be the installed blobs and sha256; each restart is logged in LAB_STATE, the state file and the notebook; none while a kill-line check of the previous restart is pending.
 2. **fast-0 `/` must stay at or above 27% free.** The host dies at its next trade under 25%. Disk guard job **#2546** alerts under 27%. The old guard **#2452** alerts under 24% and is not enough.
 3. **Never start the host with `--since-hour` when a checkpoint exists.** It copies tape into `seed-tmp` and eats the disk.
 4. **Job #2527's result file is read-only evidence** (`/data2/mal/scratch/floor-gap-range/gap.json`; sha256 in `/data/mal/hunt-1008/ops/reports/2026-11-13/floor-gap-range-job2527.sha256`, copy in `reports/2026-11-13/job2527/`). Do not overwrite or re-run into it.
@@ -79,15 +79,15 @@ This replaces the manager22 handoff (written 2026-11-12T20:5xZ–21:1xZ). manage
 - **Executor:** `mal-floor-lane.service`, PID **1929135**, pin `320cccc5…`, tree `/usr/local/lib/mal-floor-lane-executor/320cccc5…`.
 - **Config:** `/etc/mal-floor-lane/live-320cccc5f2ec81d40d18f8991f11b15d29b52f74.json` (sha256 aa6c355f…).
 - **Limits:** stake **0.10 SOL**; max_open 16; lifetime loss budget **1.20 SOL**; daily stop **0.20 SOL**; fee reserve 3,860,000 lamports.
-- **Wallet:** `5n95HyhZqjZNkjdp44QGJoAqk4ZFjDgMKuUzWcQqSugk` (public key only). It held **3,058,196,239 lamports** at 2026-11-13T00:3xZ (3,058,829,273 before the unwound round trip). Check with a public RPC `getBalance` via curl to api.mainnet-beta.solana.com.
+- **Wallet:** `5n95HyhZqjZNkjdp44QGJoAqk4ZFjDgMKuUzWcQqSugk` (public key only). It held **3,058,196,239 lamports** at 2026-11-13T00:3xZ (3,058,829,273 before the unwound round trip). Check (lamports in `result.value`): `curl -s https://api.mainnet-beta.solana.com -H 'Content-Type: application/json' -d '{"jsonrpc":"2.0","id":1,"method":"getBalance","params":["5n95HyhZqjZNkjdp44QGJoAqk4ZFjDgMKuUzWcQqSugk"]}'`.
 - **Lifetime realized:** +0.015081595 SOL from the 10 closed trades at 0.03 SOL (lane report, job #2536). The unwound round trip (−0.000633034 SOL) is a separate figure.
-- **Rollback to the 0.6 budget config:** `rm /etc/systemd/system/mal-floor-lane.service.d/zzz-pin-320c.conf && systemctl daemon-reload && systemctl restart mal-floor-lane.service` (executor only; through Helm unless an emergency).
+- **Rollback to the 0.6 budget config:** `rm /etc/systemd/system/mal-floor-lane.service.d/zzz-pin-320c.conf && systemctl daemon-reload && systemctl restart mal-floor-lane.service` (executor only; through Helm).
 - **Gap guard.** A tip-status gap makes the host refuse any Buy whose 6 h lookback overlaps it, and block that pool for 24 h. `gap_refusals` was 13 at the last hourly (11-13T00:31Z). The 11-12 gap (16:04:39Z, 763 ms, kind `tip_gap_status_unhealthy`, `missed_slots` 0) lost no row; one pool stays blocked to 11-13T20:48:22Z.
 
 **Am.6 gate (DEC-035 Amendment 6, merged 8dec3a3b; NOT installed).** Am.6 raises the stake to 0.25, budget 2.10, daily stop 0.50 (owner accepted 11-12 ~06:4xZ, memory `owner-scale-1112`).
 - **Take the first 20 closed 0.10 trades** since 2026-11-12T00:46:04.584Z, in lane-ledger exit order. Their realized P&L must be **≥ 0 after all fees** (every lane-ledger row of the 20 positions, plus failed-buy fee rows up to and including the 20th exit instant).
 - **The fills check must print `FILLS_MATCH_MODEL yes` at trade 10 and at trade 20.** Run as a manager job on fast-0: `sudo -n $HOME/mal-venvs/r4b/bin/python -m tools.floor_fills_vs_model --config /etc/mal-floor-lane/live-320cccc5f2ec81d40d18f8991f11b15d29b52f74.json --since 2026-11-12T00:46:04.584Z`
-- Preconditions (a) to (f) of Am.6 must also hold; read Am.6 in full before writing the ask. If the gate passes, write a HELM-ASK from the **Am.5 live config** (stake 2.5e8, budget 2.1e9, daily 5e8, pin 8dec3a3b); format only from `/data/mal/hunt-1008/ops/manager22/HELM-ASK-1112-1.DRAFT.md`.
+- Preconditions (a) to (f) of Am.6 must also hold; read Am.6 in full before writing the ask. If the gate passes, write a HELM-ASK for the Am.6 install from the **Am.5 live config** `live-320cccc5….json` (sha256 aa6c355f…), **not the older fc6a config named in the draft**, and **change only** `stake_lamports` to 2.5e8, `budget_lamports` to 2.1e9 and `daily_loss_lamports` to 5e8 (the new values), plus the changed executor blob `tools/floor_lane_executor.py` at Am.6's merge sha 8dec3a3b (Am.6 Install). Use `/data/mal/hunt-1008/ops/manager22/HELM-ASK-1112-1.DRAFT.md` for its format only.
 - **Count so far: 0 of 20 closed at 0.10** (state file, 11-13T00:3xZ hourly #2539). One position is open (`e3b7cc9de20e65bd`).
 - **Open question for QP:** does the unwound round trip `73a31cf948fba66e` (bought and sold at once, `paper_refused`) count as a closed 0.10 trade toward the 20? Not decided.
 - Am.7 adds: trades under the new host count toward the 20; a fills-check "no" caused only by positions open across a host restart goes to QP first.
@@ -102,25 +102,24 @@ This replaces the manager22 handoff (written 2026-11-12T20:5xZ–21:1xZ). manage
 **Stage-1 host change (DEC-035 Amendment 7; not installed).**
 - Code merged: **aa05923f** (#1332; `tools/floor_lane_host.py` blob ba7050e1, sha256 201f3d4a…; two flags `status_span_no_loss` and `cheap_restart`, default off; golden md5 `aba8b479…` equals main). Am.7 merged **86cdca18** (#1335).
 - What it does: with `cheap_restart` true, a later restart blocks only the pools the rule bought during the downtime, instead of refusing every pool for 24 h. The deploy restart itself is NOT cheap (24 h refuse-all, `unknown_prev_end`), and a restart within BLOCK_MS of an unflagged host_down span still refuses all. `status_span_no_loss` stays off.
-- **Install preconditions and their state:**
-  - (a) Am.7 merged with verdicts: **done** (86cdca18).
-- **Install preconditions, in order (state 2026-11-13T01:24Z).** The proof harness **#1337 is MERGED as main `4c862bba8e852154ba730c75196832863985fd74`** (QP OK and REVIEWER APPROVE at 97a5532f). The kill-line check was moved out to branch `claude/floor-stage1-killcheck` (not in a PR). Commands and pass lines are in `docs/runbooks/floor-stage1-proof.md`. MINOR owed: print `test_mode=False` in the proof output.
-  1. **DEC-035 Am.7 Erratum 1** (T1, one line, being drafted on branch `claude/dec035-am7-erratum1`): the proof-job SEALS-BRIEF line is added now; the kill-line check job's line before that job's first run and in any case before the first restart that can be cheap. It must be merged BEFORE P0 and P2 run. **Not merged.**
-  2. **SEALS-BRIEF line (g)** for the proof job added (text in `docs/runbooks/floor-stage1-proof.md`) and the brief's sha recorded. **Not done.**
-  3. **Both precounts at `hours_missing=0`.** **Not done.**
-  4. **`P0 PASS` and `P2 PASS`** at the merged sha (P1 only before `status_span_no_loss`); P2 job `--mem 32G` on mal-research-0. **Not done.**
-  5. **Kill-line check PR and its smoke run** before the first restart that can be cheap (branch `claude/floor-stage1-killcheck`; the check compares live entry rows after each cheap restart with an unguarded, uninterrupted replay; 0 entries on pools the reference holds). **Not done.**
-  6. **Timing rule:** not before C = 2026-11-13T00:00:00Z (passed). At or after R = 2026-11-14T01:00:00Z unless the lane report at the stop shows zero open positions entered before C. Not inside the tip hand-off window [2026-11-15T05:00Z, 09:00Z), and not until its three confirmations hold. The host is already down for the disk fault and HELM-ASK-1113-2 restarts it on the current v1 code; Am.7 allows no second host restart within about 24 h of a restart, so when the stage-1 deploy follows is the manager's call.
+- **Install preconditions, in order (state 2026-11-13T01:3xZ).** Commands and pass lines are in `docs/runbooks/floor-stage1-proof.md`. Am.7 is merged (86cdca18). The proof harness #1337 is merged as main `4c862bba8e852154ba730c75196832863985fd74` (QP OK and REVIEWER APPROVE at 97a5532f); the kill-line check was moved to branch `claude/floor-stage1-killcheck` (not in a PR). MINOR owed: print `test_mode=False` in the proof output.
+  1. **DEC-035 Am.7 Erratum 1: DONE**, merged as main `46e6b66d` (#1340, QP OK and REVIEWER APPROVE at 78770ef7). The proof-job SEALS-BRIEF line is added now; the kill-line check job's line before that job's first run and before the first restart that can be cheap.
+  2. **SEALS-BRIEF line (g) for the proof job: DONE** (brief sha256 `31cbf6c1…`; AGENT-BRIEF-COMMON updated). It needs an update when the proof follow-up (item 3) lands.
+  3. **Both precounts at `hours_missing=0`: NOT MET.** The first precount (job #2549) FAILED as designed with `hours_missing=24`, first_missing 2026-11-02T01: the research-0 hv7 copy keeps about 240 h and has pruned 2026-11-02T01..2026-11-03T00, so the script's fixed seed is unreachable. The manager froze hv7's 240 closed hours (2026-11-03T01..2026-11-13T00) by hard links at `/data2/mal/scratch/floor-stage1-proof/tapecopy-1113/` (list `tapecopy-1113.list`, sha256 `d0a11d3132f5e206…`). A follow-up PR on branch `claude/floor-stage1-proof-seed` adapts the proof: seed from the first available hour, read the frozen copy with a list check, W1 = [2026-11-12T00Z, 2026-11-12T15Z). Not yet merged; QP must re-rule.
+  4. **`P0 PASS` and `P2 PASS`: NOT RUN.** They run at the merged sha of that follow-up PR (the harness is 4c862bba; the host code under test is aa05923f, host blob ba7050e1). P2 job `--mem 32G` on mal-research-0. P1 only before `status_span_no_loss`.
+  5. **Kill-line check PR and its smoke run: NOT DONE**, required before the first restart that can be cheap (branch `claude/floor-stage1-killcheck`).
+  6. **Timing rule:** not before C = 2026-11-13T00:00:00Z (passed). At or after R = 2026-11-14T01:00:00Z unless the lane report at the stop shows zero open positions entered before C. Not inside the tip hand-off window [2026-11-15T05:00Z, 09:00Z), and not until its three confirmations hold.
   7. **Owner word to Helm**, then the HELM-ASK from `HELM-ASK-stage1.DRAFT.md`.
   - Also at install (Am.7 (d) to (f)): unit tests at the merge sha (`tools/test_floor_lane_host_stage1.py`, `tools/test_floor_lane_host.py`; run as a job); STOP and HALT files absent, lane cash and open count recorded, each open position's entry compared with C; rollback line recorded.
-  - **Deploy = 24 h refuse-all.** New unit WITHOUT `--since-hour`.
+  - **Deploy = 24 h refuse-all.** New unit WITHOUT `--since-hour`. The deploy span stays unflagged for about 24 h (Am.7 R4), so a restart inside it gains nothing: the manager's rule is no second host restart within about 24 h (this is the manager's rule with that reason, not Am.7 text). HELM-ASK-1113-2 restarts the host on v1 today, so the stage-1 deploy is a later, separate restart.
+  - **Post-install check (Am.7):** the deploy start's `lane_start` and `lane_restart_shadow` rows show `prev_end: unknown`, `fallback: unknown_prev_end`, `shadow_complete: false`, `host_sha256` 201f3d4a…, `guard: {cheap_restart: true, status_span_no_loss: false}`, `since_hour: null`, empty `seed-tmp`, and no entry row until BLOCK_MS after the span. **Kill-line rollback trigger:** any live entry on a pool the unguarded reference holds after a cheap restart, or any HostFatal/HostError on the new paths; then set both flags false and restart the host on the old config through Helm.
 - `/data/mal/hunt-1008/ops/manager23/HELM-ASK-stage1.DRAFT.md` exists and is **not sent** (placeholders for PR numbers, jobs and the send instant; confirm the decision root against host.json `root` before sending).
 
 **Hourly status.**
 - Script: `/data/mal/hunt-1008/ops/manager23/hourly.sh` (from manager22's). Run it as a MiScusi job:
 
   ```
-  B=$(base64 -w0 hourly.sh); miscusi-agent job submit --name hourly --machine mal-fast-0 --role ops --mem 512M -- "echo $B | base64 -d > /tmp/h.\$\$.sh; sh /tmp/h.\$\$.sh"
+  B=$(base64 -w0 /data/mal/hunt-1008/ops/manager23/hourly.sh); miscusi-agent job submit --name hourly --machine mal-fast-0 --role ops --mem 512M --cpus 0.2 -- "echo $B | base64 -d > /tmp/h.\$\$.sh; sh /tmp/h.\$\$.sh"
   ```
 
   then `miscusi-agent job log <seq>`. The bridge-event filter starts at `ts_ms` 1794419100000 (11-11T17:45Z); raise it as the log grows.
@@ -153,11 +152,12 @@ Re-create the crons from `crons-manager23.json` with CronCreate.
 | **11-13 09:13** | Successor for **#1952 watchdog** (ends ~11-14T04Z). Recover the A3 #1896/#1898 commands **without** job_status (notebook n_KAyq8dRg6ZzKRQ). |
 | **11-13 10:37** | r4bt-a2 dry host install (§4; runbook; J1 ~11:35, J2 12:05) |
 | **11-13 ~14:06** | Open trade `e3b7cc9de20e65bd` exits on the executor clock (no host take-profit); cron 14:21. Count it toward the 20 as the Am.6 rules say. |
-| **11-14 01:00 (R)** | **EXP-029 read, procedural FAIL** (Erratum 1g; cron 01:07). The four §4 tests on trades in [S = 11-09T06:00Z, C = 11-13T00:00Z), pooled and split by stake (0.03 / 0.10); the pre-S sends listed separately; labelled **FAIL (procedural)**, never a market verdict; QP before merge. **The read must disclose the host-down span from 2026-11-13T00:33Z and the lost host take-profit on the open pre-C position `e3b7cc9de20e65bd`.** |
+| **11-14 01:00 (R)** | **EXP-029 read, procedural FAIL** (Erratum 1g; cron 01:07). The event was the 0.10 install at 2026-11-12T00:46:04.584Z, so C = 11-13T00:00Z and R = C + 25 h. Run the read once, at or after R:<ul><li>the four §4 tests on trades in [S = 11-09T06:00Z, C), pooled and split by stake (0.03 / 0.10);</li><li>the pre-S sends listed separately (Erratum 1, item 4);</li><li>the report labelled **FAIL (procedural)**, never a market verdict;</li><li>QP before merge;</li><li>quote the Erratum 1e MAJOR 1 disclosure and the QP ruling;</li><li>**disclose the host-down span from 2026-11-13T00:33:06Z** (the signal host made no entries);</li><li>**disclose the lost host take-profit on the open pre-C position `e3b7cc9de20e65bd`** (it exits on the executor's 24 h clock).</li></ul> |
 | 11-14 12:00 | Host check #2348 (pin) runs; read its exit code. A restart through Helm's drop-in may change what it sees; not confirmed. |
 | daily 00:23 | floor-forward-ab job on research-0 (`scripts/research/floor_forward_ab.sh <last closed hour>`). Check the job log for a path-guard stop. Job #2537 (end hour 2026-11-12T23, main aa05923f) was submitted 00:13Z, so no second job that day. |
 | **11-15 06:41** | **Tip hand-off check** (`docs/runbooks/tip-writer-handoff.md` §5/§6). Writer #2033 hits its limit ~06:09Z, push #2039 ~06:24Z. Gates #2501 (deadline 08:08Z) and #2502 (08:23Z) release #2503/#2504. Confirm the gates exited 0; the successors are running, resumed and caught_up, with no REFUSED; a counts-only FLOOR host gap check. A gate exit of 4 or 5: follow the runbook by hand. |
 | 11-15 12:05 | Latest r4bt-a2 dry host start (§4) |
+| **by 2026-11-15T18:00** | **Start successors for #2055 and #2064** (they end ~11-15T23:30Z–11-16T00:15Z; the r4bt-a2 P0 days need them). **No cron covers this yet**: create one (e.g. 11-15 18:13) or do it at the 11-15 06:41 check. |
 | ~11-15 23:30 – 11-16 00:15 | #2055 and #2064 reach their limits: **successors needed before 2026-11-16T00:00Z** (r4bt-a2 P0 needs the tip health). |
 | 11-16 03:23 | vault1.0 out-of-sample paper check (cron). Rule in §6. |
 | 11-16 06:13 | HELM-ASK-1108-1 reset window opens (06:00Z to 11-21T00Z). Nudge Helm; use the **current** pin and config, only the one state field changes (ADDENDUM-1). |
@@ -181,7 +181,7 @@ MiScusi refuses job limits above 14 days. `after` fires only on exit 0, never on
 ## 7. Owed (not done)
 - **Durable disk plan for fast-0:** the backfill-fast-b / -c move (26 GB) needs a T1 ledger note; tip retention. The c1nf-ledger move (7 GB) already happened (job #2545).
 - **Watch successor for #2291**, after the host is back (§1). Disk guard successor beyond #2546's limit.
-- **DEC-035 Am.7 Erratum 1** (branch `claude/dec035-am7-erratum1`); **kill-line check PR** (branch `claude/floor-stage1-killcheck`); SEALS-BRIEF line (g); `test_mode=False` print MINOR in the proof output.
+- **Stage 1:** the proof follow-up PR (branch `claude/floor-stage1-proof-seed`, then P0/P2); **kill-line check PR** (branch `claude/floor-stage1-killcheck`); the SEALS-BRIEF line (g) update; the `test_mode=False` print MINOR in the proof output. (Am.7 Erratum 1 and line (g) are done.)
 - **`set -f` MINOR** around the symlink-component loop in `scripts/research/floor_gap_range.sh`.
 - **Forward A/B bins** for the landing vault (`land_vault_sol`, `entry_over_mark0`).
 - **Records batch for 11-13**, and the `data/console.json` update for the incident.
@@ -203,7 +203,7 @@ MiScusi refuses job limits above 14 days. `after` fires only on exit 0, never on
 3. **11-13 09:13Z:** #1952 watchdog successor. **10:37Z:** r4bt-a2 dry host install (never read an entry count before J4).
 4. **After ~14:06Z:** confirm `e3b7cc9de20e65bd` exited; get the QP ruling on whether the unwound `73a31cf948fba66e` counts toward the Am.6 gate's 20.
 5. **11-14 01:00Z:** the EXP-029 procedural-FAIL read, with the host-down disclosure; QP before merge.
-6. **Stage 1:** follow the seven ordered preconditions in §3 (Am.7 Erratum 1 first, then SEALS-BRIEF line (g), precounts, P0 and P2, kill-line check PR and smoke run, timing, owner word). Send HELM-ASK-stage1 only after the 24 h refuse-all from step 1 has passed and outside the 11-15 hand-off window.
+6. **Stage 1:** follow the ordered preconditions in §3: proof follow-up PR (seed from the first available hour, frozen copy), both precounts at `hours_missing=0`, P0 and P2 PASS, kill-line check PR and smoke run, timing, owner word. Send HELM-ASK-stage1 only after the 24 h refuse-all from step 1 has passed and outside the 11-15 hand-off window.
 7. **11-15 06:41Z** tip hand-off check; successors for #2055 and #2064 before 11-16T00:00Z; 11-17 09:13Z A3 successors.
 8. Records batch for 11-13, the `console.json` incident update, and the durable fast-0 disk plan (§7).
 
