@@ -1,8 +1,48 @@
 {
  "schema_version": "console.v1",
- "updated_utc": "2026-11-13T03:35:06Z",
+ "updated_utc": "2026-11-13T08:53:45Z",
  "review_windows": [],
  "events": [
+  {
+   "id": "am6-count-ruling-1113",
+   "kind": "decision",
+   "atUtc": "2026-11-13T08:51:00Z",
+   "approx": true,
+   "title": "QP ruling: the Am.6 gate count is 1 of 20 (the unwound round trip 73a31cf948fba66e counts)",
+   "detail": "QP-RULING-1113-am6-count (sha256 fb7974f2f5086e0b8e33558a77b161283566135a8417741899cc705408f589c7): the unwound round trip 73a31cf948fba66e counts as trade 1 of 20, with its -0.000633034 SOL in the sum, budget, daily stop and fills check; e3b7cc9de20e65bd counts when it closes; count start 2026-11-12T00:46:04.584Z. A T1 wording erratum (Am.6 Erratum 4) must merge before the trade-10 fills check. A count, not a gate pass. No book has cleared the promotion gate."
+  },
+  {
+   "id": "r4bt-a2-dry-jobs-1113",
+   "kind": "job",
+   "atUtc": "2026-11-13T08:50:27Z",
+   "approx": false,
+   "title": "r4bt-a2 dry jobs submitted after #1349 merged (128d7e27); dry host starts 10:05Z; r4bt-a2 is NOT registered",
+   "detail": "PR #1349 merged as 128d7e27e32d80a693c89fdc393dcd05bf686002 at 2026-11-13T08:50:27Z (ledger note and DEC-031 Amendment 23 readers record 2). On fast-0, change_id r4bt-a2-dry-1113a: J1 sidecar #2590 (started 08:50Z), J2 dry host #2591 (sleeps to 2026-11-13T10:05:00Z, then r4b-dry-long.sh r4bt-a2-dry-1113a 134), J3 stop check #2592, J4 P0 count #2593 (2026-11-19T00:10:00Z), J5 day-sha loop #2594. Paper only. Registration only follows a P0 PASS on 2026-11-16, 11-17, 11-18. No entry count is read before J4. No book has cleared the promotion gate."
+  },
+  {
+   "id": "floor-a3-halt-1113",
+   "kind": "finding",
+   "atUtc": "2026-11-13T07:10:05Z",
+   "approx": false,
+   "title": "A3 record 2026-11-13T07:10:05Z has halt.any=true; the FLOOR executor pauses new entries by itself while it stands",
+   "detail": "Helm FYI HELM-REPLY-1113-5; answer HELM-ASK-1113-5: no action, no STOP file, no LIVE_OK change. Record: boost_share_low (0 non-mayhem WSOL graduations of 20, InitBoost 0/8 WSOL) and synthetic_share_high (11/20); two boost rules not evaluated; pooled guard a3-applied verdict HALT. The FLOOR executor refuses new buys while the newest A3 record has a set or not-evaluated flag (not a latch; it clears when a later record is clean, next runs about 19:10Z and 2026-11-14T07:10Z); exits run, so the open trade e3b7cc9de20e65bd sells on its clock. No a3_pause row yet because the host refuses all pools until about 2026-11-14T06:03Z. Wide probe job #2585 (n 80): WSOL 52/80 (non-mayhem 20; mayhem 32), other quote 28/80; mix over 120: wsol 86 / usdc 5 / other 29. Trend job #2587: other-quote share 28/60 at 07:10Z, the largest so far; a burst of other-quote launches plus a quiet hour, not yet a regime change. Cause (report other-quote-graduations.md; public RPC, structure counts): of the 120 newest graduations 30 were other-quote; one creator account made 19 of the 30, all 06:31-06:38Z; one account's 7-minute burst, not a platform change. Follow-up: the 19:10Z record (check at 19:23Z). No book has cleared the promotion gate."
+  },
+  {
+   "id": "floor-stage1-p2-pass-1113",
+   "kind": "result",
+   "atUtc": "2026-11-13T07:10:00Z",
+   "approx": true,
+   "title": "FLOOR host stage 1: P2 PASS (job #2573 at 1670b44f, --seed-relaxed); Errata 2 and 3 merged; QP Addendum 1 send conditions; nothing installed",
+   "detail": "P2 PASS about 06:45Z (the state file's clock note; 07:10Z is the #1348 merge and QP Addendum 1). After P2 was vacuous on both pre-declared windows, QP ruled route (B). Merged: #1346 (Am.7 Erratum 2, 07ef3302), #1347 (P2-only --seed-relaxed, 1670b44f), #1348 (Am.7 Erratum 3, P1 deferred, 4ef63d48). P2 job #2573, window [2026-11-08T00Z, 2026-11-10T00Z), seed_h_before_from=119, list sha256 d0a11d31...: ref_entries 41, t_found true; nine cases all pass=True with every *_MUST0 = 0; f2 and f3 pass. Tests job #2580 at aa05923f: 76 passed. QP Addendum 1: SEND OK WITH CONDITIONS: install about 15:00Z on 2026-11-13 only if the exit of open trade e3b7cc9de20e65bd has landed and the lane shows 0 open, else wait for R = 2026-11-14T01:00Z; rollback = tree e89f1536 + host.json sha256 60f7a60a... + the ExecStart in force. The install request (HELM-ASK-1113-6) is ready and not sent; it needs the owner's own word because new code is not covered by the 11-13 restart auto-approval. No book has cleared the promotion gate."
+  },
+  {
+   "id": "floor-unattended-restart-1113",
+   "kind": "record",
+   "atUtc": "2026-11-13T06:03:33Z",
+   "approx": false,
+   "title": "FLOOR host and executor restarted by an unattended upgrade at 2026-11-13T06:03:33Z; host refuses every pool until about 2026-11-14T06:03Z",
+   "detail": "apt-daily-upgrade upgraded libc6 at 06:03:18Z, systemd re-executed at 06:03:27Z and the services restarted at 06:03:32-33Z. New PIDs: host 2625988 (was 2504565), executor 2625989 (was 1929135), tip follower 2625920 (was 2254354). No unit or config change; no send, no exit; the open trade e3b7cc9de20e65bd and its exit clock are unchanged. The new host_down span means the host refuses every pool until about 2026-11-14T06:03Z. Helm (HELM-REPLY-1113-4, 06:18Z) wrote /etc/needrestart/conf.d/50-mal-live.conf so the mal-* units are not restarted automatically again; a kernel 6.8.0-149 is pending and a reboot needs a planned window. The EXP-029 read must disclose this restart. No book has cleared the promotion gate."
+  },
   {
    "id": "owner-1113-instructions",
    "kind": "decision",
@@ -24,8 +64,8 @@
    "kind": "result",
    "atUtc": "2026-11-13T03:17:00Z",
    "approx": true,
-   "title": "FLOOR host stage 1 replay proof: P0 PASS (job #2554 at 1482a80d); P2 (job #2563) running",
-   "detail": "PR #1341 merged as 1482a80d (seed = first available hour 2026-11-03T01, frozen hard-link tape copy with a list check); precount #2553 hours_missing 0. P0, window [2026-11-12T00Z, 2026-11-12T15Z): status_spans 0; names_equal True; files_md5_differ 0; checkpoint_equal True; all_log_md5 = all_log_md5_v2 = all_log_md5_v2on 2238e32c3145f2bc8fdbcce866ebdd68; checkpoint_md5 v1 = v2 3fbd2a192771b933a2d30cbbb92157a9; rows 1. The equality rests on 1 decision row (thin). The proof shows equivalence between host versions, not a replay of the live host. P2 was running at 2026-11-13T03:3xZ: no result yet. Stage 1 is not installed; the timing rule and the kill-line check still come first. No book has cleared the promotion gate."
+   "title": "FLOOR host stage 1 replay proof: P0 PASS (job #2554 at 1482a80d); P2 first vacuous on both windows (jobs #2563, #2567); later P2 PASS in floor-stage1-p2-pass-1113",
+   "detail": "PR #1341 merged as 1482a80d (seed = first available hour 2026-11-03T01, frozen hard-link tape copy with a list check); precount #2553 hours_missing 0. P0, window [2026-11-12T00Z, 2026-11-12T15Z): status_spans 0; names_equal True; files_md5_differ 0; checkpoint_equal True; all_log_md5 = all_log_md5_v2 = all_log_md5_v2on 2238e32c3145f2bc8fdbcce866ebdd68; checkpoint_md5 v1 = v2 3fbd2a192771b933a2d30cbbb92157a9; rows 1. The equality rests on 1 decision row (thin). The proof shows equivalence between host versions, not a replay of the live host. P2 was vacuous (exit 3) on both pre-declared windows (jobs #2563 and #2567); the P2 PASS that followed is in the next entries. Stage 1 is not installed; the timing rule and the kill-line check still come first. No book has cleared the promotion gate."
   },
   {
    "id": "dec035-am6-erratum3-1113",
@@ -41,7 +81,7 @@
    "atUtc": "2026-11-13T00:33:06Z",
    "approx": false,
    "title": "FLOOR signal host stopped itself 2026-11-13T00:33:06Z on the disk floor; host back up 02:19:18Z",
-   "detail": "What happened: fast-0 disk was 24.0% free, under the 25% floor (DEC-031 section 3.8). A buy (order 73a31cf948fba66e) landed 00:32:56Z, the paper-ledger append was refused, the executor sold it at once (landed 00:32:59Z) and the host exited. Cost: -0.000633034 SOL on that one round trip. Cause: the disk had sat at 23.9% to 24.4% free since at least 11-11T16:47Z; our own 'healthy' threshold was below the real 25% floor (manager miss). Fixed: disk freed to 44.166% free (older job checkouts, a shelved ledger and two finished walker archives, 7,036,392,533 + 26,651,919,475 bytes, moved to research-0); Helm restarted the host at 02:19:18Z (PID 2504565) without the flag that copied tape (--since-hour). The executor (PID 1929135) was never touched. Entries resume about 2026-11-14T02:24Z because the host refuses every pool for about 24 h after any restart. One position opened earlier (e3b7cc9de20e65bd) exits on the executor's own 24 h clock (about 14:06Z) with no host take-profit. Live lane realized -0.000633034 SOL today. No book has cleared the promotion gate."
+   "detail": "What happened: fast-0 disk was 24.0% free, under the 25% floor (DEC-031 section 3.8). A buy (order 73a31cf948fba66e) landed 00:32:56Z, the paper-ledger append was refused, the executor sold it at once (landed 00:32:59Z) and the host exited. Cost: -0.000633034 SOL on that one round trip. Cause: the disk had sat at 23.9% to 24.4% free since at least 11-11T16:47Z; our own 'healthy' threshold was below the real 25% floor (manager miss). Fixed: disk freed to 44.166% free (older job checkouts, a shelved ledger and two finished walker archives, 7,036,392,533 + 26,651,919,475 bytes, moved to research-0); Helm restarted the host at 02:19:18Z (PID 2504565) without the flag that copied tape (--since-hour). The executor (PID 1929135) was not touched by that restart. The host then restarted again at 06:03:33Z (unattended upgrade, see floor-unattended-restart-1113), so it refuses every pool until about 2026-11-14T06:03Z, not 02:24Z. One position opened earlier (e3b7cc9de20e65bd) exits on the executor's own 24 h clock (about 14:06Z) with no host take-profit. Live lane realized -0.000633034 SOL today. No book has cleared the promotion gate."
   },
   {
    "id": "dec031-am30-r4bt-a2-1112",
@@ -2010,6 +2050,12 @@
   }
  ],
  "for_you": [
+  {
+   "id": "fy-20261113-stage1-word",
+   "from": "claude",
+   "text": "Needs your word: the FLOOR host stage-1 install request (HELM-ASK-1113-6) is ready and not sent. It installs new code, which the 2026-11-13 restart auto-approval does not cover. Proofs are met (P0, P2, tests); QP's send conditions: install about 15:00Z today only if the open trade e3b7cc9de20e65bd has exited and the lane shows 0 open, else after 2026-11-14T01:00Z. A kernel 6.8.0-149 is also pending; a reboot would restart everything and could ride the same window. Nothing is installed. No book has cleared the promotion gate.",
+   "atUtc": "2026-11-13T07:10:00Z"
+  },
   {
    "id": "fy-20261106-helm-direct-yes",
    "from": "claude",
