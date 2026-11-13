@@ -2,6 +2,7 @@
 # floor_killcheck_extract.sh NAME --from-ms N --to-ms N   (mal-fast-0, step A of the FLOOR kill-line check; a manager job, uses sudo -n)
 # 1. sudo python3 -I floor_killcheck_extract.py: reads ONLY entry rows and lane_restart_shadow rows of the live decision log in the window; writes $HOME/mal-data/ops/killcheck/NAME.jsonl (new file).
 # 2. rsync (ssh BatchMode, the route of arena-tip-push-job.sh) to mal-research-0:/data2/mal/scratch/floor-killcheck/in/ with --ignore-existing (never overwrite).
+# The near file is 0600; the far file 0640 in a 0750 dir (it holds live pool ids). Delete both copies once the result is recorded: far = step B --delete-extract-after, near = rm by hand.
 # 3. checks the sha256 on the far side. Prints OUT_SHA256 and REMOTE_SHA256 for step B's --extract-sha256. POSIX sh. No pool id is printed.
 set -eu
 NAME=${1:?name}
@@ -12,12 +13,12 @@ PY=${PY:-python3}
 ROOT=/var/lib/mal-live/floor-lane/decisions-root
 OUT="$HOME/mal-data/ops/killcheck/$NAME.jsonl"
 DST=/data2/mal/scratch/floor-killcheck/in
-SSH_HOST=${SSH_HOST:-mal-research-0}
+SSH_HOST=mal-research-0   # hard-coded: no env override
 [ "$(hostname)" = "mal-fast-0" ] || { echo "REFUSED: runs on mal-fast-0 only"; exit 2; }
 cd "$REPO"
 sudo -n "$PY" -I scripts/ops/floor_killcheck_extract.py --decision-root "$ROOT" --out "$OUT" "$@"
 [ -f "$OUT" ] || { echo "REFUSED: no extract written"; exit 2; }
-rsync -e "ssh -o BatchMode=yes" --ignore-existing --chmod=F0644 --rsync-path="mkdir -p $DST && rsync" "$OUT" "$SSH_HOST:$DST/"
+rsync -e "ssh -o BatchMode=yes" --ignore-existing --chmod=F0640 --rsync-path="mkdir -p $DST && chmod 0750 $DST && rsync" "$OUT" "$SSH_HOST:$DST/"
 LOCAL=$(sha256sum "$OUT" | cut -d' ' -f1)
 REMOTE=$(ssh -o BatchMode=yes "$SSH_HOST" "sha256sum $DST/$NAME.jsonl" | cut -d' ' -f1)
 echo "OUT_SHA256=$LOCAL"

@@ -10,6 +10,7 @@ REPO=${REPO:-$(cd "$(dirname "$0")/../.." && pwd)}
 PY=${PY:-/data/mal/venv/bin/python}
 BASE=/data2/mal/scratch/floor-killcheck
 mkdir -p "$BASE/.shim" "$BASE/in"
+chmod 0750 "$BASE/in"
 printf '#!/bin/sh\nexec /usr/bin/zstd -f "$@"\n' > "$BASE/.shim/zstd"
 chmod +x "$BASE/.shim/zstd"
 PATH="$BASE/.shim:$PATH"

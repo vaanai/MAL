@@ -234,7 +234,7 @@ def kargs(tmp, p, sha, out="r1", *extra):
 
 def reference(tmp):
     """The reference's own entries on the synthetic tape, learned by running the same function the check runs (same window as main derives for RESTART)."""
-    frm = K.floor_h(min(RESTART["t_ms"], RESTART["down_from_ms"]) - K_BLOCK())
+    frm = K.floor_h(min(RESTART["t_ms"], RESTART["down_from_ms"]) - 2 * K_BLOCK())
     (tmp / "scratch" / "learn").mkdir(exist_ok=True)
     rows = K.run_reference(str(tmp / "scratch" / "learn"), [str(tmp / "tape")], None, frm, H0 + 48 * HOUR, 60_000, True)
     return [r for r in rows if r.get("kind") == "entry"], rows
@@ -339,3 +339,77 @@ def test_count_only_runs_no_reference(kenv, capsys):
     assert K.main(kargs(kenv, p, sha, "c1", "--count-only")) == 0
     out = capsys.readouterr().out
     assert "KILLCHECK-INPUT" in out and "KILLCHECK-TAPE" in out and not (kenv / "scratch" / "c1").exists()
+
+
+# ------------------------------------------------------------------------------------------------ changes since 079a8959 (QP B1 and the smaller items)
+def test_b1_a_reference_that_starts_one_block_before_the_restart_misses_a_hold_the_two_block_start_sees(kenv, capsys, monkeypatch):
+    """The synthetic reference enters pool Q at 32 h and holds it to 56 h. With BLOCK_MS cut to 2 h and a restart at 35 h: a start at 33 h (the old 1 x BLOCK start) has an empty book, never
+    sees that entry, and a live entry on Q at 35.5 h (another trigger) passes; the 2 x BLOCK start (31 h) sees the hold and the same live entry FAILS."""
+    sys.path.insert(0, str(REPO))
+    from tools import floor_lane_host as H
+    monkeypatch.setattr(H, "BLOCK_MS", 2 * HOUR)
+    r35 = H0 + 35 * HOUR
+    restart = {"t_ms": r35, "prev_end": "signal", "fallback": None, "shadow_complete": True, "down_from_ms": None, "down_to_ms": None}
+    planted = {"t_ms": r35 + 1_800_000, "pool": PQ, "order_id": "B1-PLANTED", "trig_ms": r35 + 1_799_000}
+    (kenv / "scratch" / "l1").mkdir()
+    old = K.run_reference(str(kenv / "scratch" / "l1"), [str(kenv / "tape")], None, H0 + 33 * HOUR, H0 + 37 * HOUR, 60_000, True)
+    assert K.compare(old, [planted], [restart], 2 * HOUR, H0 + 37 * HOUR)["n_live_entry_on_ref_held_pool_MUST0"] == 0  # the old start would have PASSED
+    p, sha = put_extract(kenv, [planted], [restart], "b1.jsonl", to_ms=H0 + 37 * HOUR)
+    rc = K.main(kargs(kenv, p, sha, "b1"))
+    out = capsys.readouterr().out
+    assert rc == 1 and "KILLCHECK FAIL" in out and "B1-PLANTED" in out
+    assert json.loads((kenv / "scratch" / "b1" / "killcheck-KILLCHECK.json").read_text())["tape_info"]["ref_from"] == hn(H0 + 31 * HOUR)
+    with pytest.raises(SystemExit):  # a later start is refused outside smoke
+        K.main(kargs(kenv, p, sha, "b2", "--ref-from", hn(H0 + 33 * HOUR)))
+    assert K.main(kargs(kenv, p, sha, "b3", "--ref-from", hn(H0 + 33 * HOUR), "--smoke")) != 1  # smoke may start later (a plumbing test only)
+
+
+def test_every_restart_row_is_printed_with_checked_and_the_not_shown_line(kenv, capsys):
+    ents, _ = reference(kenv)
+    e = [live_from_ref(r) for r in ents if r["ms"] >= RESTART["t_ms"]]
+    fb = dict(RESTART, t_ms=H0 + 20 * HOUR, shadow_complete=False, fallback="unclean_exit", prev_end="exception")
+    p, sha = put_extract(kenv, e, [fb, RESTART])
+    assert K.main(kargs(kenv, p, sha)) == 0
+    out = capsys.readouterr().out
+    assert "KILLCHECK-ROW row=1" in out and "fallback=unclean_exit" in out and "checked=no" in out and "checked=yes" in out
+    assert "KILLCHECK-NOT-SHOWN" in out and "backstop, not a proof" in out and "re-entry" in out and "live staleness" in out and "after the reference window end" in out
+
+
+def test_smoke_flags_a_live_entry_the_reference_does_not_reproduce(kenv, capsys):
+    ents, _ = reference(kenv)
+    first = [r for r in ents if r["ms"] >= RESTART["t_ms"]][0]
+    stray = {"t_ms": int(first["ms"]) + 7_000, "pool": "POOLNEVER", "order_id": "STRAY", "trig_ms": int(first["ms"]) + 6_000}
+    p, sha = put_extract(kenv, [live_from_ref(first), stray], [], "n.jsonl")
+    rc = K.main(kargs(kenv, p, sha, "n1", "--restart-ms", str(RESTART["t_ms"]), "--smoke", "--ref-from", hn(H0 + 6 * HOUR)))
+    out = capsys.readouterr().out
+    assert rc == 4 and "REFERENCE DOES NOT REPRODUCE LIVE DECISIONS: ask QP" in out and "KILLCHECK_SMOKE PASS" not in out and "POOLNEVER" not in out
+
+
+def test_delete_extract_after_removes_only_the_research_copy_after_the_result(kenv, capsys):
+    ents, _ = reference(kenv)
+    p, sha = put_extract(kenv, [live_from_ref(r) for r in ents if r["ms"] >= RESTART["t_ms"]], [RESTART])
+    assert K.main(kargs(kenv, p, sha, "d1", "--delete-extract-after")) == 0
+    assert not p.exists() and (kenv / "scratch" / "d1" / "killcheck-KILLCHECK.json").exists()
+    q, sq = put_extract(kenv, [], [RESTART], "d2.jsonl")
+    assert K.main(kargs(kenv, q, sq, "d2", "--delete-extract-after")) == 3 and not q.exists()  # a vacuous result is a recorded result
+
+
+def test_extract_counts_failed_restart_rows_writes_0600_and_refuses_symlinked_subdirs(xenv, capsys):
+    tmp, root, cfg = xenv
+    assert X.main(xargs(tmp, root, cfg, "m.jsonl")) == 0
+    out = capsys.readouterr().out
+    assert "n_restart_shadow_failed=1" in out
+    assert (tmp / "kc" / "m.jsonl").stat().st_mode & 0o777 == 0o600
+    h = json.loads((tmp / "kc" / "m.jsonl").read_text().splitlines()[0])
+    assert h["n_restart_shadow_failed"] == 1 and "why" not in canon(h)
+    d = Path(root) / "decisions"
+    real = d.with_name("decisions-real")
+    d.rename(real)
+    os.symlink(real, d)
+    with pytest.raises(SystemExit):
+        X.main(xargs(tmp, root, cfg, "m2.jsonl"))
+
+
+def test_wrappers_hardcode_the_push_target_and_set_modes():
+    sh = (REPO / "scripts" / "ops" / "floor_killcheck_extract.sh").read_text()
+    assert "SSH_HOST=mal-research-0" in sh and "F0640" in sh and "chmod 0750" in sh and "SSH_HOST:-" not in sh

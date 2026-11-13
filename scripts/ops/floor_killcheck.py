@@ -5,8 +5,11 @@ instant? Inputs: (1) the extract file written by step A on mal-fast-0 (scripts/o
 /data2/mal/scratch/floor-killcheck/in/ and checked against the sha256 given on the command line; (2) the tape source, with the proof's rules (scripts/ops/floor_stage1_proof.py,
 imported, not copied): the research-0 hv7 copy or a frozen hard-link copy /data2/mal/scratch/floor-stage1-proof/tapecopy-<MMDD> with its list (TAPE-CHECK). Nothing else is read.
 
-The reference is the P2 reference (floor_stage1_proof.reference_rows): HostV2 + the frozen rule straight through, no guard, no restart. It starts one BLOCK_MS (and the restart's
-downtime) before the earliest restart so that every reference position open at the restart exists in it, and ends at the end of the checked entries (hour-aligned, closed hours only).
+The reference is the P2 reference (floor_stage1_proof.reference_rows): HostV2 + the frozen rule straight through, no guard, no restart. It starts with an EMPTY book 2 x BLOCK_MS before
+the earliest restart (or its downtime start), hour-floored (QP B1 on #1344): a divergence that starts from the unknown true book at the start then closes before the restart. A later
+`--ref-from` is refused unless `--smoke`. RESIDUAL: repeated exit-and-re-entry on one pool can in principle carry a divergence further, so the check is a BACKSTOP, NOT A PROOF; it is a
+reconstruction, not an exact replay. It ends at the end of the checked entries (hour-aligned, closed hours only). The restart instant is the `lane_restart_shadow` row's `ms`, i.e. the end of
+the warm-up (no decision precedes it). Every restart row of the window is printed with `checked=yes|no` (cheap = shadow_complete true).
 `verify_pins()` runs before the reference (QP note 4); outside test mode HEAD's tools/floor_lane_host.py must be the stage-1 merge's blob.
 
 Per cheap restart r (start instant = the row's `ms`; `--restart-ms` overrides and REQUIRES `--smoke`), the live entries with r <= t < r + BLOCK_MS (and inside the reference window) are checked:
@@ -19,7 +22,8 @@ Per cheap restart r (start instant = the row's `ms`; `--restart-ms` overrides an
   n_live_entries_beyond_reference_window_INFO   entries after the reference window end (a partial run is allowed; complete it later)
 Order ids (or `seq:<n>` when the row carried none) of the MUST0 offenders are printed; never a pool id, price or P&L. Exit 0 `KILLCHECK PASS` only if MUST0 == 0, at least one cheap
 restart was checked and at least one live entry followed it; exit 3 (vacuous, says so) if there is no cheap restart or no live entry after one; exit 1 `KILLCHECK FAIL`; exit 2 a refusal.
-`--smoke` labels everything `SMOKE` (final line `KILLCHECK_SMOKE PASS`, json `killcheck-SMOKE.json`): a smoke run with a hand-set restart instant is NOT a kill-line check.
+`--smoke` labels everything `SMOKE`; in smoke a nonzero n_live_entry_not_in_reference_INFO prints "REFERENCE DOES NOT REPRODUCE LIVE DECISIONS: ask QP" and exits 4 (not a pass). `--delete-extract-after`
+removes the research-0 copy of the extract once the result file is written. `--smoke` labels everything `SMOKE` (final line `KILLCHECK_SMOKE PASS`, json `killcheck-SMOKE.json`): a smoke run with a hand-set restart instant is NOT a kill-line check.
 Writes only under /data2/mal/scratch/floor-killcheck/<run>/ (a NEW dir). The reference's decision log (pool ids) is deleted after its rows are read. Paper only. NOT a promotion read."""
 from __future__ import annotations
 
@@ -44,6 +48,10 @@ ALLOWED_ENTRY_KEYS = {"t_ms", "pool", "order_id", "seq", "trig_ms"}
 TOL_MS = 2_000  # same-entry tolerance when a live row carries no trigger instant
 HOUR_MS = S.HOUR_MS
 EXIT_FAIL, EXIT_VACUOUS = S.EXIT_FAIL, S.EXIT_VACUOUS
+EXIT_NOT_REPRODUCED = 4  # smoke only: a live entry is not a reference entry (QP on #1344: the reference must reproduce live decisions before the check is relied on)
+NOT_SHOWN = ("a PASS is a backstop, not a proof: the reference is a reconstruction from an empty book at --ref-from (2 x BLOCK_MS before the earliest restart), not an exact replay, and repeated "
+             "exit-and-re-entry on one pool can still diverge; entries after the reference window end are unchecked (see ..._beyond_reference_window_INFO); live staleness (lane clock up to ~1.1 s later) "
+             "is not modelled; no fills, slippage or P&L; no missed entries; nothing before the first cheap restart")
 refuse = S.refuse
 
 
@@ -180,12 +188,13 @@ def build_parser() -> argparse.ArgumentParser:
     ap.add_argument("--extract-sha256", required=True)
     ap.add_argument("--restart-ms", type=int, action="append", default=None, help="override the extract's cheap restarts; REQUIRES --smoke")
     ap.add_argument("--smoke", action="store_true", help="label the run SMOKE; it is never a kill-line check")
-    ap.add_argument("--ref-from", default=None, help="reference start hour YYYY-MM-DDTHH (default: the hour of earliest restart/downtime start minus BLOCK_MS)")
+    ap.add_argument("--ref-from", default=None, help="reference start hour YYYY-MM-DDTHH (default: the hour of the earliest restart/downtime start minus 2 x BLOCK_MS; a later value needs --smoke)")
     ap.add_argument("--to", default=None, help="reference end hour (exclusive; default: the hour after the last checked entry window)")
     ap.add_argument("--seed-from-hour", default="auto")
     ap.add_argument("--tape-list", default=None)
     ap.add_argument("--tape-src", action="append", default=None)
     ap.add_argument("--step-ms", type=int, default=1000)
+    ap.add_argument("--delete-extract-after", action="store_true", help="delete the research-0 copy of the extract once the result file is written (the fast-0 copy: delete by hand, see the runbook)")
     ap.add_argument("--count-only", action="store_true", help="check the extract, the tape source and the window; run no reference")
     ap.add_argument("--test-mode", action="store_true", help="synthetic tapes only (needs MAL_ARENA_TEST=1)")
     ap.add_argument("--now-ms", type=int, default=None)
@@ -211,13 +220,24 @@ def main(argv=None) -> int:
         restarts = [dict(r, source="extract") for r in header.get("lane_starts", []) if r.get("shadow_complete") is True and isinstance(r.get("t_ms"), int)]
     restarts.sort(key=lambda r: r["t_ms"])
     S.emit("%s-INPUT" % label, {"extract_sha256": a.extract_sha256.lower(), "n_entries_in_extract": len(entries), "n_restart_rows_in_extract": len(header.get("lane_starts", [])),
-                                "n_cheap_restarts": len(restarts), "restart_source": "override" if a.restart_ms else "extract", "block_ms": block, "smoke": bool(a.smoke), "test_mode": bool(a.test_mode)})
+                                "n_cheap_restarts": len(restarts), "restart_source": "override" if a.restart_ms else "extract", "block_ms": block, "smoke": bool(a.smoke), "test_mode": bool(a.test_mode),
+                                "n_restart_shadow_failed_rows_in_window": header.get("n_restart_shadow_failed", "unknown")})
+    for i, r in enumerate(header.get("lane_starts", []), 1):  # EVERY restart row of the window, cheap or with a fallback, and whether it was checked (QP on #1344)
+        chk = bool(r.get("shadow_complete") is True and not a.restart_ms)
+        S.emit("%s-ROW" % label, {"row": i, "restart_hour": S.hour_name(r["t_ms"]), "prev_end": r.get("prev_end"), "fallback": r.get("fallback") or "none", "shadow_complete": r.get("shadow_complete"),
+                                  "checked": "yes" if chk else "no"})
+    if a.restart_ms:
+        for x in a.restart_ms:
+            S.emit("%s-ROW" % label, {"row": "override", "restart_hour": S.hour_name(int(x)), "prev_end": "none", "fallback": "none", "shadow_complete": "hand-set", "checked": "yes"})
     if not restarts:
         print("%s VACUOUS: the window has no cheap restart (no lane_restart_shadow row with shadow_complete true); nothing was checked" % label, file=sys.stderr)
         return EXIT_VACUOUS
     first = min(min(r["t_ms"], r.get("down_from_ms") or r["t_ms"]) for r in restarts)
     last_end = min(int(header["to_ms"]), max(r["t_ms"] for r in restarts) + block)
-    frm = S.parse_hour(a.ref_from) if a.ref_from else floor_h(first - block)
+    default_frm = floor_h(first - 2 * block)  # QP B1 on #1344: 2 x BLOCK_MS, so a divergence that starts from the unknown book at the start closes before the restart
+    frm = S.parse_hour(a.ref_from) if a.ref_from else default_frm
+    if frm > default_frm and not a.smoke:
+        refuse("--ref-from %s is later than the default %s (2 x BLOCK_MS before the earliest restart); only --smoke may start later" % (S.hour_name(frm), S.hour_name(default_frm)))
     to = S.parse_hour(a.to) if a.to else ceil_h(last_end)
     srcs = S.check_srcs(a.tape_src or list(S.TAPE_SRC), a.test_mode)
     if a.seed_from_hour == "none":
@@ -254,10 +274,17 @@ def main(argv=None) -> int:
                                       "n_live_entries_beyond_reference_window_INFO": p["n_live_entries_beyond_reference_window_INFO"], "offender_order_ids": ",".join(p["offender_ids"]) or "none"})
     S.emit(label, {k: res[k] for k in ("n_cheap_restarts_checked", "n_live_entries_after_restart", "n_live_entry_on_ref_held_pool_MUST0", "n_live_entry_not_in_reference_INFO", "ref_entries")})
     Path(out, "killcheck-%s.json" % ("SMOKE" if a.smoke else "KILLCHECK")).write_text(json.dumps(res, sort_keys=True))
+    if a.delete_extract_after:
+        os.remove(os.path.abspath(a.extract))
+        print("%s-EXTRACT deleted_after_result=True" % label)
+    print("%s-NOT-SHOWN %s" % (label, NOT_SHOWN))
     if res["n_cheap_restarts_checked"] < 1 or res["n_live_entries_after_restart"] < 1:
         print("%s VACUOUS: no live entry followed a cheap restart inside the reference window; nothing was shown" % label, file=sys.stderr)
         return EXIT_VACUOUS
     ok = res["n_live_entry_on_ref_held_pool_MUST0"] == 0
+    if a.smoke and ok and res["n_live_entry_not_in_reference_INFO"] > 0:
+        print("REFERENCE DOES NOT REPRODUCE LIVE DECISIONS: ask QP (%d live entries are not reference entries); KILLCHECK_SMOKE is NOT passed" % res["n_live_entry_not_in_reference_INFO"])
+        return EXIT_NOT_REPRODUCED
     print(("KILLCHECK_SMOKE %s (a hand-set restart instant: NOT a kill-line check)" if a.smoke else "KILLCHECK %s") % ("PASS" if ok else "FAIL"))
     return 0 if ok else EXIT_FAIL
 
