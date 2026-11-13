@@ -336,11 +336,16 @@ Written 2026-11-13T00:1xZ (`date -u` 00:16:13Z), manager23 draft. Nothing in thi
      - `tools/floor_lane_host.py`;
      - three executor files (`tools/floor_lane_executor.py`, `tools/floor_arena_executor.py`, `tools/arena_live_bridge.py`). They come from Amendments 4–6 and are already in the live executor tree. The host does not import them (grep of the host's import chain).
    - **Unchanged pins.** `FROZEN_SHA` stays `5e12f8f597571d6d5191a7ba38125c67ad723b7d`. PINS and IDENTICAL_AT_FROZEN are unchanged. The checkpoint schema stays `floor_lane_host_ckpt_v1`, with additive optional fields only (QP condition 9).
-6. **Config at install.**
-   - The new host config is a copy of the host config live at the install instant, with exactly two keys added: `"cheap_restart": true` and `"status_span_no_loss": false`. The second equals its default and is written for the record.
-   - Every other field stays identical: `root`, `ledger_root`, `registry`, `tape_dir`, `frozen_sha`, `clock_start_ms`, `end_ms`, `stack_version`, `feed_delay_slots`, `warm_min`, `gap_lookback_s`.
-   - **Live host config identity: ______ (MANAGER TO FILL: path and sha256 of the config that `mal-floor-lane-host.service` runs today).** The documents read for this draft do not name it. HELM-ASK-1107-2 §1 asked for "Host config `floor-lane-host.json`", built from `scripts/mal-fast/floor-lane-host.json.example`. HELM-REPLY-1107-2 records the host tree pin, the `host_sha256` and `clock_start_ms` 1794132000000, but no config path or hash.
-   - The new config's path and sha256 are recorded from Helm's reply.
+6. **Config and tree at install.**
+   - **The live host today.** Manager job #2538 on mal-fast-0 at 2026-11-13T00:2xZ inspected the unit (names and config keys only). `mal-floor-lane-host.service` (MainPID 3484327, active) runs `/usr/local/lib/mal-floor-lane/venv/bin/python -E -s -B -u tools/floor_lane_host.py run --config /etc/mal-floor-lane/host.json --since-hour 2026-10-29T11`. Its WorkingDirectory is `/usr/local/lib/mal-floor-lane/current`, set by drop-in `/etc/systemd/system/mal-floor-lane-host.service.d/runtime.conf`.
+   - **The live host config** is `/etc/mal-floor-lane/host.json`: 451 bytes, root-owned 0644, mtime 2026-11-08 08:30, sha256 `60f7a60a2b6478ec8ef1efaed657ec6ecc4194297f41a765467fb10d95bd2a71`. Its keys are `clock_start_ms`, `end_ms`, `feed_delay_slots`, `frozen_sha`, `gap_lookback_s` (21600), `ledger_root`, `registry`, `root`, `stack_version`, `tape_dir` and `warm_min` (365). It has no `cheap_restart` key and no `status_span_no_loss` key.
+   - **The new host config** is a copy of `/etc/mal-floor-lane/host.json` at sha256 `60f7a60a…` with exactly one key added, `"cheap_restart": true`. `status_span_no_loss` stays absent, which the code reads as false (`_cfg_flag`). Every other field stays byte-for-byte identical in value.
+   - **Its file name.** DEC-035 sets no naming precedent for the host config (the executor's `live-<sha>.json` names are executor configs). The new file's name is chosen by Helm and recorded with its sha256 in the reply. `/etc/mal-floor-lane/host.json` is kept unchanged for rollback.
+   - **The new tree** is a new clean root-owned directory beside `/usr/local/lib/mal-floor-lane/current`, checked out at main aa05923f. How `current` (or the unit's WorkingDirectory) is switched to it is Helm's choice. The rollback switches it back and uses the old config.
+   - **The unit's `--since-hour 2026-10-29T11`.** With a checkpoint present, it still sends the start through `rebuild_table_since` (`tools/floor_lane_host.py`, `main`).
+     - **Decisions are unchanged by it.** That path hard-links every tape hour from 2026-10-29T11 up to the warm-up start into `<root>/lane/seed-tmp`, then applies only rows after the pickle's hwm, because `PoolTable.rebuild` skips earlier hours and rows. This is the same table as `rebuild_table`.
+     - **Its cost is disk.** Where a hard link fails, the file is copied instead.
+     - **Helm's choice.** Helm may keep the flag or drop it; the reply says which. Without it, a missing checkpoint makes the start refuse ("first start (no checkpoint): --since-hour is required").
 
 **Bot id.**
 - floor-lane-1 keeps its bot_id, its decision root and its ledger, by a named exception to §3 ("A code or prompt change is a new `bot_id`").
@@ -377,8 +382,6 @@ Written 2026-11-13T00:1xZ (`date -u` 00:16:13Z), manager23 draft. Nothing in thi
 - the new config of item 6 (Helm sends the diff);
 - one stop and start of `mal-floor-lane-host.service` only;
 - the rollback line.
-
-The owner tells Helm in the Helm chat (HANDOFF §1, Helm protocol).
 
 Before the ask, all of the following hold, and the manager records them in the state file.
 - (a) **Verdicts.** QP OK and REVIEWER APPROVE at the exact head of this amendment's PR, and the PR is merged to main.
@@ -419,10 +422,14 @@ Before the ask, all of the following hold, and the manager records them in the s
   - Lane cash and the number of open positions are recorded.
   - Each open position's entry instant is compared with C (Timing).
 - (f) **Rollback line**, recorded.
-  - The previous host tree (the clean root-owned checkout of e89f15364c85; host blob a4387c24, sha256 d805085c…) and the previous host config (item 6) are kept unchanged.
-  - Rollback = point the unit back at them and restart the host through Helm.
+  - These are kept unchanged:
+    - the previous host tree, `/usr/local/lib/mal-floor-lane/current` as of the install (the clean root-owned checkout of e89f15364c85; host blob a4387c24, sha256 d805085c…);
+    - the previous host config, `/etc/mal-floor-lane/host.json` (sha256 60f7a60a…).
+  - Rollback = switch `current` (or the WorkingDirectory) back, point `--config` at the old file, and restart the host through Helm.
   - Main's v1 code loads a v2 checkpoint (QP and the reviewer verified this on #1332). It ignores the extra fields and treats every `shadow_complete` host_down span as unflagged, so it refuses every pool for BLOCK_MS after that span.
   - The rollback restart is itself a host_down span, with the same 24 h refuse-all.
+
+Helm acts on the owner's word given in Helm chat (docs/HANDOFF.md §1); the manager asks the owner to give it.
 
 **Post-install check.** Counts only, by a manager job that prints counts and order ids only (HANDOFF §0 item 4).
 - (a) **The deploy start.** All of these hold:
