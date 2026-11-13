@@ -1,8 +1,48 @@
 {
  "schema_version": "console.v1",
- "updated_utc": "2026-11-13T08:53:45Z",
+ "updated_utc": "2026-11-13T14:55:00Z",
  "review_windows": [],
  "events": [
+  {
+   "id": "merged-1113c-prs",
+   "kind": "record",
+   "atUtc": "2026-11-13T14:36:00Z",
+   "approx": false,
+   "title": "Merged after #1350: #1351 (Am.6 Erratum 4), #1352 (wording errata), #1353 (DEC-035 Am.8 + executor key a3_floor_flag_list), #1354 (Am.8 Erratum 1)",
+   "detail": "#1351 aa39dd078fff6042c6d55c2fe6ec082cd7c601c1 (DEC-035 Am.6 Erratum 4: what counts toward the 20 trades); #1352 71a446b4b1b4b9e297170dd58f81ea6dfe017198 (wording errata); #1353 9c52f4fcfdccfb0775736eec050f8023c5e9a381 (DEC-035 Am.8 and the executor config key a3_floor_flag_list, default off); #1354 4aaf30fdd7bf8b6929cbb8a0bc8372ae526ee627 (Am.8 Erratum 1: job #2606 replaces the crashed job #2602). Am.8 part B (executor key a3_floor_flag_list, pin 9c52f4fc) is asked of Helm as HELM-ASK-1113-7 and is NOT installed; it needs the owner's word. Am.8 part A (status_span_no_loss on): P1 PASS (job #2606); earliest ask after 2026-11-14T14:48Z. Amendment 6 code ceilings are present in the merged executor; Amendment 6 config is not installed. No book has cleared the promotion gate."
+  },
+  {
+   "id": "floor-p1-crash-1113",
+   "kind": "finding",
+   "atUtc": "2026-11-13T13:11:00Z",
+   "approx": false,
+   "title": "Disclosure: P1 job #2602 crashed (manager error); P1 was re-run as #2606 on the frozen tape copy and passed",
+   "detail": "Job #2602 was submitted without --tape-src, so the script linked the hv7 copy directly instead of the frozen copy tapecopy-1113; it exited rc=4 at 13:09Z with no P1 result (hv7 retention dropped hour 2026-11-03T12 and the second replay's seed rebuild failed). No v1/v2 comparison was computed or seen. This is a deviation from SEALS-BRIEF line (g): the first replay read hv7 hours 2026-11-03T12 to 11-13T00 directly. The re-run, job #2606 at 1670b44f with --tape-src tapecopy-1113 (list sha256 d0a11d31...), is the P1 record: PASS (entries v1 1 / v2 2, v2-only 1 at a v1 refusal row, all MUST0 = 0, nonvacuous True). DEC-035 Am.8 Erratum 1 (#1354, 4aaf30fd) is the record. Notebook n_P2cO0QlbHx49tg. No book has cleared the promotion gate."
+  },
+  {
+   "id": "r4bt-a2-dry-host-started-1113",
+   "kind": "job",
+   "atUtc": "2026-11-13T10:05:01Z",
+   "approx": false,
+   "title": "r4bt-a2 dry host started 2026-11-13T10:05:01Z (paper; NOT registered until a P0 PASS)",
+   "detail": "Job #2591 woke 10:05:00Z; scope r4b-dry-r4bt-a2-dry-1113a.scope up 10:05:02Z, host pid 2752773, install_head 3c12c5fddfa67384dca2e306a8bf6c529e85ebfc. M1_SLICE PASS, M1_SCOPE_MEMORY_MAX PASS (5,368,709,120), M1_SCOPE_SWAP_MAX PASS (0), M1_NICE PASS (19). Catch-up check #2599 at 10:57:45Z: sidecar phase LIVE, backlog_jumps 0, lag 0 slots. Jobs: #2590 sidecar, #2591 host, #2592 stop check, #2593 P0 count at 2026-11-19T00:10Z, #2594 day-sha loop. r4bt-a2 is not registered until a P0 PASS on 2026-11-16, 11-17, 11-18. No entry count has been read. Paper only. No book has cleared the promotion gate."
+  },
+  {
+   "id": "floor-trade2-exit-1113",
+   "kind": "result",
+   "atUtc": "2026-11-13T14:06:11Z",
+   "approx": false,
+   "title": "FLOOR trade e3b7cc9de20e65bd closed on the 24 h time stop: realized -0.004085219 SOL after all fees; Am.6 gate count 2 of 20",
+   "detail": "Sell sent 14:06:11Z, landed 14:06:13Z, reason time_24h. Realized -0.004085219 SOL (basis 0.101673840 SOL, -4.02%; flag_c no: not below -12%). Lane realized today -0.004718253 SOL over two exits; 0 open; wallet 3,155,784,860 lamports. Am.6 gate count 2 of 20: 73a31cf948fba66e -0.000633034 (paper_refused), e3b7cc9de20e65bd -0.004085219 (time_24h); sum -0.004718253. Am.7 list-(ii) disclosure for e3b7cc9de20e65bd: host down 00:33:06Z to 02:19:18Z, the host take-profit was lost, the 06:03:33Z restart, and the exit at 14:06:11Z against a buy landed 2026-11-12T14:06:15Z. FLOOR made no money on 2026-11-13: two small losing trades, and entries locked out since 00:33Z. A count, not a gate pass. No book has cleared the promotion gate."
+  },
+  {
+   "id": "floor-stage1-installed-1113",
+   "kind": "record",
+   "atUtc": "2026-11-13T14:44:03Z",
+   "approx": false,
+   "title": "FLOOR host stage 1 (cheap restart) installed by Helm: host stop 14:44:02.156Z, start 14:44:03.517Z, PID 2625988 -> 2913148; refuses every pool until about 2026-11-14T14:47:40Z",
+   "detail": "Owner's word in the Helm chat 2026-11-13T10:56Z. Commit aa05923f (host sha256 201f3d4a...); config /etc/mal-floor-lane/host-aa05923f.json sha256 5ec10c69fb90edbab6bbb317b53544d0fd5947e72dce448aa5e28ae312a31bb4 (old config plus cheap_restart true; status_span_no_loss off). Executor untouched (PID 2625989). Helm tests 76 passed; no rollback. Post-install check (a): since_hour null, table_rebuilt_rows 0; lane_start prev_end unknown, shadow_fallback unknown_prev_end; row seq 130 guard {cheap_restart true, status_span_no_loss false}; lane_restart_shadow row seq 131 shadow_complete false. The host refuses every pool until about 2026-11-14T14:47:40Z; no host restart before then. P2 passed on the relaxed-seed route (job #2573); what a relaxed-seed P2 does not exercise is recorded in DEC-035 Am.7 Erratum 2. Am.8 part B (HELM-ASK-1113-7) was not approved yet and is not installed. No book has cleared the promotion gate."
+  },
   {
    "id": "am6-count-ruling-1113",
    "kind": "decision",
@@ -2051,10 +2091,10 @@
  ],
  "for_you": [
   {
-   "id": "fy-20261113-stage1-word",
+   "id": "fy-20261113-am8b-word",
    "from": "claude",
-   "text": "Needs your word: the FLOOR host stage-1 install request (HELM-ASK-1113-6) is ready and not sent. It installs new code, which the 2026-11-13 restart auto-approval does not cover. Proofs are met (P0, P2, tests); QP's send conditions: install about 15:00Z today only if the open trade e3b7cc9de20e65bd has exited and the lane shows 0 open, else after 2026-11-14T01:00Z. A kernel 6.8.0-149 is also pending; a reboot would restart everything and could ride the same window. Nothing is installed. No book has cleared the promotion gate.",
-   "atUtc": "2026-11-13T07:10:00Z"
+   "text": "Tell Helm OK for HELM-ASK-1113-7 (A3 false-alarm fix; executor only, no lockout). Not installed until you do. No book has cleared the promotion gate.",
+   "atUtc": "2026-11-13T14:22:00Z"
   },
   {
    "id": "fy-20261106-helm-direct-yes",
@@ -2466,6 +2506,14 @@
   }
  ],
  "stream": [
+  {
+   "id": "s-20261113-floor-stage1",
+   "from": "claude",
+   "kind": "result",
+   "atUtc": "2026-11-13T14:51:00Z",
+   "approx": false,
+   "text": "FLOOR: the second open trade closed on its 24 h clock at 14:06Z for -0.004085219 SOL after all fees; today's two exits total -0.004718253 SOL, so FLOOR made no money today (entries have been locked out since 00:33Z). Helm installed the host cheap-restart change at 14:44Z on your word; the host refuses entries until about 2026-11-14T14:48Z. Still waiting on your word for HELM-ASK-1113-7 (the A3 false-alarm fix). No book has cleared the promotion gate."
+  },
   {
    "id": "s-20261109-floor-budgetfix",
    "from": "claude",
