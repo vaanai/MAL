@@ -388,6 +388,7 @@ class FloorLaneBridge(F.FloorBridge):
         live = cfg.mode == B.LIVE
         self.a3_record_file = a3_record_file
         self.a3_floor_flag_list = bool(a3_floor_flag_list)
+        self._a3_ignored: tuple[str, ...] = ()
         self._a3_pause: str | None = None
         self._a3_polled_ms: int | None = None
         if live:  # the per-bot lock comes BEFORE the parent loads, reconciles or saves any state: a second process is refused before it can write
@@ -464,6 +465,11 @@ class FloorLaneBridge(F.FloorBridge):
         new = problem or ("a3_flags:" + ",".join(flags) if flags else None)
         if new != self._a3_pause:
             self._log("a3_pause" if new else "a3_resume", why=new, **({"ignored": ignored} if ignored else {}))
+            if self.a3_floor_flag_list:
+                self._a3_ignored = tuple(ignored)
+        elif self.a3_floor_flag_list and tuple(ignored) != self._a3_ignored:
+            self._a3_ignored = tuple(ignored)
+            self._log("a3_ignored", ignored=ignored)
         self._a3_pause = new
 
     def _lane_check(self, now: int, stake: int) -> str | None:

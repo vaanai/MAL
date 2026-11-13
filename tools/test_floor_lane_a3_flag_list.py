@@ -52,7 +52,7 @@ def test_default_is_off(tmp_path):
 def test_on_boost_flag_alone_no_pause(tmp_path):
     br = mk(tmp_path, {"boost_share_low": SET, "pins_changed": OK}, on=True)
     pause, logged = run(br)
-    assert pause is None and logged == []
+    assert pause is None and logged == [("a3_ignored", {"ignored": ["boost_share_low"]})]
     assert br._lane_check(T0, STAKE) is None
 
 
@@ -75,13 +75,13 @@ def test_on_resume_row_carries_ignored(tmp_path):
     assert logged == [("a3_resume", {"why": None, "ignored": ["boost_last_slice_early", "boost_share_low"]})]
 
 
-def test_on_ignored_set_change_alone_does_not_log(tmp_path):
+def test_on_ignored_set_change_alone_logs_only_a3_ignored(tmp_path):
     br = mk(tmp_path, {"boost_share_low": SET, "pins_changed": SET}, on=True)
     run(br)
     a3_file(tmp_path, {"boost_share_low": OK, "pins_changed": SET})
     br._a3_polled_ms = None
     pause, logged = run(br)
-    assert pause == "a3_flags:pins_changed" and logged == []
+    assert pause == "a3_flags:pins_changed" and logged == [("a3_ignored", {"ignored": []})]
 
 
 def sub(tmp, n):
@@ -120,3 +120,30 @@ def test_start_row_field_only_when_on(tmp_path):
     mk(off)
     start = [r for r in ledger_rows(off) if r["ev"] == "start"]
     assert start and "a3_floor_flag_list" not in start[-1]
+
+
+def test_a3_ignored_row_once_then_clears(tmp_path):
+    br = mk(tmp_path, {"pins_changed": OK}, on=True)
+    assert run(br) == (None, [])
+    a3_file(tmp_path, {"pins_changed": OK, "boost_share_low": SET})
+    br._a3_polled_ms = None
+    pause, logged = run(br)
+    assert pause is None and logged == [("a3_ignored", {"ignored": ["boost_share_low"]})]
+    br._a3_polled_ms = None
+    logged.clear()
+    br.a3_pause_tick(T0)
+    assert logged == []  # unchanged: no further row (spy is still installed on br._log)
+    a3_file(tmp_path, {"pins_changed": OK})
+    br._a3_polled_ms = None
+    br.a3_pause_tick(T0)
+    assert logged == [("a3_ignored", {"ignored": []})]
+
+
+def test_flag_off_never_logs_a3_ignored(tmp_path):
+    br = mk(tmp_path, {"pins_changed": OK}, on=False)
+    run(br)
+    a3_file(tmp_path, {"pins_changed": OK, "boost_share_low": SET})
+    br._a3_polled_ms = None
+    pause, logged = run(br)
+    assert pause == "a3_flags:boost_share_low"
+    assert all(k != "a3_ignored" for k, _ in logged) and br._a3_ignored == ()
