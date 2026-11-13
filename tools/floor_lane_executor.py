@@ -368,11 +368,15 @@ def take_bot_lock(lane: "H.LaneLedger") -> Any:
 # --- the bridge --------------------------------------------------------------------------------------------------------------------------------------
 
 
+# DEC-035 amendment pending: these A3 halt flags concern the H5 BOOST books only, not rule l1-floor-v2 (used only when config a3_floor_flag_list is true).
+FLOOR_A3_IGNORED_FLAGS = ("boost_share_low", "boost_last_slice_early", "boost_budget_or_slices_changed")
+
+
 class FloorLaneBridge(F.FloorBridge):
     """FloorBridge plus the lane. With a DRY config it adds nothing (no ledger is read or written). With a live config the shared lane ledger is read under its lock before every send."""
 
     def __init__(self, cfg: B.Config, port: B.OrderPort, lane_cfg: H.LaneConfig, *, now_ms: Callable[[], int] | None = None, live_ok_path: str | Path = LIVE_OK_DEFAULT,
-                 tier_path: Path = B.TIER_PATH, root_checks: bool = True, close_blocked: Callable[[str], bool | None] | None = None, dry_replay_caps: bool = False, a3_record_file: str = "", bot_lock: Any = None) -> None:
+                 tier_path: Path = B.TIER_PATH, root_checks: bool = True, close_blocked: Callable[[str], bool | None] | None = None, dry_replay_caps: bool = False, a3_record_file: str = "", bot_lock: Any = None, a3_floor_flag_list: bool = False) -> None:
         self.lane_cfg = lane_cfg
         self.lane: FloorLaneLedger | None = None
         self._lane_bot_lock: Any = None
@@ -383,6 +387,7 @@ class FloorLaneBridge(F.FloorBridge):
         self.lane_root_checks = root_checks
         live = cfg.mode == B.LIVE
         self.a3_record_file = a3_record_file
+        self.a3_floor_flag_list = bool(a3_floor_flag_list)
         self._a3_pause: str | None = None
         self._a3_polled_ms: int | None = None
         if live:  # the per-bot lock comes BEFORE the parent loads, reconciles or saves any state: a second process is refused before it can write
@@ -399,7 +404,8 @@ class FloorLaneBridge(F.FloorBridge):
             port.on_error = self._latch
             self._lane_record("start", "", code_sha256=hashlib.sha256(Path(__file__).read_bytes()).hexdigest(), frozen_sha=FROZEN_SHA, book=BOOK_BOT_ID,
                               lane={"bot_id": LANE_BOT_ID, "stake_lamports": lane_cfg.stake_lamports, "max_open": lane_cfg.max_open, "budget_lamports": lane_cfg.budget_lamports,
-                                    "daily_loss_lamports": lane_cfg.daily_loss_lamports, "fee_reserve_lamports": lane_cfg.fee_reserve_lamports, "mark_stale_s": lane_cfg.mark_stale_s})
+                                    "daily_loss_lamports": lane_cfg.daily_loss_lamports, "fee_reserve_lamports": lane_cfg.fee_reserve_lamports, "mark_stale_s": lane_cfg.mark_stale_s},
+                              **({"a3_floor_flag_list": True} if self.a3_floor_flag_list else {}))
             self._lane_reconcile(self.now_ms(), force=True)
 
     def _start_guard(self, cfg: B.Config, port: B.OrderPort) -> None:
@@ -451,9 +457,13 @@ class FloorLaneBridge(F.FloorBridge):
             flags, problem = h5a.a3_record_problem(Path(self.a3_record_file), now)
         except Exception:  # noqa: BLE001 - fail closed
             flags, problem = [], "a3_record_error"
+        ignored: list[str] = []
+        if self.a3_floor_flag_list and not problem:  # problem strings always pause; only the BOOST-book flags are dropped
+            ignored = sorted(f for f in flags if f in FLOOR_A3_IGNORED_FLAGS)
+            flags = [f for f in flags if f not in FLOOR_A3_IGNORED_FLAGS]
         new = problem or ("a3_flags:" + ",".join(flags) if flags else None)
         if new != self._a3_pause:
-            self._log("a3_pause" if new else "a3_resume", why=new)
+            self._log("a3_pause" if new else "a3_resume", why=new, **({"ignored": ignored} if ignored else {}))
         self._a3_pause = new
 
     def _lane_check(self, now: int, stake: int) -> str | None:
@@ -686,6 +696,7 @@ def run(raw: Mapping[str, Any], *, live_flag: bool, once: bool = False, root_che
         print(f"floor_lane_executor ALERT startup_refused {exc}", flush=True)
         return 2
     a3_file = str(raw.get("a3_record_file") or "")
+    a3_fl = raw.get("a3_floor_flag_list", False) is True
     if live_flag and not (a3_file and os.path.isabs(a3_file)):
         print("floor_lane_executor ALERT startup_refused a3_record_file_missing", flush=True)
         return 2
@@ -701,7 +712,7 @@ def run(raw: Mapping[str, Any], *, live_flag: bool, once: bool = False, root_che
             print(f"floor_lane_executor ALERT startup_refused {exc}", flush=True)
             return 2
     port = (port_factory or build_live_port)(cfg) if live_flag else B.DryPort(cfg.dry_balance_lamports)
-    br = FloorLaneBridge(cfg, port, lane, now_ms=now_ms, live_ok_path=live_ok, root_checks=root_checks, a3_record_file=a3_file, bot_lock=lock)
+    br = FloorLaneBridge(cfg, port, lane, now_ms=now_ms, live_ok_path=live_ok, root_checks=root_checks, a3_record_file=a3_file, bot_lock=lock, a3_floor_flag_list=a3_fl)
     print(f"floor_lane_executor mode={cfg.mode} lane_bot={LANE_BOT_ID} book={cfg.bot_id} stake={cfg.stake_lamports}", flush=True)
     kw = {"sleep": sleep} if sleep is not None else {}
     br.run(once=once, **kw)
