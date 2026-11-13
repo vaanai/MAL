@@ -32,6 +32,7 @@ from __future__ import annotations
 
 import argparse
 import copy
+import gc
 import hashlib
 import json
 import os
@@ -472,7 +473,7 @@ def pick_t(ref_rows: list, frm: int, to: int, d_max_ms: int, horizon_ms: int, d_
     return None
 
 
-def p2_case_metrics(name, ref_rows, T, D, host, rows, rec, eng, expect_fallback, restart_now) -> dict:
+def p2_case_metrics(name, ref_rows, T, D, host, rows, rec, eng, expect_fallback, restart_now, horizon_ms: int = 3_600_000) -> dict:
     ref_e = _entries(ref_rows)
     ref_ex = {}
     for r in ref_rows:
@@ -484,19 +485,25 @@ def p2_case_metrics(name, ref_rows, T, D, host, rows, rec, eng, expect_fallback,
     complete = bool(rs.get("shadow_complete"))
     in_dt = {k[0] for k in ref_e if T <= int(k[1]) <= T + D}
     n_in_dt = sum(1 for k in ref_e if T <= int(k[1]) <= T + D)
-    open_pools = set()
+    # QP B2: a reference position open in [T, T + D + 10 s] is covered only if, after catch_up, the pool's block lasts to the position's exit (capped at restart + horizon), or the
+    # lane holds an OPEN position on that pool at the restart. No "ever entered" term; the existence of a block is not enough.
+    blocked_until = rec["blocked_pools"] if isinstance(rec["blocked_pools"], dict) else {p: 2 ** 62 for p in rec["blocked_pools"]}
+    lane_open = set(rec.get("lane_open_pools") or ())
+    n_open, uncovered = 0, 0
     for k, e in ref_e.items():
-        if e["ms"] <= T + D + 10_000 and ref_ex.get(e["order_id"], 2 ** 62) >= T:
-            open_pools.add(k[0])
-    lane_pools = {r["pool"] for r in rows if r.get("kind") == "entry" and r["ms"] <= T + 1_000}
-    covered = shadow_pools | rec["blocked_pools"] | lane_pools
+        ex_ms = ref_ex.get(e["order_id"], 2 ** 62)
+        if e["ms"] <= T + D + 10_000 and ex_ms >= T:
+            n_open += 1
+            need = min(ex_ms, restart_now + horizon_ms)
+            if not (k[0] in lane_open or int((blocked_until.get(k[0]) or 0)) >= need):
+                uncovered += 1
     post = [r for r in rows if r.get("kind") == "entry" and r["ms"] >= restart_now]
     post_not_ref = [r for r in post if _trig(r) not in ref_e]
     stamped_in_down = [r for r in rows if r.get("kind") == "entry" and T + 1_000 < r["ms"] < restart_now]
     shadow_rows = (rec["seq_post"] - rec["seq_pre"]) - (1 if rs else 0)
     d = {"case": name, "prev_end": rs.get("prev_end", "none"), "fallback": rs.get("fallback") or "none", "shadow_complete": complete, "n_pools_blocked_by_shadow": len(shadow_pools),
          "n_ref_buys_in_downtime": n_in_dt, "n_ref_pools_bought_in_downtime_missed_MUST0": len(in_dt - shadow_pools) if complete else 0,
-         "blocked_equals_ref_buys": shadow_pools == in_dt, "n_ref_positions_open_in_downtime_uncovered_MUST0": len(open_pools - covered) if complete else 0,
+         "blocked_equals_ref_buys": shadow_pools == in_dt, "n_ref_positions_open_in_downtime": n_open, "n_ref_positions_open_in_downtime_uncovered_MUST0": uncovered if complete else 0,
          "n_post_restart_entries": len(post), "n_post_restart_entries_not_in_reference_MUST0": len(post_not_ref),
          "n_dispatched_during_shadow_MUST0": rec["buys_post"] - rec["buys_pre"] + len(stamped_in_down), "n_rows_written_by_shadow_MUST0": shadow_rows,
          "fallback_as_expected": (rs.get("fallback") or "none") == expect_fallback}
@@ -504,6 +511,61 @@ def p2_case_metrics(name, ref_rows, T, D, host, rows, rec, eng, expect_fallback,
     d["pass"] = (d["fallback_as_expected"] and d["shadow_complete"] == (expect_fallback == "none") and d["n_ref_buys_in_downtime"] >= 1 and
                  all(d[k] == 0 for k in d if k.endswith("MUST0")))
     return d
+
+
+DISK_FREE_MIN_FRAC = 0.255  # CLAUDE.md: keep / at >= 25.5 % free; the same margin is applied to the proof's file system
+
+
+def tree_bytes(path: str) -> int:
+    return sum(f.stat().st_size for f in Path(path).rglob("*") if f.is_file())
+
+
+def disk_guard(src: str, copies: int, where: str, usage=shutil.disk_usage) -> None:
+    """P2 copies phase A's root once per case: refuse unless the copies fit and free space stays >= 25.5 % of the file system afterwards."""
+    need = tree_bytes(src) * copies
+    u = usage(where)
+    if u.free - need < DISK_FREE_MIN_FRAC * u.total:
+        refuse("disk: %d copies of phase A's root need %d bytes; free %d of %d would drop below %.1f %%" % (copies, need, u.free, u.total, DISK_FREE_MIN_FRAC * 100))
+
+
+def register_scratch(reg: str, frm: int, test_mode: bool) -> None:
+    from tools import arena_rules as R
+    from tools import floor_lane_host as H
+    from tools.arena_rules_v2 import load_rules_v2
+    os.environ["MAL_ARENA_TEST"] = "1"
+    try:
+        R.register_rules(load_rules_v2([BOT]), reg, H.FROZEN_SHA, frm, now_ms=frm - 1, verify_sha=False)
+    finally:
+        if not test_mode:
+            os.environ.pop("MAL_ARENA_TEST", None)
+
+
+def reference_rows(work: str, reg: str, tape: str, frm: int, to: int, step: int, tm, do_seed: bool) -> list:
+    """The UNGUARDED reference: HostV2 + the frozen rule straight through [frm, to) (no GapGuardRule). Returns its decision rows; the host is freed before return."""
+    import gc
+    from tools import arena_rules as R
+    from tools import floor_lane_host as H
+    from tools.arena_rules_testkit import FakeEngine
+    from tools.arena_rules_v2 import HostV2, load_rules_v2, rebuild_table
+    from tools.arena_state import ArenaState, WARM_MIN_DEFAULT
+    warm = WARM_MIN_DEFAULT
+    rroot = os.path.join(work, "ref")
+    rules = load_rules_v2([BOT])
+    if tm:
+        rules[0].table_mode = tm
+    state = ArenaState(tape, start_ms=frm - warm * 60_000, warm_min=warm)
+    cfg = R.HostConfig(root=rroot, registry=reg, frozen_sha=H.FROZEN_SHA, clock_start_ms=frm, live=False)
+    ref = HostV2(cfg, rules, state, FakeEngine(Path(rroot)))
+    if do_seed:
+        rebuild_table(ref.table, tape, frm - warm * 60_000)
+    ref.resume()
+    ref.catch_up(frm)
+    for t in range(frm, to, step):
+        ref.step(t)
+    rows = read_rows(rroot)
+    del ref, state, rules
+    gc.collect()
+    return rows
 
 
 def run_p2(a, out: str, tape: str, seed_ms) -> dict:
@@ -531,19 +593,7 @@ def run_p2(a, out: str, tape: str, seed_ms) -> dict:
         return rebuild_table(host.table, tape, upto) if seed_ms is not None or a.test_mode else 0
 
     # -- the unguarded reference: HostV2 + the frozen rule, straight through
-    rroot = os.path.join(work, "ref")
-    rules = load_rules_v2([BOT])
-    if tm:
-        rules[0].table_mode = tm
-    state = ArenaState(tape, start_ms=frm - warm * 60_000, warm_min=warm)
-    cfg = R.HostConfig(root=rroot, registry=reg, frozen_sha=H.FROZEN_SHA, clock_start_ms=frm, live=False)
-    ref = HostV2(cfg, rules, state, FakeEngine(Path(rroot)))
-    seed(ref, frm - warm * 60_000)
-    ref.resume()
-    ref.catch_up(frm)
-    for t in range(frm, to, step):
-        ref.step(t)
-    ref_rows = read_rows(rroot)
+    ref_rows = reference_rows(work, reg, tape, frm, to, step, tm, bool(seed_ms is not None or a.test_mode))
     n_ref = len(_entries(ref_rows))
     d_ms = {"5min": 300_000, "2h": 7_200_000, "warm-5min": warm * 60_000 - 300_000, "warm+5min": warm * 60_000 + 300_000, "7h": 25_200_000}
     d_ms = {k: v for k, v in d_ms.items()}
@@ -575,6 +625,8 @@ def run_p2(a, out: str, tape: str, seed_ms) -> dict:
         clock[0] = t + 100
         A.step(t)
     del A
+    gc.collect()
+    disk_guard(aroot, 10, work)
     cases = [("a_" + k, v, "none" if v <= warm * 60_000 - 120_000 else "downtime_exceeds_warmup", None) for k, v in d_ms.items()]
     cases += [("c_exception", 300_000, "unclean_exit", lambda ck: ck.update(ended="exception")), ("d_in_doubt", 300_000, "unclean_exit", lambda ck: ck.update(ended="in_doubt")),
               ("e_unknown_v1_checkpoint", 300_000, "unknown_prev_end", lambda ck: (ck.pop("guard", None), ck.pop("ended", None))),
@@ -603,17 +655,18 @@ def run_p2(a, out: str, tape: str, seed_ms) -> dict:
 
         def cu(t_from, orig=orig, B=B, eng=eng, rec=rec):
             rec["seq_pre"] = B.log.head(BOT)[1]
+            rec["lane_open_pools"] = {getattr(x, "pool", None) for x in eng.positions.values()}
             rec["buys_pre"] = sum(1 for c in eng.calls if c[0] == "buy")
             orig(t_from)
             rec["seq_post"] = B.log.head(BOT)[1]
             rec["buys_post"] = sum(1 for c in eng.calls if c[0] == "buy")
-            rec["blocked_pools"] = set(B.blocked)
+            rec["blocked_pools"] = {p_: int(b_["until_ms"]) for p_, b_ in B.blocked.items()}
             rec["start_s"] = round(time.monotonic() - t_start, 3)
 
         B.catch_up = cu
         start = max(frm, now)
         B.run(start - start % 1000, start + horizon, sleep=lambda s, clk=clk: clk.__setitem__(0, clk[0] + max(20, int(s * 1000))))
-        m = p2_case_metrics(name, ref_rows, T, D, B, read_rows(croot), rec, eng, expect, now)
+        m = p2_case_metrics(name, ref_rows, T, D, B, read_rows(croot), rec, eng, expect, now, horizon)
         m["D_s"] = D // 1000
         m["start_duration_s_INFO"] = rec.get("start_s")
         m["table_rebuild_rows_INFO"] = n
@@ -621,6 +674,9 @@ def run_p2(a, out: str, tape: str, seed_ms) -> dict:
         if name == "e_unknown_v1_checkpoint":
             res["f"] = run_f(B, eng, croot, lane, tape, rebuild_table, now + horizon, step, warm, frm)
         shutil.rmtree(os.path.join(croot, "ledger"), ignore_errors=True)
+        if name != "e_unknown_v1_checkpoint":
+            del B, eng
+            gc.collect()
     # fail-closed: a decision log without its lane checkpoint refuses to start (main run without --since-hour and without a checkpoint)
     mroot = os.path.join(work, "nockpt")
     shutil.copytree(aroot, mroot)
@@ -654,7 +710,7 @@ def run_f(B1, eng, croot, lane, tape, rebuild_table, end1, step, warm, frm) -> d
         H_.catch_up(now - now % step)
         j = H_.judge(now + 5_000, "probe-pool-without-a-block")
         rs = [r for r in read_rows(croot) if r.get("kind") == "lane_restart_shadow"][-1]
-        d = {"case": name, "prev_end": rs.get("prev_end"), "fallback": rs.get("fallback") or "none", "shadow_complete": bool(rs.get("shadow_complete")), "old_unflagged_span_refuses_every_pool": j is not None}
+        d = {"case": name, "prev_end": rs.get("prev_end"), "fallback": rs.get("fallback") or "none", "shadow_complete": bool(rs.get("shadow_complete")), "old_unflagged_span_refuses_every_pool": j is not None and any(g_.get("kind") == "host_down" for g_ in j[1])}
         return H_, clk, d
 
     now2 = _align(end1 + 600_000, step)
