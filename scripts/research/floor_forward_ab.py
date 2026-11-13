@@ -132,8 +132,11 @@ def _f(x):
     return "n/a" if x is None else "%.6f" % x
 
 
+CAVEAT = ("MULTIPLE COMPARISONS: 8 bins x 2 stakes x 2 arms, re-read every day; by chance alone some bin will look different on some day. The 0.10 and 0.25 rows are the same entries (not independent evidence). "
+          "The bins and edges were chosen after seeing the IN-SAMPLE days shown here, so IN-SAMPLE rows are the hypothesis, not a test. No bin is a finding from this table: a bin contrast counts only if pre-registered as ONE comparison "
+          "(study Q6: vault <=0.5 vs >0.5, or ratio <=1.15 vs >1.15, on stake 0.25 flat) and read once at its registered instant, with >= 7 complete forward days and >= 20 forward entries in each compared bin.")
 LANDING_HEADER = "paper, hypothesis tracking only; no gate claim; n is small; decide nothing before at least 7 complete forward days"
-VAULT_BINS = ("<=0.5", "0.5-0.87", ">0.87")
+VAULT_BINS = ("<=0.5", "0.5-0.8", ">0.8")
 RATIO_BINS = ("<=1.00", "1.00-1.05", "1.05-1.15", "1.15-1.5", ">1.5")
 RATIO_STAKE_SOL = 0.25  # entry_over_mark0 uses the 0.25 stake for every stake row, as the 2026-11-13 landing-vault study did
 
@@ -143,13 +146,27 @@ def _num(x):
 
 
 def vault_bin(x):
-    """upper edges inclusive: 0.5 -> '<=0.5', 0.87 -> '0.5-0.87'; None -> 'unknown'"""
-    return "unknown" if x is None else "<=0.5" if x <= 0.5 else "0.5-0.87" if x <= 0.87 else ">0.87"
+    """upper edges inclusive: 0.5 -> '<=0.5', 0.8 -> '0.5-0.8'; None -> 'unknown'"""
+    return "unknown" if x is None else "<=0.5" if x <= 0.5 else "0.5-0.8" if x <= 0.8 else ">0.8"
 
 
 def ratio_bin(x):
     """upper edges inclusive: 1.00 -> '<=1.00', 1.05 -> '1.00-1.05'; None -> 'unknown'"""
     return "unknown" if x is None else "<=1.00" if x <= 1.0 else "1.00-1.05" if x <= 1.05 else "1.05-1.15" if x <= 1.15 else "1.15-1.5" if x <= 1.5 else ">1.5"
+
+
+_FEE = []
+
+
+def _fee_ppm():
+    """one-time lazy import (numpy only needed for this table section); repo root added to sys.path once"""
+    if not _FEE:
+        root = os.path.normpath(os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", ".."))
+        if root not in sys.path:
+            sys.path.insert(0, root)
+        from tools.arena_stack import fee_ppm
+        _FEE.append(fee_ppm)
+    return _FEE[0]
 
 
 def landing_fields(p):
@@ -160,8 +177,7 @@ def landing_fields(p):
     vault = (Qe - v) / 1e9 if _num(Qe) and _num(v) else None
     ratio = None
     if _num(Qe) and _num(Be) and Be > 0 and _num(m0) and m0 > 0:
-        sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", ".."))
-        from tools.arena_stack import fee_ppm  # lazy: numpy only needed for this table section
+        fee_ppm = _fee_ppm()
         net = RATIO_STAKE_SOL * 1e9 * (1 - float(fee_ppm(Qe, Be)) / 1e6)
         ratio = (Qe + net) / Be * 1e-3 / m0
     return vault, ratio
@@ -177,7 +193,7 @@ def _bin_stats(rows):
 
 def landing_bins(pos, stake, days):
     """flat leg of one stake over the given (complete) entry days. Guarded entries (paper guard fired: no position) are counted apart, not in a bin.
-    n_unpriced = positions in the bin the pricer could not price (engine-excluded or open at tape end); they carry no landing fields, so they sit in `unknown`."""
+    n_unpriced = positions in the bin the pricer could not price (engine-excluded or open at tape end); counted in the bin of their landing fields when another stake's row carries them, else in `unknown`."""
     key = f"{stake}:flat"
     ps = [p for p in pos if p["day"] in days]
     out = {"n_entries": len(ps), "n_guarded": 0, "vault": {}, "ratio": {}}
@@ -205,7 +221,9 @@ def landing_section(res_bins, forward_from):
     md = ["", "## landing-state bins (flat leg, base and vault1.0 arms)", "", "> " + LANDING_HEADER, "",
           "- COMPLETE days only; IN-SAMPLE = days < %s, FORWARD = complete days >= %s (the split used above)." % (forward_from, forward_from),
           "- land_vault_sol = (calc.1p9.Qe - meta.v) / 1e9 SOL; bins by upper edge inclusive. entry_over_mark0 = entry price / meta.mark0 with the entry price computed at the 0.25 stake for both stake rows (as in the 2026-11-13 landing-vault study).",
-          "- n = priced, not guarded; guarded = paper guard fired (no position), counted apart and in no bin; n unpriced = engine-excluded or open at tape end (no landing fields, so they sit in `unknown`).", ""]
+          "- n = priced, not guarded; guarded = paper guard fired (no position), counted apart and in no bin; n unpriced = not priced at this stake (engine-excluded or open at tape end); counted in the bin of their landing fields when another stake's row carries them, else in `unknown`.",
+          "- The registered contrast (study Q6) is on the coarse scheme (vault <=0.5 vs >0.5, or ratio <=1.15 vs >1.15); the 5 ratio bins refine it and are descriptive. calc.<LAT> is the latency leg the pnl file was built with (1p9 in the daily job).",
+          "- " + CAVEAT, ""]
     for arm, stakes in res_bins.items():
         for stake, sets in stakes.items():
             for name, d in sets.items():
@@ -293,7 +311,7 @@ def table(a):
                    "| pairs priced in vault1.0 only (base excluded/open): NOT in the delta | %d | - | %.6f | - |" % (T["n_vault_priced_only"], T["vault_sol_one_side"]),
                    "| pairs priced in neither arm | %d | - | - | - |" % T["n_neither_priced"], ""]
         res["legs"][key] = {"days": rows, "pooled": pooled, "paired": paired}
-    res["landing_bins"] = {"header": LANDING_HEADER, "ratio_stake_sol": RATIO_STAKE_SOL, "bins": lbins}
+    res["landing_bins"] = {"header": LANDING_HEADER, "caveat": CAVEAT, "ratio_stake_sol": RATIO_STAKE_SOL, "bins": lbins}
     md += landing_section(lbins, a.forward_from)
     json.dump(res, open(a.out_json, "w"), indent=1)
     open(a.out_md, "w").write("\n".join(md) + "\n")

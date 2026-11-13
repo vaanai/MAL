@@ -88,7 +88,7 @@ def fixture(with_open=False):
 
 
 def test_bin_edges():
-    assert [AB.vault_bin(x) for x in (0.5, 0.5000001, 0.87, 0.8700001, 0.19, None)] == ["<=0.5", "0.5-0.87", "0.5-0.87", ">0.87", "<=0.5", "unknown"]
+    assert [AB.vault_bin(x) for x in (0.5, 0.5000001, 0.8, 0.8000001, 0.19, None)] == ["<=0.5", "0.5-0.8", "0.5-0.8", ">0.8", "<=0.5", "unknown"]
     assert [AB.ratio_bin(x) for x in (1.0, 1.0000001, 1.05, 1.15, 1.1500001, 1.5, 1.5000001, 0.9, None)] == [
         "<=1.00", "1.00-1.05", "1.00-1.05", "1.05-1.15", "1.15-1.5", "1.15-1.5", ">1.5", "<=1.00", "unknown"]
 
@@ -108,21 +108,22 @@ def test_bins_split_guarded_unknown_unpriced():
     ab, md = table(rows, rows)
     lb = ab["landing_bins"]["bins"]["base"]["0.25"]
     ins, fwd = lb["IN-SAMPLE"], lb["FORWARD"]
-    assert ins["n_entries"] == 2 and ins["vault"]["<=0.5"]["n"] == 1 and ins["vault"]["0.5-0.87"]["n"] == 1  # 0.5 exactly in <=0.5
+    assert ins["n_entries"] == 2 and ins["vault"]["<=0.5"]["n"] == 1 and ins["vault"]["0.5-0.8"]["n"] == 1  # 0.5 exactly in <=0.5
     assert ins["ratio"]["<=1.00"]["n"] == 1 and ins["ratio"]["1.00-1.05"]["n"] == 1                          # 1.00 exactly in <=1.00
     assert fwd["n_entries"] == 9 and fwd["n_guarded"] == 1
     v = fwd["vault"]
-    assert (v["<=0.5"]["n"], v["0.5-0.87"]["n"], v[">0.87"]["n"], v["unknown"]["n"], v["unknown"]["n_unpriced"]) == (5, 0, 1, 1, 1)
+    assert (v["<=0.5"]["n"], v["0.5-0.8"]["n"], v[">0.8"]["n"], v["unknown"]["n"], v["unknown"]["n_unpriced"]) == (5, 0, 1, 1, 1)
     assert sum(b["n"] + b["n_unpriced"] for b in v.values()) + fwd["n_guarded"] == fwd["n_entries"]
     assert [fwd["ratio"][b]["n"] for b in ("<=1.00", "1.00-1.05", "1.05-1.15", "1.15-1.5", ">1.5")] == [1, 1, 1, 2, 1]
     b0 = v["<=0.5"]  # f1..f5: 5, -1, 3, -4, -2 million lamports on 0.25 SOL
     assert abs(b0["total_sol"] - 1e-3) < 1e-12 and b0["tp"] == 1
     assert abs(b0["ex_top3_sol"] - (-6e-3)) < 1e-12 and abs(b0["mean_pct"] - (0.4 / 5)) < 1e-9 and abs(b0["median_pct"] - (-0.4)) < 1e-9
-    assert v["0.5-0.87"]["mean_pct"] is None and v["0.5-0.87"]["ex_top3_sol"] is None
+    assert v["0.5-0.8"]["mean_pct"] is None and v["0.5-0.8"]["ex_top3_sol"] is None
     s10 = ab["landing_bins"]["bins"]["vault1.0"]["0.1"]["FORWARD"]["vault"]["<=0.5"]
     assert s10["n"] == 5 and abs(s10["total_sol"] - 0.4e-3) < 1e-12
     assert "paper, hypothesis tracking only; no gate claim; n is small; decide nothing before at least 7 complete forward days" in md
     assert "## landing-state bins" in md and "0.25 stake" in md
+    assert "MULTIPLE COMPARISONS" in md and "MULTIPLE COMPARISONS" in ab["landing_bins"]["caveat"]
 
 
 def test_incomplete_forward_day_is_not_binned():
