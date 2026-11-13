@@ -681,3 +681,59 @@ Written 2026-11-13T12:4xZ (`date -u` 12:41:58Z) for manager23; the code of part 
    The printed seed hour and tape list sha256 equal the declaration in (b). The script does not print the window: it is W2 = [2026-11-12T00Z, 2026-11-13T00Z) because the command above has no `--from`/`--to` (constant `W2`, `cmd_p1` → `common(a, W2, "p1")`, `scripts/ops/floor_stage1_proof.py` blob 06016c55, lines 87 and 932), and the manager confirmed that command against the MiScusi record of #2606. QP rules that this meets (b)'s printed-window clause for #2606 (QP comment on PR #1354 at d20598dc). The proof is thin: it rests on one writer status span and one v2-only entry. It says nothing about money.
 5. **Item B6's "112 cases"** is the count at 55ad1809. At the merge sha 9c52f4fc the count is 115 for the two files and 294 for the eight-file set of precondition (e) (job #2605, research-0; executor blob fd7e36c1ed1d9f0f6cfd69a07af93371c9cc278d).
 6. **Unchanged.** Preconditions (c), (d), (f) and (g) for part A are still owed at the part-A ask. The pass rule, the fallback rule and every other line of Amendment 8 stand. Part B does not depend on P1.
+
+## Amendment 9 (2026-11-13): open simulation books
+Written 2026-11-13T18:1xZ (`date -u` 18:12:55Z) for manager23, at main d1e752be. Nothing here says FLOOR or any variant makes money; **no book has cleared the promotion gate**. No promotion-gate threshold changes.
+
+**Decider and ground.** manager23, on the owner's direction of 2026-11-13 (~17:5xZ). The manager's record of the owner's chat message (`memory/owner-open-sims-1113.md`, shortened there) has these two sentences:
+> "We need to start running simulations and forward tests as if they're trading live at certain points in which we think would start to generate more profit and see how they are doing in real time. … That way if we see FLOOR with more money in each trade or more entries doing well, we can start to get what's live doing the same thing."
+
+Sources: `/data/mal/hunt-1008/ops/reports/2026-11-13/open-sim-board-design.md` §1, §3, §5; `/data/mal/hunt-1008/ops/QP-RULING-1113-open-sims.md` Q4; the QP verdicts on PR #1357 (`ops/reports/2026-11-13/pr1357-qp.md`).
+
+**1. The class.** An open simulation book is a paper replay of a named rule and configuration on the tip tape as it arrives, from a recorded start instant, with every parameter fixed at that instant. Its trades and results are shown to the owner as they happen and are not sealed. It is not a registration, not a DEC-031 arena book and not a gate read. No open-simulation trade counts toward the promotion gate or a §6 read, is pooled with real fills, or becomes part of a later read's data. A change of parameter, rule code or simulator version is a new book with a new start instant; the old book is stopped or left running, never edited. Days before the start instant are labelled in-sample.
+
+**2. Honesty rules (QP Q4; each is kept because breaking it puts money behind a number that will not repeat).**
+1. Fixed parameters per book; a tweak is a new book with a new start instant. Otherwise the record shows money the current settings never made.
+2. Every number is labelled in-sample or forward. In-sample numbers overstate; mixed into a forward total they make a losing configuration look positive.
+3. The board says how many book rows are watched, and the best one is treated as shrunk. With 10 zero-edge configurations the best still shows a profit by chance (DEC-031 Amendment 3 item 3).
+4. Per-day totals and the total after dropping the top 3 trades are always shown. One lucky day or token can carry the whole sum (EXP-017).
+5. Before a sim steers live, one book at the exact live configuration is compared with live fills trade by trade (item 3 below). FLOOR's probe exits filled −326 to −780 bps worse than modelled.
+6. Honest costs at the simulated size: real fees per send, rent, priority, impact at that stake, and both fail models until live fills measure them. Leaving them out invents profit.
+7. A sim that overlaps a registered read is declared in writing before its first output (§7). An undeclared peek voids the read.
+
+**Not required for open sims** (they protect claims an open sim does not make): read dates, seals on the sim's own results, P0 floors, N accounting, and outcome-blind read tools. They stay unchanged for registered reads and the gate.
+
+**3. When a sim may steer the live bot.** Only as one step inside this DEC's limits, with the owner's word where §2 or an amendment requires it, and only while the control book (the exact live configuration: design §1 book A) reconciles with live fills inside the bands below. On any band failure every book is marked "SIM OFF: not decision-grade", no live step is taken from the board, and the owner is told the same day; a simulator fix is a new simulator version and every book reruns from its own start under it.
+
+Initial constants (QP may adjust them on the reconciliation tool's PR):
+- **H1** live entries with no control-book entry = 0.
+- **H2** `unexplained` sim-only entries = 0 per day.
+- **H3** exit reason equal on every matched trade, except coded cases (host down at the take-profit, so the executor's 24 h clock sold).
+- **S1** (rolling 20 matched, needs ≥ 10) median entry slip in [−1.5, +3.0] pp; at most 2 trades beyond ±8 pp.
+- **S2** median (live − sim) net within ±3 pp of stake; |Σlive − Σsim| ≤ 2% of Σstake.
+- **S3** live fees per trade ≤ model + 0.5 pp of stake; unreclaimed rent 0.
+- **S4** live landing p50 ≤ 1.9 s and p90 ≤ 3.0 s.
+
+Until the reconciliation exists, a board number may inform a proposal to the owner, but the board says "NOT COMPARABLE". **The Amendment 6 gate (20 closed trades at 0.10 before the 0.25 stake) is not changed by this amendment.**
+
+**4. Books at start (v0, PR #1357, merged d1e752be).** From the daily job `scripts/research/floor_forward_ab.sh` (replay from 2026-11-02T01Z), forward-from 2026-11-12 (entries on or after 2026-11-12T00:00Z; earlier entries are in-sample, including those that close later):
+- **D0**: `l1-floor-v2` as live, without the lane gap guard;
+- **C0**: vault1.0 (`Q_STAR=1.0e9`), without the gap guard; picked from a variant search on 2026-11-03..11-11.
+
+Each at 0.10, 0.25, 0.5 and 1.0 SOL, labelled as QP required on #1357: 0.10 "model; live fills exist, not reconciled (recon NOT COMPARABLE)"; 0.25 "model; live check pending"; 0.5 and 1.0 "model only, extrapolated; not for steering". Neither v0 book is the control book. A day is complete only when the tape runs at least 90 min past its end.
+
+**Later books** (control A under the lane guard, and C, D1, E1, E2 from design §1; the follow-mode driver) start under this amendment when their tool PRs merge. Each is recorded by a MiScusi notebook entry with its manifest sha256 and start instant. No further amendment is needed per book.
+
+**5. SEALS-BRIEF lines.** The brief is a host file the manager edits. Each line below is in force when its tool's PR merges and the manager adds the line naming the merged commit; (j)'s PR is #1357 (d1e752be).
+- **(j)**, verbatim from QP's verdict on #1357:
+  > (j) OPEN SIM BOARD v0 (PR #1357): `floor_forward_ab.py board` reads only the two pnl json files of one floor_forward_ab.sh work dir under /data2/mal/scratch/floor-forward-ab and writes board.json and board.md there; the manager may copy exactly those two files (no other file of the work dir) to ~/data/open-sim/ on research-0 for the Console. They carry no pool id, mint, signature, price or reserve. Paper only; an open simulation, not a gate read.
+- **(k)**, draft:
+  > (k) OPEN SIM FOLLOW DRIVER (PR #[n], commit [sha]): scripts/research/osb_follow.py reads ONLY closed hv7 hours that the arena tip receiver's verification log lists, hard-linked under /data2/mal/scratch/floor-open-sim (its keeper dir and per-book dirs); it writes only under /data2/mal/scratch/floor-open-sim and to ~/data/open-sim on research-0. Files under ~/data/open-sim carry no pool id, mint, signature, absolute price or reserve. Paper only; an open simulation, not a gate read.
+- **(l)**, draft:
+  > (l) OPEN SIM LIVE EXTRACT AND RECONCILIATION (PR #[n], commit [sha]): scripts/ops/osb_live_extract.py runs on mal-fast-0 only as a manager job with sudo -n; it reads the floor-lane-1 decision rows (entry, exit, entry_refused_gap, entry_gap_span_ignored, lane_restart_shadow(_failed), start), the bridge log rows (buy_sent, buy_landed, sell_sent, sell_landed, refusals with reason, gap and gap_hold), the lane ledger cash rows and the fills log fields spend_lamports, tokens_received and price_vs_quote_bps; it writes one 0600 extract keyed by order id and copies it to research-0 (0640); stdout is counts and sha256 only. scripts/ops/osb_recon.py on research-0 is the only reader of the extract. It may print, per order id, only: order id, sim trade id, entry and exit UTC, stake, class, reason code, entry slip pp, landing ms, live and sim exit reason, live and sim net SOL, fees in pp of stake. Pool, mint, signature, absolute price and reserves never leave the extract and the tool.
+
+**6. Ledger.** One HOLDOUT_LEDGER changelog line (this PR) records the hours as open FLOOR information.
+
+**Outside this amendment.** r4-b (DEC-031 Amendment 31, PR #1358).
+
+**Unchanged.** §2 (every limit, the STOP files, keys), §3–§7, the Amendment 6 gate and its count, Amendments 1–8, and the promotion gate. Nothing here says FLOOR or any variant makes money; no book has cleared the promotion gate.
