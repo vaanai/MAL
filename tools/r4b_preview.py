@@ -599,7 +599,7 @@ def build_report(*, manifest: Mapping, as_of_ms: int, cfg: AP.StackConfig, entri
     exit_of = {(x["_cid"], x["order_id"]): x for x in exits}
     ent_pid = {k: pid for k, pid in res["by_order"].items()}
     counted_pids = {ent_pid[k] for k, e in label_of.items() if e["_counted"] and k in ent_pid}
-    counted_rows = [r for r in led if r["position_id"] in counted_pids]
+    counted_rows = [r for r in led if r.get("position_id") in counted_pids]
     # ---- per-stake trades that go in totals
     dec_by_stake: dict[float, list] = {}
     partition: dict[str, dict] = {}
