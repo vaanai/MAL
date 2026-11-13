@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
-"""floor_nov_paper: paper replay of l1-floor-v2 (HostV2, tools/arena_rules_v2) over a closed tip-tape slice, priced at stakes 0.10 and 0.25 with the kit's fee stack
+"""floor_nov_paper: paper replay of l1-floor-v2 (HostV2, tools/arena_rules_v2) over a closed tip-tape slice, priced at stakes 0.10 and 0.25 (default; --stakes adds more, e.g. 0.5, 1.0) with the kit's fee stack
 (arena_stack_v2 fields) and send = 160,000 lamports per send by default (p155 + base; the earlier 1,673,840 included 1,513,840 of refundable token-ATA rent and over-charged). PAPER only; scratch registry and ledger under --root (outside /data/mal/arena).
 No table seed: the pool table is built from the slice itself (pools that graduated before the slice start are missing, disclosed in the report).
-Usage: floor_nov_paper.py --root R --tape-dir T --from-ms A --to-ms B [--send 160000]
+Usage: floor_nov_paper.py --root R --tape-dir T --from-ms A --to-ms B [--send 160000] [--stakes 0.10,0.25]
 """
 import argparse, dataclasses, json, sys
 from pathlib import Path
@@ -20,15 +20,34 @@ from floor_tape_paths import require_files_ok  # noqa: E402
 from floor_gap_range_engine import GapRangeEngine  # noqa: E402
 
 
+def parse_stakes(text):
+    """--stakes 0.10,0.25,0.5,1.0 -> tuple of floats. 2-6 values, each in (0, 2.0], strictly ascending, must include 0.10 and 0.25 (the A/B table reads those two)."""
+    try:
+        v = tuple(float(x) for x in text.split(","))
+    except ValueError:
+        raise SystemExit("refusing --stakes %r: not a comma list of numbers" % text)
+    if not 2 <= len(v) <= 6:
+        raise SystemExit("refusing --stakes: need 2 to 6 values, got %d" % len(v))
+    if any(not (0 < x <= 2.0) or x != x for x in v):
+        raise SystemExit("refusing --stakes: every value must be in (0, 2.0]")
+    if any(b <= a for a, b in zip(v, v[1:])):
+        raise SystemExit("refusing --stakes: values must be strictly ascending")
+    if 0.10 not in v or 0.25 not in v:
+        raise SystemExit("refusing --stakes: must include 0.10 and 0.25")
+    return v
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--root", required=True); ap.add_argument("--tape-dir", required=True)
     ap.add_argument("--from-ms", type=int, required=True); ap.add_argument("--to-ms", type=int, required=True)
     ap.add_argument("--send", type=int, default=160_000)
+    ap.add_argument("--stakes", default="0.10,0.25", help="comma list of paper stakes in SOL (default 0.10,0.25; 2-6 values in (0, 2.0], ascending, must include 0.10 and 0.25)")
     ap.add_argument("--set", nargs="*", default=[], help="variant overrides on tools.arena_rule_l1 module constants, NAME=value (e.g. Q_STAR=0.75e9 AGE_LO=43200); the file is not edited")
     ap.add_argument("--gap-exclusion", choices=("on", "off"), default="on", help="research only. on (default) = engine behaviour, positions whose hold overlaps a data_loss gap are excluded (feed_gap). off = price them through the holes; rows carry gap_overlap/gap_holes either way")
     ap.add_argument("--ts-variant", action="store_true", help="research only: also price a 24 h time-stop shadow (ledger/<bot>-ts) for every gap-overlap position that exited by take-profit")
     a = ap.parse_args()
+    stakes = parse_stakes(a.stakes)
     require_files_ok(a.tape_dir)
     from tools import arena_rule_l1 as _L
     overrides = {}
@@ -48,7 +67,7 @@ def main():
     ledger, registry = str(root / "ledger"), str(root / "bots.json")
     rules = load_rules_v2([H.BOT_ID])
     scratch_register(registry, a.from_ms)
-    cfg = dataclasses.replace(stack_config_for(2, R.DEFAULT_FEED_DELAY_SLOTS), send=a.send, stakes_sol=(0.10, 0.25))
+    cfg = dataclasses.replace(stack_config_for(2, R.DEFAULT_FEED_DELAY_SLOTS), send=a.send, stakes_sol=stakes)
     state = ArenaState(a.tape_dir, start_ms=a.from_ms, warm_min=WARM_MIN_DEFAULT)
     engine = GapRangeEngine(ledger, registry, cfg=cfg, gap_exclusion=(a.gap_exclusion == "on"), ts_variant=a.ts_variant)
     hc = R.HostConfig(root=str(root), registry=registry, frozen_sha=H.FROZEN_SHA, clock_start_ms=a.from_ms, live=False, verbose=True)
