@@ -36,6 +36,36 @@ REPO = Path(__file__).resolve().parent.parent
 DEC_TEXT = REPO / "DEC" / "DEC-031-forward-paper-arena.md"
 
 
+REAL_ROOTS = ("/data2/mal/r4b-preview", "/data2/mal/scratch/r4b-price-keep")
+
+
+@pytest.fixture(autouse=True)
+def _never_touch_the_real_roots(monkeypatch):
+    """Any write, mkdir, chmod, link, rename or delete under the real roots raises during these tests (reads are not blocked)."""
+    def guard(fn, pathpos=0):
+        def inner(*a, **k):
+            for x in a[pathpos:pathpos + 2] if fn.__name__ in ("link", "rename", "replace") else a[pathpos:pathpos + 1]:
+                if isinstance(x, (str, bytes, os.PathLike)):
+                    q = os.path.abspath(os.fsdecode(x))
+                    if any(q == r or q.startswith(r + "/") for r in REAL_ROOTS):
+                        raise AssertionError(f"a test touched the real root {q}")
+            return fn(*a, **k)
+        return inner
+
+    for name in ("mkdir", "chmod", "unlink", "rmdir", "link", "rename", "replace", "remove"):
+        monkeypatch.setattr(os, name, guard(getattr(os, name)))
+    real_open = os.open
+
+    def safe_open(path, flags, *a, **k):
+        if flags & (os.O_WRONLY | os.O_RDWR | os.O_CREAT | os.O_TRUNC | os.O_APPEND):
+            q = os.path.abspath(os.fsdecode(path))
+            if any(q == r or q.startswith(r + "/") for r in REAL_ROOTS):
+                raise AssertionError(f"a test opened the real root {q} for writing")
+        return real_open(path, flags, *a, **k)
+
+    monkeypatch.setattr(os, "open", safe_open)
+
+
 @pytest.fixture(autouse=True)
 def _disk(monkeypatch):
     import collections
@@ -217,9 +247,10 @@ def test_roots_guards(tmp_path):
 
 
 def test_the_constants_default_roots_are_what_the_ruling_names():
-    env = V.make_env()
-    assert (str(env.declog_root), str(env.tape_dir), str(env.out_root), str(env.work_root)) == (V.DECLOG_COPY_ROOT, V.TAPE_DIR, V.OUT_ROOT, V.WORK_ROOT)
-    assert V.WORK_ROOT == "/data2/mal/r4b-preview/work"
+    assert (V.DECLOG_COPY_ROOT, V.TAPE_DIR, V.OUT_ROOT, V.WORK_ROOT) == ("/data2/mal/r4b-preview/declog-copy", "/data2/mal/scratch/r4b-price-keep",
+                                                                           "/data2/mal/r4b-preview/out", "/data2/mal/r4b-preview/work")
+    with pytest.raises(G.Refused, match="never used under pytest"):
+        V.make_env()
 
 
 def test_tape_hour_before_the_floor_is_never_opened_and_is_refused(tmp_path, monkeypatch):
@@ -433,7 +464,7 @@ def test_idempotent_rerun_verify_and_first_output_o_excl(tmp_path, capsys):
     (out_dir(w) / "preview.json").write_bytes(b"{}")
     assert run_world(w, verify=True) == 4 and capsys.readouterr().out.strip().endswith("DIFF")
     assert run_world(w) == 2, "an output with other bytes is never overwritten"
-    assert not list(Path(w["roots"][3]).iterdir()), "the temp ledger is deleted"
+    assert not _left(w), "the temp ledger is deleted"
 
 
 def test_every_refusal_writes_nothing(tmp_path):
@@ -719,8 +750,10 @@ def test_no_registered_tool_mentions_the_preview_and_the_preview_has_no_read_imp
         if p.is_file():
             assert "r4b-preview" not in p.read_text() and "r4b_preview" not in p.read_text(), p.name
     src = (REPO / "tools" / "r4b_preview.py").read_text()
-    for banned in ("import r4b_book", "r4b_read", "r4b_insample_ladder", "tools import r4b_book", "fcntl.flock", "flock("):
-        assert banned not in src.replace("never calls flock", ""), banned
+    for banned in ("import r4b_book", "r4b_read", "r4b_insample_ladder", "tools import r4b_book"):
+        assert banned not in src, banned
+    i = src.index("def read_chain_prefix")
+    assert "flock" not in src[i:src.index("def check_start_rows")], "no lock on the declog copy"
     assert not re.search(r"^from tools import .*r4b_(book|read|live)", src, re.M)
 
 
@@ -740,12 +773,22 @@ def test_cli_main_runs_and_the_script_runs_isolated(tmp_path):
     import subprocess
     import sys
 
-    r = subprocess.run([sys.executable, "-I", str(REPO / "tools" / "r4b_preview.py"), "run", "--manifest", w["manifest"], "--manifest-sha256", "0" * 64, "--as-of", w["as_of"]],
-                       capture_output=True, text=True, cwd=str(tmp_path))
-    assert r.returncode == 2 and "REFUSED" in r.stderr, "the real roots do not exist here and the manifest sha is wrong: refused, nothing opened"
+    argv = [sys.executable, "-I", str(REPO / "tools" / "r4b_preview.py"), "run", "--manifest", w["manifest"], "--manifest-sha256", "0" * 64, "--as-of", w["as_of"]]
+    r = subprocess.run(argv, capture_output=True, text=True, cwd=str(tmp_path))  # PYTEST_CURRENT_TEST is inherited: the real roots are refused
+    assert r.returncode == 2 and "never used under pytest" in r.stderr
+    before = os.stat("/data2/mal/r4b-preview/work").st_mtime_ns if os.path.exists("/data2/mal/r4b-preview/work") else None
+    env2 = {k: v for k, v in os.environ.items() if k != "PYTEST_CURRENT_TEST"}
+    r2 = subprocess.run(argv, capture_output=True, text=True, cwd=str(tmp_path), env=env2)  # a wrong manifest sha is refused before any directory is made or swept
+    assert r2.returncode == 2 and "REFUSED" in r2.stderr
+    after = os.stat("/data2/mal/r4b-preview/work").st_mtime_ns if os.path.exists("/data2/mal/r4b-preview/work") else None
+    assert before == after
 
 
 # ------------------------------------------------------------------------------------------------------------------------------ review round: work root, blobs, keeper
+def _left(w):
+    return [p for p in Path(w["roots"][3]).iterdir() if p.name != V.RUN_LOCK]
+
+
 def _scan(root, needles) -> list:
     hits = []
     if not Path(root).exists():
@@ -776,7 +819,7 @@ def test_work_root_overlap_is_refused_and_stale_leftovers_are_swept(tmp_path):
     (stale / "ledger.jsonl").write_text(POOL)
     (Path(wd["roots"][3]) / "loose.txt").write_text(POOL)
     assert run_world(wd) == 0
-    assert not list(Path(wd["roots"][3]).iterdir())
+    assert not _left(wd)
 
 
 def test_no_pool_string_exists_under_out_root_during_or_after_a_run(tmp_path, monkeypatch):
@@ -792,7 +835,7 @@ def test_no_pool_string_exists_under_out_root_during_or_after_a_run(tmp_path, mo
     monkeypatch.setattr(V.ArenaEngine, "sell", spy)
     assert run_world(w) == 0
     assert seen["work"] and seen["out_hits"] == [], "the engine ledger exists only under WORK_ROOT while the replay runs"
-    assert _scan(w["roots"][2], (POOL, MINT, "ZQX")) == [] and not list(Path(w["roots"][3]).iterdir())
+    assert _scan(w["roots"][2], (POOL, MINT, "ZQX")) == [] and not _left(w)
 
 
 def test_a_crash_mid_replay_leaves_nothing_under_out_root_and_work_is_emptied(tmp_path, monkeypatch):
@@ -804,7 +847,7 @@ def test_a_crash_mid_replay_leaves_nothing_under_out_root_and_work_is_emptied(tm
     monkeypatch.setattr(V.ArenaEngine, "sell", boom)
     with pytest.raises(RuntimeError):
         run_world(w)
-    assert not list(Path(w["roots"][3]).iterdir()), "removed at exit on every path"
+    assert not _left(w), "removed at exit on every path"
     assert _scan(w["roots"][2], (POOL,)) == []
 
 
@@ -921,3 +964,50 @@ def test_first_output_is_written_before_the_outputs(tmp_path, monkeypatch):
     monkeypatch.setattr(V.os, "link", lambda a, b: (order.append((Path(w["roots"][2]) / "first-output.json").exists()), real(a, b))[1])
     assert run_world(w) == 0
     assert order and all(order), "first-output.json exists before the first link"
+
+
+# ------------------------------------------------------------------------------------------------------------------------------ run lock and ordering
+def test_real_roots_under_pytest_exit_2_and_never_sweep(tmp_path, monkeypatch):
+    w = world(tmp_path)
+
+    def boom(env):
+        raise AssertionError("sweep_work must not be called")
+
+    monkeypatch.setattr(V, "sweep_work", boom)
+    assert V.run(w["manifest"], w["manifest_sha256"], w["as_of"], roots=None, now_ms=w["now_ms"], code_state_fn=w["code_state_fn"]) == 2
+
+
+def test_a_held_run_lock_exits_2_and_sweeps_nothing(tmp_path):
+    import fcntl as fc
+
+    w = world(tmp_path)
+    wk = Path(w["roots"][3])
+    wk.mkdir(parents=True)
+    (wk / "work-x").mkdir()
+    fd = os.open(str(wk / V.RUN_LOCK), os.O_RDWR | os.O_CREAT, 0o600)
+    fc.flock(fd, fc.LOCK_EX | fc.LOCK_NB)
+    try:
+        assert run_world(w) == 2
+        assert (wk / "work-x").exists()
+    finally:
+        os.close(fd)
+    assert run_world(w) == 0 and not (wk / "work-x").exists() and (wk / V.RUN_LOCK).exists()
+
+
+def test_a_wrong_manifest_sha_or_code_state_leaves_the_work_dir_alone(tmp_path):
+    w = world(tmp_path)
+    wk = Path(w["roots"][3])
+    (wk / "work-x").mkdir(parents=True)
+    assert V.run(w["manifest"], "0" * 64, w["as_of"], roots=w["roots"], now_ms=w["now_ms"], code_state_fn=w["code_state_fn"]) == 2
+    assert run_world(w, code_state_fn=lambda: ("b" * 40, False)) == 2
+    assert (wk / "work-x").exists() and not (wk / V.RUN_LOCK).exists()
+
+
+def test_two_keeper_rows_for_one_hour_that_differ_are_untrusted(tmp_path):
+    w = world(tmp_path)
+    kp = Path(w["roots"][1]) / V.KEEPER_HOURS
+    first = json.loads(kp.read_text().splitlines()[0])
+    kp.write_text(kp.read_text() + json.dumps(dict(first, zst_sha="e" * 64)) + "\n")
+    assert run_world(w) == 3
+    kp.write_text(kp.read_text().rsplit("\n", 2)[0] + "\n" + json.dumps(first) + "\n")  # an identical duplicate is harmless
+    assert run_world(w) == 0

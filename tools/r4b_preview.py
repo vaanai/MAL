@@ -8,10 +8,11 @@ WHERE IT RUNS AND WHAT IT TOUCHES (Addendum 1, B5). One manager MiScusi job on m
   * its manifest (JSON, pinned by sha256);
   * the declog byte copy `DECLOG_COPY_ROOT/<change_id>/decisions/r4b-exp027/<UTC day>.jsonl` (made by a separate copier job, cut at the last newline);
   * the price keeper `TAPE_DIR` (hard links of closed tape hours, made by a separate keeper job).
-It WRITES finished outputs ONLY under `OUT_ROOT`; its temporary engine ledger (pool ids) lives ONLY under `WORK_ROOT` (0700, swept at the start of every run, removed at exit). The three roots are constants, overridable only through the test-only `roots=` argument; a read or write outside them is refused, and an
+It WRITES finished outputs ONLY under `OUT_ROOT`; its temporary engine ledger (pool ids) lives ONLY under `WORK_ROOT` (0700, swept at the start of every run, removed at exit). The four roots are constants, overridable only through the test-only `roots=` argument; a read or write outside them is refused, and an
 OUT_ROOT inside /data/mal/arena, a keeper dir, the declog copy, the dry host's root or /var/lib is refused. It re-verifies the hash chain of the copied prefixes on every
-run (exit 3 on a break). It never calls flock (the copier may be mid-write): a torn last line is cut, and a file that is inconsistent only at its very tail is read up to
-the last consistent complete line.
+run (exit 3 on a break). It never locks a declog or a tape file (the copier may be mid-write): any complete line that fails the chain is exit 3; only a final fragment without a newline is ignored.
+The only lock is an exclusive non-blocking flock on its OWN `WORK_ROOT/.run.lock`: a second run exits 2 and sweeps nothing. The real roots are refused under pytest, and
+the work dir is created and swept only after the manifest, as-of and code-state checks have passed.
 
 WHAT IT PRICES. Only entries at marks at or after `CUTOFF_S` (2026-11-16T01:00:00Z). The tape hours of `TAPE_FLOOR` (2026-11-15T22:00:00Z) through the cut-off are fed
 to the engine for POOL STATE ONLY (B1): the cut-off filter runs before the replay, no entry or exit before it is priced, and no count, gap, refusal or other figure from
@@ -81,6 +82,7 @@ TAPE_DIR = "/data2/mal/scratch/r4b-price-keep"
 OUT_ROOT = "/data2/mal/r4b-preview/out"
 WORK_ROOT = "/data2/mal/r4b-preview/work"  # the temporary engine ledger and registry (pool ids): sealed, 0700, never under OUT_ROOT
 KEEPER_HOURS = ".keeper-hours.jsonl"
+RUN_LOCK = ".run.lock"
 REGISTERED_BLOBS = {  # git blob ids of the registered modules at W' 3c12c5fddfa67384dca2e306a8bf6c529e85ebfc: the preview refuses to run on any other bytes
     "tools/r4bt_price.py": "7ed62b1f43ed58da862a56a5bd28a6167136cb39",
     "tools/arena_paper.py": "5eef156bb617138a4c04fca6779f9ff4c5215b13",
@@ -161,6 +163,8 @@ class Env:
 
 
 def make_env(roots: tuple[str | Path, str | Path, str | Path, str | Path] | None = None) -> Env:
+    if roots is None and os.environ.get("PYTEST_CURRENT_TEST"):
+        raise G.Refused("the real roots are never used under pytest")
     d, t, o, wk = roots if roots is not None else (DECLOG_COPY_ROOT, TAPE_DIR, OUT_ROOT, WORK_ROOT)
     for part in Path(d).parts:
         if part in DECLOG_DENY:
@@ -861,6 +865,9 @@ def load_keeper_rows(env: Env) -> tuple[dict, int]:
         if not ok:
             bad += 1
             continue
+        old = rows.get(r["name"])
+        if old is not None and (old["zst_bytes"], old["zst_sha"]) != (r["zst_bytes"], r["zst_sha"]):
+            raise Untrusted(f"two keeper rows for hour {r['h']} differ")
         rows.setdefault(r["name"], r)
     if bad:
         print(f"r4b_preview: {bad} unreadable line(s) skipped in {KEEPER_HOURS}", file=sys.stderr)
@@ -893,12 +900,29 @@ def check_keeper_hours(env: Env, files: Sequence[Path]) -> None:
             raise Untrusted(f"tape hour {hour}: size or sha256 differs from the keeper's row")
 
 
+def take_run_lock(env: Env) -> int:
+    """Exclusive non-blocking flock on WORK_ROOT/.run.lock (the preview's own file, never a declog); returns the fd, held to exit. Held elsewhere: Refused."""
+    import fcntl
+
+    env.work_root.mkdir(parents=True, exist_ok=True)
+    os.chmod(env.work_root, 0o700)
+    fd = os.open(str(env.work_root / RUN_LOCK), os.O_RDWR | os.O_CREAT, 0o600)
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except OSError:
+        os.close(fd)
+        raise G.Refused("another preview run holds the work lock") from None
+    return fd
+
+
 def sweep_work(env: Env) -> int:
     """Empty WORK_ROOT (leftovers of a killed run) before anything else; creates it 0700."""
     env.work_root.mkdir(parents=True, exist_ok=True)
     os.chmod(env.work_root, 0o700)
     n = 0
     for c in env.work_root.iterdir():
+        if c.name == RUN_LOCK:
+            continue
         shutil.rmtree(c, ignore_errors=True) if c.is_dir() and not c.is_symlink() else c.unlink()
         n += 1
     return n
@@ -952,12 +976,18 @@ def compute(manifest: Mapping, as_of_ms: int, env: Env, *, now_ms: int, code_sta
 def run(manifest_path: str, manifest_sha256: str, as_of: str, *, roots=None, now_ms: int | None = None, code_state_fn=None, verify: bool = False,
         keep_bonding: bool = False) -> int:
     now = int(time.time() * 1000) if now_ms is None else int(now_ms)
+    lock_fd = None
     try:
         env = make_env(roots)
-        swept = sweep_work(env)  # before anything else: leftovers of a killed run hold pool ids
         manifest = load_manifest(manifest_path, manifest_sha256)
         as_of_ms = G.utc_ms(as_of)
         csf = code_state_fn or (lambda: AP.process_code_state(Path(__file__).resolve().parent.parent))
+        head, dirty = csf()
+        if head != manifest["pin_commit"] or dirty is not False:
+            raise G.Refused(f"the process runs code {head} (dirty {dirty}), not a clean checkout at the manifest's pin_commit {manifest['pin_commit']}")
+        check_registered_modules()
+        lock_fd = take_run_lock(env)
+        swept = sweep_work(env)  # leftovers of a killed run hold pool ids; only after every cheap check and the lock
         rep = compute(manifest, as_of_ms, env, now_ms=now, code_state_fn=csf, keep_bonding=keep_bonding)
         js, md, con = render(rep)
         d = env.out_root / f"as-of-{time.strftime('%Y%m%dT%H', time.gmtime(as_of_ms // 1000))}Z"
@@ -980,6 +1010,9 @@ def run(manifest_path: str, manifest_sha256: str, as_of: str, *, roots=None, now
     except (OSError, ValueError, KeyError) as e:
         print(f"r4b_preview: UNTRUSTED: {type(e).__name__}: {str(e)[:200]}", file=sys.stderr)
         return 3
+    finally:
+        if lock_fd is not None:
+            os.close(lock_fd)
 
 
 def main(argv: Sequence[str] | None = None, **kw: Any) -> int:
