@@ -32,6 +32,18 @@ WINDOWS (pre-declared; hour-granular, override with --from / --to as YYYY-MM-DDT
       fallback from 2026-11-11T00 needs seed 2026-11-02T15 and is NOT reachable. If both are vacuous the manager stops and asks QP: no further window choice. Do not shorten D or the horizon.
   P2  the window of W2 (the reference runs straight through it); T is chosen from the reference's own decisions (a reference Buy inside [T, T+5 min], another position open at T,
       and T + 7 h + horizon inside the window); --t-ms overrides.
+P2 SEED-RELAXED RUN (QP-RULING-1113-floor-stage1-p2-vacuous, route B; DEC-035 Am.7 Erratum 2). The frozen-copy P2 runs on 11-11/11-12 were vacuous (exit 3: 2 reference entries, no T). Pre-declared, verbatim from the ruling:
+  - P2 only, flag `--seed-relaxed`: the seed must be at least 96 h (not 201 h) before `--from`. P0, P1 and the kill-line check keep 201 h; P0/P1 refuse the flag. With the flag EVERY output line of the
+    run carries the word `SEED_RELAXED` and `seed_h_before_from=<n>`. Without the flag behaviour is as before. The relaxation lives only in this script's check_window; `main replay` (which has the host's own
+    201 h rule, tools/floor_lane_host.py, pinned and untouched) is not on P2's path: P2 drives LaneHost in `main run`'s order.
+  - Run P2 once, at the merged commit of this PR, on [2026-11-08T00Z, 2026-11-10T00Z), tape /data2/mal/scratch/floor-stage1-proof/tapecopy-1113 (list sha256 d0a11d31...), seed 2026-11-03T01 (about 119 h).
+  - Only if that exits 3 (vacuous): run once on [2026-11-09T00Z, 2026-11-11T00Z), same seed (about 143 h). If that is vacuous too, STOP and ask QP.
+  - MUST NOT: choose or change a window from any P2 output other than the pre-declared vacuity exit (no look at P2-CASE values, MUST0 counts or pass/fail before the window is fixed); try any window not
+    listed above; change D, the horizon, the cases or the pass rule; run P2 at an unmerged commit, or on hv7 or tapecopy-roll directly (only a pinned tapecopy-<MMDD> with its list); drop P2 or replace it by the synthetic tests.
+  - NOT EXERCISED by a relaxed-seed P2 (disclose in the install record): triggers of pools older than the seed (about 119-143 h at the window start); the AGE_DROP / sweep path for pools past 201 h
+    (pinned v1 code in arena_pool_table.py, unchanged by stage 1). The guarded host and the unguarded reference share seed and tape, so every P2 comparison is unaffected in kind.
+Nothing here says the rule makes money.
+
 MEMORY / TIME (estimates, not measured): one replay at a time, streaming; the host's own replay peak, <= 8 GB RSS (the pool table of ~8.5 days of seed plus ArenaState); the
 2026-11-12 forward A/B replays of ~10 days took 2 h 17 m on 2 cpus, so expect each 14-24 h replay with its 8.5-day seed to take about 0.5-1.5 h. p0 and p1 run two replays each,
 sequentially; p2 runs the reference, phase A, and 9 restart cases of (warm-up 365 min + horizon) each.
@@ -69,6 +81,7 @@ TAPE_SRC = (HV7,)  # hv7 only (Am.7 precondition (c)); the scratch tapecopy is N
 MERGE_HOST_BLOB = "ba7050e1ed3bbf1538a2745f4604110cadb80a7f"  # git blob of tools/floor_lane_host.py at the stage-1 merge aa05923f
 MERGE_SHA = "aa05923fc7d2593c4d70c7c80b2f64dee371d700"
 SEED_MIN_H = 201
+SEED_RELAXED_MIN_H = 96  # P2 only, behind --seed-relaxed (QP-RULING-1113-floor-stage1-p2-vacuous); the host file and its own 201 h rule are untouched
 BOT = "l1-floor-v2"
 W1 = ("2026-11-12T00", "2026-11-12T15")
 W2 = ("2026-11-12T00", "2026-11-13T00")
@@ -76,12 +89,15 @@ D_LABELS = ("5min", "2h", "warm-5min", "warm+5min", "7h")
 EXIT_FAIL, EXIT_VACUOUS = 1, 3
 
 
+RELAXED: dict = {}  # set by common() only for `p2 --seed-relaxed`; empty = behaviour as before
+
+
 class Refuse(SystemExit):
     pass
 
 
 def refuse(msg: str, code: int = 2):
-    print("REFUSED: " + msg, file=sys.stderr)
+    print("REFUSED: " + msg + _relaxed_suffix(), file=sys.stderr)
     raise Refuse(code)
 
 
@@ -104,8 +120,19 @@ def canon(o) -> str:
     return json.dumps(o, sort_keys=True, separators=(",", ":"))
 
 
+def _relaxed_suffix() -> str:
+    """Empty unless a P2 run with --seed-relaxed has set RELAXED; then the flag word and the seed lead on every output line."""
+    if not RELAXED:
+        return ""
+    return " SEED_RELAXED seed_h_before_from=%s" % RELAXED["seed_h_before_from"]
+
+
 def emit(tag: str, d: dict) -> None:
     """stdout: counts, md5 and flag words only. Never a row."""
+    if RELAXED:
+        d = {**d, "seed_h_before_from": RELAXED["seed_h_before_from"]}
+        print("%s SEED_RELAXED %s" % (tag, " ".join("%s=%s" % (k, v) for k, v in d.items())), flush=True)
+        return
     print("%s %s" % (tag, " ".join("%s=%s" % (k, v) for k, v in d.items())), flush=True)
 
 
@@ -230,12 +257,13 @@ def coverage(srcs, seed_ms: int, to_ms: int) -> dict:
     return {"hours_expected": len(hrs), "hours_present": len(hrs) - len(missing), "hours_missing": len(missing), "first_missing_hour": missing[0] if missing else "none"}
 
 
-def check_window(frm: int, to: int, seed_ms: int, now_ms: int | None = None) -> None:
+def check_window(frm: int, to: int, seed_ms: int, now_ms: int | None = None, min_h: int = SEED_MIN_H) -> None:
+    """min_h is SEED_MIN_H (201) everywhere except `p2 --seed-relaxed`, which passes SEED_RELAXED_MIN_H (96)."""
     if to <= frm:
         refuse("empty window")
-    if seed_ms > frm - SEED_MIN_H * HOUR_MS:
-        earliest = hour_name(seed_ms + SEED_MIN_H * HOUR_MS)
-        refuse("--from %s is less than %d h after the seed %s; the earliest valid --from is %s" % (hour_name(frm), SEED_MIN_H, hour_name(seed_ms), earliest))
+    if seed_ms > frm - min_h * HOUR_MS:
+        earliest = hour_name(seed_ms + min_h * HOUR_MS)
+        refuse("--from %s is less than %d h after the seed %s; the earliest valid --from is %s" % (hour_name(frm), min_h, hour_name(seed_ms), earliest))
     now_ms = int(datetime.now(timezone.utc).timestamp() * 1000) if now_ms is None else now_ms
     if to > now_ms - now_ms % HOUR_MS:
         refuse("--to is the current or a future UTC hour: closed hours only")
@@ -839,10 +867,19 @@ def common(a, default_w, p):
         a.seed_from_hour = hour_name(seed_ms)
     else:
         seed_ms = parse_hour(a.seed_from_hour)
-    a.tape_info = {"test_mode": bool(a.test_mode), "seed_hour": a.seed_from_hour, "earliest_valid_from": hour_name(seed_ms + SEED_MIN_H * HOUR_MS) if seed_ms is not None else "none"}
+    min_h = SEED_MIN_H
+    RELAXED.clear()
+    if getattr(a, "seed_relaxed", False):
+        if p != "p2":
+            refuse("--seed-relaxed is for p2 only (P0, P1 and the kill-line check keep the %d h seed rule)" % SEED_MIN_H)
+        if seed_ms is None:
+            refuse("--seed-relaxed needs a seed hour")
+        min_h = SEED_RELAXED_MIN_H
+        RELAXED["seed_h_before_from"] = (frm - seed_ms) // HOUR_MS
+    a.tape_info = {"test_mode": bool(a.test_mode), "seed_hour": a.seed_from_hour, "earliest_valid_from": hour_name(seed_ms + min_h * HOUR_MS) if seed_ms is not None else "none"}
     if seed_ms is not None:
         a.tape_info.update(verify_frozen(srcs, seed_ms, to, a.tape_list))
-        check_window(frm, to, seed_ms, now_ms=a.now_ms)
+        check_window(frm, to, seed_ms, now_ms=a.now_ms, min_h=min_h)
     else:
         a.tape_info["list_sha256"] = "none"
     return seed_ms, frm, to, srcs
@@ -930,7 +967,7 @@ def cmd_p2(a) -> int:
     prepare_trees(a, out) if not a.test_mode else None
     res = run_p2(a, out, tape, seed_ms)
     if not res["t_found"]:
-        print("P2 VACUOUS: %s" % res["why"], file=sys.stderr)
+        print("P2 VACUOUS: %s%s" % (res["why"], _relaxed_suffix()), file=sys.stderr)
         Path(out, "p2.json").write_text(json.dumps(res, sort_keys=True))
         return EXIT_VACUOUS
     for c in res["cases"]:
@@ -940,7 +977,7 @@ def cmd_p2(a) -> int:
         emit("P2-F", res["f"][k])
     emit("P2-CHECK", {"missing_checkpoint_refuses": res["missing_checkpoint_refuses"]})
     Path(out, "p2.json").write_text(json.dumps(res, sort_keys=True))
-    print("P2 %s" % ("PASS" if res["pass"] else "FAIL"))
+    print("P2 %s%s" % ("PASS" if res["pass"] else "FAIL", _relaxed_suffix()))
     return 0 if res["pass"] else EXIT_FAIL
 
 
@@ -970,6 +1007,7 @@ def build_parser() -> argparse.ArgumentParser:
         p.add_argument("--count-only", action="store_true")
         p.add_argument("--test-mode", action="store_true", help="synthetic tapes only (needs MAL_ARENA_TEST=1)")
         p.add_argument("--now-ms", type=int, default=None)
+        p.add_argument("--seed-relaxed", action="store_true", help="P2 ONLY (QP-RULING-1113): accept a seed at least %d h (not %d h) before --from; every output line then carries SEED_RELAXED and seed_h_before_from" % (SEED_RELAXED_MIN_H, SEED_MIN_H))
         if name == "p2":
             p.add_argument("--t-ms", type=int, default=None)
             p.add_argument("--horizon-s", type=int, default=14_400)
