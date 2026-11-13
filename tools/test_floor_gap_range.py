@@ -117,3 +117,48 @@ def test_default_engine_rows_byte_identical_to_plain_engine(tmp_path):
     t_off = [json.dumps(_strip(r), sort_keys=True) for r in rows(off, "trade")]
     t_pl = [json.dumps(_strip(r), sort_keys=True) for r in rows(plain, "trade")]
     assert t_off == t_pl and len(t_pl) == 3
+
+
+SH = Path(__file__).resolve().parent.parent / "scripts" / "research" / "floor_gap_range.sh"
+
+
+def _run_sh(base, work, marker):
+    import os
+    import subprocess
+    stub = base.parent / "stubpy"
+    stub.write_text("#!/bin/sh\necho called >> %s\necho 0\n" % marker)
+    stub.chmod(0o755)
+    env = dict(os.environ, GAP_BASE=str(base), PY=str(stub), END_HOUR="2026-11-11T23")
+    return subprocess.run(["sh", str(SH)] + ([str(work)] if work else []), env=env, capture_output=True, text=True)
+
+
+def test_sh_refuses_existing_result_and_outside_base_without_touching_anything(tmp_path):
+    base = tmp_path / "floor-gap-range"
+    base.mkdir()
+    marker = tmp_path / "marker"
+    (base / "gap.json").write_text("{}")  # a finished result in the base itself (like job #2527)
+    done = base / "old"
+    (done / "run").mkdir(parents=True)
+    (done / "gap.json").write_text("KEEP")
+    (done / "run" / "x").write_text("KEEP")
+    r = _run_sh(base, done, marker)
+    assert r.returncode == 3 and "already holds a result" in r.stderr and not marker.exists()
+    assert (done / "gap.json").read_text() == "KEEP" and (done / "run" / "x").read_text() == "KEEP"
+    r = _run_sh(base, base, marker)  # WORK == BASE is not a per-run folder under BASE
+    assert r.returncode == 2 and not marker.exists() and (base / "gap.json").read_text() == "{}"
+    r = _run_sh(base, tmp_path / "elsewhere", marker)
+    assert r.returncode == 2 and "not a folder under" in r.stderr and not marker.exists() and not (tmp_path / "elsewhere").exists()
+    r = _run_sh(base, base / ".." / "elsewhere2", marker)
+    assert r.returncode == 2 and not marker.exists()
+
+
+def test_sh_default_is_a_new_per_run_folder(tmp_path):
+    base = tmp_path / "floor-gap-range"
+    base.mkdir()
+    marker = tmp_path / "marker"
+    r = _run_sh(base, None, marker)  # stub python: every python call just prints 0
+    made = [p for p in base.iterdir() if p.is_dir()]
+    assert len(made) == 1 and made[0].name.startswith("2026-11-11T23-") and marker.exists() and (made[0] / "replay.log").exists(), r.stderr
+    assert not (base / "gap.json").exists()
+    r2 = _run_sh(base, made[0], tmp_path / "m2")
+    assert r2.returncode == 3  # a second run into the same folder is refused
