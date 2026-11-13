@@ -22,7 +22,7 @@ Written 2026-11-12 from documents and code only. Nothing on mal-fast-0 was check
 |---|---|---|
 | Fresh dry host (Am.30 item 6) | new clean tree, e.g. `$HOME/mal-install/r4bt-a2-dry-Wp` (clone or `git worktree add --detach`; `git status --porcelain` empty) | W′ = `3c12c5fddfa67384dca2e306a8bf6c529e85ebfc` (#1330 merge; host closure byte-identical to W `17e3b05a`) |
 | Decision host (Am.30 item 10) | new clean tree, e.g. `$HOME/mal-install/r4bt-a2-Wp` | W′ = `3c12c5fd…` (the registered `frozen_sha`; a W″ only on a clock slip, Am.30 item 9) |
-| Pricer, read, confirm, A3 apply | clean checkout at W′ (the pricer refuses unless HEAD = the registry's `frozen_sha` and the tree is clean) | W′ |
+| Pricer, read, confirm, A3 apply | clean checkout at W′ (the pricer refuses unless HEAD = the registry's `frozen_sha` and the tree is clean); the registered pricer's checkout is on mal-research-0 (section 8) | W′ |
 
 Do not reuse `$HOME/mal-install/r4bt-W` (r4bt-a1's tree). Am.30 needs a fresh clean tree.
 
@@ -35,6 +35,8 @@ Verify in each tree before starting:
 - The follower's `/var/lib/mal/fast-tip-follower/status.json` shows `decoder_blobs_pinned` true, the three EXP027_DECODER_REF blobs (`238942a6`, `ea4e11ed`, `9a8bebb3`) and `trade_event_v` true. Read only this file and `checkpoint.json`, never the tip dir.
 
 ## 2. Jobs (all host-side MiScusi jobs on mal-fast-0, plain `sh`, no bash-isms)
+
+Exception: J12, the registered pricer, runs on mal-research-0 (section 8; DEC-031 Amendment 30 Errata 2 and 3).
 
 This is how r4bt-a1 / dry-long-1101a ran: sidecar job #2018, then host job #2019 30 min later, both MiScusi jobs on fast-0 running the install tree's wrappers. The host job's reservation was 5,312 MiB, at or above the scope cap, with the M2 job-name text. dry-long-1101a ran at install `bc65c088`. r4bt-a1's planned decision host (`r4bt-a1-1107a`, tree `$HOME/mal-install/r4bt-W`, limit 20,160 min) never started. The same form applies here. No `systemd --user` unit, nohup or tmux.
 
@@ -51,7 +53,7 @@ This is how r4bt-a1 / dry-long-1101a ran: sidecar job #2018, then host job #2019
 | J9 | after the registration record; an HH:05Z leaving the catch-up done before the clock; planned **2026-11-19T21:05Z** | decision host + its sidecar (≥ 30 min earlier) | as J1/J2 at the W′ tree with `<change_id>` `r4bt-a2-<MMDD><letter>` and `--max-marks` (second wrapper arg) set to exit 0 before the 14-day limit; **submitted only after the registration record**, as a scheduled job at its HH:05Z (planned 2026-11-19T21:05Z), with J3's exit 0 checked first. Never `after: J3` alone: J3 exits about 11-19T00:0xZ, about 21 h before the planned start and before the registration record that item 10 requires |
 | J10 | from the clock | count jobs (`r4bt_attempts.py count --clock-ms 1795132800000 --h-days <H> --hour-table …`), hourly or daily | boundary detection only; outcome-blind. The counter takes no `--bot-id` (unchanged pinned blob) |
 | J11 | daily, from the registration | A3 apply for a2 | `tools/r4bt_a3.py apply --bot-id r4bt-a2 --verdict … --registry … --applied-log …` at W′ |
-| J12 | after the screen boundary, last exit and every item 13 entry | screen pricer, then read | `$HOME/mal-venvs/r4b/bin/python -m tools.r4bt_price_bot --bot-id r4bt-a2 <r4bt_price args, incl. --h-days, --feed-delay-slots d, --k-rounding ceil>` from a clean checkout at W′ (never `tools/r4bt_price.py` directly: it would run as `r4bt-a1` and refuse); then `tools/r4bt_read.py --bot-id r4bt-a2 …` and, after a screen PASS, `tools/r4bt_read_confirm.py --bot-id r4bt-a2 …`. Both refuse if the registry `clock_start_ms` is not the table's 1795132800000. Use the `--bot-id r4bt-a2` form (two tokens): the wrapper does not parse `--bot-id=…` |
+| J12 | after the screen boundary, last exit and every item 13 entry | screen pricer, then read | `$HOME/mal-venvs/r4b/bin/python -m tools.r4bt_price_bot --bot-id r4bt-a2 <r4bt_price args, incl. --h-days, --feed-delay-slots d, --k-rounding ceil>` from a clean checkout at W′ (never `tools/r4bt_price.py` directly: it would run as `r4bt-a1` and refuse); then `tools/r4bt_read.py --bot-id r4bt-a2 …` and, after a screen PASS, `tools/r4bt_read_confirm.py --bot-id r4bt-a2 …`. Both refuse if the registry `clock_start_ms` is not the table's 1795132800000. Use the `--bot-id r4bt-a2` form (two tokens): the wrapper does not parse `--bot-id=…` **Paths and host: see §8** (DEC-031 Amendment 30 Errata 2 and 3): `--tape-dir /data2/mal/scratch/r4b-price-keep`, `--declog-root /data2/mal/r4b-preview/declog-copy/<change_id>/`, run on mal-research-0, after the `zst_sha` pre-check and the read-time copier pass. |
 
 `R4B_RUN_END_EPOCH=1795046700` is 2026-11-19T00:05:00Z. The P0 days and every fixed instant above are host-side jobs scheduled or chained with `after`, never session crons alone. At session start, also run CronList and re-create crons from the crons file.
 
@@ -66,6 +68,8 @@ Pass shape (structure only):
 - the host job is running (job list state, not the status view), and the sidecar shows the scope and the catch-up end (names, counts and timings).
 
 **Do not run `r4bt_attempts.py count` or `p0` on the dry host before the J4 instant, and do not look at entry counts in any other way.** No entry count of an r4bt-a2 host is printed, read or cited before 2026-11-19T00:10Z.
+
+**The preview's output is the one path where this ban gives way (DEC-031 Amendment 31 item 4).** The ban on printing, reading or citing an r4bt-a2 entry count before 2026-11-19T00:10Z gives way for the r4-b preview's output only. It stands for every other path, including the copier's status file and any listing of declog or declog-copy file sizes (day names and byte lengths are entry-count proxies; Amendment 31 Erratum 2 item 3).
 
 **Am.30 item 7 (verbatim):** "A stop, non-start or non-run of the item 6 host or of the P0 count job, decided after any per-day entry count of an r4bt-a2 host was seen, is scored as the P0 miss kill line (item 14), not as an operational NOT_DECIDABLE. Only a cause recorded from names, timings or job state, with no entry count cited, is operational."
 
@@ -116,3 +120,37 @@ Registration by 2026-11-19T23:59:59Z gives clock 2026-11-20T00:00:00Z (179513280
   - the real-layout twin run;
   - the owner's word.
 - The paper book models 0.25 SOL × 10 = 2.5 SOL peak open. No SOL is involved.
+
+## 8. Preview (DEC-031 Amendment 31, Errata 1 and 2) and the registered pricer's paths (Amendment 30 Errata 2 and 3)
+
+Sources: DEC-031 Amendment 31 Erratum 1 item 2 and Erratum 2, Amendment 30 Errata 2 and 3, and the header comments of `scripts/ops/r4b_price_keeper.sh` and `scripts/ops/r4b_declog_copy.sh`. No command below is invented: where a job form is not in those headers, it is not given here.
+
+**Three manager MiScusi jobs, each from a clean detached tree at its pinned commit. Agents never run them.**
+
+| Job | Host | When | Form |
+|---|---|---|---|
+| r4-b price keeper | mal-research-0 | links closed hv7 hours from 2026-11-15T22; start by 2026-11-16T12Z | `scripts/ops/r4b_price_keeper.sh` (see its header comment; suggested job in it: mem 64 MB, 0.1 CPU, no time limit). Exit 5 (a missing hour, or the receiver silent for over 72 h) ends the job after a full pass; the manager restarts it after fixing the cause. The missing-hour alert runs from its start (Amendment 30 Erratum 2). |
+| declog copier | mal-fast-0 | before the preview's first run | `scripts/ops/r4b_declog_copy.sh` with `--series <change_id>=<declog dir>` flags (see its header comment; suggested job in it: mem 128 MB, 0.2 CPU, no time limit). **Exactly ONE copier job at a time: it takes no lock.** An r4bt-a3 series needs `--quiet-until <its own P0 count instant, ISO Z>`. |
+| r4-b preview pricer | mal-research-0 | daily at 03:20Z with `as_of` = that day 00:00Z; first run 2026-11-17 | see `scripts/research/r4b-preview.sh` once PR #1370 merges. |
+
+The schedule (03:20Z, `as_of` = that day 00:00Z) is not enforced in code. An `as_of` whose run would finish before 2026-11-19T00:10Z is fine under Amendment 31 item 4, because the preview's output is the one path where the entry-count ban gives way (section 3).
+
+**Owed before the preview's first run (all):**
+- the smoke judgement of the Amendment 30 item 6 host (Amendment 30 item 13 (e)), written and notebooked and not revised afterwards;
+- d, measured once over [2026-11-15T00:00Z, 2026-11-16T00:00Z) of the 60 s sampler with the pinned d tool, and notebooked (Amendment 31 Erratum 1 item 3); the preview and r4bt-a2's registration use that one value;
+- the second P0 notebook entry, before 2026-11-16T00:00:00Z (section 4 and Amendment 31 item 4);
+- the declaration notebook entry, "r4-b preview declared <instant> (Amendment 31)" (Amendment 31 item 3);
+- the copier and preview pins recorded (the keeper's pin is #1367 `50469181a6ce4820c8890d0157bf2809fa50e7d3`);
+- the SEALS-BRIEF lines (Amendment 31 Erratum 1 item 6, Erratum 2 item 4);
+- PR #1370 (the preview pricer) merged with QP OK and a reviewer verdict (Amendment 31 item 2);
+- the preview pricer's commit and blob recorded by a later Amendment 23 readers record (add, never rewrite);
+- Amendment 23 readers record 3 merged (before the keeper's first link);
+- done: the HOLDOUT_LEDGER line (#1368, merged 2026-11-13T23:05:33Z).
+
+**Owed before the copier's first run:** the Am.30 item 12 readers addition (Amendment 30 Erratum 3 item 3) and the R4-B DECLOG COPY SEALS line.
+
+**The registered pricer's paths (J12; Amendment 30 Errata 2 and 3).** These replace J12's price path and declog root; J12 is otherwise unchanged.
+- `--tape-dir` is the keeper dir `/data2/mal/scratch/r4b-price-keep`.
+- `--declog-root` is the declog copy `/data2/mal/r4b-preview/declog-copy/<change_id>/`. Both are on mal-research-0, so the registered pricer runs there. The registration record pins both paths.
+- Before pricing, the `zst_sha` pre-check of Amendment 30 Erratum 3 item 1 runs as its own pinned step. `tools/r4bt_price.py` is not edited. A failed check means the pricer is not run.
+- Read-time copier procedure (Amendment 30 Erratum 3 item 2): after the host stops or the last needed day has closed, one copier pass with `--loop 0`; every needed day `unchanged` with copy length and sha equal to the original's newline-cut prefix; only then the `r4bt_attempts day-sha` list from the originals on fast-0. Every copied day file must equal that list, or the pricer refuses.
