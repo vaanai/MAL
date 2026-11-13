@@ -14,7 +14,7 @@ the root's realpath ends in /declog and is <allowed parent>/<change_id>/declog; 
 Append-only check: before sending, the remote file's byte length and sha256 are fetched; the local prefix of that length must hash to it (and the remote must not be longer), else the file is
 refused loudly (exit 4, nothing sent for it). After a send the remote sha256 and length must equal the local ones (else exit 1).
 
-Log rule (QP B3, DEC-031 Am.31 item 4): before P0_COUNT_INSTANT_S (2026-11-19T00:10:00Z) stdout carries only `R4B-COPY pass <n> start|end exit <code>` lines and failure lines naming the change_id and a
+Log rule (QP B3, DEC-031 Am.31 item 4): before P0_COUNT_INSTANT_S (2026-11-19T00:10:00Z) stdout carries only `R4B-COPY pass <n> end exit <code>` lines (no start line: the pass duration grows with sends) and failure lines naming the change_id and a
 failure kind; no day name, byte length, sha or state. The per-file records go only to the 0600 status file (dir 0700). After the instant the per-file lines print. `--quiet-until <ISO>` moves the
 instant later (the wrapper sets it for r4bt-a3 series, which need it: a series of an r4bt-a3 host is refused without it); a value earlier than the a2 constant is refused for any a2 series.
 
@@ -53,6 +53,10 @@ SHA_RE = re.compile(r"^[0-9a-f]{64}\Z")
 EXIT_OK, EXIT_FAIL, EXIT_REFUSED, EXIT_DIVERGED = 0, 1, 2, 4
 
 
+def _print(line):
+    print(line, flush=True)  # stdout is block-buffered under a pipe: every line must reach the job log at once
+
+
 class Refuse(Exception):
     pass
 
@@ -62,6 +66,10 @@ class Diverged(Exception):
 
 
 class TransportError(Exception):
+    pass
+
+
+class PermFail(TransportError):
     pass
 
 
@@ -196,15 +204,30 @@ def _remote_paths(cid, day):
     return d, "%s/%s" % (d, day), "%s/.%s.tmp.$$" % (d, day)
 
 
+def remote_dirs(cid):
+    """Every directory level the remote script may create, from the fixed root down (validated names only)."""
+    check_change_id(cid)
+    out, cur = [DEST_ROOT], DEST_ROOT
+    for part in (cid,) + ARM_SUBDIR:
+        cur = "%s/%s" % (cur, part)
+        out.append(cur)
+    return out
+
+
 def remote_send_cmd(cid, day, n, sha):
-    """The fixed remote command (validated names only). $$ is the remote shell's pid, left unquoted on purpose. The temp file is checked for byte length AND sha256 before the rename; on any
-    failure it is removed and the shell exits 1, so a cut connection leaves the previous good file untouched."""
+    """The fixed remote command (validated names only). $$ is the remote shell's pid, left unquoted on purpose.
+    A default POSIX ACL on the parent makes the kernel ignore the umask, so the script sets modes explicitly: every directory level is chmod 700 and its ACLs are removed (setfacl -b -k, where
+    setfacl exists), the temp file is created 0600 BEFORE any byte is written, checked for byte length AND sha256 before the rename, chmod 600 again, and after the rename the file must be 600 and its
+    directory 700. Failure before the rename: the temp file is removed, exit 1 (a cut connection leaves the previous good file untouched). Wrong mode after the rename: exit 3 (perm-fail)."""
     if isinstance(n, bool) or not isinstance(n, int) or n < 0 or not isinstance(sha, str) or not SHA_RE.match(sha):
         raise Refuse("length or sha256 not valid")
     d, final, tmp = _remote_paths(cid, day)
+    dirs = " ".join(shlex.quote(x) for x in remote_dirs(cid))
     t = shlex.quote(tmp[:-2]) + "$$"
-    script = ("umask 077; mkdir -p %s && cat > %s && [ \"$(wc -c < %s | tr -d ' ')\" = %d ] && [ \"$(sha256sum < %s | cut -d' ' -f1)\" = %s ] && mv %s %s || { rm -f %s; exit 1; }"
-              % (shlex.quote(d), t, t, n, t, sha, t, shlex.quote(final), t))
+    script = ("umask 077; mkdir -p %s && chmod 700 %s && { command -v setfacl >/dev/null 2>&1 && setfacl -b -k %s || true; } && ( umask 077; : > %s ) && chmod 600 %s && cat >> %s"
+              " && [ \"$(wc -c < %s | tr -d ' ')\" = %d ] && [ \"$(sha256sum < %s | cut -d' ' -f1)\" = %s ] && chmod 600 %s && mv %s %s || { rm -f %s; exit 1; }; "
+              "[ \"$(stat -c %%a %s)\" = 600 ] && [ \"$(stat -c %%a %s)\" = 700 ] || exit 3"
+              % (shlex.quote(d), dirs, dirs, t, t, t, t, n, t, sha, t, t, shlex.quote(final), t, shlex.quote(final), shlex.quote(d)))
     return "sh -c " + shlex.quote(script)
 
 
@@ -257,12 +280,14 @@ def ssh_send(cid, day, path, n, sha, host=SSH_HOST, timeout=900, popen=subproces
         rc = p.wait()
     finally:
         timer.cancel()
+    if rc == 3:
+        raise PermFail("send rc=3")
     if rc != 0:
         raise TransportError("send rc=%s" % rc)
 
 
 # ---------------------------------------------------------------------------------------------------------------- one pass
-def one_pass(series, send_fn, remote_stat_fn, dry_run=False, out=print, quiet=True):
+def one_pass(series, send_fn, remote_stat_fn, dry_run=False, out=_print, quiet=True):
     """series: [(change_id, real declog root)] already validated. Returns (code, file records, failures). The per-file records are for the status file; `out` gets per-file lines only when
     not quiet. Failures are (change_id, kind) pairs, which are safe to print at any time. A divergence ends nothing but the file; the code is the worst of the pass."""
     recs, fails, code = [], [], EXIT_OK
@@ -300,7 +325,7 @@ def one_pass(series, send_fn, remote_stat_fn, dry_run=False, out=print, quiet=Tr
                             fail(cid, "verify-fail", EXIT_FAIL, day)
                             continue
             except TransportError as e:
-                fail(cid, "transport-fail", EXIT_FAIL, "%s: %s" % (day, e))
+                fail(cid, "perm-fail" if isinstance(e, PermFail) else "transport-fail", EXIT_FAIL, "%s: %s" % (day, e))
                 continue
             recs.append({"change_id": cid, "file": day, "bytes": n, "sha256": sha, "state": state})
             if not quiet:
@@ -338,7 +363,7 @@ def parse_quiet_until(text, series):
     return t
 
 
-def main(argv=None, send_fn=None, remote_stat_fn=None, allowed_parents=ALLOWED_PARENTS, status_path=None, sleep=time.sleep, max_passes=None, out=print, now_fn=time.time):
+def main(argv=None, send_fn=None, remote_stat_fn=None, allowed_parents=ALLOWED_PARENTS, status_path=None, sleep=time.sleep, max_passes=None, out=_print, now_fn=time.time):
     """send_fn, remote_stat_fn, allowed_parents, status_path, sleep, max_passes, now_fn are injectable for tests; the CLI uses ssh to the research-0 alias."""
     ap = argparse.ArgumentParser(description="byte copier of r4bt decision-log prefixes to research-0 (parses no row)")
     ap.add_argument("--series", action="append", default=[], help="<change_id>=<declog root>, repeatable")
@@ -346,6 +371,8 @@ def main(argv=None, send_fn=None, remote_stat_fn=None, allowed_parents=ALLOWED_P
     ap.add_argument("--dry-run", action="store_true")
     ap.add_argument("--quiet-until", default=None, help="YYYY-MM-DDTHH:MM:SSZ; per-file lines stay out of the log before it (default: the r4bt-a2 P0 count instant)")
     a = ap.parse_args(argv)
+    if hasattr(sys.stdout, "reconfigure"):
+        sys.stdout.reconfigure(line_buffering=True)
     try:
         series = parse_series(a.series, allowed_parents)
         quiet_until = parse_quiet_until(a.quiet_until, series)
@@ -359,7 +386,6 @@ def main(argv=None, send_fn=None, remote_stat_fn=None, allowed_parents=ALLOWED_P
     while True:
         n += 1
         quiet = now_fn() < quiet_until
-        out("R4B-COPY pass %d start" % n)
         try:
             code, recs, fails = one_pass(series, send_fn, remote_stat_fn, a.dry_run, out, quiet)
         except Refuse as e:
@@ -369,7 +395,7 @@ def main(argv=None, send_fn=None, remote_stat_fn=None, allowed_parents=ALLOWED_P
             out("R4B-COPY FAIL pass %d: %s" % (n, e.strerror or type(e).__name__))
             code, recs, fails = EXIT_FAIL, [], []
         if quiet:
-            for cid, kind in sorted(set(fails)):
+            for cid, kind in sorted({(c, "transport-fail" if k == "verify-fail" else k) for c, k in fails}):  # a verify failure would reveal that a send happened
                 out("R4B-COPY %s %s%s" % (kind.upper(), cid, ": copy and original diverge: stop and ask QP" if kind == "diverged" else ""))
         try:
             write_status(spath, {"pass_utc": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"), "dry_run": a.dry_run, "exit": code, "files": recs})
