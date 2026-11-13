@@ -2,6 +2,7 @@
 """floor_forward_ab helpers (used by floor_forward_ab.sh). PAPER, in-sample/forward research; not a gate read.
   link  --end-hour 2026-11-12T20 --out DIR [--copy-dir D] [--live-dir D]   symlink every closed tape hour 2026-11-02T01..end-hour into DIR; prints to-ms
   table --base PNL.json --variant PNL.json --out-json F --out-md F --end-hour H [--forward-from 2026-11-12]
+  board --base PNL.json --variant PNL.json --end-hour H --out-json F --out-md F [--forward-from 2026-11-12]   open sim board v0 (open_sim_board.v1), booked on the EXIT (close) UTC day
 Days >= --forward-from are FORWARD (counted only when COMPLETE: see floor_nov_pnl.complete_bound_ms) (after the vault1.0 variant was chosen on 11-03..11-11); earlier days are IN-SAMPLE.
 """
 import argparse, collections, json, math, os, statistics, sys
@@ -255,7 +256,7 @@ def table(a):
           "- base arm: variant=%s frozen_rule=%s; vault arm: variant=%s frozen_rule=%s (both ledgers are registered under the pinned FROZEN_SHA; the vault arm is NOT the frozen rule)." % (
               hb.get("variant"), hb.get("frozen_rule"), hv.get("variant"), hv.get("frozen_rule")), ""]
     lbins = {"base": {}, "vault1.0": {}}
-    for key in sorted(b["entries_by_day"]):
+    for key in sorted(k for k in b["entries_by_day"] if k.split(":")[0] in ("0.1", "0.25")):  # the table reads only 0.10 and 0.25, whatever stakes the ledger carries
         stake, model = key.split(":")
         bd, vd, bpos, vpos = b["entries_by_day"][key], v["entries_by_day"][key], b.get("positions", []), v.get("positions", [])
         md += ["## stake %s, %s leg" % (stake, model), "",
@@ -317,6 +318,159 @@ def table(a):
     open(a.out_md, "w").write("\n".join(md) + "\n")
 
 
+# ---- open sim board v0 (schema open_sim_board.v1). Paper, exploration, not a gate read. Reads only the two pnl json files; writes no pool id, mint, signature, price or reserve field. ----
+BANNER = "open simulation, paper, not a gate read; no book has cleared the promotion gate"
+BOARD_CAVEAT = ("%d book rows are watched daily (2 rules x %d stakes); the vault1.0 rule was itself picked from a variant search on 2026-11-03..11-11. "
+                "The best-looking row overstates; treat it as shrunk. Days before 2026-11-12 are in-sample for the wider rule.")
+EXTRAPOLATION_NOTE = ("0.5 and 1.0 are extrapolated: our SOL is about 1-2x the pool's real SOL, so the exit sells mostly into our own buy, and the recorded later flow comes from a world without it; "
+                      "sandwich loss and the pressure fail rate are not scaled with size; haircuts and the E1 floor are linear from small-stake data; the take-profit fires on the 0.25-stake mark for every rung. "
+                      "Not for steering and not a basis for a stake step (a stake above 0.25 needs a DEC-035 amendment).")
+BOOK_LAG_MS = 5_400_000  # GRACE_SLOTS 10,000 x 0.5 s/slot (upper sps) + feed delay and exit lag, rounded up: every exit decided before D_end is priced or excluded by D_end + BOOK_LAG_MS (arena_paper.py:86, :1274)
+IMPACT_LABELS = {0.10: "model; live fills exist, not reconciled (recon NOT COMPARABLE)", 0.25: "model; live check pending", 0.5: "model only, extrapolated; not for steering", 1.0: "model only, extrapolated; not for steering"}
+RECON = {"status": "NOT COMPARABLE", "note": "v0 sims have no lane gap guard; live entries were locked out until about 2026-11-14T14:48Z"}
+DAY_MS = 86_400_000
+BOOKS = (("D0", "FLOOR rule as live, no gap guard (paper replay)", "control", "base"), ("C0", "wider rule vault1.0, no gap guard", "variant", "variant"))
+
+
+def _utc(ms):
+    return datetime.fromtimestamp(ms / 1000, timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+
+def _day(ms):
+    return datetime.fromtimestamp(ms / 1000, timezone.utc).strftime("%Y-%m-%d")
+
+
+def _days_between(a, b):
+    """inclusive list of UTC day strings a..b (empty when a > b)"""
+    out, d, end = [], datetime.strptime(a, "%Y-%m-%d"), datetime.strptime(b, "%Y-%m-%d")
+    while d <= end:
+        out.append(d.strftime("%Y-%m-%d")); d += timedelta(days=1)
+    return out
+
+
+def _blob_id(path):
+    """git blob id of a file, computed without git: sha1 of b'blob <n>' NUL bytes"""
+    import hashlib
+    try:
+        b = open(path, "rb").read()
+    except OSError:
+        return None
+    return hashlib.sha1(b"blob %d\0" % len(b) + b).hexdigest()
+
+
+def sim_version():
+    here = os.path.dirname(os.path.abspath(__file__))
+    ids = {n: _blob_id(os.path.join(here, n)) for n in ("floor_nov_paper.py", "floor_nov_pnl.py", "floor_forward_ab.py")}
+    return "v0" if not all(ids.values()) else "v0 " + " ".join("%s=%s" % kv for kv in ids.items())
+
+
+def _book_trades(pnl, stake):
+    """-> (trades, opens) in entry order. ids P%05d run over ALL positions (closed, open, engine-excluded) in (t0, pid) order, so an id never changes on a rerun and an open position keeps its id when it closes."""
+    sk, trades, opens = str(stake), [], []
+    for i, p in enumerate(sorted(pnl.get("positions", []), key=lambda q: (q["t0"], q["pid"])), 1):
+        tid, st = "P%05d" % i, p["status"].get(sk)
+        if st == "closed":
+            if p.get("t1") is None:
+                raise SystemExit("refusing: pnl file has no exit decision ms (t1); rerun floor_nov_pnl.py from this code version")
+            trades.append({"tid": tid, "entry_ms": p["t0"], "exit_ms": p["t1"], "stake": stake, "flat": p["net"][sk + ":flat"], "press": p["net"][sk + ":press"],
+                           "reason": str((p.get("exit_reason") or {}).get(sk) or ""), "close_day": _day(p["t1"]), "entry_day": p["day"]})
+        elif st == "open_at_tape_end":
+            opens.append({"tid": tid, "entry_ms": p["t0"], "stake": stake})
+    return trades, opens
+
+
+def _top3_rest(lam):
+    s = sorted(lam, reverse=True)
+    return sum(s[3:]) / 1e9 if len(s) > 3 else None
+
+
+def _window(trades, days, n_open, forward_from):
+    ds = set(days)
+    sel = [t for t in trades if t["close_day"] in ds]
+    flat = [t["flat"] for t in sel]
+    byday = collections.defaultdict(int)
+    for t in sel:
+        byday[t["close_day"]] += t["flat"]
+    return {"net_sol_flat": sum(flat) / 1e9, "net_sol_press": sum(t["press"] for t in sel) / 1e9, "n_closed": len(sel), "n_in_sample": sum(1 for t in sel if t["entry_day"] < forward_from), "n_open_at_tape_end": n_open,
+            "win_rate": (sum(1 for x in flat if x > 0) / len(flat)) if flat else None,
+            "tp_count": sum(1 for t in sel if t["reason"].startswith("tp")), "time_count": sum(1 for t in sel if t["reason"].startswith("time")),
+            "worst_sol": (min(flat) / 1e9) if flat else None, "ex_top3_sol": _top3_rest(flat),
+            "days_pos": sum(1 for d in days if byday.get(d, 0) > 0), "days": len(days)}
+
+
+def build_book(bid, title, role, pnl, stake, forward_from, to_ms, end_hour):
+    trades, opens = _book_trades(pnl, stake)
+    last = _day((to_ms - BOOK_LAG_MS) // DAY_MS * DAY_MS - DAY_MS)  # newest UTC day whose closes are all resolved
+    first = min((t["close_day"] for t in trades), default=last)
+    all_days = _days_between(first, last)
+    n_open = len(opens)
+    fdays = [d for d in all_days if d >= forward_from]
+    summary = {"today": _window(trades, all_days[-1:], n_open, forward_from), "d7": _window(trades, all_days[-7:], n_open, forward_from),
+               "forward_all": _window([t for t in trades if t["entry_day"] >= forward_from], fdays, n_open, forward_from), "incl_backfill": _window(trades, all_days, n_open, forward_from)}
+    summary["forward_all"]["n_in_sample_entries_excluded"] = sum(1 for t in trades if t["close_day"] in set(fdays) and t["entry_day"] < forward_from)
+    summary["today"]["day"] = all_days[-1] if all_days else None
+    per_day = []
+    for d in all_days:
+        w = _window(trades, [d], n_open, forward_from)
+        per_day.append({"day": d, "in_sample": d < forward_from, "n": w["n_closed"], "n_in_sample": w["n_in_sample"], "net_sol_flat": w["net_sol_flat"], "net_sol_press": w["net_sol_press"], "ex_top3_sol": w["ex_top3_sol"]})
+    hdr = pnl.get("header") or {}
+    return {"id": "%s-%.2f" % (bid, stake), "book": bid, "title": title, "role": role, "stake_sol": stake, "impact_label": IMPACT_LABELS[stake], **({"extrapolation_note": EXTRAPOLATION_NOTE} if stake >= 0.5 else {}),
+            "params": {"variant": hdr.get("variant"), "frozen_rule": hdr.get("frozen_rule"), "gap_guard": False, "send_lamports": 160000},
+            "backfill_from": "2026-11-02T01:00:00Z", "in_sample_until": forward_from + "T00:00:00Z", "booking": "exit (close) UTC day",
+            "status": {"state": "replay snapshot", "last_hour": end_hour}, "summary": summary, "per_day": per_day,
+            "trades": [{"tid": t["tid"], "entry_utc": _utc(t["entry_ms"]), "exit_utc": _utc(t["exit_ms"]), "stake_sol": t["stake"], "net_sol_flat": t["flat"] / 1e9, "net_sol_press": t["press"] / 1e9,
+                        "ret_pct": 100.0 * t["flat"] / (t["stake"] * 1e9), "exit_reason": t["reason"], "in_sample": t["entry_day"] < forward_from} for t in trades],
+            "open": [{"tid": o["tid"], "entry_utc": _utc(o["entry_ms"]), "stake_sol": o["stake"], "age_h": (to_ms - o["entry_ms"]) / 3_600_000.0} for o in opens]}
+
+
+def board_md(res):
+    f = lambda x: "n/a" if x is None else "%+.4f" % x
+    md = ["# Open sim board v0 (FLOOR, paper)", "", "> " + res["banner"], "",
+          "- Generated %s from the daily replay; tape through %s; sim_version %s." % (res["generated_utc"], res["tape_through_utc"], res["sim_version"]),
+          "- SOL is booked on the EXIT (close) UTC day (the `table` step books on the entry day). Net SOL is shown for the flat 15%% fail leg / the pressure leg. Complete UTC days only (complete = the tape runs at least 90 min past the day's end): today = newest complete day, 7-day = last 7 complete days, forward = complete days >= %s, all = complete days since the backfill start 2026-11-02 (in-sample before %s)." % (res["forward_from"], res["forward_from"]),
+          "- Forward counts only trades entered on or after %s; a trade entered earlier and closed later is in-sample and is counted in today / 7-day / all, marked IS." % res["forward_from"],
+          "- " + res["extrapolation_note"],
+          "- Impact labels: 0.10 = \"%s\"; 0.25 = \"%s\"; 0.5 and 1.0 = \"%s\"." % (IMPACT_LABELS[0.10], IMPACT_LABELS[0.25], IMPACT_LABELS[0.5]),
+          "- Live: null (%s). Reconciliation: %s (%s)." % (res["live_note"], res["recon"]["status"], res["recon"]["note"]),
+          "- " + res["caveat"], "",
+          "| book | stake | label | today flat / press (n) | 7-day flat / press (n) | forward flat / press (n) | all incl. backfill flat / press (n) | open |", "|---|---|---|---|---|---|---|---|"]
+    cell = lambda w: "%s / %s (%d, IS %d)" % (f(w["net_sol_flat"]), f(w["net_sol_press"]), w["n_closed"], w["n_in_sample"])
+    for b in res["books"]:
+        s = b["summary"]
+        md.append("| %s %s | %.2f | %s | %s | %s | %s | %s | %d |" % (b["book"], b["title"], b["stake_sol"], b["impact_label"], cell(s["today"]), cell(s["d7"]), cell(s["forward_all"]), cell(s["incl_backfill"]), s["incl_backfill"]["n_open_at_tape_end"]))
+    for b in res["books"]:
+        if b["stake_sol"] != 0.25:
+            continue
+        last = b["trades"][-30:]
+        md += ["", "## %s, stake 0.25: last %d of %d closed trades (flat / pressure net SOL; IS = in-sample)" % (b["book"], len(last), len(b["trades"])), "",
+               "| id | entry UTC | exit UTC | flat | press | ret % | exit | IS |", "|---|---|---|---|---|---|---|---|"]
+        for t in last:
+            md.append("| %s | %s | %s | %s | %s | %.2f | %s | %s |" % (t["tid"], t["entry_utc"], t["exit_utc"], f(t["net_sol_flat"]), f(t["net_sol_press"]), t["ret_pct"], t["exit_reason"], "y" if t["in_sample"] else "n"))
+    return md
+
+
+def board(a, now=None):
+    pn = {}
+    for nm, path in (("base", a.base), ("variant", a.variant)):
+        x = json.load(open(path))
+        if not x.get("bound_applied") or x.get("to_ms") is None:
+            raise SystemExit("refusing: %s pnl file was produced without --to-ms" % nm)
+        pn[nm] = x
+    to_ms = min(pn["base"]["to_ms"], pn["variant"]["to_ms"])
+    books = []
+    for bid, title, role, src in BOOKS:
+        for stake in sorted({float(k.split(":")[0]) for k in pn[src]["entries_by_day"]}):
+            if stake in IMPACT_LABELS:
+                books.append(build_book(bid, title, role, pn[src], stake, a.forward_from, to_ms, a.end_hour))
+    res = {"schema": "open_sim_board.v1", "banner": BANNER, "n_books_watched": len(books), "generated_utc": _utc((now or datetime.now(timezone.utc)).timestamp() * 1000),
+           "tape_through_utc": _utc(to_ms), "sim_version": sim_version(), "forward_from": a.forward_from, "end_hour": a.end_hour,
+           "booking": "net SOL is booked on the exit (close) UTC day; only complete UTC days enter the today, d7, forward_all and incl_backfill blocks",
+           "caveat": BOARD_CAVEAT % (len(books), len(books) // 2), "extrapolation_note": EXTRAPOLATION_NOTE, "books": books, "live": None, "live_note": "live line added by the manager's job", "recon": dict(RECON)}
+    json.dump(res, open(a.out_json, "w"), indent=1)
+    open(a.out_md, "w").write("\n".join(board_md(res)) + "\n")
+    return res
+
+
 ap = argparse.ArgumentParser(); sp = ap.add_subparsers(dest="cmd", required=True)
 l = sp.add_parser("link"); l.add_argument("--end-hour", required=True); l.add_argument("--out", required=True)
 l.add_argument("--copy-dir", default=COPY_DIR); l.add_argument("--live-dir", default=LIVE_DIR)
@@ -324,6 +478,10 @@ t = sp.add_parser("table")
 for n in ("--base", "--variant", "--out-json", "--out-md", "--end-hour"):
     t.add_argument(n, required=True)
 t.add_argument("--forward-from", default="2026-11-12")
+bd = sp.add_parser("board")
+for n in ("--base", "--variant", "--out-json", "--out-md", "--end-hour"):
+    bd.add_argument(n, required=True)
+bd.add_argument("--forward-from", default="2026-11-12")
 if __name__ == "__main__":
     a = ap.parse_args()
-    link(a) if a.cmd == "link" else table(a)
+    {"link": link, "table": table, "board": board}[a.cmd](a)

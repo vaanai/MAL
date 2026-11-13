@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""floor_nov_pnl: read the scratch ledger written by floor_nov_paper.py and report per-day and pooled paper P&L at stake 0.10 and 0.25 (flat-15% and pressure legs),
+"""floor_nov_pnl: read the scratch ledger written by floor_nov_paper.py and report per-day and pooled paper P&L at every stake the ledger carries (0.10 and 0.25 today; more with floor_nov_paper.py --stakes) (flat-15% and pressure legs),
 with first-come caps K. Entry-day = UTC day of the entry decision. Phases: pre (< 2026-11-07T18Z), cutover (18Z hour, excluded), post (>= 19Z). Counts/aggregates only.
 Usage: floor_nov_pnl.py LEDGER_DIR OUT_JSON [RULE=total] [LAT=1p9] [--send-lamports 160000 [--ledger-send 1673840]]
 Rent correction (manager22 erratum, 2026-11-12): the first replay charged send = 1,673,840 lamports per send, of which 1,513,840 is refundable token-ATA rent. With
@@ -78,17 +78,29 @@ def complete_bound_ms(last_entry_ms):
     return last_entry_ms + hold_ms() + TICK_MS + EXIT_LEG_MARGIN_MS
 
 
+BASE_STAKES = (0.10, 0.25)
+
+
+def stakes_of(trades, excl):
+    """stakes the ledger carries (trade and excluded rows), always including the two the A/B table reads; 2-stake ledger -> (0.1, 0.25) as before"""
+    seen = {s for t in trades.values() for s in t} | {s for x in excl.values() for s in x}
+    return tuple(sorted(set(BASE_STAKES) | seen))
+
+
 def entries_by_day(opens, trades, excl, rule, lat, send_delta, to_ms=None):
     """-> (by_day, positions). The 11-07T18Z cut-over hour is skipped (as in the funnel report). Per position and stake the status is
     closed (trade row), engine_excluded (engine `excluded` row; reason kept) or open_at_tape_end (neither: no exit decision by the end of the tape).
     A day is complete only if it has no open_at_tape_end entry (any stake) and, when to_ms is given, to_ms >= complete_bound_ms(last entry of the day).
     An incomplete day carries counts only: total_sol / ex_top3_sol are None."""
+    stakes = stakes_of(trades, excl)
     ents = {pid: o for pid, o in opens.items() if phase(o["decision_ms"]["entry"]) != "cutover"}
     days = sorted({day(o["decision_ms"]["entry"]) for o in ents.values()})
     positions = []
     for pid, o in sorted(ents.items(), key=lambda kv: kv[1]["decision_ms"]["entry"]):
         rec = {"pid": pid, "pool": o["pool"], "t0": o["decision_ms"]["entry"], "day": day(o["decision_ms"]["entry"]), "status": {}, "reason": {}, "net": {}}
-        for stake in (0.10, 0.25):
+        t1s = [t["decision_ms"]["exit"] for t in trades.get(pid, {}).values() if t.get("decision_ms", {}).get("exit") is not None]
+        rec["t1"] = min(t1s) if t1s else None  # exit decision ms (None: no priced exit); board input
+        for stake in stakes:
             t, x = trades.get(pid, {}).get(stake), excl.get(pid, {}).get(stake)
             rec["status"][str(stake)] = "closed" if t is not None else "engine_excluded" if x is not None else "open_at_tape_end"
             if x is not None and t is None:
@@ -107,7 +119,7 @@ def entries_by_day(opens, trades, excl, rule, lat, send_delta, to_ms=None):
         rec["exit_reason"] = {str(s): t.get("exit_reason") for s, t in tr_any.items()}
         positions.append(rec)
     out = {}
-    for stake in (0.10, 0.25):
+    for stake in stakes:
         for model in ("flat", "press"):
             blk = {}
             for d in days:
@@ -175,7 +187,7 @@ def main(argv=None):
     spans = {"pre": (datetime(2026, 11, 3, tzinfo=timezone.utc), 4.75), "post": (None, 4.25)}  # days of phase (pre: 11-03T00..11-07T18 = 4.75; post: 11-07T19..11-11T24 = 4.2083)
     days_of = {"pre": 4.75, "post": 4.0 + 5 / 24.0, "all": 4.75 + 4.0 + 5 / 24.0}
     out = {}
-    for stake in (0.10, 0.25):
+    for stake in stakes_of(trades, excl):
         for model in ("flat", "press"):
             key = f"{stake}:{model}"
             rows = []
