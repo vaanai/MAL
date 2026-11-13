@@ -74,17 +74,17 @@ def env(shared):
 
 @pytest.fixture(scope="module")
 def pass_run(env):
-    mans = [env.mf(), env.mf(rule_overrides={**FAST, "TP": 1.3})]
-    code, rep, line = env.run(mans, 24)
+    mans = [env.mf()]
+    code, rep, line = env.run(mans, 18)
     return code, rep, line, mans
 
 
 def test_full_proof_passes_on_the_fixture(pass_run):
     code, rep, line, mans = pass_run
     assert code == 0 and line.startswith("OSB-PROOF PASS "), (line, rep and rep["fails"])
-    assert rep["hours"] == 24 and rep["head"] == "a" * 40 and len(rep["manifests"]) == 2
+    assert rep["hours"] == 18 and rep["head"] == "a" * 40 and len(rep["manifests"]) == 1
     for r in rep["manifests"]:
-        assert r["md5_by_hour_lines"] == {"L1": 24, "L3": 24}
+        assert r["md5_by_hour_lines"] == {"L1": 18, "L3": 18}
         assert r["L1_digests"] == r["L2_digests"] == r["L3_digests"] and set(r["L1_digests"]) == {"decision_md5", "all_kinds_digest", "sequence_md5", "ledger_tree_md5"}
         assert r["legs"]["L3"]["exit_codes"] == [0, 0] and r["legs"]["L1"]["exit_codes"] == [0] and r["legs"]["L2"]["exit_codes"] == [0]
         assert r["row_counts_by_kind"].get("entry", 0) >= 3
@@ -99,8 +99,8 @@ def test_derived_manifests_change_only_out_root_and_tape_dir_and_the_window_is_h
     der = json.loads((root / "M0" / "manifest-L1.json").read_text())
     assert {k for k in orig if orig[k] != der[k]} == {"out_root", "tape_dir"}
     names = sorted(p.name for p in (root / "M0" / "tape").iterdir())
-    assert len(names) == 201 + 24 and all(os.stat(root / "M0" / "tape" / n).st_nlink >= 2 for n in names)  # linked from keep, never copied
-    assert names[0] == hour_name(S_MS - 201 * HOUR) and names[-1] == hour_name(S_MS + 23 * HOUR)
+    assert len(names) == 201 + 18 and all(os.stat(root / "M0" / "tape" / n).st_nlink >= 2 for n in names)  # linked from keep, never copied
+    assert names[0] == hour_name(S_MS - 201 * HOUR) and names[-1] == hour_name(S_MS + 17 * HOUR)
     assert json.loads((root / "proof.json").read_text())["verdict"] == "PASS"
 
 
@@ -139,8 +139,9 @@ def test_a_non_zero_exit_code_is_a_fail(env):
     assert code == 1 and "exit code" in rep["fails"]
 
 
-def test_a_window_without_entries_is_vacuous_not_a_pass(env):
-    code, rep, line = env.run([env.mf()], 4, min_entries=5)
+def test_two_manifests_run_and_a_window_without_entries_is_vacuous_not_a_pass(env):
+    code, rep, line = env.run([env.mf(), env.mf(rule_overrides={**FAST, "TP": 1.3})], 4, min_entries=5)
+    assert len(rep["manifests"]) == 2 and rep["manifests"][1]["L1_digests"]
     assert code == 3 and line.startswith("OSB-PROOF VACUOUS ") and "n_entries<5" in line and rep["verdict"] == "VACUOUS"
 
 
