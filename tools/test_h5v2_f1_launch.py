@@ -198,6 +198,8 @@ def test_book2_refuses_before_hand_off(tmp_path):
 
 def test_dec_pins_the_launcher_sha256():
     d = DEC.read_text()
-    am = d[d.index("### Amendment 29 (DRAFT; H5 v2 forward on November pools"):]
+    start = d.index("### Amendment 29 (DRAFT; H5 v2 forward on November pools")
+    nxt = d.find("\n### Amendment ", start + 1)  # Amendment 29's own text only: later amendments (30, 31, ...) follow it in the file
+    am = d[start:] if nxt < 0 else d[start:nxt]
     assert hashlib.sha256(LAUNCH.read_bytes()).hexdigest() in am
     assert "Amendment 30" not in am and "17:4x" not in am and "2026-11-06T17:16:06Z" in am
