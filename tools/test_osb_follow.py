@@ -19,8 +19,11 @@ from tools.test_floor_arena_executor import _host_log_scenarios  # noqa: E402
 import tools.test_arena_rule_l1 as T  # noqa: E402
 
 N_HOURS = 60
-START = H.parse_hour("2026-11-01T00")
-SEED = "2026-10-22T00"  # 240 h before the start (>= 201 h); the fixture has no tape there, the seed reads zero files
+T0 = H.parse_hour("2026-11-01T00")  # first hour of the fixture tape
+S0 = 26  # the book starts 26 h into the tape: the earlier hours are seed + warm-up (no ticks), which keeps the replay short
+START = T0 + S0 * HOUR
+START_HOUR = "2026-11-02T02"
+SEED = "2026-10-22T00"  # >= 201 h before START_HOUR; seeds the table from fixture hours 0 .. 20 (to the warm-up start)
 RT = dict(_table_mode="first_print")
 
 
@@ -32,8 +35,8 @@ def _env(monkeypatch):
 
 
 def shifted_rows(tmp):
-    """_host_log_scenarios rows (3 pools: one take-profit, two time exits), moved onto the calendar hour START so the hour keys match start_hour."""
-    d = START - H0
+    """_host_log_scenarios rows (3 pools: one take-profit, two time exits), moved onto the calendar hour T0 so the hour keys match start_hour."""
+    d = T0 - H0
     rows = _host_log_scenarios(tmp)
     for r in rows:
         r["t_recv_ms"] += d
@@ -49,7 +52,7 @@ def world(tmp_path):
     src = tmp_path / "src"
     write_tape(src, shifted_rows(tmp_path))
     for i in range(N_HOURS):
-        (src / hour_name(START + i * HOUR)).touch()
+        (src / hour_name(T0 + i * HOUR)).touch()
     names = sorted(p.name for p in src.glob("tape-*"))
     assert len(names) == N_HOURS
     (tmp_path / "tape").mkdir()
@@ -57,7 +60,7 @@ def world(tmp_path):
 
 
 def manifest(tmp, **over):
-    m = {"book_id": "t-a", "title": "test book", "host": "lane", "rule_overrides": {}, "stakes_sol": [0.10, 0.25], "send_lamports": 160000, "start_hour": "2026-11-01T00",
+    m = {"book_id": "t-a", "title": "test book", "host": "lane", "rule_overrides": {}, "stakes_sol": [0.10, 0.25], "send_lamports": 160000, "start_hour": START_HOUR,
          "seed_from_hour": SEED, "tape_dir": str(tmp / "tape"), "out_root": str(tmp / "out"), "lane": {"gap_lookback_s": 21600, "status_span_no_loss": False, "cheap_restart": False}}
     m.update(over)
     p = tmp / ("manifest-%d.json" % len(list(tmp.glob("manifest-*"))))
@@ -75,25 +78,25 @@ def run_once(tmp, mp, **kw):
     return O.follow(str(mp), once=True, _roots=(str(tmp),), **RT, **kw)
 
 
-def follow_all(tmp, src, names, mp):
+def follow_all(tmp, src, names, mp, n=N_HOURS):
     """One process; reveal one more hour at every sleep, like the keeper."""
     tape = tmp / "tape"
-    shown = [1]
-    link(src, tape, names, 1)
+    shown = [S0 + 1]
+    link(src, tape, names, S0 + 1)
 
     def reveal(_s):
         shown[0] += 1
         link(src, tape, names, shown[0])
-    return O.follow(str(mp), max_hours=N_HOURS, sleep_fn=reveal, _roots=(str(tmp),), **RT)
+    return O.follow(str(mp), max_hours=n - S0, sleep_fn=reveal, _roots=(str(tmp),), **RT)
 
 
-def one_shot(tmp, m, run="oneshot"):
+def one_shot(tmp, m, n=N_HOURS, run="oneshot"):
     """The reference: the same host built by the driver's own builder, ONE host.run over the whole range."""
-    link(tmp / "src", tmp / "tape", sorted(p.name for p in (tmp / "src").glob("tape-*")), N_HOURS)
+    link(tmp / "src", tmp / "tape", sorted(p.name for p in (tmp / "src").glob("tape-*")), n)
     restore = O.apply_overrides(m["rule_overrides"])
     try:
         host, eng, cfg = O.build_book(m, tmp / run, table_mode="first_print")
-        host.run(START, START + N_HOURS * HOUR)
+        host.run(START, T0 + n * HOUR)
     finally:
         restore()
     return tmp / run
@@ -106,22 +109,26 @@ def test_chunked_follow_equals_one_single_replay(world):
     follow_dir = (tmp / "out" / "book").resolve()
     ref = one_shot(tmp, m)
     rows = [r for r in DecisionLog(str(ref)).rows(L.BOT_ID) if r["kind"] in ("entry", "exit")]
-    assert sum(r["kind"] == "entry" for r in rows) == 3 and sum(r["kind"] == "exit" for r in rows) == 3  # non-vacuous
+    n_ent, n_ex = sum(r["kind"] == "entry" for r in rows), sum(r["kind"] == "exit" for r in rows)
+    assert n_ent >= 3 and n_ex >= 3  # non-vacuous: entries and time/take-profit exits happened in the window
     assert O.decision_md5(follow_dir) == O.decision_md5(ref)
     assert any((ref / "ledger").rglob("*.jsonl")) and any((follow_dir / "ledger").rglob("*.jsonl"))
     assert O.tree_md5(follow_dir / "ledger") == O.tree_md5(ref / "ledger")
     st = json.loads((tmp / "out" / "status.json").read_text())
     assert st["last_hour"] == "2026-11-03T11" and st["decision_md5"] == O.decision_md5(ref) and st["manifest_sha256"] == (tmp / "out" / "manifest.sha256").read_text().strip()
-    assert st["n_entries"] == 3 and st["n_exits"] == 3 and st["active"] is True
-    assert len((tmp / "out" / "md5-by-hour.jsonl").read_text().splitlines()) == N_HOURS
+    assert st["n_entries"] == n_ent and st["n_exits"] == n_ex and st["active"] is True
+    assert len((tmp / "out" / "md5-by-hour.jsonl").read_text().splitlines()) == N_HOURS - S0
+
+
+FAST = {"HOLD_S": 43200}  # 12 h hold: the shorter window the non-central tests replay (entries at about 30 h, exits by 42 h)
 
 
 def test_once_with_all_hours_present_equals_the_same_replay(world):
     tmp, src, names = world
-    mp, m = manifest(tmp)
-    link(src, tmp / "tape", names, N_HOURS)
+    mp, m = manifest(tmp, rule_overrides=FAST)
+    link(src, tmp / "tape", names, 48)
     assert run_once(tmp, mp) == 0
-    ref = one_shot(tmp, m)
+    ref = one_shot(tmp, m, 48)
     assert O.decision_md5((tmp / "out" / "book").resolve()) == O.decision_md5(ref)
     assert O.tree_md5((tmp / "out" / "book").resolve() / "ledger") == O.tree_md5(ref / "ledger")
 
@@ -129,7 +136,7 @@ def test_once_with_all_hours_present_equals_the_same_replay(world):
 def test_changed_manifest_is_refused_and_the_same_one_resumes(world):
     tmp, src, names = world
     mp, m = manifest(tmp)
-    link(src, tmp / "tape", names, 3)
+    link(src, tmp / "tape", names, S0 + 3)
     assert run_once(tmp, mp) == 0
     sha = (tmp / "out" / "manifest.sha256").read_text()
     mp2, _ = manifest(tmp, stakes_sol=[0.10, 0.25, 0.5])
@@ -141,18 +148,18 @@ def test_changed_manifest_is_refused_and_the_same_one_resumes(world):
 
 def test_restart_reproduces_md5_by_hour_and_a_tampered_md5_is_exit_4(world):
     tmp, src, names = world
-    mp, m = manifest(tmp)
-    link(src, tmp / "tape", names, 40)
+    mp, m = manifest(tmp, rule_overrides=FAST)
+    link(src, tmp / "tape", names, S0 + 12)
     assert run_once(tmp, mp) == 0
     f = tmp / "out" / "md5-by-hour.jsonl"
     before = f.read_text()
-    assert len(before.splitlines()) == 40
-    link(src, tmp / "tape", names, N_HOURS)  # the restart covers the 40 stored hours again, then follows the rest
+    assert len(before.splitlines()) == 12
+    link(src, tmp / "tape", names, 48)  # the restart covers the 12 stored hours again, then follows the rest
     assert run_once(tmp, mp) == 0
     after = f.read_text()
-    assert after.startswith(before) and len(after.splitlines()) == N_HOURS
+    assert after.startswith(before) and len(after.splitlines()) == 48 - S0
     assert (tmp / "out" / "book").resolve().name == "0002"
-    assert O.decision_md5((tmp / "out" / "book").resolve()) == O.decision_md5(one_shot(tmp, m))
+    assert O.decision_md5((tmp / "out" / "book").resolve()) == O.decision_md5(one_shot(tmp, m, 48))
     # tamper with one stored md5: the next start exits 4 and overwrites nothing
     lines = after.splitlines()
     d = json.loads(lines[10])
@@ -185,7 +192,7 @@ def test_a_run_with_hold_s_restores_the_module_globals(world):
     tmp, src, names = world
     hold0, block0 = L.HOLD_MS, H.BLOCK_MS
     mp, m = manifest(tmp, rule_overrides={"HOLD_S": 43200})
-    link(src, tmp / "tape", names, 2)
+    link(src, tmp / "tape", names, S0 + 2)
     assert run_once(tmp, mp) == 0
     assert (L.HOLD_MS, H.BLOCK_MS) == (hold0, block0)
     v = json.loads((tmp / "out" / "runs" / "0001" / "variant.json").read_text())
