@@ -327,7 +327,7 @@ EXTRAPOLATION_NOTE = ("0.5 and 1.0 are extrapolated: our SOL is about 1-2x the p
                       "Not for steering and not a basis for a stake step (a stake above 0.25 needs a DEC-035 amendment).")
 BOOK_LAG_MS = 5_400_000  # GRACE_SLOTS 10,000 x 0.5 s/slot (upper sps) + feed delay and exit lag, rounded up: every exit decided before D_end is priced or excluded by D_end + BOOK_LAG_MS (arena_paper.py:86, :1274)
 IMPACT_LABELS = {0.10: "model; live fills exist, not reconciled (recon NOT COMPARABLE)", 0.25: "model; live check pending", 0.5: "model only, extrapolated; not for steering", 1.0: "model only, extrapolated; not for steering"}
-RECON = {"status": "NOT COMPARABLE", "note": "v0 sims have no lane gap guard; live entries were locked out until about 2026-11-14T14:48Z"}
+RECON = {"status": "NOT COMPARABLE: not decision-grade", "note": "v0 sims have no lane gap guard; live entries were locked out until about 2026-11-14T14:48Z"}
 DAY_MS = 86_400_000
 BOOKS = (("D0", "FLOOR rule as live, no gap guard (paper replay)", "control", "base"), ("C0", "wider rule vault1.0, no gap guard", "variant", "variant"))
 
@@ -398,6 +398,11 @@ def _window(trades, days, n_open, forward_from):
             "days_pos": sum(1 for d in days if byday.get(d, 0) > 0), "days": len(days)}
 
 
+def book_label(forward_from):
+    """DEC-035 Am.9 section 4 label; the 'declared' clause belongs to the 2026-11-12 forward-from only"""
+    return "v0 replay, forward-from 2026-11-12 declared 2026-11-12T21:43Z" if forward_from == "2026-11-12" else "v0 replay, forward-from %s" % forward_from
+
+
 def build_book(bid, title, role, pnl, stake, forward_from, to_ms, end_hour):
     trades, opens = _book_trades(pnl, stake)
     last = _day((to_ms - BOOK_LAG_MS) // DAY_MS * DAY_MS - DAY_MS)  # newest UTC day whose closes are all resolved
@@ -414,7 +419,7 @@ def build_book(bid, title, role, pnl, stake, forward_from, to_ms, end_hour):
         w = _window(trades, [d], n_open, forward_from)
         per_day.append({"day": d, "in_sample": d < forward_from, "n": w["n_closed"], "n_in_sample": w["n_in_sample"], "net_sol_flat": w["net_sol_flat"], "net_sol_press": w["net_sol_press"], "ex_top3_sol": w["ex_top3_sol"]})
     hdr = pnl.get("header") or {}
-    return {"id": "%s-%.2f" % (bid, stake), "book": bid, "title": title, "role": role, "stake_sol": stake, "impact_label": IMPACT_LABELS[stake], **({"extrapolation_note": EXTRAPOLATION_NOTE} if stake >= 0.5 else {}),
+    return {"id": "%s-%.2f" % (bid, stake), "book": bid, "title": title, "role": role, "book_label": book_label(forward_from), "stake_sol": stake, "impact_label": IMPACT_LABELS[stake], **({"extrapolation_note": EXTRAPOLATION_NOTE} if stake >= 0.5 else {}),
             "params": {"variant": hdr.get("variant"), "frozen_rule": hdr.get("frozen_rule"), "gap_guard": False, "send_lamports": 160000},
             "backfill_from": "2026-11-02T01:00:00Z", "in_sample_until": forward_from + "T00:00:00Z", "booking": "exit (close) UTC day",
             "status": {"state": "replay snapshot", "last_hour": end_hour}, "summary": summary, "per_day": per_day,
@@ -437,7 +442,7 @@ def board_md(res):
     cell = lambda w: "%s / %s (%d, IS %d)" % (f(w["net_sol_flat"]), f(w["net_sol_press"]), w["n_closed"], w["n_in_sample"])
     for b in res["books"]:
         s = b["summary"]
-        md.append("| %s %s | %.2f | %s | %s | %s | %s | %s | %d |" % (b["book"], b["title"], b["stake_sol"], b["impact_label"], cell(s["today"]), cell(s["d7"]), cell(s["forward_all"]), cell(s["incl_backfill"]), s["incl_backfill"]["n_open_at_tape_end"]))
+        md.append("| %s %s (%s) | %.2f | %s | %s | %s | %s | %s | %d |" % (b["book"], b["title"], b["book_label"], b["stake_sol"], b["impact_label"], cell(s["today"]), cell(s["d7"]), cell(s["forward_all"]), cell(s["incl_backfill"]), s["incl_backfill"]["n_open_at_tape_end"]))
     for b in res["books"]:
         if b["stake_sol"] != 0.25:
             continue
