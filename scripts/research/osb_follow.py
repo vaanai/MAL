@@ -15,10 +15,15 @@ Layout under out_root (same as floor_nov_paper.py, inside a per-run directory so
 `book` is a symlink to the active run; md5-by-hour.jsonl; status.json; manifest.sha256.
 Restart: no checkpoint semantics. A new start replays from start_hour into a NEW run directory and compares the decision md5 of every hour the stored md5-by-hour.jsonl covers.
 Any mismatch = exit 4 with the stored list and the active `book` link untouched. The `book` link moves to the new run only once it has verified every stored hour.
-Exit codes: 0 ok, 2 refused (manifest, path, override, pins), 4 md5 mismatch against the stored segment.
+Version pin: code.sha256 (written at first start) is the sha256 of {path: sha256} of this script, floor_gap_range_engine.py, floor_lane_host.py, floor_replay_proof_reg.py and every file
+floor_lane_host.verify_pins() lists; a later start whose value differs is refused (a changed simulator is a new book). md5-by-hour.jsonl stores decision_md5 AND ledger_md5 per hour; both are compared on restart.
+One process per book: out_root/.osb.lock is flock'ed for the process lifetime. While an hour file is missing status.json carries waiting_for_hour / waiting_since_utc and a fresh wall_time_utc each poll.
+A torn last line of md5-by-hour.jsonl (a partial write) is dropped, said on stderr, and the file is rewritten without it; that hour is verified or appended again.
+Exit codes: 0 ok (with --once and stored hours not yet covered by the tape: 0, `book` unmoved, a message on stderr); 1 uncaught error (OSError, bad JSON, disk full: a traceback);
+2 refused (manifest, path, override, pins, code version, lock held by another process); 3 host fatal during run (R.HostFatal: a log or ledger write failed); 4 md5 mismatch against the stored segment.
 Usage: osb_follow.py MANIFEST.json [--once] [--max-hours N]
 """
-import argparse, dataclasses, hashlib, json, os, re, sys, time
+import argparse, dataclasses, fcntl, hashlib, json, math, os, re, sys, time
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -39,7 +44,7 @@ from floor_gap_range_engine import GapRangeEngine  # noqa: E402
 OSB_ROOT = "/data2/mal/scratch/floor-open-sim"  # the only root a tape_dir or out_root may sit in (the CLI does not expose an override)
 HOUR_MS = 3_600_000
 POLL_S = 60
-EXIT_OK, EXIT_REFUSED, EXIT_MISMATCH = 0, 2, 4
+EXIT_OK, EXIT_REFUSED, EXIT_FATAL, EXIT_MISMATCH = 0, 2, 3, 4
 MANIFEST_KEYS = {"book_id", "title", "host", "rule_overrides", "stakes_sol", "send_lamports", "start_hour", "seed_from_hour", "tape_dir", "out_root", "lane", "gap_exclusion"}
 REQUIRED_KEYS = MANIFEST_KEYS - {"lane", "gap_exclusion"}
 LANE_KEYS = {"gap_lookback_s", "status_span_no_loss", "cheap_restart"}
@@ -74,6 +79,8 @@ def load_manifest(path):
     st = m["stakes_sol"]
     if not (isinstance(st, list) and st and all(isinstance(x, (int, float)) and not isinstance(x, bool) and x > 0 for x in st)):
         raise Refused("stakes_sol must be a non-empty list of positive numbers")
+    if any(x > 2.0 for x in st) or any(b <= a for a, b in zip(st, st[1:])):
+        raise Refused("stakes_sol: each value in (0, 2.0], strictly ascending")
     if not (isinstance(m["send_lamports"], int) and not isinstance(m["send_lamports"], bool) and m["send_lamports"] >= 0):
         raise Refused("send_lamports must be a non-negative integer")
     for k in ("tape_dir", "out_root"):
@@ -84,11 +91,15 @@ def load_manifest(path):
             H.parse_hour(m[k])
         except (R.HostError, TypeError) as e:
             raise Refused("%s: %s" % (k, e))
-    if H.parse_hour(m["seed_from_hour"]) > H.parse_hour(m["start_hour"]) - H.SEED_MIN_H * HOUR_MS:  # the lane host's own check (floor_lane_host.main), applied to both hosts
-        raise Refused("seed_from_hour must be at least %d h before start_hour" % H.SEED_MIN_H)
     if not isinstance(m["rule_overrides"], dict):
         raise Refused("rule_overrides must be an object")
     check_overrides(m["rule_overrides"])
+    age_hi, age_lo = m["rule_overrides"].get("AGE_HI", L.AGE_HI), m["rule_overrides"].get("AGE_LO", L.AGE_LO)
+    if age_lo >= age_hi:
+        raise Refused("AGE_LO must be below AGE_HI")
+    need_h = max(H.SEED_MIN_H, math.ceil(age_hi / 3600) + 1)  # the lane host's own 201 h check (floor_lane_host.main) for the default AGE_HI of 200 h; longer if AGE_HI is overridden up
+    if H.parse_hour(m["seed_from_hour"]) > H.parse_hour(m["start_hour"]) - need_h * HOUR_MS:
+        raise Refused("seed_from_hour must be at least %d h before start_hour (SEED_MIN_H %d, AGE_HI %s s)" % (need_h, H.SEED_MIN_H, age_hi))
     if m["host"] == "lane":
         lane = m.get("lane", {})
         if not isinstance(lane, dict) or set(lane) - LANE_KEYS:
@@ -116,6 +127,8 @@ def check_overrides(ov):
             raise Refused("refusing override of %r (allowed: %s)" % (k, sorted(OVERRIDE_TYPES)))
         if isinstance(v, bool) or not isinstance(v, (int, float)) or v <= 0:
             raise Refused("override %s must be a positive number" % k)
+        if OVERRIDE_TYPES[k] is int and isinstance(v, float) and not v.is_integer():
+            raise Refused("override %s must be a whole number" % k)
 
 
 def apply_overrides(ov):
@@ -146,6 +159,9 @@ def guard_paths(m, roots):
             raise Refused("%s: %s" % (k, why))
     if R._inside(m["out_root"], R.ARENA_OUTPUT_ROOT):
         raise Refused("refusing to write inside the arena output root")
+    t, o = os.path.realpath(m["tape_dir"]), os.path.realpath(m["out_root"])
+    if TP._under(o, t) or TP._under(t, o):
+        raise Refused("tape_dir and out_root must be disjoint")
 
 
 def hour_key(ms):
@@ -170,7 +186,7 @@ def build_book(m, run_dir, *, table_mode=None, engine_kw=None):
     ledger, registry = str(run_dir / "ledger"), str(run_dir / "bots.json")
     ov = m["rule_overrides"]
     (run_dir / "variant.json").write_text(json.dumps({"variant": {k: getattr(L, k) for k in ov}, "frozen_rule": not ov, "registered_frozen_sha_is_not_the_rule": bool(ov), "send": m["send_lamports"],
-                                                       "book_id": m["book_id"], "host": m["host"]}, indent=1, sort_keys=True) + "\n")
+                                                       "book_id": m["book_id"], "host": m["host"], "reason_labels_fixed": True}, indent=1, sort_keys=True) + "\n")
     scratch_register(registry, start_ms)
     cfg = dataclasses.replace(stack_config_for(2, R.DEFAULT_FEED_DELAY_SLOTS), send=m["send_lamports"], stakes_sol=tuple(float(x) for x in m["stakes_sol"]))
     engine = GapRangeEngine(ledger, registry, cfg=cfg, gap_exclusion=(m.get("gap_exclusion", "on") == "on"), **(engine_kw or {}))
@@ -202,7 +218,7 @@ def count_rows(run_dir):
     return {"n_decision_rows": len(rows), "n_entries": sum(1 for r in rows if r.get("kind") == "entry"), "n_exits": sum(1 for r in rows if r.get("kind") == "exit")}
 
 
-PROCESS_KEYS = ("engine_id", "trade_id")  # per-process identity the engine writes into every ledger row (random engine id and the id derived from it); not part of a decision or a price
+PROCESS_KEYS = ("engine_id",)  # the engine's random per-process id; trade_id is deterministic outside the (dropped) start rows and stays in the projection
 
 
 def ledger_rows(d):
@@ -227,11 +243,26 @@ def read_stored(out_root):
     p = Path(out_root) / "md5-by-hour.jsonl"
     out = {}
     if p.exists():
-        for ln in p.read_text().splitlines():
-            if ln.strip():
+        lines = [ln for ln in p.read_text().splitlines() if ln.strip()]
+        for i, ln in enumerate(lines):
+            try:
                 d = json.loads(ln)
                 out[d["hour"]] = d
+            except (ValueError, KeyError, TypeError):
+                if i != len(lines) - 1:
+                    raise Refused("md5-by-hour.jsonl line %d is unreadable (not the last line): repair by hand" % (i + 1))
+                print("osb_follow: torn last line of md5-by-hour.jsonl dropped (that hour is verified or appended again)", file=sys.stderr)
+                p.write_text("".join(x + "\n" for x in lines[:-1]))
     return out
+
+
+def code_sha256():
+    """sha256 of canonical {relpath: sha256}: this driver, its research helpers, floor_lane_host.py and every pinned file verify_pins() returns."""
+    files = {}
+    for rel in ("scripts/research/osb_follow.py", "scripts/research/floor_gap_range_engine.py", "scripts/research/floor_replay_proof_reg.py", "tools/floor_lane_host.py"):
+        files[rel] = hashlib.sha256((H.REPO / rel).read_bytes()).hexdigest()
+    files.update(H.verify_pins())
+    return hashlib.sha256(json.dumps(files, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
 
 
 def _atomic_json(path, obj):
@@ -242,7 +273,9 @@ def _next_run_dir(out_root):
     runs = Path(out_root) / "runs"
     runs.mkdir(parents=True, exist_ok=True)
     n = 1 + max([int(p.name) for p in runs.iterdir() if p.name.isdigit()] or [0])
-    return runs / ("%04d" % n)
+    d = runs / ("%04d" % n)
+    d.mkdir()  # no exist_ok: a second writer on the same run dir fails here
+    return d
 
 
 def _flip(out_root, run_dir):
@@ -264,7 +297,10 @@ def follow(manifest_path, once=False, max_hours=None, *, sleep_fn=time.sleep, _r
     except Mismatch as e:
         print("osb_follow: MD5 MISMATCH: %s" % e, file=sys.stderr)
         return EXIT_MISMATCH
-    except (R.HostError, R.HostFatal, SystemExit) as e:
+    except R.HostFatal as e:
+        print("osb_follow: HostFatal: %s" % str(e)[:300], file=sys.stderr)
+        return EXIT_FATAL
+    except (R.HostError, SystemExit) as e:
         print("osb_follow: %s: %s" % (type(e).__name__, str(e)[:300]), file=sys.stderr)
         return EXIT_REFUSED
 
@@ -272,9 +308,22 @@ def follow(manifest_path, once=False, max_hours=None, *, sleep_fn=time.sleep, _r
 def _follow(manifest_path, once, max_hours, sleep_fn, roots, table_mode, engine_kw=None):
     m = load_manifest(manifest_path)
     guard_paths(m, roots)
-    TP.require_ok(m["tape_dir"], roots)
+    TP.require_files_ok(m["tape_dir"], roots)  # the folder and the realpath of every tape-* entry (seed hours and hours ahead of the cursor included)
     out_root = Path(m["out_root"])
     out_root.mkdir(parents=True, exist_ok=True)
+    lock_fh = open(out_root / ".osb.lock", "a")
+    try:
+        fcntl.flock(lock_fh, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except BlockingIOError:
+        lock_fh.close()
+        raise Refused("another osb_follow holds %s" % (out_root / ".osb.lock"))
+    try:
+        return _locked(m, out_root, once, max_hours, sleep_fn, roots, table_mode, engine_kw)
+    finally:
+        lock_fh.close()
+
+
+def _locked(m, out_root, once, max_hours, sleep_fn, roots, table_mode, engine_kw):
     sha = manifest_sha256(m)
     sf = out_root / "manifest.sha256"
     if sf.exists():
@@ -283,6 +332,12 @@ def _follow(manifest_path, once, max_hours, sleep_fn, roots, table_mode, engine_
     else:
         sf.write_text(sha + "\n")
     H.verify_pins()
+    csha, cf = code_sha256(), out_root / "code.sha256"
+    if cf.exists():
+        if cf.read_text().strip() != csha:
+            raise Refused("simulator version changed (code.sha256 %s != %s): a new book" % (cf.read_text().strip()[:12], csha[:12]))
+    else:
+        cf.write_text(csha + "\n")
     restore = apply_overrides(m["rule_overrides"])
     try:
         stored = read_stored(out_root)
@@ -293,29 +348,40 @@ def _follow(manifest_path, once, max_hours, sleep_fn, roots, table_mode, engine_
             _flip(out_root, run_dir)
         last_stored = max(stored) if stored else None
         cursor, done = H.parse_hour(m["start_hour"]), 0
+        base = {"book_id": m["book_id"], "manifest_sha256": sha, "code_sha256": csha, "seed_from_hour": m["seed_from_hour"], "run": run_dir.name, "stakes_sol": list(cfg.stakes_sol)}
+        status, waiting_since = dict(base), None
         while True:
             f = hour_file(m["tape_dir"], cursor)
             if f is None:
                 if once or (max_hours is not None and done >= max_hours):
                     break
+                waiting_since = waiting_since or datetime.now(timezone.utc).isoformat()
+                status.update(waiting_for_hour=hour_key(cursor), waiting_since_utc=waiting_since, wall_time_utc=datetime.now(timezone.utc).isoformat())
+                _atomic_json(out_root / "status.json", status)
                 sleep_fn(POLL_S)
                 continue
-            why = TP.refusal(str(f), roots)
-            if why:
-                raise Refused(why)
+            waiting_since = None
+            status.pop("waiting_for_hour", None)
+            status.pop("waiting_since_utc", None)
+            TP.require_files_ok(m["tape_dir"], roots)
             end = cursor + HOUR_MS
             host.run(cursor, end)
-            key, md5 = hour_key(cursor), decision_md5(run_dir)
-            if key in stored and stored[key]["decision_md5"] != md5:
-                raise Mismatch("hour %s: stored %s, replay %s (run %s kept for inspection; stored list and `book` untouched)" % (key, stored[key]["decision_md5"], md5, run_dir.name))
+            key, md5, lmd5 = hour_key(cursor), decision_md5(run_dir), tree_md5(run_dir / "ledger")
+            if key in stored:
+                for fld, got in (("decision_md5", md5), ("ledger_md5", lmd5)):
+                    if stored[key].get(fld) != got:
+                        raise Mismatch("hour %s %s: stored %s, replay %s (run %s kept for inspection; stored list and `book` untouched)" % (key, fld, stored[key].get(fld), got, run_dir.name))
             if not verified and key == last_stored:
                 verified = True
                 _flip(out_root, run_dir)
             if verified and key not in stored:
                 with open(out_root / "md5-by-hour.jsonl", "a") as fh:
-                    fh.write(canon({"hour": key, "end_ms": end, "decision_md5": md5}) + "\n")
-            _atomic_json(out_root / "status.json", {"book_id": m["book_id"], "manifest_sha256": sha, "last_hour": key, "last_hour_end_ms": end, "wall_time_utc": datetime.now(timezone.utc).isoformat(),
-                                                    "run": run_dir.name, "active": verified, "catching_up_to_stored_hours": not verified, "decision_md5": md5, "stakes_sol": list(cfg.stakes_sol), **count_rows(run_dir)})
+                    fh.write(canon({"hour": key, "end_ms": end, "decision_md5": md5, "ledger_md5": lmd5}) + "\n")
+                    fh.flush()
+                    os.fsync(fh.fileno())
+            status.update(last_hour=key, last_hour_end_ms=end, wall_time_utc=datetime.now(timezone.utc).isoformat(), active=verified, catching_up_to_stored_hours=not verified,
+                          decision_md5=md5, ledger_md5=lmd5, **count_rows(run_dir))
+            _atomic_json(out_root / "status.json", status)
             cursor, done = end, done + 1
             if max_hours is not None and done >= max_hours:
                 break
