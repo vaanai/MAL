@@ -142,7 +142,7 @@ def test_sh_refuses_existing_result_and_outside_base_without_touching_anything(t
     (done / "gap.json").write_text("KEEP")
     (done / "run" / "x").write_text("KEEP")
     r = _run_sh(base, done, marker)
-    assert r.returncode == 3 and "already holds a result" in r.stderr and not marker.exists()
+    assert r.returncode == 3 and "cannot create" in r.stderr and not marker.exists()
     assert (done / "gap.json").read_text() == "KEEP" and (done / "run" / "x").read_text() == "KEEP"
     r = _run_sh(base, base, marker)  # WORK == BASE is not a per-run folder under BASE
     assert r.returncode == 2 and not marker.exists() and (base / "gap.json").read_text() == "{}"
@@ -162,3 +162,29 @@ def test_sh_default_is_a_new_per_run_folder(tmp_path):
     assert not (base / "gap.json").exists()
     r2 = _run_sh(base, made[0], tmp_path / "m2")
     assert r2.returncode == 3  # a second run into the same folder is refused
+
+
+def _sha(p):
+    import hashlib
+    return hashlib.sha256(Path(p).read_bytes()).hexdigest()
+
+
+def test_sh_cannot_be_bypassed_with_dotdot_or_symlink(tmp_path):
+    base = tmp_path / "floor-gap-range"
+    base.mkdir()
+    (base / "gap.json").write_text("old")
+    (base / "replay.log").write_text("oldlog")
+    (base / "run").mkdir()
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    (base / "lnk").symlink_to(outside)
+    marker = tmp_path / "marker"
+    before = (_sha(base / "gap.json"), _sha(base / "replay.log"))
+    seen_above = set(p.name for p in tmp_path.iterdir() if p.name != "stubpy")
+    for arg in (str(base) + "/x/..", str(base) + "/..", str(base) + "/../", str(base) + "/lnk", str(base) + "/lnk/sub", str(base) + "/./", str(base) + "/a/../b"):
+        r = _run_sh(base, arg, marker)
+        assert r.returncode != 0, (arg, r.stderr)
+        assert not marker.exists(), arg
+        assert (_sha(base / "gap.json"), _sha(base / "replay.log")) == before, arg
+        assert list(outside.iterdir()) == [] and set(p.name for p in tmp_path.iterdir() if p.name != "stubpy") == seen_above, arg
+        assert not (base / "shim").exists() and not (base / "x").exists(), arg
