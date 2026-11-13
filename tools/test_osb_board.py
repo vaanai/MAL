@@ -74,10 +74,16 @@ def make_book(tmp, bid, rows, end_ms=END, wall="2026-11-16T06:00:30+00:00", **kw
     return mp, out
 
 
-def set_status(out, end_ms, wall="2026-11-16T06:00:30+00:00"):
-    st = {"book_id": out.name, "stakes_sol": [0.1, 0.25]}
+def set_status(out, end_ms, wall="2026-11-16T06:00:30+00:00", **extra):
+    """status.json as osb_follow writes it, plus md5-by-hour.jsonl (the verified hours of the active run)"""
+    st = {"book_id": out.name, "stakes_sol": [0.1, 0.25], "run": "0001"}
+    md5 = out / "md5-by-hour.jsonl"
     if end_ms is not None:
         st.update(last_hour=B.utc(end_ms - H)[:13], last_hour_end_ms=end_ms, wall_time_utc=wall, active=True)
+        md5.write_text(json.dumps({"hour": B.utc(end_ms - H)[:13], "end_ms": end_ms, "decision_md5": "d", "ledger_md5": "l"}) + "\n")
+    elif md5.exists():
+        md5.unlink()
+    st.update(extra)
     (out / "status.json").write_text(json.dumps(st))
 
 
@@ -150,7 +156,9 @@ def test_variant_vs_control_disclosure_and_floor(world):
     assert d["floor_holds"] is True
     assert row(res, "A", 0.25)["disclosure"]["floor_holds"] is None and row(res, "A", 0.25)["vs_control"] is None
     md = (out / "board.md").read_text()
-    assert "QP floor: holds" in md and "QP floor: n/a" in md and "recommend" not in md.lower()
+    assert d["decision_grade"] is False and res["decision_grade"] is False and res["recon"] == {"status": "NOT COMPARABLE: not decision-grade"}
+    assert "holds; not decision-grade (recon NOT COMPARABLE): no live step rests on it" in md and "QP floor (a fact, not a recommendation)" in md and "QP floor: n/a" in md
+    assert "| holds |" not in md and "QP floor: holds |" not in md and "QP floor: holds\n" not in md
 
 
 def test_floor_does_not_hold_when_control_is_ahead(tmp_path):
@@ -210,11 +218,27 @@ def test_waiting_for_hour_is_carried(tmp_path):
     assert load(o)["books"][0]["waiting_for_hour"] == "2026-11-16T06"
 
 
-def test_manifest_pin_mismatch_is_exit_2_and_names_the_book(tmp_path, capsys):
-    mp, out = make_book(tmp_path, "A", CONTROL_ROWS)
-    (out / "manifest.sha256").write_text("0" * 64 + "\n")
-    rc, o = run(tmp_path, books_file(tmp_path, [(mp, "control")]))
-    assert rc == 2 and "book A" in capsys.readouterr().err and not (o / "board.json").exists()
+def test_pin_mismatch_refuses_only_that_book_even_after_startup(tmp_path):
+    ca, outa = make_book(tmp_path, "A", CONTROL_ROWS)
+    cc, outc = make_book(tmp_path, "C", VARIANT_ROWS)
+    bf = books_file(tmp_path, [(ca, "control"), (cc, "variant")])
+    assert run(tmp_path, bf)[0] == 0
+    (outc / "manifest.sha256").write_text("0" * 64 + "\n")  # a restart under another manifest, seen at the next build
+    rc, o = run(tmp_path, bf)
+    res = load(o)
+    assert rc == 0 and [b["state"] for b in res["books"]] == ["running", "REFUSED: manifest pin"] and res["books"][1]["rows"] == [] and len(res["books"][0]["rows"]) == 2
+
+
+def test_a_book_whose_driver_has_not_started_is_starting(tmp_path):
+    ca, _ = make_book(tmp_path, "A", CONTROL_ROWS)
+    cc, outc = make_book(tmp_path, "C", VARIANT_ROWS)
+    import shutil
+    shutil.rmtree(outc)  # no out_root yet
+    rc, o = run(tmp_path, books_file(tmp_path, [(ca, "control"), (cc, "variant")]))
+    res = load(o)
+    assert rc == 0 and [b["state"] for b in res["books"]] == ["running", "starting"] and len(res["books"][0]["rows"]) == 2
+    (outc / "x").parent.mkdir(parents=True)  # out_root exists, no pin yet
+    assert load(run(tmp_path, books_file(tmp_path, [(ca, "control"), (cc, "variant")]))[1])["books"][1]["state"] == "starting"
 
 
 def test_bad_books_files_are_refused(tmp_path):
@@ -257,11 +281,13 @@ def test_output_allow_list_and_labels(world):
         low = s.lower().replace("unpriced", "")
         assert not any(w in low for w in ("pool", "mint", "signature", "price", "reserve", "slot")), s
     assert not any(w in md.lower().replace("unpriced", "").replace("priced", "") for w in ("pool", "mint", "signature", "price", "reserve", "slot"))
-    assert res["banner"] == "open simulation, paper, not a gate read; no book has cleared the promotion gate" and res["recon"] == {"status": "NOT COMPARABLE"} and "NOT COMPARABLE: not decision-grade" in md
+    assert res["banner"] == "open simulation, paper, not a gate read; no book has cleared the promotion gate" and res["recon"] == {"status": "NOT COMPARABLE: not decision-grade"} and "NOT COMPARABLE: not decision-grade" in md
     assert res["live"] == {"note": "passed through"} and res["n_books_watched"] == 6 and "best of 6 book rows; treat as shrunk" in res["caveat"]
     assert row(res, "A", 0.10)["impact_label"] == "model; live fills exist, not reconciled (recon NOT COMPARABLE)" and row(res, "A", 0.25)["impact_label"] == "model; live check pending"
     a, c, d = (next(b for b in res["books"] if b["id"] == i) for i in "ACD")
-    assert "control: the exact live configuration" in a["title"] and "Q_STAR=1000000000.0" in c["title"] and "TP=1.3" in d["title"]
+    assert "the lane limit layer (max_open 16, budget, daily stop) is not applied" in a["title"] and "exact live configuration" not in a["title"] and a["params"]["limit_layer"] == "not applied" and res["limit_layer"] == "not applied"
+    assert "No limit layer (max_open, budget, daily stop) is applied to any book" in md
+    assert "Q_STAR=1000000000.0" in c["title"] and "TP=1.3" in d["title"]
     assert a["gap_guard_note"] is None and d["gap_guard_note"] == "no lane gap guard" and d["params"]["host"] == "hostv2" and c["params"]["gap_guard"] is True
     assert a["code_sha256"] == "c" * 64 and a["params"]["send_lamports"] == 160000 and a["params"]["start_hour"] == "2026-11-14T12"
     assert "no lane gap guard" in md and "extrapolation_note" not in res  # stakes 0.10 and 0.25 only
