@@ -743,3 +743,181 @@ def test_cli_main_runs_and_the_script_runs_isolated(tmp_path):
     r = subprocess.run([sys.executable, "-I", str(REPO / "tools" / "r4b_preview.py"), "run", "--manifest", w["manifest"], "--manifest-sha256", "0" * 64, "--as-of", w["as_of"]],
                        capture_output=True, text=True, cwd=str(tmp_path))
     assert r.returncode == 2 and "REFUSED" in r.stderr, "the real roots do not exist here and the manifest sha is wrong: refused, nothing opened"
+
+
+# ------------------------------------------------------------------------------------------------------------------------------ review round: work root, blobs, keeper
+def _scan(root, needles) -> list:
+    hits = []
+    if not Path(root).exists():
+        return hits
+    for p in Path(root).rglob("*"):
+        if p.is_file():
+            b = p.read_bytes()
+            hits += [(p.name, n) for n in needles if n.encode() in b]
+    return hits
+
+
+def _no_files(root) -> bool:
+    return not Path(root).exists() or not any(p.is_file() for p in Path(root).rglob("*"))
+
+
+def test_work_root_overlap_is_refused_and_stale_leftovers_are_swept(tmp_path):
+    c, k, o, w = (tmp_path / x for x in ("c", "k", "o", "w"))
+    for bad in ((c, k, o, o / "w"), (c, k, o, c / "w"), (c, k, o, k), (c, k, o, tmp_path), (c, k, o, Path("/data/mal/arena/w")), (c, k, o, Path("/var/lib/w")),
+                (c, k, o, Path("/data2/mal/r4b-preview/out/w"))):
+        with pytest.raises(G.Refused):
+            V.make_env(bad)
+    env = V.make_env((c, k, o, w))
+    with pytest.raises(G.Refused):
+        env.check_work(o / "x")
+    wd = world(tmp_path / "s")
+    stale = Path(wd["roots"][3]) / "work-1-999"
+    stale.mkdir(parents=True)
+    (stale / "ledger.jsonl").write_text(POOL)
+    (Path(wd["roots"][3]) / "loose.txt").write_text(POOL)
+    assert run_world(wd) == 0
+    assert not list(Path(wd["roots"][3]).iterdir())
+
+
+def test_no_pool_string_exists_under_out_root_during_or_after_a_run(tmp_path, monkeypatch):
+    w = world(tmp_path)
+    seen = {}
+    real = V.ArenaEngine.sell
+
+    def spy(self, *a, **k):
+        seen["work"] = [p for p in Path(w["roots"][3]).rglob("*") if p.is_file()]
+        seen["out_hits"] = _scan(w["roots"][2], (POOL, MINT))
+        return real(self, *a, **k)
+
+    monkeypatch.setattr(V.ArenaEngine, "sell", spy)
+    assert run_world(w) == 0
+    assert seen["work"] and seen["out_hits"] == [], "the engine ledger exists only under WORK_ROOT while the replay runs"
+    assert _scan(w["roots"][2], (POOL, MINT, "ZQX")) == [] and not list(Path(w["roots"][3]).iterdir())
+
+
+def test_a_crash_mid_replay_leaves_nothing_under_out_root_and_work_is_emptied(tmp_path, monkeypatch):
+    w = world(tmp_path)
+
+    def boom(self, *a, **k):
+        raise RuntimeError("killed")
+
+    monkeypatch.setattr(V.ArenaEngine, "sell", boom)
+    with pytest.raises(RuntimeError):
+        run_world(w)
+    assert not list(Path(w["roots"][3]).iterdir()), "removed at exit on every path"
+    assert _scan(w["roots"][2], (POOL,)) == []
+
+
+def test_registered_blob_table_matches_the_files_and_one_byte_refuses(tmp_path):
+    assert set(V.REGISTERED_BLOBS) == {"tools/r4bt_price.py", "tools/arena_paper.py", "tools/arena_score.py", "tools/r4bt_read.py", "tools/r4bt_gate.py", "tools/arena_declog.py",
+                                       "tools/r4bt_bots.py"}
+    V.check_registered_modules()  # the table equals the files at this commit
+    for rel in V.REGISTERED_BLOBS:
+        d = tmp_path / "copy" / rel
+        d.parent.mkdir(parents=True, exist_ok=True)
+        d.write_bytes((REPO / rel).read_bytes())
+    V.check_registered_modules(tmp_path / "copy")
+    f = tmp_path / "copy" / "tools/arena_score.py"
+    f.write_bytes(f.read_bytes() + b" ")
+    with pytest.raises(G.Refused, match="arena_score.py"):
+        V.check_registered_modules(tmp_path / "copy")
+    w = world(tmp_path / "w")
+    saved = dict(V.REGISTERED_BLOBS)
+    V.REGISTERED_BLOBS["tools/r4bt_bots.py"] = "0" * 40
+    try:
+        assert run_world(w) == 2
+    finally:
+        V.REGISTERED_BLOBS.update(saved)
+    assert _no_files(w["roots"][2])
+
+
+def _hour_zst(w, k):
+    return Path(w["roots"][1]) / f"tape-{P.hour_name(V.TAPE_FLOOR_MS + k * HR)}.jsonl.zst"
+
+
+def test_keeper_hours_good_size_sha_missing_row_and_torn_last_line(tmp_path, capsys):
+    w = world(tmp_path / "g")
+    assert run_world(w) == 0
+    w1 = world(tmp_path / "s")  # size mismatch on a pre-roll hour
+    f = _hour_zst(w1, 1)
+    f.write_bytes(f.read_bytes() + b"\0")
+    assert run_world(w1) == 3 and _no_files(w1["roots"][2])
+    w2 = world(tmp_path / "h")  # sha mismatch, same size
+    f = _hour_zst(w2, 4)
+    b = bytearray(f.read_bytes())
+    b[-1] ^= 1
+    f.write_bytes(bytes(b))
+    capsys.readouterr()
+    assert run_world(w2) == 3 and P.hour_name(V.TAPE_FLOOR_MS + 4 * HR) in capsys.readouterr().err
+    w3 = world(tmp_path / "m")  # no row for the first pre-roll hour
+    kp = Path(w3["roots"][1]) / V.KEEPER_HOURS
+    kp.write_text("\n".join(kp.read_text().splitlines()[1:]) + "\n")
+    assert run_world(w3) == 3
+    w4 = world(tmp_path / "t")  # a torn extra line is skipped with a count; a torn needed row is a missing row
+    kp = Path(w4["roots"][1]) / V.KEEPER_HOURS
+    txt = kp.read_text()
+    kp.write_text(txt + '{"h": "2026-11-16T09", "name": "tape-2026-11-16T09.jsonl.z')
+    capsys.readouterr()
+    assert run_world(w4) == 0 and "1 unreadable line" in capsys.readouterr().err
+    ls = txt.splitlines()
+    kp.write_text("\n".join(ls[:5]) + '\n{"h": "2026-11-16T0')  # the rows of hours 5.. are gone and the last line is torn
+    assert run_world(w4) == 3
+
+
+def test_chain_break_at_the_tail_is_exit_3_and_a_missing_middle_day_is_untrusted(tmp_path):
+    w = world(tmp_path)
+    f = Path(w["roots"][0]) / DRY / "decisions" / V.ARM / "2026-11-16.jsonl"
+    lines = f.read_bytes().split(b"\n")[:-1]
+    f.write_bytes(b"\n".join(lines[:-1]) + b"\n" + lines[-1].replace(b'"rank"', b'"Rank"') + b"\n")
+    assert run_world(w) == 3
+    w2 = world(tmp_path / "d")
+    dl = DecisionLog(Path(w2["roots"][0]) / DRY)
+    dl.append(V.ARM, CUT + 3 * HR + 5, {"kind": "gap", "gap_kind": "x"})
+    dl.append(V.ARM, CUT + DAY + 5, {"kind": "gap", "gap_kind": "y"})
+    dl.append(V.ARM, CUT + 2 * DAY + 5, {"kind": "gap", "gap_kind": "z"})
+    (Path(w2["roots"][0]) / DRY / "decisions" / V.ARM / "2026-11-17.jsonl").unlink()
+    with pytest.raises(V.Untrusted):
+        V.read_chain_prefix(V.make_env(w2["roots"]), DRY, CUT + 3 * DAY)
+
+
+def test_console_lines_carry_both_e1_columns_and_both_counts(tmp_path):
+    T0 = V.CUTOFF_S
+    rows = [(CUT + 1200, entry_body(T0)), (CUT + HR + 1200, exit_body(T0, T0 + 3600)), (CUT + 1800_000, entry_body(T0 + 1800, mint="MA"))]
+    w = world(tmp_path, dry_rows=rows)
+    assert run_world(w) == 0
+    con = outputs(w)["console.txt"].decode().splitlines()
+    assert con and all("e1 proportional flat" in ln and "e1 fixed flat" in ln and "press" in ln for ln in con)
+    assert all(ln.endswith("| no exit row 0, open at as_of 1") for ln in con)
+    for s in ("0.1", "0.25", "0.5", "1"):
+        assert any(f"{s} SOL" in ln for ln in con)
+
+
+def test_non_counted_entries_change_no_counted_row_and_peak_open_counts_priced_only(tmp_path):
+    T0, T2 = V.CUTOFF_S, V.CUTOFF_S + 1800
+    dry = [(CUT + 1200, entry_body(T0)), (CUT + HR + 1200, exit_body(T0, T0 + 3600))]
+    dec = [(CUT + 600_000, entry_body(T2, mint="MX")), (CUT + HR + 600_000, exit_body(T2, T2 + 1800, mint="MX"))]
+    a = world(tmp_path / "a", dry_rows=dry)
+    b = world(tmp_path / "b", dry_rows=dry, dec_rows=dec, first_live=V.CUTOFF_S + 7200)
+    assert run_world(a) == 0 and run_world(b) == 0
+    ja, jb = json.loads(outputs(a)["preview.json"]), json.loads(outputs(b)["preview.json"])
+    assert ja["cells"] == jb["cells"] and ja["peak_open"] == jb["peak_open"]
+    assert ja["trades"] == [t for t in jb["trades"] if t["counted"]]
+
+
+def test_verify_diff_exit_code_is_not_the_crash_code_and_as_of_must_be_on_the_hour(tmp_path):
+    w = world(tmp_path)
+    assert V.run(w["manifest"], w["manifest_sha256"], "2026-11-16T03:30:00Z", roots=w["roots"], now_ms=w["now_ms"], code_state_fn=w["code_state_fn"]) == 2
+    assert V.run(str(tmp_path / "nope.json"), "0" * 64, w["as_of"], roots=w["roots"], now_ms=w["now_ms"], code_state_fn=w["code_state_fn"]) == 3
+    assert run_world(w) == 0
+    (out_dir(w) / "preview.json").unlink()
+    (out_dir(w) / "preview.json").write_bytes(b"{}")
+    assert run_world(w, verify=True) == 4
+
+
+def test_first_output_is_written_before_the_outputs(tmp_path, monkeypatch):
+    w = world(tmp_path)
+    order = []
+    real = V.os.link
+    monkeypatch.setattr(V.os, "link", lambda a, b: (order.append((Path(w["roots"][2]) / "first-output.json").exists()), real(a, b))[1])
+    assert run_world(w) == 0
+    assert order and all(order), "first-output.json exists before the first link"

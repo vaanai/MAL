@@ -175,7 +175,7 @@ def make_env(roots: tuple[str | Path, str | Path, str | Path, str | Path] | None
         b = Path(bad)
         if inside(orr, b):
             raise G.Refused(f"OUT_ROOT {orr} is inside {bad}: refused")
-    for bad in NEVER_WRITE:
+    for bad in NEVER_WRITE_WORK:
         if inside(wr, Path(bad)):
             raise G.Refused(f"WORK_ROOT {wr} is inside {bad}: refused")
     trees = (dr, tr, orr, wr)
