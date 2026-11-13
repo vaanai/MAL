@@ -2,6 +2,14 @@
 
 Code: `scripts/ops/floor_stage1_proof.py` (+ `.sh` wrapper for MiScusi jobs, which run under sh). Tests: `tools/test_floor_stage1_proof.py`. Stdout is counts, md5 and flag words only; a small JSON goes to `<out>/<cmd>.json`. Nothing here says the rule makes money. NOT RUN on real tape by the author.
 
+## Scope (manager decision, DEC-035 Am.7)
+Am.7 installs with `cheap_restart: true` and `status_span_no_loss` FALSE, and the unit runs WITHOUT `--since-hour`. The install therefore needs **P0 and P2 only**. **P1 is required only before `status_span_no_loss` is switched on (a later amendment).**
+
+## Closed hv7 hours each proof needs
+Hours are `tape-YYYY-MM-DDTHH.jsonl.zst`, seed 2026-11-02T01 onward, no gaps allowed (`--count-only` reports missing hours).
+- P0: 2026-11-02T01 .. 2026-11-10T23 (seed to W1 end, 215 hours).
+- P1 and P2: 2026-11-02T01 .. 2026-11-12T23 (W2 end 11-13T00Z, 263 hours); `--to` must not be the current UTC hour.
+
 ## Windows (pre-declared)
 - Seed: every replay seeds the pool table from 2026-11-02T01 (first hour of the research-0 hv7 copy). The host needs the seed at least 201 h before `--from-ms`, so the earliest valid `--from` is **2026-11-10T10Z**. 2026-11-10T00Z is not reachable.
 - W1 (P0) = [2026-11-10T10Z, 2026-11-11T00Z), 14 h. The script counts writer status spans in it (the host's own `captured_no_loss_row` predicate on the raw gap rows with t_recv in [from - 365 min, to)) and refuses (exit 1) unless the count is 0. It does hold the backlog_jump holes G2-G8; both hosts refuse alike there.
@@ -29,7 +37,7 @@ miscusi-agent job submit --name floor-s1-p2 --machine mal-research-0 --role expl
 ## Pass criteria
 - **P0**: `P0 PASS`: file set equal, `files_md5_differ=0` (md5 of every whole decision-log day file), `checkpoint_equal=True`, `status_spans_in_w1=0`.
 - **P1**: `P1 PASS`: every `*_MUST0` count is 0, `v2_only_entries >= 1` (else exit 3, window proves nothing), `v2_only_entries == v2_only_at_v1_refusal_rows`; also printed: status span count and durations, refusals by reason/gap kind for v1 and v2, entries, md5 of the common entry and exit projections.
-- **P2**: `P2 PASS`: nine cases (a: D = 5 min, 2 h, warm-5 min, warm+5 min, 7 h; c exception; d in_doubt; e unknown v1 checkpoint; e unknown status-flag-only checkpoint). Per case: prev_end, fallback (as expected), shadow_complete, n pools blocked, n reference buys in downtime (>= 1), post-restart entries, entries not in the reference (0), dispatched during shadow (0), rows written by the shadow (0), reference pools bought in the downtime that were not blocked (0), reference positions open in the downtime not covered (0). `blocked_equals_ref_buys` is informational: the empty-book shadow also blocks pools the reference holds, so the blocked set can be larger. T is chosen from the reference's own decisions and kept in the JSON only.
+- **P2**: `P2 PASS`: nine cases plus case (f) and a check. The restart rebuild is exactly `main run`'s with a checkpoint and no `--since-hour` (`rebuild_table(table, tape, warm_start)`); `start_duration_s_INFO` (rebuild + lane_start + catch-up) is printed for information, not a pass criterion. `P2-CHECK missing_checkpoint_refuses=True`: a decision log without its lane checkpoint refuses to start (fail closed). Case (f): `P2-F f2` a restart inside 24 h of the unflagged deploy span still refuses every pool (`old_unflagged_span_refuses_every_pool=True`), `P2-F f3` after the span aged out the restart is cheap (`shadow_complete=True`, `prev_end=signal`, refuse flag False). Nine cases (a: D = 5 min, 2 h, warm-5 min, warm+5 min, 7 h; c exception; d in_doubt; e unknown v1 checkpoint; e unknown status-flag-only checkpoint). Per case: prev_end, fallback (as expected), shadow_complete, n pools blocked, n reference buys in downtime (>= 1), post-restart entries, entries not in the reference (0), dispatched during shadow (0), rows written by the shadow (0), reference pools bought in the downtime that were not blocked (0), reference positions open in the downtime not covered (0). `blocked_equals_ref_buys` is informational: the empty-book shadow also blocks pools the reference holds, so the blocked set can be larger. T is chosen from the reference's own decisions and kept in the JSON only.
 
 ## Paste into DEC-035 Am.7's install record
 Merge sha, PR head sha of the proof script, window instants, and the lines `P0 ...`, `P1 ...`, `P2-CASE ...` (counts and md5 only), plus the host md5s. State that the proof is host-level only (QP condition 13).

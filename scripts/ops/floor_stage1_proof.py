@@ -4,7 +4,7 @@ and R5. PAPER replays only. COUNTS, MD5s AND FLAG WORDS ONLY go to stdout (no po
 
   p0  flags off = v1. The host's own `main replay` at the checked-out sha vs the same entry point of the v1 host, over W1, both flags absent. Every decision-log file byte-equal
       (md5 of each whole file, set of file names) and the lane checkpoint md5 equal. W1 must hold ZERO writer status spans (counted from the raw gap rows).
-  p1  flags on (status_span_no_loss) vs v1 over W2, which must hold real status spans: decisions(v2) = decisions(v1) except v1 refusals turned into entries. Prints the QP
+  p1  (required only before `status_span_no_loss` is switched on, a later amendment; Am.7 installs it FALSE) flags on (status_span_no_loss) vs v1 over W2, which must hold real status spans: decisions(v2) = decisions(v1) except v1 refusals turned into entries. Prints the QP
       must-be-0 counts and the number of v2-only entries (>= 1, else the window proves nothing: exit 3).
   p2  restart harness. `main replay` never calls note_rebuild / lane_start / the shadow, so this drives LaneHost in `main run`'s order (table rebuild -> note_rebuild -> lane_start
       -> resume -> run) over tape, with a simulated kill (no finally) at T and a restart at T + D, against the UNGUARDED reference (HostV2 + the frozen rule straight through).
@@ -741,7 +741,7 @@ def cmd_p2(a) -> int:
 
 
 def build_parser() -> argparse.ArgumentParser:
-    ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
+    ap = argparse.ArgumentParser(description=__doc__.split("\n")[0] + "  NOTE: p1 is required only before status_span_no_loss is switched on (a later amendment); the Am.7 install needs p0 and p2.", formatter_class=argparse.RawDescriptionHelpFormatter)
     sub = ap.add_subparsers(dest="cmd", required=True)
     for name in ("p0", "p1", "p2", "_replay"):
         p = sub.add_parser(name)
