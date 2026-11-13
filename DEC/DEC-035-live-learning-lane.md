@@ -298,11 +298,11 @@ Review nits from #1318 and #1319, carried as wording only:
 4. Provenance of "about 0.007 SOL per position" (REVIEWER nit on #1319, "the number is not derived from the cause now named"): the figure is the round-trip impact estimate of the "Price impact" section (2 × 0.25² / 18.25 = 0.00685; 8 × 0.00685 = 0.0548 for 8 open), taken from the REVIEWER comment on #1318. It was not derived from pool fees plus rent and buy fee, and no fee derivation has been made. Read "about 0.007" and "about 0.055" in "Why the daily stop is 0.50" as that impact estimate. The sentence's cause (pool fees plus rent and buy fee) stays as Erratum 1 item 2 set it. The magnitude is small against the 0.50 stop, and the rationale does not rest on the exact number.
 
 ## Amendment 7 (2026-11-13): floor-lane-1 decision host "stage 1" install (cheap restart on; the deploy restart is a 24 h refuse-all; `status_span_no_loss` stays off)
-Written 2026-11-13T00:1xZ (`date -u` 00:16:13Z), manager23 draft. Nothing in this amendment says floor-lane-1 makes money, and **floor-lane-1 has not cleared the promotion gate**.
+Written 2026-11-13T00:1xZ (`date -u` 00:16:13Z) by manager23; revised 2026-11-13T00:2xZ (`date -u` 00:26:07Z) after QP NOT OK and the REVIEWER MINORs at 8db68744 on PR #1335. Nothing in this amendment says floor-lane-1 makes money, and **floor-lane-1 has not cleared the promotion gate**.
 
 **Decider.** manager23. §3 makes a code change a new `bot_id` that is "logged, not re-approved"; this amendment raises no §2 limit and touches no §6 scaling step, so this DEC's text asks for no owner word. It keeps the bot_id by a named exception to §3, as Amendment 2 did. Helm acts on the owner's word in the Helm chat (see Install).
 
-**Sources.** `/data/mal/hunt-1008/ops/QP-RULING-1112-floor-guard-stage1.md` (conditions 1–13; "the ruling wins" over the design); the QP verdicts on PR #1332, the last at 60f9c7a2 (OK; "not an install approval"); `docs/runbooks/floor-lane-host-stage1.md` at main aa05923f; the design `/data/mal/hunt-1008/ops/reports/2026-11-12/floor-gap-guard-v2-design.md`.
+**Sources.** `/data/mal/hunt-1008/ops/QP-RULING-1112-floor-guard-stage1.md` (conditions 1–13; the runbook says the ruling wins over the design: "the ruling wins", docs/runbooks/floor-lane-host-stage1.md line 3); the QP verdicts on PR #1332, the last at 60f9c7a2 (OK; "not an install approval"); `docs/runbooks/floor-lane-host-stage1.md` at main aa05923f; the design `/data/mal/hunt-1008/ops/reports/2026-11-12/floor-gap-guard-v2-design.md`.
 
 **Found.** The decision host refuses every pool for BLOCK_MS (24 h + 1.9 s hold + 60 s cooldown + 1 s tick + 5 s margin) after any host_down span, so any host restart is a day without entries (docs/HANDOFF.md §0 item 1). It also refuses for 6 h after a writer status span in which no row was lost (11-12, 16:04:39Z, 763 ms; HANDOFF §1). PR #1332, merged as main `aa05923fc7d2593c4d70c7c80b2f64dee371d700` with QP OK and REVIEWER APPROVE at head 60f9c7a2, adds two host config flags that narrow those refusals. Both default to false. With both flags off the host is byte-identical to v1 (golden md5 `aba8b479bc9f1841f70fe4dffb288d2d`, which QP verified against main's own code).
 
@@ -320,7 +320,8 @@ Written 2026-11-13T00:1xZ (`date -u` 00:16:13Z), manager23 draft. Nothing in thi
 3. **The deploy restart is NOT cheap.**
    - The first start with `cheap_restart: true` loads a checkpoint that the live v1 host wrote without it. It therefore reads `prev_end: unknown` and takes `fallback: unknown_prev_end`, with `shadow_complete: false`.
    - So the host refuses **every** pool for 24 h after the install, exactly as a v1 restart does. The runbook: "The FIRST start with `cheap_restart: true` from any checkpoint not written with `cheap_restart: true` … refuses ALL pools for 24 h".
-   - The checkpoint that run writes carries `guard.cheap_restart: true`. Cheap restarts begin with the restart **after** the deploy start. QP at 60f9c7a2: "any restart after the first flagged periodic lane checkpoint, about 60 s after the deploy start".
+   - The checkpoint that run writes carries `guard.cheap_restart: true`, so a later restart can read `prev_end` `end` or `signal`.
+   - "A restart within BLOCK_MS of the deploy start's host_down span still refuses every pool until that span's end + BLOCK_MS, because the deploy span is unflagged and stays in the checkpoint; the same holds after any fallback restart. The first restart whose cost is only the shadow-blocked pools is one made more than BLOCK_MS after the last unflagged host_down span ended." (QP R4 on #1335 at 8db68744. It corrects the wording "any restart after the first flagged periodic lane checkpoint, about 60 s after the deploy start" from QP at 60f9c7a2, which the first draft of this amendment quoted.)
 4. **`status_span_no_loss` stays `false` under this amendment.**
    - **Switching it on** needs its own amendment or erratum, merged with QP OK and REVIEWER APPROVE at its head. It comes after the counts-only check of QP conditions 4–5: for every hour with a status span since S, the writer hour-health `status_failures` codes are only `status_stale`, `status_missing` or `status_ts_missing`.
    - **While it is on:** the check repeats daily. Any other code (`decoder_blobs_mismatch`, `decoder_blobs_not_pinned`, `event_v_off`) means the lane STOP file, then the flag off. No follower decoder change is made while the flag is on.
@@ -342,10 +343,10 @@ Written 2026-11-13T00:1xZ (`date -u` 00:16:13Z), manager23 draft. Nothing in thi
    - **The new host config** is a copy of `/etc/mal-floor-lane/host.json` at sha256 `60f7a60a…` with exactly one key added, `"cheap_restart": true`. `status_span_no_loss` stays absent, which the code reads as false (`_cfg_flag`). Every other field stays byte-for-byte identical in value.
    - **Its file name.** DEC-035 sets no naming precedent for the host config (the executor's `live-<sha>.json` names are executor configs). The new file's name is chosen by Helm and recorded with its sha256 in the reply. `/etc/mal-floor-lane/host.json` is kept unchanged for rollback.
    - **The new tree** is a new clean root-owned directory beside `/usr/local/lib/mal-floor-lane/current`, checked out at main aa05923f. How `current` (or the unit's WorkingDirectory) is switched to it is Helm's choice. The rollback switches it back and uses the old config.
-   - **The unit's `--since-hour 2026-10-29T11`.** With a checkpoint present, it still sends the start through `rebuild_table_since` (`tools/floor_lane_host.py`, `main`).
-     - **Decisions are unchanged by it.** That path hard-links every tape hour from 2026-10-29T11 up to the warm-up start into `<root>/lane/seed-tmp`, then applies only rows after the pickle's hwm, because `PoolTable.rebuild` skips earlier hours and rows. This is the same table as `rebuild_table`.
-     - **Its cost is disk.** Where a hard link fails, the file is copied instead.
-     - **Helm's choice.** Helm may keep the flag or drop it; the reply says which. Without it, a missing checkpoint makes the start refuse ("first start (no checkpoint): --since-hour is required").
+   - **The unit's `--since-hour 2026-10-29T11` is dropped** (QP R1 on #1335).
+     - **Why.** With a checkpoint present, `--since-hour` still sends the start through `rebuild_table_since` (`tools/floor_lane_host.py`, `main`). That path hard-links (or, where `os.link` fails, copies) every tape hour from 2026-10-29T11 up to the warm-up start into a temporary `floor-lane-seed-*` directory under `<root>/lane/seed-tmp`. The directory is removed after the rebuild; only a SIGKILL during the copy leaves it behind. `PoolTable.rebuild` then applies only rows after the pickle's hwm, so the table is the same as `rebuild_table` gives.
+     - **The cost.** In copy mode, one start temporarily needs about the whole tape since 10-29 free on the filesystem that holds the decision root, and every start takes longer (the start duration grows with the copy). Start duration does not decide completeness (QP R1 (a)); triggers during it are stale, then shadowed, so they cost entries, not safety.
+     - **Required.** "The new unit runs `… tools/floor_lane_host.py run --config <new config>` **without** `--since-hour`. With the lane checkpoint and the pool-table pickle present, the start uses `rebuild_table` on the tape dir (no links, no copies, the same table); a missing checkpoint or pickle makes the start refuse ("first start (no checkpoint): --since-hour is required"), which is fail-closed and needs the manager. Helm reports the new ExecStart line. Before the start Helm checks that `<root>/lane/seed-tmp` holds no leftover `floor-lane-seed-*` directory and reports it (names and sizes only). The rollback ExecStart is the old one." (QP R1.)
 
 **Bot id.**
 - floor-lane-1 keeps its bot_id, its decision root and its ledger, by a named exception to §3 ("A code or prompt change is a new `bot_id`").
@@ -358,18 +359,21 @@ Written 2026-11-13T00:1xZ (`date -u` 00:16:13Z), manager23 draft. Nothing in thi
 - "Residual restart cost": "positions open at the restart lose the host take-profit and time-exit at 24 h".
 
 **Authorised host restarts.**
-- This amendment overrides "the decision host is never restarted" (Amendments 4, 5 and 6, Install) and docs/HANDOFF.md §0 item 1 ("Never restart `mal-floor-lane-host.service`"), **for this install only**.
-- It authorises two host restarts, both through Helm:
-  - one deploy restart, by one HELM-ASK;
-  - the rollback restart of the kill line below.
-- Any later host restart, the first cheap one included, needs its own authorisation (an erratum or an amendment) and goes through Helm. It is checked as in Post-install check (b).
+- This amendment overrides "the decision host is never restarted" (Amendments 4, 5 and 6, Install) and docs/HANDOFF.md §0 item 1 ("Never restart `mal-floor-lane-host.service`") for this install, its rollback, and the later restarts of the standing rule below.
+- **The install.** One deploy restart, through Helm, by one HELM-ASK; and the rollback restart of the kill line below.
+- "**Later host restarts (standing rule).** After the install, a restart of `mal-floor-lane-host.service` is allowed without a new amendment when the code and the host config are the blobs and sha256 this amendment (or a later merged amendment or erratum) installed, and it is made for an authorised install, a rollback, or an operational need (a crash, a host fault, a Helm maintenance). Each such restart goes through Helm, is logged in LAB_STATE, the manager state file and the MiScusi notebook with: the stop and start instants, how the previous process ended (systemd `code=`/status), the `lane_start` `prev_end`, the `lane_restart_shadow` `fallback`, `shadow_complete`, `n_shadow_buys`, `n_blocked_pools` and `blocked_by_why`, and the number of open positions at the stop (they lose the host take-profit). No restart is made while a kill-line check of the previous restart is pending. A restart that changes code or config needs its own amendment or erratum, as before." (QP R3 on #1335.) Each is checked as in Post-install check (b).
 - The executor is not restarted by this install.
 
 **Timing.** QP condition 1, quoted exactly:
 > "**Install timing.** Not before C = 2026-11-13T00:00:00Z. At or after R = 2026-11-14T01:00:00Z, unless the lane report at the stop instant shows **zero** open positions whose entry is before C (then any time after C). Not inside the 11-15 tip hand-off window (HANDOFF). The stop and start instants go into LAB_STATE, the manager state file and the MiScusi notebook."
 
 - **C and R** are EXP-029 Erratum 1g's. Its rule 1: "C is the first 00:00Z after it, R = C + 25 h". The event was the 0.10 install at 2026-11-12T00:46:04.584Z.
-- **The tip hand-off window** is [2026-11-15T05:00:00Z, 2026-11-15T09:00:00Z). It lasts past 09:00Z until all the docs/HANDOFF.md §2 "11-15 06:41" confirmations hold: "the gates exited 0; the successors are running, resumed and caught_up, with no REFUSED; a counts-only FLOOR host gap check". Sources:
+- **The tip hand-off window** is [2026-11-15T05:00:00Z, 2026-11-15T09:00:00Z). It lasts past 09:00Z until all three docs/HANDOFF.md §2 "11-15 06:41" confirmations hold. HANDOFF lists them as three items:
+  - "the gates exited 0;"
+  - "the successors are running, resumed and caught_up, with no REFUSED;"
+  - "a counts-only FLOOR host gap check."
+
+  Sources for the window:
   - docs/runbooks/tip-writer-handoff.md §5: "At the instant (about 11-15T07Z) and after";
   - HANDOFF §2: "Writer #2033 hits its limit ~06:09Z and push #2039 ~06:24Z … The gates (#2501, deadline 08:08Z; #2502, deadline 08:23Z) release the queued successors";
   - the manager's state file (`/data/mal/hunt-1008/ops/manager23/state-manager23.md`, line 2026-11-12T21:44Z): "outside 11-15 05-09Z".
@@ -401,7 +405,7 @@ Before the ask, all of the following hold, and the manager records them in the s
     - v2 refusals not in v1 (must be 0);
     - the md5 of the common entry and exit projections (must be equal);
     - at least one v2-only entry (non-vacuous).
-  - **P2, through a harness** that drives the host class in `main run`'s order (`note_rebuild` → `lane_start` → `resume` → `run`). `main replay` never calls those.
+  - **P2, through a harness** that drives the host class in `main run`'s order (`note_rebuild` → `lane_start` → `resume` → `run`). `main replay` never calls those. QP R1: "**P2 does not need to measure start time with the unit's arguments.** Start time does not decide completeness. It must call the **same rebuild `main run` makes without `--since-hour`** (`rebuild_table(table, tape_dir, warm_start)`, then `note_rebuild(warm_start, n)`), so that precondition (b)'s P2 drives the install's real path."
     - **Cases.** D ∈ {5 min, 2 h, warm_min − 5 min, warm_min + 5 min, 7 h}, plus one `unclean_exit` case and one `unknown_prev_end` case. T_k is chosen from counts so that at least one reference Buy lies inside the downtime and at least one position is open at T_k.
     - **It prints, per case:** `prev_end`, `fallback`, `shadow_complete`, `n_shadow_buys` and `n_blocked_pools`.
     - **Three claims, each must be `yes`:**
@@ -411,11 +415,12 @@ Before the ask, all of the following hold, and the manager records them in the s
     - **Expected fallbacks:** D = warm_min + 5 min and D = 7 h fall back with `downtime_exceeds_warmup`; the `unclean_exit` and `unknown_prev_end` cases fall back under those names.
 - (c) **Seals** (QP condition 12). Before the proof jobs run, the manager:
   - adds a SEALS-BRIEF "FLOOR LANE READERS" line naming the jobs, the code, the read-only dir and the outputs (counts and md5):
-    - the code is `tools/floor_lane_host.py` at aa05923f (blob ba7050e1) plus the P2 harness file at its commit;
+    - the jobs are the P0–P2 proof jobs **and the kill-line check job** of Post-install check (the unguarded, uninterrupted replay against the live entry rows after each cheap restart);
+    - the code is `tools/floor_lane_host.py` at aa05923f (blob ba7050e1) plus the P2 harness file and the kill-line check file at their commits;
     - the read-only dir is research-0 `/data2/mal/arena-tip-feed/hv7`, or fast-0 `/home/claude/mal-data/floor-tip/tape`;
   - updates the SEALS-BRIEF sha in AGENT-BRIEF-COMMON.
 
-  QP's ruling calls this line (f). The SEALS-BRIEF already has an (f), for the FLOOR research scripts, so the new line takes the next free letter.
+  QP's ruling calls this line (f). The SEALS-BRIEF already has an (f), for the FLOOR research scripts, so the new line (or lines, one for the proof jobs and one for the kill-line check) takes the next free letter after (f).
 - (d) **Unit tests** pass at the merge sha: `tools/test_floor_lane_host_stage1.py` and `tools/test_floor_lane_host.py`. The second includes the golden `GOLDEN_V1_SCENARIO_MD5`; it took QP over 600 s, so run it as a job.
 - (e) **Stops.**
   - The lane STOP file and the wallet-wide STOP and HALT files are absent.
@@ -437,12 +442,15 @@ Helm acts on the owner's word given in Helm chat (docs/HANDOFF.md §1); the mana
   - the `lane_restart_shadow` row shows `prev_end: unknown`, `fallback: unknown_prev_end` and `shadow_complete: false`;
   - the start row's binding shows `host_sha256` 201f3d4a… and `guard: {cheap_restart: true, status_span_no_loss: false}`;
   - the lane checkpoint written about 60 s later carries `guard.cheap_restart: true`;
-  - there is no `entry` row until BLOCK_MS after the host_down span ends.
-- (b) **The next host restart** (this amendment does not authorise it; see above). The `lane_start` info and the `lane_restart_shadow` row show `prev_end` `end` or `signal`, and one of:
+  - there is no `entry` row until BLOCK_MS after the host_down span ends;
+  - "the start's `table_rebuilt_rows` line shows `since_hour: null`; the start duration (unit start → `lane_start` line → first live tick) is recorded; `<root>/lane/seed-tmp` holds no new directory." (QP R1.)
+- (b) **Each later host restart** (the standing rule above). The `lane_start` info and the `lane_restart_shadow` row show `prev_end` `end` or `signal`, and one of:
   - `shadow_complete: true`, with counts for `n_shadow_buys`, `n_blocked_pools` and `blocked_by_why`;
   - a named fallback.
+
+  A restart within BLOCK_MS of the end of the deploy span (or of any other unflagged host_down span) still refuses every pool until that span's end + BLOCK_MS, whatever its own shadow says (Change item 3); the check expects exactly that.
 - **Kill line.** Either of these triggers it:
-  - **any entry on a pool the reference holds.** The reference holds the pool if an uninterrupted, unguarded run of the rule would hold a position on it at the entry instant. After each cheap restart, the P2 harness checks this counts-only on the real restart window;
+  - "any entry on a pool the reference holds. After each restart whose `lane_restart_shadow` row shows `shadow_complete: true`, a manager job (counts and order ids only) takes every `entry` row of the live decision log in [restart start, restart start + BLOCK_MS] (pool, decision ms) and checks it against the positions of an unguarded, uninterrupted replay of the rule over [restart start − 201 h seed, restart start + BLOCK_MS] on the research-0 tip copy (`/data2/mal/arena-tip-feed/hv7`, the SEALS-BRIEF readers line of precondition (c)). It prints n_live_entries, n_on_reference_held_pools (must be 0) and the order ids of any such entry. It runs once the tip copy covers the window (within 48 h of the restart; a partial run at 24 h is allowed and is completed later). An entry on a held pool is the kill line." (QP R2 on #1335. This is not a re-run of the P2 harness: it tests what the live host did.)
   - **any `floor_lane_host: HostFatal` or `HostError` on the new paths:** the `in_doubt` or `ended` mark, the `lane_restart_shadow` or `entry_gap_span_ignored` evidence rows, or the refusal-row re-block.
 
   Then set both flags false and restart the host on the old config through Helm (the rollback line).
@@ -450,7 +458,7 @@ Helm acts on the owner's word given in Helm chat (docs/HANDOFF.md §1); the mana
 
 **Amendment 6 interaction.** QP condition 2 asks the amendment to say "whether v2-host trades at 0.10 count toward Am.6 precondition (b)".
 
-**Draft answer, for QP to rule on in the review: they count.**
+**The rule (QP ruling on #1335 at 8db68744): trades under the new host count toward the 20.**
 - **Why.** Same rule `l1-floor-v2`, same executor, same stake. Am.6 (b) is a live-fills gate on "the first 20 closed filled round trips … at stake 0.10 SOL", not a host-version test.
 - **What the Am.6 (b) report lists separately:**
   - (i) every one of the 20 whose entry v1 would have refused. That is either:
@@ -458,7 +466,8 @@ Helm acts on the owner's word given in Helm chat (docs/HANDOFF.md §1); the mana
     - an entry with an `entry_gap_span_ignored` row whose `then` is allow. There are none while `status_span_no_loss` is false.
   - (ii) every one whose position was open across a host restart (host take-profit lost).
 - **Pass/fail.** Precondition (b) is still decided on all 20, as Am.6 registered it.
-- **Expected size of list (i): empty.** The install is at or after R, the deploy start is a 24 h refuse-all, and this amendment authorises no second host restart.
+- **Precondition (c).** QP: "Positions in list (ii) lost the host take-profit, which can only lower their P&L, so counting them in (b) is conservative. For (c), if `FILLS_MATCH_MODEL` reads `no` and the no comes only from list-(ii) positions, the manager reports that to QP before any decision. It is not an automatic pass, and not an automatic fail."
+- **When list (i) can be non-empty.** Only after a restart made more than BLOCK_MS after the last unflagged host_down span ended (Change item 3). The install is at or after R, and the deploy start is a 24 h refuse-all.
 
 **EXP-029.**
 - `tools/floor_lane_host.py` is an Appendix A file, and EXP-029 already ended on procedure (Erratum 1g).
