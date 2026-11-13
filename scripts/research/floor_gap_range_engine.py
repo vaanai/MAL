@@ -4,7 +4,7 @@ What it changes, and only this:
   * gap_exclusion=False: the feed_gap exclusion (a data_loss gap overlapping decision-to-exit) is NOT applied; the position is priced through the hole with the
     prints the tape has (exit = first visible TP print, else the 24 h time stop, as the engine finds it). guard_ref_missing and missing_v exclusions are unchanged.
     gap_exclusion=True keeps the engine's behaviour exactly.
-  * Every trade / excluded row carries `gap_overlap` (bool: a data_loss gap of the position's program overlaps its span) and `gap_holes` ([[t_lo_ms, t_hi_ms], ...]).
+  * With gap_exclusion=False ONLY (default True: rows are byte-identical to the plain engine's), every trade / excluded row carries `gap_overlap` (bool: a data_loss gap of the position's program overlaps its span) and `gap_holes` ([[t_lo_ms, t_hi_ms], ...]).
   * ts_variant=True: for every gap-overlap position that did NOT exit by the 24 h time stop, a shadow position (bot_id + "-ts", position_id + "-ts") is priced at the
     first feed row at or after decision_ms + HOLD_MS (the rule's own time-stop instant), written under ledger/<bot_id>-ts/. The shadow never enters the rule's view
     (HostV2 filters engine.positions by its own bot ids). It is priced with the same price_leg code as a real time exit.
@@ -51,9 +51,10 @@ class GapRangeEngine(ArenaEngine):
     def _base_row(self, pos, kind, s_sol, src):
         row = super()._base_row(pos, kind, s_sol, src)
         if not pos.position_id.endswith("-ts"):
-            holes = self._ov.get(pos.position_id, [])
-            row["gap_overlap"] = bool(holes)
-            row["gap_holes"] = holes
+            if not self.gap_exclusion:  # only the research replay (--gap-exclusion off) adds the fields; default rows are the plain engine's
+                holes = self._ov.get(pos.position_id, [])
+                row["gap_overlap"] = bool(holes)
+                row["gap_holes"] = holes
         else:
             row["ts_variant"] = True
         return row

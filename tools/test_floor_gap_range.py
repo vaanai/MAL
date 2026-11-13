@@ -38,7 +38,7 @@ def test_default_excludes_overlapped_and_marks_it(tmp_path):
     drive(eng, True)
     ex = rows(eng, "excluded")
     assert len(ex) == 3 and {r["exclusion_reason"] for r in ex} == {"feed_gap"} and rows(eng, "trade") == []
-    assert all(r["gap_overlap"] is True and len(r["gap_holes"]) == 1 for r in ex)
+    assert all("gap_overlap" not in r and "gap_holes" not in r for r in ex)  # default = plain engine rows
 
 
 def test_option_off_prices_the_overlapped_position_same_entry(tmp_path):
@@ -83,3 +83,37 @@ def test_reader_groups_on_engine_ledger(tmp_path):
     r = json.load(open(tmp_path / "o.json"))
     assert r["counts"]["overlap_n"] == 1 and r["counts"]["A_n"] == 0
     assert r["groups"]["0.25:flat"]["B"]["pooled"]["K=16"]["n"] == 1 and r["groups"]["0.25:flat"]["C_ts"]["pooled"]["K=16"]["n"] == 1
+
+
+def _strip(r):  # engine_id is a random uuid per engine instance
+    return {k: v for k, v in r.items() if k not in ("gap_overlap", "gap_holes", "engine_id")}
+
+
+def test_default_engine_rows_byte_identical_to_plain_engine(tmp_path):
+    import json
+    from tools.arena_paper import ArenaEngine
+    for with_gap in (False, True):
+        a, b = tmp_path / ("p%d" % with_gap), tmp_path / ("g%d" % with_gap)
+        a.mkdir(); b.mkdir()
+        reg = a / "bots.json"
+        register_bot("botA", "abc1234", 0, reg, now_ms=0)
+        plain = ArenaEngine(a / "ledger", reg, SC(strand_rule="total"), sps_fn=lambda: 0.4, code_state_fn=lambda: ("abc1234", False))
+        plain.now_fn = lambda: plain.hw_ms or 0
+        gr = mk(b, gap_exclusion=True)
+        drive(plain, with_gap); drive(gr, with_gap)
+        for kind in ("open", "trade", "excluded"):
+            pr = [json.dumps(_strip(r), sort_keys=True) for r in plain.ledger.read_bot("botA") if r["kind"] == kind]
+            gg = [json.dumps(_strip(r), sort_keys=True) for r in gr.ledger.read_bot("botA") if r["kind"] == kind]
+            assert pr == gg, (with_gap, kind)
+        # and with the option off, rows equal the plain engine's once the two documented fields are removed (no gap: same priced rows)
+    (tmp_path / "o").mkdir()
+    off = mk(tmp_path / "o", gap_exclusion=False)
+    drive(off, False)
+    pl = tmp_path / "pl"; pl.mkdir()
+    reg = pl / "bots.json"; register_bot("botA", "abc1234", 0, reg, now_ms=0)
+    plain = ArenaEngine(pl / "ledger", reg, SC(strand_rule="total"), sps_fn=lambda: 0.4, code_state_fn=lambda: ("abc1234", False))
+    plain.now_fn = lambda: plain.hw_ms or 0
+    drive(plain, False)
+    t_off = [json.dumps(_strip(r), sort_keys=True) for r in rows(off, "trade")]
+    t_pl = [json.dumps(_strip(r), sort_keys=True) for r in rows(plain, "trade")]
+    assert t_off == t_pl and len(t_pl) == 3
