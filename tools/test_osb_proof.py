@@ -136,7 +136,7 @@ def test_a_non_zero_exit_code_is_a_fail(env):
         code, rss, w = base(mp, args, log)
         return (4 if mp.endswith("manifest-L3.json") and "--once" in args else code), rss, w
     code, rep, line = env.run([env.mf()], 4, cli=cli)
-    assert code == 1 and "exit code" in rep["fails"]
+    assert code == 1 and any(f.startswith("exit code") and "L3=[0, 4]" in f for f in rep["fails"])
 
 
 def test_two_manifests_run_and_a_window_without_entries_is_vacuous_not_a_pass(env):
