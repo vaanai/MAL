@@ -4,7 +4,7 @@
   table --base PNL.json --variant PNL.json --out-json F --out-md F --end-hour H [--forward-from 2026-11-12]
 Days >= --forward-from are FORWARD (counted only when COMPLETE: see floor_nov_pnl.complete_bound_ms) (after the vault1.0 variant was chosen on 11-03..11-11); earlier days are IN-SAMPLE.
 """
-import argparse, collections, json, os
+import argparse, collections, json, math, os, statistics, sys
 from datetime import datetime, timedelta, timezone
 
 from floor_tape_paths import require_ok, refusal
@@ -132,6 +132,111 @@ def _f(x):
     return "n/a" if x is None else "%.6f" % x
 
 
+CAVEAT = ("MULTIPLE COMPARISONS: 8 bins x 2 stakes x 2 arms, re-read every day; by chance alone some bin will look different on some day. The 0.10 and 0.25 rows are the same entries (not independent evidence). "
+          "The bins and edges were chosen after seeing the IN-SAMPLE days shown here, so IN-SAMPLE rows are the hypothesis, not a test. No bin is a finding from this table: a bin contrast counts only if pre-registered as ONE comparison "
+          "(study Q6: vault <=0.5 vs >0.5, or ratio <=1.15 vs >1.15, on stake 0.25 flat) and read once at its registered instant, with >= 7 complete forward days and >= 20 forward entries in each compared bin.")
+LANDING_HEADER = "paper, hypothesis tracking only; no gate claim; n is small; decide nothing before at least 7 complete forward days"
+VAULT_BINS = ("<=0.5", "0.5-0.8", ">0.8")
+RATIO_BINS = ("<=1.00", "1.00-1.05", "1.05-1.15", "1.15-1.5", ">1.5")
+RATIO_STAKE_SOL = 0.25  # entry_over_mark0 uses the 0.25 stake for every stake row, as the 2026-11-13 landing-vault study did
+
+
+def _num(x):
+    return isinstance(x, (int, float)) and not isinstance(x, bool) and math.isfinite(x)
+
+
+def vault_bin(x):
+    """upper edges inclusive: 0.5 -> '<=0.5', 0.8 -> '0.5-0.8'; None -> 'unknown'"""
+    return "unknown" if x is None else "<=0.5" if x <= 0.5 else "0.5-0.8" if x <= 0.8 else ">0.8"
+
+
+def ratio_bin(x):
+    """upper edges inclusive: 1.00 -> '<=1.00', 1.05 -> '1.00-1.05'; None -> 'unknown'"""
+    return "unknown" if x is None else "<=1.00" if x <= 1.0 else "1.00-1.05" if x <= 1.05 else "1.05-1.15" if x <= 1.15 else "1.15-1.5" if x <= 1.5 else ">1.5"
+
+
+_FEE = []
+
+
+def _fee_ppm():
+    """one-time lazy import (numpy only needed for this table section); repo root added to sys.path once"""
+    if not _FEE:
+        root = os.path.normpath(os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", ".."))
+        if root not in sys.path:
+            sys.path.insert(0, root)
+        from tools.arena_stack import fee_ppm
+        _FEE.append(fee_ppm)
+    return _FEE[0]
+
+
+def landing_fields(p):
+    """-> (land_vault_sol, entry_over_mark0), each None when a ledger field is missing/invalid.
+    land_vault_sol = (Qe - v) / 1e9; entry_over_mark0 = ((Qe + net) / Be * 1e-3) / mark0, net = 0.25e9 * (1 - fee_ppm(Qe, Be) / 1e6)."""
+    L = p.get("landing") or {}
+    Qe, Be, v, m0 = L.get("Qe"), L.get("Be"), L.get("v"), L.get("mark0")
+    vault = (Qe - v) / 1e9 if _num(Qe) and _num(v) else None
+    ratio = None
+    if _num(Qe) and _num(Be) and Be > 0 and _num(m0) and m0 > 0:
+        fee_ppm = _fee_ppm()
+        net = RATIO_STAKE_SOL * 1e9 * (1 - float(fee_ppm(Qe, Be)) / 1e6)
+        ratio = (Qe + net) / Be * 1e-3 / m0
+    return vault, ratio
+
+
+def _bin_stats(rows):
+    """rows: (net_lamports, stake_lamports, tp) of priced positions"""
+    nets = sorted((r[0] for r in rows), reverse=True)
+    pct = [r[0] / r[1] * 100.0 for r in rows]
+    return {"n": len(rows), "total_sol": sum(nets) / 1e9, "ex_top3_sol": (sum(nets[3:]) / 1e9) if len(nets) > 3 else None,
+            "mean_pct": (sum(pct) / len(pct)) if pct else None, "median_pct": statistics.median(pct) if pct else None, "tp": sum(1 for r in rows if r[2])}
+
+
+def landing_bins(pos, stake, days):
+    """flat leg of one stake over the given (complete) entry days. Guarded entries (paper guard fired: no position) are counted apart, not in a bin.
+    n_unpriced = positions in the bin the pricer could not price (engine-excluded or open at tape end); counted in the bin of their landing fields when another stake's row carries them, else in `unknown`."""
+    key = f"{stake}:flat"
+    ps = [p for p in pos if p["day"] in days]
+    out = {"n_entries": len(ps), "n_guarded": 0, "vault": {}, "ratio": {}}
+    acc = {"vault": {b: [[], 0] for b in VAULT_BINS + ("unknown",)}, "ratio": {b: [[], 0] for b in RATIO_BINS + ("unknown",)}}
+    for p in ps:
+        vault, ratio = landing_fields(p)
+        bins = {"vault": vault_bin(vault), "ratio": ratio_bin(ratio)}
+        if p["status"][stake] != "closed":
+            for k, b in bins.items():
+                acc[k][b][1] += 1
+            continue
+        if (p.get("leg_state") or {}).get(stake) == "guarded":
+            out["n_guarded"] += 1
+            continue
+        row = (p["net"][key], float(stake) * 1e9, str((p.get("exit_reason") or {}).get(stake) or "").startswith("tp"))
+        for k, b in bins.items():
+            acc[k][b][0].append(row)
+    for k in ("vault", "ratio"):
+        for b, (rows, nun) in acc[k].items():
+            out[k][b] = dict(_bin_stats(rows), n_unpriced=nun)
+    return out
+
+
+def landing_section(res_bins, forward_from):
+    md = ["", "## landing-state bins (flat leg, base and vault1.0 arms)", "", "> " + LANDING_HEADER, "",
+          "- COMPLETE days only; IN-SAMPLE = days < %s, FORWARD = complete days >= %s (the split used above)." % (forward_from, forward_from),
+          "- land_vault_sol = (calc.1p9.Qe - meta.v) / 1e9 SOL; bins by upper edge inclusive. entry_over_mark0 = entry price / meta.mark0 with the entry price computed at the 0.25 stake for both stake rows (as in the 2026-11-13 landing-vault study).",
+          "- n = priced, not guarded; guarded = paper guard fired (no position), counted apart and in no bin; n unpriced = not priced at this stake (engine-excluded or open at tape end); counted in the bin of their landing fields when another stake's row carries them, else in `unknown`.",
+          "- The registered contrast (study Q6) is on the coarse scheme (vault <=0.5 vs >0.5, or ratio <=1.15 vs >1.15); the 5 ratio bins refine it and are descriptive. calc.<LAT> is the latency leg the pnl file was built with (1p9 in the daily job).",
+          "- " + CAVEAT, ""]
+    for arm, stakes in res_bins.items():
+        for stake, sets in stakes.items():
+            for name, d in sets.items():
+                md += ["### %s arm, stake %s flat, %s: %d entries, %d guarded" % (arm, stake, name, d["n_entries"], d["n_guarded"]), ""]
+                for k, lab, order in (("vault", "land_vault_sol", VAULT_BINS), ("ratio", "entry_over_mark0", RATIO_BINS)):
+                    md += ["| %s | n | total SOL | ex-top3 SOL | mean %% | median %% | TP | n unpriced |" % lab, "|---|---|---|---|---|---|---|---|"]
+                    for b in order + ("unknown",):
+                        r = d[k][b]
+                        md.append("| %s | %d | %s | %s | %s | %s | %d | %d |" % (b, r["n"], _f(r["total_sol"]), _f(r["ex_top3_sol"]), _f(r["mean_pct"]), _f(r["median_pct"]), r["tp"], r["n_unpriced"]))
+                    md.append("")
+    return md
+
+
 def table(a):
     b, v = json.load(open(a.base)), json.load(open(a.variant))
     for nm, x in (("base", b), ("variant", v)):
@@ -149,6 +254,7 @@ def table(a):
           "- Pairs are matched by pool within one UTC entry day. A re-timed entry that crosses midnight UTC appears as one \"only in base\" row and one \"only in vault1.0\" row on adjacent days and is left out of the like-for-like delta, so the base-only and vault1.0-only counts can include re-timed entries and are not counts of new or lost pools.",
           "- base arm: variant=%s frozen_rule=%s; vault arm: variant=%s frozen_rule=%s (both ledgers are registered under the pinned FROZEN_SHA; the vault arm is NOT the frozen rule)." % (
               hb.get("variant"), hb.get("frozen_rule"), hv.get("variant"), hv.get("frozen_rule")), ""]
+    lbins = {"base": {}, "vault1.0": {}}
     for key in sorted(b["entries_by_day"]):
         stake, model = key.split(":")
         bd, vd, bpos, vpos = b["entries_by_day"][key], v["entries_by_day"][key], b.get("positions", []), v.get("positions", [])
@@ -180,6 +286,9 @@ def table(a):
             ds = set(days)
             pooled[name] = {"n_complete_days": len(days), "days": days, "base": arm_stats(bpos, stake, model, ds), "vault1.0": arm_stats(vpos, stake, model, ds)}
             paired[name] = pair(bpos, vpos, stake, model, ds)
+            if model == "flat":
+                for arm, ap_ in (("base", bpos), ("vault1.0", vpos)):
+                    lbins[arm].setdefault(stake, {})[name] = landing_bins(ap_, stake, ds)
             n_fwd = [r["day"] for r in rows if r["set"] == name]
             md += ["### pooled %s: %d complete day(s) of %d (%s)" % (name, len(days), len(n_fwd), ", ".join(days) or "none"), "",
                    "| arm | entries | closed | engine-excluded (all reasons) | open | total SOL | mean SOL/closed | ex-top3 SOL (per arm) |", "|---|---|---|---|---|---|---|---|"]
@@ -202,6 +311,8 @@ def table(a):
                    "| pairs priced in vault1.0 only (base excluded/open): NOT in the delta | %d | - | %.6f | - |" % (T["n_vault_priced_only"], T["vault_sol_one_side"]),
                    "| pairs priced in neither arm | %d | - | - | - |" % T["n_neither_priced"], ""]
         res["legs"][key] = {"days": rows, "pooled": pooled, "paired": paired}
+    res["landing_bins"] = {"header": LANDING_HEADER, "caveat": CAVEAT, "ratio_stake_sol": RATIO_STAKE_SOL, "bins": lbins}
+    md += landing_section(lbins, a.forward_from)
     json.dump(res, open(a.out_json, "w"), indent=1)
     open(a.out_md, "w").write("\n".join(md) + "\n")
 
