@@ -264,7 +264,7 @@ def test_real_transport_uses_argv_and_stdin_without_executing(env):
         return R()
 
     assert C.ssh_remote_stat(CID, DAY, run=fake_run) is None
-    R.stdout = ("5 " + "a" * 64 + "\n").encode()
+    R.stdout = ("5 " + "a" * 64 + " 600 700 0\n").encode()
     assert C.ssh_remote_stat(CID, DAY, run=fake_run) == (5, "a" * 64)
     R.stdout = b"garbage\n"
     with pytest.raises(C.TransportError):
@@ -534,7 +534,7 @@ def test_real_sh_bad_mode_after_the_rename_exits_3(tmp_path, monkeypatch):
     assert r.returncode == 3 and shutil.which("stat")
 
 
-def test_perm_fail_is_exit1_with_kind_only_in_the_log(env):
+def test_perm_fail_ends_the_job_with_exit3_with_kind_only_in_the_log(env):
     env.day()
 
     def send(cid, day, path, n, sha):
@@ -544,7 +544,7 @@ def test_perm_fail_is_exit1_with_kind_only_in_the_log(env):
     code = C.main(["--loop", "0", "--series", "%s=%s" % (CID, env.root)], send_fn=send, remote_stat_fn=env.fake.stat, allowed_parents=(str(env.parent),), status_path=str(env.status),
                   out=out.append, now_fn=lambda: C.P0_COUNT_INSTANT_S - 1)
     text = "\n".join(out)
-    assert code == 1 and "PERM-FAIL %s" % CID in text and "2026-11-16" not in text and "bytes" not in text
+    assert code == 3 and "PERM-FAIL %s" % CID in text and "SEAL ALARM" in text and "2026-11-16" not in text and "bytes" not in text
     out.clear()
     C.main(["--loop", "0", "--series", "%s=%s" % (CID, env.root)], send_fn=send, remote_stat_fn=env.fake.stat, allowed_parents=(str(env.parent),), status_path=str(env.status),
            out=out.append, now_fn=lambda: C.P0_COUNT_INSTANT_S + 1)
@@ -594,3 +594,71 @@ def test_pass_lines_reach_a_pipe_before_the_process_exits(env):
     finally:
         p.kill()
         p.wait()
+
+
+def test_perm_fail_ends_a_loop_run_after_that_pass_and_sends_nothing_more(env):
+    env.day(name="2026-11-16.jsonl")
+    env.day(name="2026-11-17.jsonl")
+    calls, sleeps, out = [], [], []
+
+    def send(cid, day, path, n, sha):
+        calls.append(day)
+        raise C.PermFail("send rc=3")
+
+    code = C.main(["--loop", "900", "--series", "%s=%s" % (CID, env.root)], send_fn=send, remote_stat_fn=env.fake.stat, allowed_parents=(str(env.parent),), status_path=str(env.status),
+                  sleep=sleeps.append, out=out.append, now_fn=lambda: C.P0_COUNT_INSTANT_S - 1)
+    assert code == 3 and sleeps == [] and calls == ["2026-11-16.jsonl"]  # no retry, no further send in the pass
+    assert json.loads(env.status.read_text())["exit"] == 3
+
+
+def test_unchanged_file_with_wrong_mode_or_acl_is_perm_fail(env):
+    env.day(data=b"AAA\n")
+    assert env.run()[0] == 0
+    orig = env.fake.stat
+
+    def bad(cid, day):
+        orig(cid, day)
+        raise C.PermFail("wrong mode")
+
+    out = []
+    code = C.main(["--loop", "900", "--series", "%s=%s" % (CID, env.root)], send_fn=env.fake.send, remote_stat_fn=bad, allowed_parents=(str(env.parent),), status_path=str(env.status),
+                  sleep=lambda s: None, out=out.append, now_fn=lambda: C.P0_COUNT_INSTANT_S - 1)
+    assert code == 3 and any("PERM-FAIL" in o for o in out)
+
+
+def test_remote_stat_answer_with_bad_mode_dir_or_acl_raises_permfail():
+    class R:
+        returncode = 0
+
+    for tail in (" 640 700 0", " 600 750 0", " 600 700 1", " 666 700 0"):
+        R.stdout = ("5 " + "a" * 64 + tail + "\n").encode()
+        with pytest.raises(C.PermFail):
+            C.ssh_remote_stat(CID, DAY, run=lambda argv, **kw: R())
+    R.stdout = ("5 " + "a" * 64 + "\n").encode()  # old two-field answer is unreadable, not accepted
+    with pytest.raises(C.TransportError):
+        C.ssh_remote_stat(CID, DAY, run=lambda argv, **kw: R())
+
+
+def test_real_sh_remote_stat_reports_modes_and_acl(tmp_path, monkeypatch):
+    import shlex
+    import shutil
+    import subprocess
+    base = _acl_dir(tmp_path)
+    monkeypatch.setattr(C, "DEST_ROOT", str(base / "declog-copy"))
+    data = b"AAA\n"
+    assert _run_script(C.remote_send_cmd(CID, DAY, len(data), hashlib.sha256(data).hexdigest()), data).returncode == 0
+    stat_cmd = shlex.split(C.remote_stat_cmd(CID, DAY))[2]
+
+    def ask():
+        return subprocess.run(["/bin/sh", "-c", stat_cmd], capture_output=True, text=True, timeout=30).stdout.split()
+
+    got = ask()
+    assert got[0] == "4" and got[1] == hashlib.sha256(data).hexdigest() and got[2:] == ["600", "700", "0"]
+    f = base / "declog-copy" / CID / "decisions" / "r4b-exp027" / DAY
+    os.chmod(f, 0o640)
+    assert ask()[2] == "640"
+    os.chmod(f, 0o600)
+    if shutil.which("setfacl"):
+        subprocess.run(["setfacl", "-m", "u:%d:r" % os.getuid(), str(f)], check=True)
+        subprocess.run(["setfacl", "-m", "g:root:r", str(f)], check=True)
+        assert ask()[4] == "1"

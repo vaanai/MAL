@@ -21,7 +21,8 @@ instant later (the wrapper sets it for r4bt-a3 series, which need it: a series o
 Memory: nothing is held whole. The cut point is found by scanning back from the end for the last newline, the prefix is hashed by streaming, and the send streams the prefix from the file;
 the remote side checks length and sha256 of the temp file BEFORE the rename, so a dropped connection can never replace a good file with a truncated one.
 
-Exit codes: 0 pass done; 1 transport or verify failure (retried next pass; 5 consecutive passes = exit 1); 2 refusal; 4 divergence.  --loop SECONDS (default 900; 0 = one pass); --dry-run reads and hashes,
+Exit codes: 3 perm-fail: a copied file or its dir has the wrong mode (or an extended ACL) after the rename, or an `unchanged` file is found so; the job stops after that pass, never retried, and the manager
+fixes the modes and records it as a seal incident before restarting; 0 pass done; 1 transport or verify failure (retried next pass; 5 consecutive passes = exit 1); 2 refusal; 4 divergence.  --loop SECONDS (default 900; 0 = one pass); --dry-run reads and hashes,
 sends nothing and asks the remote nothing.
 """
 import argparse
@@ -50,7 +51,7 @@ MAX_CONSEC = 5
 CHUNK = 1 << 20
 P0_COUNT_INSTANT_S = int(datetime(2026, 11, 19, 0, 10, 0, tzinfo=timezone.utc).timestamp())  # Am.31 item 4: no entry-count proxy in any log before this instant
 SHA_RE = re.compile(r"^[0-9a-f]{64}\Z")
-EXIT_OK, EXIT_FAIL, EXIT_REFUSED, EXIT_DIVERGED = 0, 1, 2, 4
+EXIT_OK, EXIT_FAIL, EXIT_REFUSED, EXIT_DIVERGED, EXIT_PERM = 0, 1, 2, 4, 3
 
 
 def _print(line):
@@ -232,10 +233,12 @@ def remote_send_cmd(cid, day, n, sha):
 
 
 def remote_stat_cmd(cid, day):
-    """Prints `<bytes> <sha256>` of the remote file, or nothing when it does not exist."""
-    _, final, _ = _remote_paths(cid, day)
-    f = shlex.quote(final)
-    script = "if [ -f %s ]; then echo \"$(wc -c < %s | tr -d ' ') $(sha256sum < %s | cut -d' ' -f1)\"; fi" % (f, f, f)
+    """Prints `<bytes> <sha256> <file mode> <dir mode> <acl 0|1>` of the remote file, or nothing when it does not exist. acl is 1 when getfacl exists and shows a named user/group entry or a
+    default ACL on the file or its directory."""
+    d, final, _ = _remote_paths(cid, day)
+    f, dq = shlex.quote(final), shlex.quote(d)
+    script = ("if [ -f %s ]; then acl=0; if command -v getfacl >/dev/null 2>&1 && getfacl -c -p %s %s 2>/dev/null | grep -Eq '^(user|group):[^:]|^default:'; then acl=1; fi; "
+              "echo \"$(wc -c < %s | tr -d ' ') $(sha256sum < %s | cut -d' ' -f1) $(stat -c %%a %s) $(stat -c %%a %s) $acl\"; fi" % (f, f, dq, f, f, f, dq))
     return "sh -c " + shlex.quote(script)
 
 
@@ -253,9 +256,11 @@ def ssh_remote_stat(cid, day, host=SSH_HOST, timeout=120, run=subprocess.run):
     text = r.stdout.decode("ascii", "replace").strip()
     if not text:
         return None
-    m = re.match(r"^(\d+) ([0-9a-f]{64})\Z", text)
+    m = re.match(r"^(\d+) ([0-9a-f]{64}) (\d{3,4}) (\d{3,4}) ([01])\Z", text)
     if not m:
         raise TransportError("remote stat: unreadable answer")
+    if m.group(3) != "600" or m.group(4) != "700" or m.group(5) != "0":
+        raise PermFail("remote file or directory has the wrong mode or an extended ACL")
     return int(m.group(1)), m.group(2)
 
 
@@ -295,13 +300,18 @@ def one_pass(series, send_fn, remote_stat_fn, dry_run=False, out=_print, quiet=T
     def fail(cid, kind, c, detail=None):
         nonlocal code
         fails.append((cid, kind))
-        code = EXIT_DIVERGED if EXIT_DIVERGED in (c, code) else EXIT_FAIL
+        code = EXIT_PERM if EXIT_PERM in (c, code) else (EXIT_DIVERGED if EXIT_DIVERGED in (c, code) else EXIT_FAIL)
         if not quiet:
             out("R4B-COPY %s %s %s" % (kind.upper(), cid, detail or ""))
 
+    halt = False
     for cid, root in series:
+        if halt:
+            break
         d, names = list_day_files(root)
         for day in names:
+            if halt:
+                break
             try:
                 path = os.path.join(d, day)
                 n, sha = prefix_info(path)
@@ -325,7 +335,11 @@ def one_pass(series, send_fn, remote_stat_fn, dry_run=False, out=_print, quiet=T
                             fail(cid, "verify-fail", EXIT_FAIL, day)
                             continue
             except TransportError as e:
-                fail(cid, "perm-fail" if isinstance(e, PermFail) else "transport-fail", EXIT_FAIL, "%s: %s" % (day, e))
+                if isinstance(e, PermFail):
+                    halt = True  # no further sends in this pass; the job ends after it
+                    fail(cid, "perm-fail", EXIT_PERM, "%s: %s" % (day, e))
+                else:
+                    fail(cid, "transport-fail", EXIT_FAIL, "%s: %s" % (day, e))
                 continue
             recs.append({"change_id": cid, "file": day, "bytes": n, "sha256": sha, "state": state})
             if not quiet:
@@ -402,8 +416,10 @@ def main(argv=None, send_fn=None, remote_stat_fn=None, allowed_parents=ALLOWED_P
         except OSError:
             out("R4B-COPY status file not written")
         out("R4B-COPY pass %d end exit %d" % (n, code))
-        if code == EXIT_DIVERGED:
-            return EXIT_DIVERGED
+        if code == EXIT_PERM:
+            out("R4B-COPY SEAL ALARM perm-fail: job stopped; fix the modes and record a seal incident before restarting")
+        if code in (EXIT_DIVERGED, EXIT_PERM):
+            return code
         consec = consec + 1 if code == EXIT_FAIL else 0
         if consec >= MAX_CONSEC or (code == EXIT_FAIL and a.loop <= 0):
             return EXIT_FAIL
