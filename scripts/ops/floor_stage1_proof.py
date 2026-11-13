@@ -22,6 +22,7 @@ WINDOWS (pre-declared; hour-granular, override with --from / --to as YYYY-MM-DDT
       script only COUNTS writer status spans in it and refuses if there is one). It holds the backlog_jump holes G2-G8 (not whitelisted by stage 1): both hosts refuse alike there.
   W2  [2026-11-12T00Z, 2026-11-13T00Z): QP's window. The task's 2026-11-10 day is NOT W2: it is reachable only from 10:00Z, and its holes are tip_gap_backlog_jump spans, which
       stage 1 does not whitelist, so v2 would equal v1 there (zero v2-only entries = vacuous). 11-12 holds the writer status span.
+  FALLBACK (pre-declared, QP): if the first W2/P2 run is vacuous (exit 3), rerun with `--from 2026-11-11T00 --to 2026-11-13T00` (seed 11-02T01 is valid; hv7 holds the hours). Do not shorten D or the horizon.
   P2  the window of W2 (the reference runs straight through it); T is chosen from the reference's own decisions (a reference Buy inside [T, T+5 min], another position open at T,
       and T + 7 h + horizon inside the window); --t-ms overrides.
 MEMORY / TIME (estimates, not measured): one replay at a time, streaming; the host's own replay peak, <= 8 GB RSS (the pool table of ~8.5 days of seed plus ArenaState); the
@@ -817,6 +818,48 @@ def cmd_p1(a) -> int:
     return 0 if d["pass"] else EXIT_FAIL
 
 
+def kill_compare(live_rows: list, ref_rows: list, restart_ms: int, block_ms: int) -> dict:
+    """Kill-line check (QP point 5): LIVE entry rows in [restart, restart + BLOCK_MS], and how many sit on a pool where the unguarded reference holds a position that is open at the
+    live entry's trigger (the reference entered earlier on that pool and had not exited). Must be 0. Only counts and order ids; pools are matched in-process."""
+    live = [r for r in live_rows if r.get("kind") == "entry" and restart_ms <= int(r.get("ms", -1)) <= restart_ms + block_ms]
+    ref_e = _entries(ref_rows)
+    ref_ex: dict = {}
+    for r in ref_rows:
+        if r.get("kind") == "exit":
+            ref_ex.setdefault(r["order_id"], r["ms"])
+    held = []
+    for r in live:
+        trig = (r.get("meta") or {}).get("signal_t_recv_ms", r["ms"])
+        if any(k[0] == r["pool"] and int(k[1]) < trig and ref_ex.get(e["order_id"], 2 ** 62) > trig for k, e in ref_e.items()):
+            held.append(r["order_id"])
+    return {"n_live_entries": len(live), "n_on_reference_held_pools_MUST0": len(held), "held_order_ids": sorted(held), "n_reference_entries": len(ref_e), "pass": len(held) == 0}
+
+
+def cmd_killcheck(a) -> int:
+    sys.path.insert(0, str(REPO))
+    from tools import floor_lane_host as H
+    rs = a.restart_ms
+    a.from_ = a.from_ or hour_name(rs - rs % HOUR_MS - 25 * HOUR_MS)
+    a.to = a.to or hour_name(((rs + H.BLOCK_MS + HOUR_MS - 1) // HOUR_MS) * HOUR_MS)
+    seed_ms, frm, to, srcs = common(a, W2, "killcheck")
+    if a.count_only:
+        return precount(a, "killcheck", seed_ms, frm, to, srcs)
+    out = check_out(a.out)
+    os.makedirs(out)
+    tape = make_tapelink(out, srcs, seed_ms if seed_ms is not None else frm, to) if not a.test_mode else srcs[0]
+    live_rows = read_rows(a.live_root)  # entry rows only are used
+    work = os.path.join(out, "ref")
+    os.makedirs(work)
+    reg = os.path.join(work, "bots.json")
+    register_scratch(reg, frm, a.test_mode)
+    ref_rows = reference_rows(work, reg, tape, frm, to, a.step_ms, "first_print" if a.test_mode else None, bool(seed_ms is not None or a.test_mode))
+    d = kill_compare(live_rows, ref_rows, rs, H.BLOCK_MS)
+    emit("KILLCHECK", d)
+    Path(out, "killcheck.json").write_text(json.dumps(d, sort_keys=True))
+    print("KILLCHECK %s" % ("PASS" if d["pass"] else "FAIL"))
+    return 0 if d["pass"] else EXIT_FAIL
+
+
 def cmd_p2(a) -> int:
     seed_ms, frm, to, srcs = common(a, W2, "p2")
     if a.count_only:
@@ -843,7 +886,7 @@ def cmd_p2(a) -> int:
 def build_parser() -> argparse.ArgumentParser:
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[0] + "  NOTE: p1 is required only before status_span_no_loss is switched on (a later amendment); the Am.7 install needs p0 and p2.", formatter_class=argparse.RawDescriptionHelpFormatter)
     sub = ap.add_subparsers(dest="cmd", required=True)
-    for name in ("p0", "p1", "p2", "_replay"):
+    for name in ("p0", "p1", "p2", "killcheck", "_replay"):
         p = sub.add_parser(name)
         if name == "_replay":
             p.add_argument("--tools-root", required=True)
@@ -865,6 +908,10 @@ def build_parser() -> argparse.ArgumentParser:
         p.add_argument("--count-only", action="store_true")
         p.add_argument("--test-mode", action="store_true", help="synthetic tapes only (needs MAL_ARENA_TEST=1)")
         p.add_argument("--now-ms", type=int, default=None)
+        if name == "killcheck":
+            p.add_argument("--live-root", required=True, help="the lane root whose decisions/l1-floor-v2/*.jsonl entry rows are read (manager, mal-fast-0, sudo)")
+            p.add_argument("--restart-ms", type=int, required=True)
+            p.add_argument("--step-ms", type=int, default=1000)
         if name == "p2":
             p.add_argument("--t-ms", type=int, default=None)
             p.add_argument("--horizon-s", type=int, default=14_400)
@@ -876,7 +923,7 @@ def main(argv=None) -> int:
     a = build_parser().parse_args(argv)
     if a.cmd == "_replay":
         return child_replay(a)
-    return {"p0": cmd_p0, "p1": cmd_p1, "p2": cmd_p2}[a.cmd](a)
+    return {"p0": cmd_p0, "p1": cmd_p1, "p2": cmd_p2, "killcheck": cmd_killcheck}[a.cmd](a)
 
 
 if __name__ == "__main__":
