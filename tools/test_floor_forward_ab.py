@@ -230,3 +230,14 @@ def test_per_file_symlink_guard_and_narrowed_roots():
             assert "tape-2026-11-02T02" in str(e)
         # non-tape entries are not opened by the replay and are ignored
     assert TP.refusal("/data2/mal/scratch/floor-nov-funnel/tapecopy") is None and TP.refusal("/data2/mal/scratch/other-job/x")
+
+
+MIDNIGHT_SENTENCE = ("Pairs are matched by pool within one UTC entry day. A re-timed entry that crosses midnight UTC appears as one \"only in base\" row and one \"only in vault1.0\" row on adjacent days "
+                     "and is left out of the like-for-like delta, so the base-only and vault1.0-only counts can include re-timed entries and are not counts of new or lost pools.")
+
+
+def test_header_has_the_qp_midnight_retiming_sentence():
+    rows = both("a", "A", ms(12, 1), 1_000_000)
+    with tempfile.TemporaryDirectory() as d:
+        _, md = _table(d, pnl_json(rows, ms(20)), pnl_json(rows, ms(20)))
+    assert "- " + MIDNIGHT_SENTENCE in md
