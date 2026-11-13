@@ -12,9 +12,9 @@ This replaces the manager22 handoff (written 2026-11-12T20:5xZ–21:1xZ). manage
 
 **No book has cleared the promotion gate.** One bot trades real money: **FLOOR floor-lane-1**, the DEC-035 live-learning lane on mal-fast-0. Nothing below says it makes money.
 
-## 1. STATE OF THE LIVE BOT RIGHT NOW (2026-11-13T01:3xZ): the FLOOR signal host is DOWN
+## 1. STATE OF THE LIVE BOT (updated 2026-11-13T03:3xZ): the FLOOR signal host is UP since 02:19:18Z, refusing every pool until about 2026-11-14T02:24Z
 
-**`mal-floor-lane-host.service` is down since 2026-11-13T00:33:06Z and makes no entries.** The executor `mal-floor-lane.service` (PID **1929135**) is up and untouched.
+**`mal-floor-lane-host.service` stopped itself at 2026-11-13T00:33:06Z; Helm started it again at 02:19:18Z (PID 2504565), HELM-ASK-1113-2 is done.** It refuses every pool (a `host_down` span 2026-11-13T00:32:49Z to 02:24:18Z) **until about 2026-11-14T02:24Z**, so it makes no entries before then. The executor `mal-floor-lane.service` (PID **1929135**) was untouched throughout. (The text below up to "The open position" is the incident record as first written; the outcome is in "Resolution".)
 
 **What happened.**
 - **00:32:49Z:** the host saw a trigger and wrote its Buy. The executor bought order `73a31cf948fba66e` (sent 00:32:53Z, landed 00:32:56Z).
@@ -30,30 +30,20 @@ This replaces the manager22 handoff (written 2026-11-12T20:5xZ–21:1xZ). manage
 - The owner approved in Helm chat. Helm started the host at **01:15:20Z** (PID 2472716) and stopped it at **01:15:37Z**, as the ask's disk watch required (free fell to 24.92%, then 24.55%).
 - The unit is `inactive` (Result=success), not failed. The executor was not touched.
 - **Cause (job #2548):** the unit's `--since-hour 2026-10-29T11` sends every start through `rebuild_table_since`, which copies tape hours into `<root>/lane/seed-tmp` (`os.link` fails inside the unit). It copied 7,277 MB in 17 s; a full copy is about 28 GB.
-- Helm will not start again without the owner's fresh yes.
 
-**The pending ask: `HELM-ASK-1113-2`** (`/data/mal/hunt-1008/push-1016/hunt29/p1/`, written 01:19Z). It is the same start minus `--since-hour`:
-`/usr/local/lib/mal-floor-lane/venv/bin/python -E -s -B -u tools/floor_lane_host.py run --config /etc/mal-floor-lane/host.json`
-- Why it is safe on the live code (tree e89f1536, host sha256 d805085c…): with a checkpoint present, the start calls `rebuild_table` → `PoolTable.rebuild`, which reads the tape in place and skips hour files older than the table's high-water mark (`tools/arena_pool_table.py:331`). The checkpoint (`lane/checkpoint.json`) and `pooltable/pooltable.pkl` are intact from 00:32:50Z (hwm 00:32:49, log_seq 86). Without a checkpoint the start refuses (fail-closed).
-- **Waiting on:** Helm, and the owner's fresh yes in Helm chat. Owner question: MiScusi question key HELM-ASK-1113-2 (id **q_soa9d_aQcYckbg**, from the manager's session; not in the state file), decide by 04:19Z. No `HELM-REPLY-1113-2` existed when this was written.
+**Resolution (HELM-ASK-1113-2, HELM-REPLY-1113-2; state file 02:25Z).**
+- The owner approved in Helm chat at 02:19Z and pre-approved future FLOOR restarts on the same code and config (startup-only fixes; excludes new code, caps, keys, funds, the clock). Helm backed up the unit to `/root/mal-floor-lane-host.service.bak-20261113T0220Z`, removed `--since-hour 2026-10-29T11` from ExecStart, ran daemon-reload and started the host at **02:19:18Z, PID 2504565**. Same tree e89f1536, host.json sha256 `60f7a60a…`. df 28.112% to 28.053% over 5 minutes; no seed-tmp copy.
+- Manager verification (job #2555): host active; journal `lane_start` {checkpoint true, down_ms 6391392, carried_gaps 2, blocked_pools 1}, `resumed` {open 1, rows 87}; no HostFatal/HostError/Traceback; `seed-tmp` empty; checkpoint gaps now include `host_down` 11-13T00:32:49 to 02:24:18, so every pool is refused until about 2026-11-14T02:24Z. Helm will not restart the host inside that window.
+- Watch successor for #2291: submitted (seg2: host PID 2504565, executor PID 1929135, STOP, disk under 26%; hourly note names it #2558). Guard #2546 alerts at 27%.
+- **Disk now 44%:** after the walker B/C move (job #2562, 11-13T02:44:53Z and 02:49:28Z, 26,651,919,475 bytes in 579 files) fast-0 `/` was 44.166% free (hourly at 03:3xZ: 44.37%). Earlier: #2556 removed 82 stale job trees (28.0% to 31.570%). The three finished walker user units were disabled by Helm at 02:41Z (HELM-REPLY-1113-3). Still owed: tip retention, `public-logs.jsonl` (835 MB and growing).
+- **Owner instructions of 2026-11-13 (chat ~02:3xZ, per the state file):** FLOOR restarts auto-approved from now on (Helm: same code and config only); r4-b forward test approved and FLOOR stays live; capital for r4-b if it does well ("i can bring in some more for it"); "make sure we're simulating real trading properly"; be proactive, finish things.
+- Am.6 gate at the 03:3xZ hourly: 0 of 20 clean closed trades at 0.10, plus 1 unwound round trip (`73a31cf948fba66e`) that QP has not ruled on. Today's realized -0.000633034 SOL.
 
 **The open position.** Order `e3b7cc9de20e65bd` (bought 2026-11-12T14:06:15Z) sells on the executor's own 24 h clock at about **2026-11-13T14:06Z**, with no host take-profit (executor code: "If the host is down at the deadline the bridge sells itself"). Nothing to do there.
 
 **After any host start, the current code refuses every pool for about 24 h** (a `host_down` span; entries resume about 24 h after the start instant). That is by design. Positions open at the stop lose the host take-profit.
 
-**When HELM-REPLY-1113-2 arrives, verify with a read-only manager job (counts and names only):**
-1. The start instant, and that the new PID is active (not 2472716, not 3484327).
-2. The journal's start line shows **`"since_hour":null`** and a `table_rebuilt_rows` line; no `HostFatal`, `HostError`, `LogChainError` or Traceback.
-3. **`<root>/lane/seed-tmp` is empty** (`/var/lib/mal-live/floor-lane/decisions-root/lane/seed-tmp`).
-4. `df /` at +1 and +5 minutes (Helm stops the unit under 26.5% free; the manager wants 27% or more).
-5. The executor is still PID 1929135.
-6. Helm's drop-in text keeps the old `ExecStart` line in a comment.
-
-**Then:**
-- Submit a **successor for the crashed watch job #2291** (health watch; it raised the alert and exited 3).
-- Record the restart in `LAB_STATE.md` (stop and start instants; how the previous process ended: systemd `code=exited, status=2`, HostFatal; open positions at the stop: 1), the state file and the notebook.
-- **Do not restart the host again inside that day** (ASK-1113-2 told Helm the same).
-- If `/` falls under 27% at any point, free space before anything else (§2).
+**After any host start, record it in LAB_STATE** (done for 00:33:06Z, 01:15:20Z/01:15:37Z and 02:19:18Z in the records PR of 11-13). Do not ask Helm to restart the host inside the refuse window above.
 
 ## 2. Do not break these (read first)
 1. **The host `mal-floor-lane-host.service` is restarted only through Helm by HELM-ASK** (DEC-035, and Am.7's standing rule once stage 1 is installed; today's restart is on the v1 code, e89f1536 with host.json 60f7a60a, for an operational need). Any restart is a data-loss span and, today, a 24 h refuse-all. The executor `mal-floor-lane.service` is also restarted only through Helm. Once stage 1 is installed, Am.7 adds: the code and config must be the installed blobs and sha256; each restart is logged in LAB_STATE, the state file and the notebook; none while a kill-line check of the previous restart is pending.
@@ -102,16 +92,16 @@ This replaces the manager22 handoff (written 2026-11-12T20:5xZ–21:1xZ). manage
 **Stage-1 host change (DEC-035 Amendment 7; not installed).**
 - Code merged: **aa05923f** (#1332; `tools/floor_lane_host.py` blob ba7050e1, sha256 201f3d4a…; two flags `status_span_no_loss` and `cheap_restart`, default off; golden md5 `aba8b479…` equals main). Am.7 merged **86cdca18** (#1335).
 - What it does: with `cheap_restart` true, a later restart blocks only the pools the rule bought during the downtime, instead of refusing every pool for 24 h. The deploy restart itself is NOT cheap (24 h refuse-all, `unknown_prev_end`), and a restart within BLOCK_MS of an unflagged host_down span still refuses all. `status_span_no_loss` stays off.
-- **Install preconditions, in order (state 2026-11-13T01:3xZ).** Commands and pass lines are in `docs/runbooks/floor-stage1-proof.md`. Am.7 is merged (86cdca18). The proof harness #1337 is merged as main `4c862bba8e852154ba730c75196832863985fd74` (QP OK and REVIEWER APPROVE at 97a5532f); the kill-line check was moved to branch `claude/floor-stage1-killcheck` (not in a PR). MINOR owed: print `test_mode=False` in the proof output.
+- **Install preconditions, in order (state updated 2026-11-13T03:3xZ).** Commands and pass lines are in `docs/runbooks/floor-stage1-proof.md`. Am.7 is merged (86cdca18). The proof harness #1337 is merged as main `4c862bba8e852154ba730c75196832863985fd74` (QP OK and REVIEWER APPROVE at 97a5532f); the kill-line check was moved to branch `claude/floor-stage1-killcheck` (not in a PR). The `test_mode=False` print MINOR is addressed by #1341 (the proof output shows `test_mode=False`).
   1. **DEC-035 Am.7 Erratum 1: DONE**, merged as main `46e6b66d` (#1340, QP OK and REVIEWER APPROVE at 78770ef7). The proof-job SEALS-BRIEF line is added now; the kill-line check job's line before that job's first run and before the first restart that can be cheap.
-  2. **SEALS-BRIEF line (g) for the proof job: DONE** (brief sha256 `31cbf6c1…`; AGENT-BRIEF-COMMON updated). It needs an update when the proof follow-up (item 3) lands.
-  3. **Both precounts at `hours_missing=0`: NOT MET.** The first precount (job #2549) FAILED as designed with `hours_missing=24`, first_missing 2026-11-02T01: the research-0 hv7 copy keeps about 240 h and has pruned 2026-11-02T01..2026-11-03T00, so the script's fixed seed is unreachable. The manager froze hv7's 240 closed hours (2026-11-03T01..2026-11-13T00) by hard links at `/data2/mal/scratch/floor-stage1-proof/tapecopy-1113/` (list `tapecopy-1113.list`, sha256 `d0a11d3132f5e206…`). A follow-up PR on branch `claude/floor-stage1-proof-seed` adapts the proof: seed from the first available hour, read the frozen copy with a list check, W1 = [2026-11-12T00Z, 2026-11-12T15Z). Not yet merged; QP must re-rule.
-  4. **`P0 PASS` and `P2 PASS`: NOT RUN.** They run at the merged sha of that follow-up PR (the harness is 4c862bba; the host code under test is aa05923f, host blob ba7050e1). P2 job `--mem 32G` on mal-research-0. P1 only before `status_span_no_loss`.
+  2. **SEALS-BRIEF line (g) for the proof job: DONE** (first brief sha256 `31cbf6c1…`; AGENT-BRIEF-COMMON updated). Line (g) was replaced with the #1341 text after #1341 merged (brief sha256 `40387c0e…`); this item is DONE.
+  3. **Both precounts at `hours_missing=0`: NOT MET.** The first precount (job #2549) FAILED as designed with `hours_missing=24`, first_missing 2026-11-02T01: the research-0 hv7 copy keeps about 240 h and has pruned 2026-11-02T01..2026-11-03T00, so the script's fixed seed is unreachable. The manager froze hv7's 240 closed hours (2026-11-03T01..2026-11-13T00) by hard links at `/data2/mal/scratch/floor-stage1-proof/tapecopy-1113/` (list `/data2/mal/scratch/floor-stage1-proof/tapecopy-1113.list`, sha256 `d0a11d3132f5e206…`; per-hour sha256 `/data2/mal/scratch/floor-stage1-proof/tapecopy-1113.sha256`, file sha256 `cd845e9f360d3cfc…`; both read-only; never delete the copy or its list before the install record). The follow-up **PR #1341 is merged as `1482a80d`** (QP OK and REVIEWER APPROVE at 1c0d36f1): seed = first available hour 2026-11-03T01, frozen hard-link copy with list check, W1 = [2026-11-12T00Z, 2026-11-12T15Z), P2 = [2026-11-12T00Z, 2026-11-13T00Z). **Precount at the merged sha (job #2553): `hours_missing=0`** (P0 230/230, P2 239/239; `v1_host_md5` `4e5ea2896fe453ac371ed0cf3b31afd4`, `v2_host_md5` `5f7ebead386dc65a2c0bf1b1b9762c0a`). Met. QP's record note: the live host was seeded from 10-29T11, the proof seed is 11-03T01, so the proof shows equivalence between host versions, not a replay of the live host; the windows were chosen about 2026-11-13T01:2xZ by the manager knowing the live 11-12 events, before any proof output.
+  4. **`P0 PASS`: DONE; `P2 PASS`: RUNNING, no result yet.** P0 job **#2554** at 1482a80d PASSED (2026-11-13T03:17Z note): status_spans 0; names_equal True, files_md5_differ 0; checkpoint_equal True; all_log_md5 = all_log_md5_v2 = all_log_md5_v2on `2238e32c3145f2bc8fdbcce866ebdd68`; checkpoint_md5 v1 = v2 `3fbd2a192771b933a2d30cbbb92157a9`; rows 1 (n_entry 1, n_exit 0, n_refusal 0). Equality rests on 1 decision row (non-vacuous by the script's rule; thin). **P2 job #2563** (`floor-s1-p2`, out `p2-1113`, 32G, 600m) was running at 2026-11-13T03:3xZ (14 minutes in); read it when it ends. P1 only before `status_span_no_loss`.
   5. **Kill-line check PR and its smoke run: NOT DONE**, required before the first restart that can be cheap (branch `claude/floor-stage1-killcheck`).
   6. **Timing rule:** not before C = 2026-11-13T00:00:00Z (passed). At or after R = 2026-11-14T01:00:00Z unless the lane report at the stop shows zero open positions entered before C. Not inside the tip hand-off window [2026-11-15T05:00Z, 09:00Z), and not until its three confirmations hold.
   7. **Owner word to Helm**, then the HELM-ASK from `HELM-ASK-stage1.DRAFT.md`.
   - Also at install (Am.7 (d) to (f)): unit tests at the merge sha (`tools/test_floor_lane_host_stage1.py`, `tools/test_floor_lane_host.py`; run as a job); STOP and HALT files absent, lane cash and open count recorded, each open position's entry compared with C; rollback line recorded.
-  - **Deploy = 24 h refuse-all.** New unit WITHOUT `--since-hour`. The deploy span stays unflagged for about 24 h (Am.7 R4), so a restart inside it gains nothing: the manager's rule is no second host restart within about 24 h (this is the manager's rule with that reason, not Am.7 text). HELM-ASK-1113-2 restarts the host on v1 today, so the stage-1 deploy is a later, separate restart.
+  - **Deploy = 24 h refuse-all.** New unit WITHOUT `--since-hour`. The deploy span stays unflagged for about 24 h (Am.7 R4), so a restart inside it gains nothing: the manager's rule is no second host restart within about 24 h (this is the manager's rule with that reason, not Am.7 text). The v1 restart of 02:19:18Z has happened (§1), so the stage-1 deploy is a later, separate restart, after the refuse window ends about 2026-11-14T02:24Z.
   - **Post-install check (Am.7):** the deploy start's `lane_start` and `lane_restart_shadow` rows show `prev_end: unknown`, `fallback: unknown_prev_end`, `shadow_complete: false`, `host_sha256` 201f3d4a…, `guard: {cheap_restart: true, status_span_no_loss: false}`, `since_hour: null`, empty `seed-tmp`, and no entry row until BLOCK_MS after the span. **Kill-line rollback trigger:** any live entry on a pool the unguarded reference holds after a cheap restart, or any HostFatal/HostError on the new paths; then set both flags false and restart the host on the old config through Helm.
 - `/data/mal/hunt-1008/ops/manager23/HELM-ASK-stage1.DRAFT.md` exists and is **not sent** (placeholders for PR numbers, jobs and the send instant; confirm the decision root against host.json `root` before sending).
 
@@ -125,12 +115,12 @@ This replaces the manager22 handoff (written 2026-11-12T20:5xZ–21:1xZ). manage
   then `miscusi-agent job log <seq>`. The bridge-event filter starts at `ts_ms` 1794419100000 (11-11T17:45Z); raise it as the log grows.
 - It prints the lane report, both unit PIDs, host checkpoint fields (gaps, hwm, log_seq, gap_refusals), the follower's lag, jumps and retries, disk, and the day's bridge events.
 - **Healthy means:**
-  - executor 1929135 active, and the host active with hwm within the hour (the host is DOWN until §1 is done);
+  - executor 1929135 active, and the host active with hwm within the hour (the host has been up since 02:19:18Z, PID 2504565);
   - follower PID 2254354, NRestarts 0, backlog_jumps 0, lag under ~50;
   - **disk free at or above 27%** (not 22%: 25% is the host's floor).
 - Not yet confirmed: at 00:3xZ the lane report for the new UTC day printed `daily stop n/a (field not recorded)`; check it reads ok after the first event of a day.
 
-**Helm protocol.** Requests are files `HELM-ASK-<MMDD>-<n>.md` in `/data/mal/hunt-1008/push-1016/hunt29/p1/`; replies are `HELM-REPLY-*` in the same folder. Helm acts on the owner's word given directly in Helm chat. Verify every reply with a read-only job before recording it. Open asks: **HELM-ASK-1113-2** (§1) and **HELM-ASK-1108-1** (reset window opens 11-16T06:00Z, §5).
+**Helm protocol.** Requests are files `HELM-ASK-<MMDD>-<n>.md` in `/data/mal/hunt-1008/push-1016/hunt29/p1/`; replies are `HELM-REPLY-*` in the same folder. Helm acts on the owner's word given directly in Helm chat. Verify every reply with a read-only job before recording it. Open asks: **HELM-ASK-1108-1** (reset window opens 11-16T06:00Z, §5).
 
 ## 4. Second strategy: r4bt-a2 (paper)
 - **DEC-031 Amendment 30 merged f090d5a8** (#1325): paper successor of r4-b-T on the fixed tip feed. **r4bt-a2 is NOT yet registered**: registration only follows a P0 PASS on 2026-11-16, 11-17 and 11-18 (Am.30 items 7, 9). The count job is **2026-11-19T00:10Z**; the clock is 2026-11-20T00:00Z; screen read by 2026-11-27T01:01Z; confirmation about 12-04. W′ = **3c12c5fd** (#1330, the per-bot table).
@@ -138,7 +128,7 @@ This replaces the manager22 handoff (written 2026-11-12T20:5xZ–21:1xZ). manage
 - **Rule:** never read an entry count before the J4 count job. A stop after a seen count counts as a P0 miss.
 - **Memory:** the dry host's scope is 5120M. Check `systemctl show user-1002.slice -p MemoryCurrent -p MemoryMax -p MemoryHigh` with FLOOR running and record the headroom (dry-long-1101a recorded `M1_SLICE FAIL`: slice MemoryMax 16106127360 below 5120M plus current). No replay job during the host's ~37 min catch-up.
 - **Train/serve check (job #2531):** TRAIN = DISCLOSE (migration-row coverage of complete-row graduations 0.0337, 0.0417, 0.0098 on the three blocks); SERVE = PASS, descriptive only (11-08 to 11-11 ratios 1.0344, 1.0495, 0.9944, 0.9180). Am.30 carries the disclosure.
-- **Open owner question:** does the owner's 11-12 stacking ask cover a paper book (the owner said on 11-08 that "forward-paper testing has ended")? The manager is proceeding unless told no; the owner was told.
+- **Owner question answered (2026-11-13 ~02:3xZ chat, per the state file):** the r4-b forward test is approved, FLOOR stays live, capital for r4-b if it does well. The r4bt-a2 paper book proceeds (dry host install 10:37Z).
 - **Owed:** Am.30's heading on main still says "(DRAFT;" (T1 erratum).
 - Tip-health successors for **#2055 and #2064** are needed before 2026-11-16T00:00Z (P0 days). The tip writer/push successors #2503/#2504 end about 11-29T06Z, inside the confirmation window.
 
@@ -148,7 +138,7 @@ Re-create the crons from `crons-manager23.json` with CronCreate.
 | UTC | Step |
 |---|---|
 | hourly :17 | HELM-REPLY-*, PR verdicts, miscusi_inbox (manager23 is the registered inbox reader, worker d_11fM1Ytqx_o0Mg), the FLOOR hourly job (§3), wallet, disk (27%); one state line |
-| **11-13, when HELM-REPLY-1113-2 arrives** | §1 verification and successors (#2291 watch) |
+| 11-13 (done) | HELM-REPLY-1113-2 verified (job #2555); watch successor submitted |
 | **11-13 09:13** | Successor for **#1952 watchdog** (ends ~11-14T04Z). Recover the A3 #1896/#1898 commands **without** job_status (notebook n_KAyq8dRg6ZzKRQ). |
 | **11-13 10:37** | r4bt-a2 dry host install (§4; runbook; J1 ~11:35, J2 12:05) |
 | **11-13 ~14:06** | Open trade `e3b7cc9de20e65bd` exits on the executor clock (no host take-profit); cron 14:21. Count it toward the 20 as the Am.6 rules say. |
@@ -157,7 +147,7 @@ Re-create the crons from `crons-manager23.json` with CronCreate.
 | daily 00:23 | floor-forward-ab job on research-0 (`scripts/research/floor_forward_ab.sh <last closed hour>`). Check the job log for a path-guard stop. Job #2537 (end hour 2026-11-12T23, main aa05923f) was submitted 00:13Z, so no second job that day. |
 | **11-15 06:41** | **Tip hand-off check** (`docs/runbooks/tip-writer-handoff.md` §5/§6). Writer #2033 hits its limit ~06:09Z, push #2039 ~06:24Z. Gates #2501 (deadline 08:08Z) and #2502 (08:23Z) release #2503/#2504. Confirm the gates exited 0; the successors are running, resumed and caught_up, with no REFUSED; a counts-only FLOOR host gap check. A gate exit of 4 or 5: follow the runbook by hand. |
 | 11-15 12:05 | Latest r4bt-a2 dry host start (§4) |
-| **by 2026-11-15T18:00** | **Start successors for #2055 and #2064** (they end ~11-15T23:30Z–11-16T00:15Z; the r4bt-a2 P0 days need them). **No cron covers this yet**: create one (e.g. 11-15 18:13) or do it at the 11-15 06:41 check. |
+| **by 2026-11-15T18:00** | **Start successors for #2055 and #2064** (they end ~11-15T23:30Z–11-16T00:15Z; the r4bt-a2 P0 days need them). Cron **326cd178** fires 2026-11-15T17:13Z for these successors (added 2026-11-13T01:29Z); the 11-15 06:41 check is the backstop. |
 | ~11-15 23:30 – 11-16 00:15 | #2055 and #2064 reach their limits: **successors needed before 2026-11-16T00:00Z** (r4bt-a2 P0 needs the tip health). |
 | 11-16 03:23 | vault1.0 out-of-sample paper check (cron). Rule in §6. |
 | 11-16 06:13 | HELM-ASK-1108-1 reset window opens (06:00Z to 11-21T00Z). Nudge Helm; use the **current** pin and config, only the one state field changes (ADDENDUM-1). |
@@ -179,36 +169,35 @@ MiScusi refuses job limits above 14 days. `after` fires only on exit 0, never on
 - **Other lines are off:** EXP-012 shadow, Haiku forge, slowbot, the HV books, h5 and s1t.
 
 ## 7. Owed (not done)
-- **Durable disk plan for fast-0:** the backfill-fast-b / -c move (26 GB) needs a T1 ledger note; tip retention. The c1nf-ledger move (7 GB) already happened (job #2545).
-- **Watch successor for #2291**, after the host is back (§1). Disk guard successor beyond #2546's limit.
-- **Stage 1:** the proof follow-up PR (branch `claude/floor-stage1-proof-seed`, then P0/P2); **kill-line check PR** (branch `claude/floor-stage1-killcheck`); the SEALS-BRIEF line (g) update; the `test_mode=False` print MINOR in the proof output. (Am.7 Erratum 1 and line (g) are done.)
+- **Durable disk plan for fast-0:** the c1nf-ledger (job #2545) and backfill-fast-b / -c (job #2562) moves are done (`/` 44% free); still owed: tip retention, `public-logs.jsonl` (835 MB and growing). Disk guard successor beyond #2546's limit.
+- **Stage 1:** read P2 (job #2563); **kill-line check PR** (branch `claude/floor-stage1-killcheck`); (Am.7 Erratum 1, line (g), #1341, precount #2553 and P0 PASS #2554 are done.)
 - **`set -f` MINOR** around the symlink-component loop in `scripts/research/floor_gap_range.sh`.
 - **Forward A/B bins** for the landing vault (`land_vault_sol`, `entry_over_mark0`).
-- **Records batch for 11-13**, and the `data/console.json` update for the incident.
+- **Records batch for 11-13** (this PR) and its `data/console.json` update.
 - **Am.30 heading** "(DRAFT;" erratum (T1); r4bt-tip library row wording.
 - **Small MINORs from the state file:** #1330 follow-ups (mutable table, wrapper clock check and provenance, `--bot-id=X` form); #1328 nits (attribution of nits to the #1319 QP, "about 0.007" wording); Erratum 3 report-wording fixes (host tick; 26 last-print exits; "pricing-rule total loss"); the 41 of 79 entries landing above 0.5 SOL real vault need a separate look.
 - **From manager22:** the variants script branch `/data2/mal/wt/floor-variants` (#1324 merged the research scripts; check it is covered); the #1652 let-end (11-12T00:30Z) and #1814 let-end (11-11T07:20Z) LAB_STATE rows; the DEC-031 `--backlog-slots` note (tip-source books pin none); follower restart LAB_STATE rows (11-11T17:53:56Z; 11-12T17:58:35Z, PID 1559764 → 2254354).
 - **Stale open PRs (#905–#1263):** parked or never-merge. Triage only if there is time.
 
-## 8. Running jobs (from the state file, 11-13T01:2xZ; do not start anything from this list)
-- **FLOOR:** #2537 daily forward A/B (research-0); #2290 daily report; #2291 health watch (it exited 3 on the host-down alert and needs a successor); #2266 tip link-dir; #2348 and #2353 checks; #2546 disk guard at 27%; #2452 old disk guard (24%).
+## 8. Running jobs (from the state file, 11-13T03:3xZ; do not start anything from this list)
+- **FLOOR:** #2537 daily forward A/B (research-0); #2290 daily report; #2291 health watch (exited 3 on the host-down alert; successor submitted, #2558); **#2563 stage-1 P2 proof** (running); #2554 P0 proof (PASS, done); #2266 tip link-dir; #2348 and #2353 checks; #2546 disk guard at 27%; #2452 old disk guard (24%).
 - **Tip:** #2033 writer and #2039 push (end ~11-15T06Z); gates #2501/#2502 with successors #2503/#2504 queued; #2055, #2062, #2064 health jobs.
 - **Guards:** #1952 watchdog; #1896 and #1898 A3 guards (job_list only); #2214 → #2217 structure monitor; #2134 venue tape.
 - **fast-0 limits:** 8 CPU slots; `--mem` required, `--cpus 0.2` for status jobs; jobs run under `sh`. One heavy replay at a time, at most 2 workers; check `systemctl show user-1002.slice -p MemoryCurrent` first.
-- No open PR matters right now (#1337 merged as 4c862bba). The others are parked.
+- No open PR of manager23's matters right now (#1337, #1341, #1342 merged). The others are parked.
 
-## 9. Exact next steps (priority order)
-1. **Get the FLOOR host started via HELM-ASK-1113-2.** Make sure the owner gives Helm the fresh yes (question q_soa9d_aQcYckbg, 04:19Z). Verify the start by the §1 checklist, submit the #2291 successor, record the restart in LAB_STATE.
-2. **Run the hourly job every hour with the 27% disk threshold**; free space at once if `/` is under 27%.
-3. **11-13 09:13Z:** #1952 watchdog successor. **10:37Z:** r4bt-a2 dry host install (never read an entry count before J4).
-4. **After ~14:06Z:** confirm `e3b7cc9de20e65bd` exited; get the QP ruling on whether the unwound `73a31cf948fba66e` counts toward the Am.6 gate's 20.
-5. **11-14 01:00Z:** the EXP-029 procedural-FAIL read, with the host-down disclosure; QP before merge.
-6. **Stage 1:** follow the ordered preconditions in §3: proof follow-up PR (seed from the first available hour, frozen copy), both precounts at `hours_missing=0`, P0 and P2 PASS, kill-line check PR and smoke run, timing, owner word. Send HELM-ASK-stage1 only after the 24 h refuse-all from step 1 has passed and outside the 11-15 hand-off window.
-7. **11-15 06:41Z** tip hand-off check; successors for #2055 and #2064 before 11-16T00:00Z; 11-17 09:13Z A3 successors.
-8. Records batch for 11-13, the `console.json` incident update, and the durable fast-0 disk plan (§7).
+## 9. Exact next steps (priority order; updated 2026-11-13T03:3xZ)
+1. **Read the P2 proof (job #2563)** when it ends (`out` p2-1113; pass line in `docs/runbooks/floor-stage1-proof.md`). It is the last proof item for the Am.7 install.
+2. **Kill-line check PR** (branch `claude/floor-stage1-killcheck`) and its smoke run, with its own SEALS-BRIEF line before its first run (Am.7 Erratum 1).
+3. **Stage-1 HELM-ASK** (from `HELM-ASK-stage1.DRAFT.md`) only after P2 PASS, the kill-line check, and the timing rule: at or after R = 2026-11-14T01:00Z unless no pre-C position is open, outside the 11-15 hand-off window, and after the 02:24Z refuse window of 11-14 has ended (no second host restart inside about 24 h); owner word to Helm.
+4. **11-13 10:37Z:** r4bt-a2 dry host install (never read an entry count before J4). 09:13Z first: #1952 watchdog successor.
+5. **Run the hourly job every hour with the 27% disk threshold**; free space at once if `/` is under 27%.
+6. **After ~14:06Z:** confirm `e3b7cc9de20e65bd` exited; get the QP ruling on whether the unwound `73a31cf948fba66e` counts toward the Am.6 gate's 20.
+7. **11-14 01:00Z:** the EXP-029 procedural-FAIL read, with the host-down disclosure; QP before merge.
+8. **11-15 06:41Z** tip hand-off check; cron 326cd178 (11-15T17:13Z) for the #2055 and #2064 successors before 11-16T00:00Z; 11-17 09:13Z A3 successors.
+9. Forward A/B: the daily job (#2537 first corrected run: forward complete days 0 of 1; no vault decision before 7 complete forward days). Tip retention and `public-logs.jsonl` (§7).
 
 ## 10. How to verify this handoff
 - `git log --oneline -1` on main shows this PR or later.
 - The last lines of `state-manager23.md` mention this handoff; the 2026-11-13T01:19Z line is the CAUSE + FIX entry for the host start.
-- If HELM-REPLY-1113-2 exists: the hourly job shows the host active under a new PID, executor 1929135 active, follower PID 2254354 (unless restarted and recorded), disk at or above 27%.
-- If it does not exist: the host is still down and `mal-floor-lane-host.service` shows `inactive`.
+- The hourly job shows the host active under PID 2504565 (unless restarted and recorded), executor 1929135 active, follower PID 2254354 (unless restarted and recorded), disk at or above 27% (44% at 03:3xZ).
