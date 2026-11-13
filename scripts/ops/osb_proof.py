@@ -74,7 +74,6 @@ def prechecks(manifests, start_hour, hours, proof_root, keep, t):
     keep_p = Path(keep)
     if not keep_p.is_dir():
         raise Refusal("keep dir is not a directory")
-    from tools import floor_tape_paths  # noqa: F401  (guard imported by the driver as TP)
     why = O.TP.refusal(str(keep_p), roots)
     if why:
         raise Refusal("keep: %s" % why)
