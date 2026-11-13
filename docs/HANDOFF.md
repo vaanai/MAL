@@ -46,12 +46,12 @@ This replaces the manager22 handoff (written 2026-11-12T20:5xZ–21:1xZ). manage
 
 **The open position (closed).** `e3b7cc9de20e65bd` (bought 2026-11-12T14:06:15Z) closed at 14:06:11Z on 2026-11-13, reason `time_24h`, with no host take-profit (the host was down 00:33:06-02:19:18Z). It counts as Am.6 trade 2 of 20; list-(ii) disclosure: host-down span, lost host take-profit, 06:03:33Z restart, exit 14:06:11Z vs buy landed 11-12T14:06:15Z.
 
-**After any host start, the current code refuses every pool for about 24 h** (a `host_down` span; entries resume about 24 h after the start instant). That is by design. Positions open at the stop lose the host take-profit. The 06:03:33Z unattended restart counted as a host start: the refuse window now ends about 2026-11-14T06:03Z.
+**After any host start, the current code refuses every pool for about 24 h** (a `host_down` span; entries resume about 24 h after the start instant). That is by design. Positions open at the stop lose the host take-profit. The 06:03:33Z unattended restart and the 14:44:03.517Z stage-1 deploy start each counted as a host start: the refuse window now ends about 2026-11-14T14:47:40Z (+BLOCK_MS).
 
 **After any host start, record it in LAB_STATE** (done for 00:33:06Z, 01:15:20Z/01:15:37Z and 02:19:18Z in the records PR of 11-13; the 06:03:33Z restart of host and executor is recorded in the records PR 2026-11-13b). Do not ask Helm to restart the host inside the refuse window above.
 
 ## 2. Do not break these (read first)
-1. **The host `mal-floor-lane-host.service` is restarted only through Helm by HELM-ASK** (DEC-035, and Am.7's standing rule once stage 1 is installed; today's restart is on the v1 code, e89f1536 with host.json 60f7a60a, for an operational need). Any restart is a data-loss span and, today, a 24 h refuse-all. (The 06:03:33Z restart was unattended; Helm's needrestart exclusion of 06:18Z now keeps the mal-* units out of automatic restarts.) The executor `mal-floor-lane.service` is also restarted only through Helm. Once stage 1 is installed, Am.7 adds: the code and config must be the installed blobs and sha256; each restart is logged in LAB_STATE, the state file and the notebook; none while a kill-line check of the previous restart is pending.
+1. **The host `mal-floor-lane-host.service` is restarted only through Helm by HELM-ASK** (DEC-035, and Am.7's standing rule: stage 1 is installed since 2026-11-13T14:44:03.517Z, code aa05923f, config host-aa05923f.json sha256 5ec10c69…). Any restart is a data-loss span; no host restart before about 2026-11-14T14:48Z (§3). (The 06:03:33Z restart was unattended; Helm's needrestart exclusion of 06:18Z now keeps the mal-* units out of automatic restarts.) The executor `mal-floor-lane.service` is also restarted only through Helm. With stage 1 installed, Am.7 adds: the code and config must be the installed blobs and sha256; each restart is logged in LAB_STATE, the state file and the notebook; none while a kill-line check of the previous restart is pending.
 2. **fast-0 `/` must stay at or above 27% free.** The host dies at its next trade under 25%. Disk guard job **#2546** alerts under 27%. The old guard **#2452** alerts under 24% and is not enough.
 3. **Never start the host with `--since-hour` when a checkpoint exists.** It copies tape into `seed-tmp` and eats the disk.
 4. **Job #2527's result file is read-only evidence** (`/data2/mal/scratch/floor-gap-range/gap.json`; sha256 in `/data/mal/hunt-1008/ops/reports/2026-11-13/floor-gap-range-job2527.sha256`, copy in `reports/2026-11-13/job2527/`). Do not overwrite or re-run into it.
@@ -112,12 +112,12 @@ This replaces the manager22 handoff (written 2026-11-12T20:5xZ–21:1xZ). manage
   then `miscusi-agent job log <seq>`. The bridge-event filter starts at `ts_ms` 1794419100000 (11-11T17:45Z); raise it as the log grows.
 - It prints the lane report, both unit PIDs, host checkpoint fields (gaps, hwm, log_seq, gap_refusals), the follower's lag, jumps and retries, disk, and the day's bridge events.
 - **Healthy means:**
-  - executor 2625989 active, and the host active (PID 2625988) with hwm within the hour (restarted 06:03:33Z; the earlier PIDs 1929135 and 2504565 are gone);
+  - executor 2625989 active, and the host active (PID 2913148, since the stage-1 install at 14:44:03.517Z) with hwm within the hour (the earlier host PIDs 2504565 and 2625988 and executor PID 1929135 are gone);
   - follower PID 2625920, NRestarts 0, backlog_jumps 0, lag under ~50;
   - **disk free at or above 27%** (not 22%: 25% is the host's floor).
 - Not yet confirmed: at 00:3xZ the lane report for the new UTC day printed `daily stop n/a (field not recorded)`; check it reads ok after the first event of a day.
 
-**Helm protocol.** Requests are files `HELM-ASK-<MMDD>-<n>.md` in `/data/mal/hunt-1008/push-1016/hunt29/p1/`; replies are `HELM-REPLY-*` in the same folder. Helm acts on the owner's word given directly in Helm chat. Verify every reply with a read-only job before recording it. Open asks: **HELM-ASK-1108-1** (reset window opens 11-16T06:00Z, §5).
+**Helm protocol.** Requests are files `HELM-ASK-<MMDD>-<n>.md` in `/data/mal/hunt-1008/push-1016/hunt29/p1/`; replies are `HELM-REPLY-*` in the same folder. Helm acts on the owner's word given directly in Helm chat. Verify every reply with a read-only job before recording it. Open asks: **HELM-ASK-1113-7** (Am.8 part B; sent 14:22Z; not done, waits for the owner's word, q_h5R6dhNNtqnGyQ decide by 2026-11-14T12:00Z) and **HELM-ASK-1108-1** (reset window opens 11-16T06:00Z, §5).
 
 ## 4. Second strategy: r4bt-a2 (paper)
 - **DEC-031 Amendment 30 merged f090d5a8** (#1325): paper successor of r4-b-T on the fixed tip feed. **r4bt-a2 is NOT yet registered**: registration only follows a P0 PASS on 2026-11-16, 11-17 and 11-18 (Am.30 items 7, 9). The count job is **2026-11-19T00:10Z**; the clock is 2026-11-20T00:00Z; screen read by 2026-11-27T01:01Z; confirmation about 12-04. W′ = **3c12c5fd** (#1330, the per-bot table).
@@ -126,7 +126,7 @@ This replaces the manager22 handoff (written 2026-11-12T20:5xZ–21:1xZ). manage
 - **Memory:** the dry host's scope is 5120M. Check `systemctl show user-1002.slice -p MemoryCurrent -p MemoryMax -p MemoryHigh` with FLOOR running and record the headroom (dry-long-1101a recorded `M1_SLICE FAIL`: slice MemoryMax 16106127360 below 5120M plus current). No replay job during the host's ~37 min catch-up.
 - **Train/serve check (job #2531):** TRAIN = DISCLOSE (migration-row coverage of complete-row graduations 0.0337, 0.0417, 0.0098 on the three blocks); SERVE = PASS, descriptive only (11-08 to 11-11 ratios 1.0344, 1.0495, 0.9944, 0.9180). Am.30 carries the disclosure.
 - **Owner question answered (2026-11-13 ~02:3xZ chat, per the state file):** the r4-b forward test is approved, FLOOR stays live, capital for r4-b if it does well. The r4bt-a2 paper book proceeds (dry host install 10:37Z).
-- **Owed:** Am.30's heading on main still says "(DRAFT;" (T1 erratum).
+- **Done:** the Am.30 "(DRAFT;" heading is covered by DEC-031 Am.30 Erratum 1 (#1352, 71a446b4).
 - Tip-health successors for **#2055 and #2064** are needed before 2026-11-16T00:00Z (P0 days). The tip writer/push successors #2503/#2504 end about 11-29T06Z, inside the confirmation window.
 
 ## 5. Fixed steps (UTC)
@@ -176,7 +176,7 @@ MiScusi refuses job limits above 14 days. `after` fires only on exit 0, never on
 - **`set -f` MINOR** around the symlink-component loop in `scripts/research/floor_gap_range.sh`.
 - **Forward A/B bins** for the landing vault (`land_vault_sol`, `entry_over_mark0`).
 - **Records batch for 11-13:** PRs 2026-11-13, 13b (#1350) and 13c (this update) cover events to 14:51Z; later events go in the next daily batch.
-- **Am.30 heading** "(DRAFT;" erratum (T1); r4bt-tip library row wording.
+- **r4bt-tip library row wording** (the Am.30 heading erratum is merged, #1352).
 - **Small MINORs from the state file:** #1330 follow-ups (mutable table, wrapper clock check and provenance, `--bot-id=X` form); #1328 nits (attribution of nits to the #1319 QP, "about 0.007" wording); Erratum 3 report-wording fixes (host tick; 26 last-print exits; "pricing-rule total loss"); the 41 of 79 entries landing above 0.5 SOL real vault need a separate look.
 - **From manager22:** the variants script branch `/data2/mal/wt/floor-variants` (#1324 merged the research scripts; check it is covered); the #1652 let-end (11-12T00:30Z) and #1814 let-end (11-11T07:20Z) LAB_STATE rows; the DEC-031 `--backlog-slots` note (tip-source books pin none); follower restart LAB_STATE rows (11-11T17:53:56Z; 11-12T17:58:35Z, PID 1559764 → 2254354).
 - **Stale open PRs (#905–#1263):** parked or never-merge. Triage only if there is time.
@@ -202,10 +202,10 @@ Also: 11-15 06:41Z tip hand-off check; 11-17 09:13Z A3 successors (`A3-SUCCESSOR
 
 ### A3 halt of 2026-11-13T07:10:05Z (Helm FYI HELM-REPLY-1113-5; answer HELM-ASK-1113-5: no action)
 - The A3 record at 07:10:05Z has `halt.any=true`: boost_share_low (0 non-mayhem WSOL graduations of 20, InitBoost 0/8 WSOL) and synthetic_share_high (11/20); two boost rules not evaluated; pooled guard a3-applied verdict HALT.
-- The FLOOR executor pauses NEW entries by itself while the newest A3 record has a set or not-evaluated flag (`a3_pause_tick` in `tools/floor_lane_executor.py`). It is not a latch: it clears when a later record is clean (next runs about 19:10Z and 11-14T07:10Z). Exits keep running. No `a3_pause` row yet, because the host refuses all pools until about 2026-11-14T06:03Z. No STOP file, no LIVE_OK change.
+- The FLOOR executor pauses NEW entries by itself while the newest A3 record has a set or not-evaluated flag (`a3_pause_tick` in `tools/floor_lane_executor.py`). It is not a latch: it clears when a later record is clean (next runs about 19:10Z and 11-14T07:10Z). Exits keep running. No `a3_pause` row yet, because the host refuses all pools until about 2026-11-14T14:47:40Z (stage-1 deploy start). No STOP file, no LIVE_OK change.
 - Wide probe job #2585 (public RPC, n 80): WSOL 52/80 (non-mayhem 20, all InitBoost; mayhem 32), other quote 28/80 (11 quote mints; 26 InitBoost, 24 synthetic); mix over 120: wsol 86 / usdc 5 / other 29 (24%). Trend job #2587: other-quote share bursts to 20-25% of the 60-mix on 10-29/30, 11-01, 11-04, 11-08, 11-12, then 28/60 at 11-13T07:10Z, the largest so far. Reading: a burst of other-quote launches plus a quiet hour; not yet a regime change; decide on the 19:10Z record. **Cause (report `/data/mal/hunt-1008/ops/reports/2026-11-13/other-quote-graduations.md`, notebook n_eYfBbStvz_mpMw; public RPC, structure counts only):** of the 120 newest graduations 30 were other-quote over 12 quote mints; one creator account made 19 of the 30, all at 06:31-06:38Z, on two quote mints that are themselves pump-style coins (14 and 5); the other 11 coins have 11 creators. Reading: one account's 7-minute burst sat inside the 07:10Z sample of 20; not a platform change. Expect the 19:10Z record to clear unless it bursts again. Not measured: prices, sizes, tradeability, the two-week history by creator. If the 19:10Z and 11-14T07:10Z records both still halt, FLOOR stays paused after the refuse-all ends; then re-check (DEC-035 §4). Notebook n_L5RQa1IeCA4Jlg.
 
 ## 10. How to verify this handoff
 - `git log --oneline -1` on main shows this PR or later.
 - The last lines of `state-manager23.md` mention this handoff; the 2026-11-13T01:19Z line is the CAUSE + FIX entry for the host start and the 06:03Z line records the unattended restart.
-- The hourly job shows the host active under PID 2625988 (unless restarted and recorded), executor 2625989 active, follower PID 2625920 (unless restarted and recorded), disk at or above 27% (44.68% at 08:41Z).
+- The hourly job shows the host active under PID 2913148 (unless restarted and recorded), executor 2625989 active, follower PID 2625920 (unless restarted and recorded), disk at or above 27% (44.68% at 08:41Z).
