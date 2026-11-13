@@ -541,3 +541,7 @@ Helm acts on the owner's word given in Helm chat (docs/HANDOFF.md §1); the mana
 - The rule `l1-floor-v2` (frozen sha 5e12f8f5), its exits, and PINS.
 - §3 for any other code change; §4, §5 and §7.
 - Every other lane bot.
+
+**Erratum 1 to Amendment 7 (precondition (c) timing).** The SEALS-BRIEF line for the proof jobs (P0–P2, `scripts/ops/floor_stage1_proof.py` at its merged commit) is added before the proof jobs run. The line for the kill-line check job and its file, at their merged commit, is added before that job's first run, and in any case before the first host restart made more than BLOCK_MS after the end of the last unflagged host_down span (the first restart that can be cheap). Until that line exists and the kill-line check has passed its end-to-end smoke run (QP on #1337 at 496d6e5a), no such restart is made. Nothing else in Amendment 7 changes.
+
+Source: the text above is QP's, verbatim, from the QP VERDICT OK on PR #1337 at 97a5532f2d2c56780362d5a3f1135d4a4b679d19 (section "Am.7 precondition (c) after removing killcheck"). Written 2026-11-13T01:2xZ (`date -u` 01:24:45Z). PR #1337 is merged as main 4c862bba8e852154ba730c75196832863985fd74 and holds P0–P2 only; the kill-line check is not on main.
