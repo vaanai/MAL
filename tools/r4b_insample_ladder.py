@@ -57,8 +57,28 @@ BAD_PREFIXES = ("/data/mal/blocks", "/var/lib", "/data/mal/arena", "/data/mal/me
 BAD_WORDS = ("tip", "arena", "forward", "sealed", "shadow", "canary", "probe", "r4bt", "mal-live")
 
 # hunt9 self-check target (VERIFY): n 2,879; pressure 1.3 s mean +1.2150 % of stake; total 8.7453 SOL; 0.25 SOL, 505k + rent 2,039,280, haircut, no E1.
-EXPECTED = {"n": 2879, "mean_pct": 1.2150, "total_sol": 8.7453}
-TOL = {"mean_pct": 0.0005, "total_sol": 0.0005}
+# Extra unfiltered hunt9 targets (REPORT 2a/2c: 0 % of picks under 20x at 0.25 and 0.5, so those rows are unfiltered): 0.25 SOL 1.9 s; 0.5 SOL 1.3 s and 1.9 s.
+EXPECTED = {"n": 2879, "mean_pct": 1.2150, "total_sol": 8.7453, "mean_pct_19": 1.2755, "mean_pct_05": 1.6745, "total_sol_05": 24.104, "mean_pct_05_19": 1.7349}
+TOL = {"mean_pct": 0.0005, "total_sol": 0.0005, "mean_pct_19": 0.0005, "mean_pct_05": 0.0005, "total_sol_05": 0.0006, "mean_pct_05_19": 0.0005}
+
+TRAIN_BLOCKS = ("explore-0814", "fast-pool-0918", "oracle-insample-0922")
+FRESH = "fresh-0903"
+GROUPS = {"train3": TRAIN_BLOCKS, "fresh-0903": (FRESH,), "pooled_report_only": ALLOWED_BLOCKS}
+GROUP_TITLE = {"train3": "training blocks pooled (explore-0814, fast-pool-0918, oracle-insample-0922)", "fresh-0903": "fresh-0903 alone (its own row)",
+               "pooled_report_only": "pooled incl. fresh-0903 (report only)"}
+RETUNE_LABEL = "retune, in-sample, best of 2"
+RETUNE_NOTE = "20x depth filter (50x was the other variant looked at in hunt9); a new book (EXP-027 section 10.5), never a variant of r4-b"
+RENT_LABEL = "report-only, rent 2,039,280 charged per filled trip"
+DAYS_HUNT9 = 28
+PROVENANCE = ("picks = hunt8 walk-forward deciding picks (each test day scored by a model fitted on earlier days; no re-selection, no refit); "
+              "in-sample for selection (best of 6 l3 variants, about 25 hunts, EXP-027 section 10.4)")
+SELFCHECK_STATEMENT = ("The self-check uses the hunt9 scorer settings (auto_stranded off, C8 k-fall check off, SPL stranded rent for every trip, all five cached blocks incl. exp011-0909) "
+                       "and reproduces hunt9's published aggregates only. The ladder uses the r4b_book / r4b_read deciding defaults (auto_stranded on, C8 on at k_tol 1e-3) on the four "
+                       "allowed blocks, with no strand class (freeze authority, Token-2022 extension) and SPL stranded rent for every trip, because the picks table carries neither.")
+CAVEATS = ("Fail probability does not depend on stake in either fail model (flat 0.15; pressure p from the cached flow at the entry slot). Fill drift, exit liquidity at the hourly mark "
+           "(the exit is the cached mark state, not a live quote) and E1 above 0.25 SOL are unmeasured. hunt9: 0.5 SOL is the edge of credibility and 1.0 SOL is indicative only. "
+           "Pool fee tiers stay inside the gross effect. Drift lines subtract the bps from the mean after the fail leg on every row, guarded rows included (hunt9 convention). "
+           "Break-even is the rung grid plus a linear interpolation between adjacent rungs.")
 
 REQUIRED = ("T0", "T1", "Qx", "Bx", "Qe13", "Be13", "Qe19", "Be19", "spot", "y_p_ssb", "y_b_ssb", "y_p_nearby", "y_b_nearby")
 
@@ -170,7 +190,7 @@ def price_rung(P, stake_lam: float, lat: str, e1_lam: float = 0.0, rent: int = 0
     out["extra_e1"] = np.zeros(len(Qe))
     if e1_lam > 0:
         stk = np.full(len(Qe), float(stake_lam))
-        pnl0 = bk.round_trip(stk, Qe, Be, spot, Qx, Bx, send, rent, h_in=0.0, h_out=0.0, auto_stranded=auto)[0]
+        pnl0 = bk.round_trip(stk, Qe, Be, spot, Qx, Bx, send, rent, h_in=0.0, h_out=0.0, auto_stranded=auto, k_tol=k_tol)[0]
         hair = pnl0 - c["nofail"]
         extra = np.where(c["filled"] & ~c["stranded"], np.maximum(0.0, e1_lam - hair), 0.0)
         pnl = c["nofail"] - extra
@@ -218,6 +238,7 @@ def decompose(P, lat: str, stake_lam: float, auto: bool = True, k_tol=F.K_TOL) -
 
 # ------------------------------------------------------------------------------------------------------------------ statistics
 def leg_stats(x, T0, blocks, stake_lam: float, days_eq: float) -> dict:
+    """Per-day figures use two denominators: days_eq (covered hours / 24 inside the group's blocks) and hunt9's 28 test days."""
     """x per-trade pnl (lamports) of one leg."""
     x = np.asarray(x, float)
     T0 = np.asarray(T0, np.int64)
@@ -230,7 +251,7 @@ def leg_stats(x, T0, blocks, stake_lam: float, days_eq: float) -> dict:
     blk = np.asarray(blocks, dtype=object)
     return {
         "n": int(n), "trades_per_day": n / days_eq, "mean_pct": float(np.mean(x / stake_lam) * 100), "mean_sol": float(x.mean() / 1e9),
-        "sol_per_day": float(x.sum() / 1e9 / days_eq), "total_sol": float(x.sum() / 1e9), "ci90_lo_sol": bk.boot_lo(x / 1e9),
+        "sol_per_day": float(x.sum() / 1e9 / days_eq), "sol_per_day_hunt9_28": float(x.sum() / 1e9 / DAYS_HUNT9), "trades_per_day_hunt9_28": n / DAYS_HUNT9, "total_sol": float(x.sum() / 1e9), "ci90_lo_sol": bk.boot_lo(x / 1e9),
         "ex_top3_sol": float(np.sort(x)[::-1][3:].sum() / 1e9), "ex_best_day_sol": float(dsum.sum() - dsum.max()), "best_day": str(ud[int(np.argmax(dsum))]),
         "days_traded": int(len(ud)), "days_pos": int((dsum > 0).sum()),
         "per_block_sol": {b: float(x[blk == b].sum() / 1e9) for b in ALLOWED_BLOCKS},
@@ -255,16 +276,46 @@ def e1_versions(stake_lam: float) -> dict:
     return {"fixed": float(E1_FIXED), "prop": float(E1_PROP_FRAC * stake_lam)}
 
 
-def run_ladder(P, stakes=STAKES, days_eq: float | None = None, flow=None) -> dict:
-    """P: mapping of equal-length arrays (REQUIRED columns, already guarded and block-filtered). Returns the result dict."""
+def run_ladder(P, stakes=STAKES, days_eq=None, flow=None) -> dict:
+    """Priced per group: training blocks pooled, fresh-0903 alone, and a pooled report-only row. days_eq: None (computed per group), a dict group -> days, or one number."""
+    blocks = np.asarray(P["_block"], dtype=object)
+    out = {"label": LABEL, "provenance": PROVENANCE, "groups": {}}
+    for g, bl in GROUPS.items():
+        m = np.isin(blocks, bl)
+        if not m.any():
+            continue
+        de = days_eq.get(g) if isinstance(days_eq, dict) else (days_eq if days_eq is not None else days_equivalent(bl))
+        Pg = subset(P, m)
+        out["groups"][g] = _run_group(Pg, stakes, de, None if flow is None else np.asarray(flow)[m])
+        out["groups"][g]["group"] = g
+        out["groups"][g]["blocks"] = list(bl)
+    if "train3" in out["groups"]:
+        m = np.isin(blocks, TRAIN_BLOCKS)
+        out["bridge_0.25_rent_charged_no_E1_1.3s_press"] = bridge(subset(P, m))
+    return out
+
+
+def bridge(P) -> dict:
+    """Self-check settings vs ladder settings on one group at 0.25 SOL, rent 2,039,280, no E1, 1.3 s pressure leg: mean %, total, and the ladder's strand / invalid counts."""
+    sl = F.STAKE_LAMPORTS
+    a = price_rung(P, sl, "13", 0.0, RENT_CHARGED, SEND, auto=False, k_tol=None)
+    b = price_rung(P, sl, "13", 0.0, RENT_CHARGED, SEND, auto=True, k_tol=F.K_TOL)
+    ec = b["exit_cause"]
+    auto = b["stranded"] & ~b["entry_invalid"] & ~b["exit_invalid"]
+    return {"n": int(len(a["press"])),
+            "selfcheck_settings": {"mean_pct": float(np.mean(a["press"] / sl) * 100), "total_sol": float(a["press"].sum() / 1e9)},
+            "ladder_settings": {"mean_pct": float(np.mean(b["press"] / sl) * 100), "total_sol": float(b["press"].sum() / 1e9)},
+            "ladder_auto_stranded": int(auto.sum()), "ladder_entry_invalid": int(b["entry_invalid"].sum()),
+            "ladder_exit_invalid_by_cause": {"C2": int((ec == 2).sum()), "C7": int((ec == 7).sum()), "C8": int((ec == 8).sum())}}
+
+
+def _run_group(P, stakes, days_eq: float, flow=None) -> dict:
     n = len(P["T0"])
     blocks = np.asarray(P["_block"], dtype=object)
     T0 = np.asarray(P["T0"], np.int64)
     T1 = np.asarray(P["T1"], np.int64)
-    if days_eq is None:
-        days_eq = days_equivalent(ALLOWED_BLOCKS)
     op = open_stats(T0, T1)
-    res = {"label": LABEL, "n_picks": int(n), "days_equivalent": days_eq, "open_positions_by_intervals": op, "rungs": {}, "blocks_in_data": sorted(set(blocks.tolist()))}
+    res = {"label": LABEL, "n_picks": int(n), "days_equivalent": days_eq, "days_hunt9": DAYS_HUNT9, "open_positions_by_intervals": op, "rungs": {}, "blocks_in_data": sorted(set(blocks.tolist()))}
     for s in stakes:
         sl = s * 1e9
         rung = {"stake_sol": s, "peak_open_sol": op["peak"] * s, "mean_open_sol_at_marks": op["mean_at_marks"] * s, "lat": {}}
@@ -283,7 +334,7 @@ def run_ladder(P, stakes=STAKES, days_eq: float | None = None, flow=None) -> dic
                     v[leg] = st
                 # appendix: 20x depth filter, a RETUNE; legs (and intercepts) from the unfiltered book, retained rows only
                 keep = Qe >= 20 * sl
-                v["retune_20x"] = {"label": "RETUNE on in-sample rows", "n_variants": len(tuple(stakes)) * len(LATS),
+                v["retune_20x"] = {"label": RETUNE_LABEL, "note": RETUNE_NOTE, "n_variants": 2,
                                    **{leg: leg_stats(c[leg][keep], T0[keep], blocks[keep], sl, days_eq) for leg in ("flat", "press")}}
                 lr["variants"][vname] = v
             rung["lat"][lat] = lr
@@ -301,7 +352,13 @@ def break_even(res: dict, stakes) -> dict:
                 key = f"{vname}|{leg}|{LAT_NAME[lat]}"
                 nets = {str(s): res["rungs"][str(s)]["lat"][lat]["variants"][vname][leg].get("mean_pct") for s in stakes}
                 pos = [s for s in stakes if nets[str(s)] is not None and nets[str(s)] > 0]
-                out[key] = {"smallest_rung_net_above_0": (min(pos) if pos else "none in range"), "net_pct": nets,
+                interp = None
+                for a_, b_ in zip(stakes, stakes[1:]):
+                    na, nb = nets[str(a_)], nets[str(b_)]
+                    if na is not None and nb is not None and (na <= 0) != (nb <= 0) and nb != na:
+                        interp = a_ + (0 - na) * (b_ - a_) / (nb - na)
+                        break
+                out[key] = {"smallest_rung_net_above_0": (min(pos) if pos else "none in range"), "interpolated_stake_sol_first_sign_change": interp, "net_pct": nets,
                             **{f"net_pct_plus_{b}bps_drift": {str(s): (None if nets[str(s)] is None else nets[str(s)] - b / 100.0) for s in stakes} for b in DRIFT_BPS}}
     return out
 
@@ -311,136 +368,193 @@ def _f(x, d=4):
     return "n/a" if x is None else (f"{x:.{d}f}" if isinstance(x, (int, float)) else str(x))
 
 
+VARIANT_ROWS = (("fixed", "fixed"), ("prop", "prop"), ("fixed_rent_charged", f"fixed + rent [{RENT_LABEL}]"))
+
+
 def render_md(res: dict, meta: dict) -> str:
-    L = [f"# r4-b in-sample stake ladder", "", LABEL, "", f"Code blob {meta.get('code_blob')}; picks rows priced {res['n_picks']}; days equivalent {res['days_equivalent']:.4f}; "
-         f"rows dropped (exp011-0909): {meta.get('dropped_exp011')}. oracle-live-0925 is not in the cache and is not priced. E1 scaling with stake is unmeasured; both versions are printed. "
-         f"Costs: {SEND} lamports per send, rent 0 (rent-charged leg in the JSON), haircut +26.08/-16 bps, guard 1.15. Nothing here says r4-b makes money.", ""]
+    L = ["# r4-b in-sample stake ladder", "", LABEL, "",
+         f"Code blob {meta.get('code_blob')}; rows dropped (exp011-0909, never priced in the ladder): {meta.get('dropped_exp011')}. oracle-live-0925 is not in the cache and is not priced. "
+         f"E1 scaling with stake is unmeasured; both versions are printed. Costs: {SEND} lamports per send, rent 0 (rent-charged rows are printed beside them), haircut +26.08/-16 bps, guard 1.15. "
+         "Nothing here says r4-b makes money.", "", PROVENANCE + ".", "", CAVEATS, ""]
 
     def table(title, head, rows):
         L.extend([f"## {title}", "", LABEL, "", "| " + " | ".join(head) + " |", "|" + "---|" * len(head)])
         L.extend("| " + " | ".join(str(c) for c in r) + " |" for r in rows)
         L.append("")
 
-    rungs = res["rungs"]
-    rows = []
-    for s, r in rungs.items():
-        for lat in LATS:
-            for vn in ("fixed", "prop"):
-                v = r["lat"][lat]["variants"][vn]
-                for leg in ("flat", "press"):
-                    t = v[leg]
-                    rows.append([s, _f(r["peak_open_sol"], 2), LAT_NAME[lat], leg, vn, t["n"], _f(t.get("trades_per_day"), 3), _f(t.get("mean_pct")), _f(t.get("mean_sol"), 6),
-                                 _f(t.get("sol_per_day"), 5), _f(t.get("total_sol")), _f(t.get("ex_top3_sol")), _f(t.get("ex_best_day_sol")), f"{t.get('days_pos')}/{t.get('days_traded')}", _f(t.get("ci90_lo_sol"), 6)])
-    table("Net by rung, leg, latency, E1 version (main table, no depth filter)", ["stake SOL", "peak open SOL", "lat", "fail leg", "E1", "n", "trades/day", "net % of stake", "net SOL/trade", "net SOL/day", "total SOL", "ex-top-3 SOL", "ex-best-day SOL", "days+/days", "CI90 lo SOL/trade"], rows)
+    sc = meta.get("selfcheck")
+    L.extend(["# Self-check and bridge", ""])
+    rows = [["self-check", ("PASS" if sc and sc.get("pass") else "not recorded"), json.dumps({k: sc.get(k) for k in EXPECTED} if sc else None), json.dumps(EXPECTED), json.dumps(TOL), (sc or {}).get("code_blob")]]
+    table("Self-check result (hunt9 targets)", ["item", "result", "measured", "targets", "tolerances", "code blob"], rows)
+    L.extend([SELFCHECK_STATEMENT, ""])
+    br = res.get("bridge_0.25_rent_charged_no_E1_1.3s_press")
+    if br:
+        rows = [[br["n"], _f(br["selfcheck_settings"]["mean_pct"]), _f(br["selfcheck_settings"]["total_sol"]), _f(br["ladder_settings"]["mean_pct"]), _f(br["ladder_settings"]["total_sol"]),
+                 br["ladder_auto_stranded"], br["ladder_entry_invalid"], json.dumps(br["ladder_exit_invalid_by_cause"])]]
+        table("Bridge, training blocks pooled, 0.25 SOL, rent 2,039,280, no E1, 1.3 s pressure leg", ["n", "mean % self-check settings", "total SOL self-check settings", "mean % ladder settings", "total SOL ladder settings",
+                                                                                                    "ladder auto-stranded", "ladder entry-invalid", "ladder exit-invalid by cause"], rows)
 
-    rows = []
-    for s, r in rungs.items():
-        for lat in LATS:
-            d = r["lat"][lat]["decomp"]
-            im = r["lat"][lat]["impact_rt_bps"]
-            for vn in ("fixed", "prop"):
-                v = r["lat"][lat]["variants"][vn]
-                rows.append([s, LAT_NAME[lat], vn, _f(d["gross_pct"]), _f(d["send_pct"]), _f(d["impact_pct"]), f"{_f(im['median'], 1)}/{_f(im['p90'], 1)}/{_f(im['mean'], 1)}", _f(d["haircut_pct"]), _f(v["e1_pct"]),
-                             _f(d["strand_rent_pct"]), _f(v["flat"]["fail_cost_pct"]), _f(v["press"]["fail_cost_pct"]), _f(v["flat"]["mean_pct"]), _f(v["press"]["mean_pct"])])
-    table("Cost drag, % of stake (gross + send + impact + haircut + E1 + stranded rent - fail cost = net)", ["stake SOL", "lat", "E1", "gross effect %", "send fees %", "impact %", "impact RT bps med/p90/mean", "haircut %", "E1 %", "stranded rent %", "fail cost flat %", "fail cost press %", "net flat %", "net press %"], rows)
-
-    rows = []
-    for s, r in rungs.items():
-        for lat in LATS:
-            for vn in ("fixed", "prop"):
-                for leg in ("flat", "press"):
-                    pb = r["lat"][lat]["variants"][vn][leg].get("per_block_sol", {})
-                    rows.append([s, LAT_NAME[lat], vn, leg] + [_f(pb.get(b), 4) for b in ALLOWED_BLOCKS])
-    table("Per-block total SOL", ["stake SOL", "lat", "E1", "fail leg"] + list(ALLOWED_BLOCKS), rows)
-
-    days = sorted({d for r in rungs.values() for lat in LATS for vn in ("fixed", "prop") for leg in ("flat", "press") for d in r["lat"][lat]["variants"][vn][leg].get("per_day_sol", {})})
-    for vn in ("fixed", "prop"):
+    for g, gr in res["groups"].items():
+        gt = GROUP_TITLE[g]
+        rungs = gr["rungs"]
+        L.extend([f"# Group: {gt}", "", f"picks {gr['n_picks']}; days equivalent (covered hours / 24 in the group's blocks) {gr['days_equivalent']:.4f}; hunt9 denominator {gr['days_hunt9']} days; both per-day figures are printed.", ""])
         rows = []
-        for d in days:
-            row = [d]
-            for s, r in rungs.items():
-                for lat in LATS:
-                    row.append(_f(r["lat"][lat]["variants"][vn]["press"].get("per_day_sol", {}).get(d), 4))
-            rows.append(row)
-        table(f"Per-day total SOL, pressure leg, E1 {vn}", ["day"] + [f"{s} @ {LAT_NAME[lat]}" for s in rungs for lat in LATS], rows)
+        for s, r in rungs.items():
+            for lat in LATS:
+                for vn, vl in VARIANT_ROWS:
+                    v = r["lat"][lat]["variants"][vn]
+                    for leg in ("flat", "press"):
+                        t = v[leg]
+                        rows.append([s, _f(r["peak_open_sol"], 2), LAT_NAME[lat], leg, vl, t["n"], _f(t.get("trades_per_day"), 3), _f(t.get("mean_pct")), _f(t.get("mean_sol"), 6),
+                                     _f(t.get("sol_per_day"), 5), _f(t.get("sol_per_day_hunt9_28"), 5), _f(t.get("total_sol")), _f(t.get("ex_top3_sol")), _f(t.get("ex_best_day_sol")),
+                                     f"{t.get('days_pos')}/{t.get('days_traded')}", _f(t.get("ci90_lo_sol"), 6)])
+        table(f"Net by rung, leg, latency, E1 version, no depth filter - {gt}", ["stake SOL", "peak open SOL", "lat", "fail leg", "E1 / rent", "n", "trades/day", "net % of stake", "net SOL/trade",
+              "net SOL/day (group days)", "net SOL/day (28 days)", "total SOL", "ex-top-3 SOL", "ex-best-day SOL", "days+/days traded", "CI90 lo SOL/trade"], rows)
 
-    rows = []
-    for s, r in rungs.items():
-        for lat in LATS:
-            v = r["lat"][lat]["variants"]["fixed"]
-            rows.append([s, LAT_NAME[lat], _f(r["peak_open_sol"], 2), _f(r["mean_open_sol_at_marks"], 3), _f(r["lat"][lat]["share_q_lt_20x_stake"], 4), _f(r["lat"][lat]["share_stake_gt_60s_flow"]) if r["lat"][lat]["share_stake_gt_60s_flow"] is not None else "not computed",
-                         _f(v["guard_share"]), _f(v["stranded_share"])])
-    table("Capacity and depth (peak open at max 10 concurrent)", ["stake SOL", "lat", "peak open SOL", "mean open SOL at marks", "share quote (incl. V) < 20x stake", "share stake > 60 s pool flow", "guard share", "stranded share"], rows)
+        rows = []
+        for s, r in rungs.items():
+            for lat in LATS:
+                d = r["lat"][lat]["decomp"]
+                im = r["lat"][lat]["impact_rt_bps"]
+                for vn in ("fixed", "prop"):
+                    v = r["lat"][lat]["variants"][vn]
+                    rows.append([s, LAT_NAME[lat], vn, _f(d["gross_pct"]), _f(d["send_pct"]), _f(d["impact_pct"]), f"{_f(im['median'], 1)}/{_f(im['p90'], 1)}/{_f(im['mean'], 1)}", _f(d["haircut_pct"]),
+                                 _f(v["e1_pct"]), _f(d["strand_rent_pct"]), _f(v["flat"]["fail_cost_pct"]), _f(v["press"]["fail_cost_pct"]), _f(v["flat"]["mean_pct"]), _f(v["press"]["mean_pct"])])
+        table(f"Cost drag, % of stake: gross (pool fee tiers inside) + send + impact + haircut + stranded rent - E1 - fail cost = net - {gt}",
+              ["stake SOL", "lat", "E1", "gross effect %", "send fees % (signed)", "impact % (signed)", "impact RT bps med/p90/mean", "haircut % (signed)", "E1 % (cost, positive)", "stranded rent % (signed)",
+               "fail cost flat % (positive)", "fail cost press % (positive)", "net flat %", "net press %"], rows)
 
-    rows = []
-    for key, b in res["break_even"].items():
-        rows.append([key, b["smallest_rung_net_above_0"]] + [_f(b["net_pct"][str(s)]) for s in rungs] + [", ".join(f"{s}:{_f(b['net_pct_plus_50bps_drift'][str(s)], 3)}" for s in rungs), ", ".join(f"{s}:{_f(b['net_pct_plus_100bps_drift'][str(s)], 3)}" for s in rungs)])
-    table("Break-even line (smallest rung with net % above 0; net % shown; extra adverse drift of 50 and 100 bps of stake per trade)", ["E1 | leg | lat", "smallest rung net > 0"] + [f"net % @ {s}" for s in rungs] + ["net % at +50 bps drift", "net % at +100 bps drift"], rows)
+        rows = []
+        for s, r in rungs.items():
+            for lat in LATS:
+                for vn in ("fixed", "prop"):
+                    for leg in ("flat", "press"):
+                        pb = r["lat"][lat]["variants"][vn][leg].get("per_block_sol", {})
+                        rows.append([s, LAT_NAME[lat], vn, leg] + [_f(pb.get(b), 4) if b in gr["blocks"] else "-" for b in ALLOWED_BLOCKS])
+        table(f"Per-block total SOL - {gt}", ["stake SOL", "lat", "E1", "fail leg"] + list(ALLOWED_BLOCKS), rows)
 
-    rows = []
-    for s, r in rungs.items():
-        for lat in LATS:
+        if g != "pooled_report_only":
+            days = sorted({d for r in rungs.values() for lat in LATS for d in r["lat"][lat]["variants"]["fixed"]["press"].get("per_day_sol", {})})
             for vn in ("fixed", "prop"):
-                for leg in ("flat", "press"):
-                    t = r["lat"][lat]["variants"][vn]["retune_20x"][leg]
-                    rows.append([s, LAT_NAME[lat], vn, leg, t["n"], _f(t.get("mean_pct")), _f(t.get("total_sol")), _f(t.get("ex_top3_sol")), _f(t.get("ci90_lo_sol"), 6)])
-    L.extend(["# Appendix: RETUNE on in-sample rows (20x depth filter, skip picks with quote incl. V under 20x stake; a new book, best of "
-              f"{len(rungs) * len(LATS)} cells, in-sample)", ""])
-    table("RETUNE on in-sample rows: 20x depth filter", ["stake SOL", "lat", "E1", "fail leg", "n", "net % of stake", "total SOL", "ex-top-3 SOL", "CI90 lo SOL/trade"], rows)
+                rows = [[d] + [_f(r["lat"][lat]["variants"][vn]["press"].get("per_day_sol", {}).get(d), 4) for s, r in rungs.items() for lat in LATS] for d in days]
+                table(f"Per-day total SOL, pressure leg, E1 {vn} - {gt}", ["day"] + [f"{s} @ {LAT_NAME[lat]}" for s in rungs for lat in LATS], rows)
+
+        rows = []
+        for s, r in rungs.items():
+            for lat in LATS:
+                v = r["lat"][lat]["variants"]["fixed"]
+                fl = r["lat"][lat]["share_stake_gt_60s_flow"]
+                rows.append([s, LAT_NAME[lat], _f(r["peak_open_sol"], 2), _f(r["mean_open_sol_at_marks"], 3), _f(r["lat"][lat]["share_q_lt_20x_stake"], 4), "not computed" if fl is None else _f(fl),
+                             _f(v["guard_share"]), _f(v["stranded_share"])])
+        table(f"Capacity and depth (peak open at max 10 concurrent) - {gt}", ["stake SOL", "lat", "peak open SOL", "mean open SOL at marks", "share quote (incl. V) < 20x stake", "share stake > 60 s pool flow",
+              "guard share", "stranded share"], rows)
+
+        rows = []
+        for key, b in gr["break_even"].items():
+            rows.append([key, b["smallest_rung_net_above_0"], _f(b["interpolated_stake_sol_first_sign_change"])] + [_f(b["net_pct"][str(s)]) for s in rungs]
+                        + [", ".join(f"{s}:{_f(b['net_pct_plus_50bps_drift'][str(s)], 3)}" for s in rungs), ", ".join(f"{s}:{_f(b['net_pct_plus_100bps_drift'][str(s)], 3)}" for s in rungs)])
+        table(f"Break-even line (rung grid plus linear interpolation; net % per rung; extra adverse drift of 50 and 100 bps of stake per trade) - {gt}",
+              ["E1 | leg | lat", "smallest rung net > 0", "interpolated stake at first sign change"] + [f"net % @ {s}" for s in rungs] + ["net % at +50 bps drift", "net % at +100 bps drift"], rows)
+
+    L.extend([f"# Appendix: {RETUNE_LABEL} ({RETUNE_NOTE}; skip picks with quote incl. V under 20x stake)", ""])
+    for g, gr in res["groups"].items():
+        rows = []
+        for s, r in gr["rungs"].items():
+            for lat in LATS:
+                for vn in ("fixed", "prop"):
+                    for leg in ("flat", "press"):
+                        t = r["lat"][lat]["variants"][vn]["retune_20x"][leg]
+                        rows.append([s, LAT_NAME[lat], vn, leg, t["n"], _f(t.get("mean_pct")), _f(t.get("total_sol")), _f(t.get("ex_top3_sol")), _f(t.get("ci90_lo_sol"), 6)])
+        table(f"{RETUNE_LABEL}: 20x depth filter, a new book (EXP-027 section 10.5) - {GROUP_TITLE[g]}", ["stake SOL", "lat", "E1", "fail leg", "n", "net % of stake", "total SOL", "ex-top-3 SOL", "CI90 lo SOL/trade"], rows)
     return "\n".join(L)
 
 
 # ------------------------------------------------------------------------------------------------------------------ self-check
 def code_blob() -> str:
     h = hashlib.sha256()
-    for p in (Path(__file__), Path(bk.__file__)):
+    for p in (Path(__file__), Path(bk.__file__), Path(F.__file__)):
         h.update(hashlib.sha256(Path(p).read_bytes()).digest())
     return h.hexdigest()
 
 
-def require_selfcheck(scf: Path, blob: str) -> None:
-    """The ladder refuses to start without a PASS file written by the same code blob."""
+def read_selfcheck(scf: Path, blob: str) -> dict:
+    """The ladder refuses to start without a PASS file written by the same code blob. Returns the file's content."""
     try:
         d = json.loads(Path(scf).read_text())
     except (OSError, ValueError):
         raise Refusal(f"no readable self-check PASS file at {scf}; run --self-check first")
     if d.get("pass") is not True or d.get("code_blob") != blob:
         raise Refusal(f"self-check file {scf} is not a PASS from this code blob; run --self-check first")
+    return d
+
+
+def require_selfcheck(scf: Path, blob: str) -> None:
+    read_selfcheck(scf, blob)
 
 
 def selfcheck_compare(got: dict, expected: dict | None = None, tol: dict | None = None) -> bool:
     expected = EXPECTED if expected is None else expected
     tol = TOL if tol is None else tol
-    return (got["n"] == expected["n"] and abs(got["mean_pct"] - expected["mean_pct"]) <= tol["mean_pct"] and abs(got["total_sol"] - expected["total_sol"]) <= tol["total_sol"])
+    for k, e in expected.items():
+        if k not in got:
+            return False
+        if k == "n":
+            if got[k] != e:
+                return False
+        elif not abs(got[k] - e) <= tol[k]:
+            return False
+    return True
 
 
 def selfcheck_numbers(P) -> dict:
-    """Full picks set at 0.25 SOL, hunt9 stack: 505k + rent 2,039,280, haircut, no E1; hunt9's scorer had no stranded switch, so auto_stranded off and C8 off."""
-    sl = F.STAKE_LAMPORTS
-    c = price_rung(P, sl, "13", 0.0, RENT_CHARGED, SEND, auto=False, k_tol=None)
-    x = c["press"]
-    return {"n": int(len(x)), "mean_pct": float(np.mean(x / sl) * 100), "total_sol": float(x.sum() / 1e9)}
+    """Full picks set, hunt9 stack: 505k + rent 2,039,280, haircut, no E1; hunt9's scorer had no stranded switch, so auto_stranded off and C8 off.
+    0.25 SOL 1.3 s and 1.9 s pressure leg; 0.5 SOL 1.3 s (mean and total) and 1.9 s pressure leg."""
+    def press(stake_sol, lat):
+        sl = stake_sol * 1e9
+        x = price_rung(P, sl, lat, 0.0, RENT_CHARGED, SEND, auto=False, k_tol=None)["press"]
+        return float(np.mean(x / sl) * 100), float(x.sum() / 1e9), int(len(x))
+
+    m13, t13, n = press(0.25, "13")
+    m19, _, _ = press(0.25, "19")
+    m05, t05, _ = press(0.5, "13")
+    m05_19, _, _ = press(0.5, "19")
+    return {"n": n, "mean_pct": m13, "total_sol": t13, "mean_pct_19": m19, "mean_pct_05": m05, "total_sol_05": t05, "mean_pct_05_19": m05_19}
 
 
 # ------------------------------------------------------------------------------------------------------------------ io
+def _int_col(df, name):
+    a = df[name].to_numpy()
+    if a.dtype.kind in "iu":
+        return a.astype(np.int64)
+    if a.dtype.kind == "f":
+        if not np.isfinite(a).all():
+            raise Refusal(f"column {name} has non-finite values")
+        if (a != np.floor(a)).any():
+            raise Refusal(f"column {name} is not integer-valued")
+        return a.astype(np.int64)
+    raise Refusal(f"column {name} has dtype {a.dtype}; unix seconds as integers are required")
+
+
 def load_picks(path: str, flow_path: str | None = None):
     import pandas as pd
 
-    df = pd.read_parquet(path)
-    miss = [c for c in REQUIRED if c not in df.columns]
-    if miss:
-        raise Refusal(f"picks table lacks columns {miss}")
+    cols = list(REQUIRED) + (["key"] if flow_path else [])
+    try:
+        df = pd.read_parquet(path, columns=cols)
+    except (KeyError, ValueError) as e:
+        raise Refusal(f"picks table lacks required columns or is unreadable: {e}")
+    if len(df) == 0:
+        raise Refusal("picks table is empty")
     P = {c: df[c].to_numpy() for c in REQUIRED}
-    P["T0"] = P["T0"].astype(np.int64)
-    P["T1"] = P["T1"].astype(np.int64)
+    P["T0"] = _int_col(df, "T0")
+    P["T1"] = _int_col(df, "T1")
     P["_flow"] = None
     if flow_path is not None:
-        if not {"key", "T0"} <= set(df.columns):
-            raise Refusal("--flow needs key and T0 in the picks table")
-        fl = pd.read_parquet(flow_path)
-        if not {"key", "T0", "tot"} <= set(fl.columns):
-            raise Refusal("flow table lacks key, T0, tot")
-        m = df[["key", "T0"]].merge(fl[["key", "T0", "tot"]], on=["key", "T0"], how="left")
+        fl = pd.read_parquet(flow_path, columns=["key", "T0", "tot"])
+        try:
+            m = df[["key", "T0"]].merge(fl[["key", "T0", "tot"]], on=["key", "T0"], how="left", validate="many_to_one")
+        except Exception as e:
+            raise Refusal(f"flow table does not join one row per (key, T0): {e}")
         P["_flow"] = m["tot"].fillna(0).to_numpy(float)
     return P
 
@@ -461,7 +575,19 @@ def prepare(P, include_exp011: bool):
         raise Refusal(f"{int(other.sum())} rows in blocks outside the allow-list: {sorted(set(blocks[other].tolist()))}")
     dropped = int(exp.sum())
     keep = ok | exp if include_exp011 else ok
+    if not keep.any():
+        raise Refusal("no rows left after the block filter")
     return subset(P, keep), dropped
+
+
+def check_out_path(path: str, what: str) -> None:
+    real = os.path.realpath(path)
+    for p in BAD_PREFIXES:
+        if real.startswith(p):
+            raise Refusal(f"{what} {path!r} is under barred prefix {p}")
+    for w in BAD_WORDS:
+        if w in real.lower():
+            raise Refusal(f"{what} {path!r} names barred word {w!r}")
 
 
 def main(argv=None, picks_root: str = PICKS_ROOT, cache_root: str = CACHE_ROOT) -> int:
@@ -483,9 +609,12 @@ def main(argv=None, picks_root: str = PICKS_ROOT, cache_root: str = CACHE_ROOT) 
         if a.out:
             outp = Path(a.out)
             mdp = outp.with_suffix(".md")
+            check_out_path(a.out, "--out")
             if outp.exists() or mdp.exists():
                 raise Refusal(f"--out {outp} (or its .md) already exists")
         scf = Path(a.selfcheck_file) if a.selfcheck_file else (outp.parent / "selfcheck.json" if outp else None)
+        if scf is not None:
+            check_out_path(str(scf), "--selfcheck-file")
         if not a.selfcheck and not outp:
             raise Refusal("nothing to do: give --out (ladder) and/or --self-check")
         if a.selfcheck and scf is None:
@@ -499,19 +628,20 @@ def main(argv=None, picks_root: str = PICKS_ROOT, cache_root: str = CACHE_ROOT) 
             Pf, _ = prepare(P0, include_exp011=True)
             got = selfcheck_numbers(Pf)
             ok = selfcheck_compare(got)
-            print(f"SELF-CHECK {'PASS' if ok else 'FAIL'} n={got['n']} pressure_1.3s_mean_pct={got['mean_pct']:.4f} total_sol={got['total_sol']:.4f}")
+            print("SELF-CHECK " + ("PASS" if ok else "FAIL") + " " + " ".join(f"{k}={got[k]:.4f}" if k != "n" else f"n={got[k]}" for k in EXPECTED))
             if ok:
                 scf.parent.mkdir(parents=True, exist_ok=True)
-                scf.write_text(json.dumps({"pass": True, "code_blob": blob, **got}, sort_keys=True) + "\n")
+                scf.write_text(json.dumps({"pass": True, "code_blob": blob, "targets": EXPECTED, "tolerances": TOL, **got}, sort_keys=True) + "\n")
             else:
                 return 1
         if outp is None:
             return 0
-        require_selfcheck(scf, blob)
+        scd = read_selfcheck(scf, blob)
         P, dropped = prepare(P0, include_exp011=False)
         print(f"exp011-0909 rows dropped, not priced: {dropped}; rows priced: {len(P['T0'])}; oracle-live-0925 is not in the cache and is not priced")
         res = run_ladder(P, stakes, flow=P["_flow"])
-        meta = {"code_blob": blob, "dropped_exp011": dropped, "picks": picks, "flow": flow, "cache_read": False, "oracle_live_0925": "not in the cache; not priced"}
+        meta = {"code_blob": blob, "dropped_exp011": dropped, "picks": picks, "flow": flow, "cache_read": False, "oracle_live_0925": "not in the cache; not priced",
+                "selfcheck": scd, "selfcheck_statement": SELFCHECK_STATEMENT, "provenance": PROVENANCE, "caveats": CAVEATS}
         res["meta"] = meta
         outp.parent.mkdir(parents=True, exist_ok=True)
         with open(outp, "x") as fh:
