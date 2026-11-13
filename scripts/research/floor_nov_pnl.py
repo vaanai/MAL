@@ -97,6 +97,14 @@ def entries_by_day(opens, trades, excl, rule, lat, send_delta, to_ms=None):
                 for model in ("flat", "press"):
                     leg = t["legs"][rule][f"{model}_{lat}"]
                     rec["net"][f"{stake}:{model}"] = leg["net_lamports"] + send_addback(leg["state"], send_delta, model, _p(t, rule, lat))
+        # landing-state fields for the forward A/B landing bins (added keys only; raw ledger values, derivations live in floor_forward_ab.py)
+        tr_any = trades.get(pid, {})
+        src = tr_any.get(0.25) or tr_any.get(0.10)
+        if src is not None:
+            c, m = (src.get("calc") or {}).get(lat) or {}, src.get("meta") or {}
+            rec["landing"] = {"Qe": c.get("Qe"), "Be": c.get("Be"), "v": m.get("v"), "mark0": m.get("mark0")}
+        rec["leg_state"] = {str(s): t["legs"][rule][f"flat_{lat}"]["state"] for s, t in tr_any.items()}
+        rec["exit_reason"] = {str(s): t.get("exit_reason") for s, t in tr_any.items()}
         positions.append(rec)
     out = {}
     for stake in (0.10, 0.25):
