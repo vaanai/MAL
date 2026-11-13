@@ -52,7 +52,8 @@ HOUR_MS = 3_600_000
 HV7 = "/data2/mal/arena-tip-feed/hv7"
 TAPECOPY = "/data2/mal/scratch/floor-nov-funnel/tapecopy"
 OUT_ROOT = "/data2/mal/scratch/floor-stage1-proof"
-TAPE_SRC = (TAPECOPY, HV7)
+TAPE_SRC = (HV7,)  # hv7 only (Am.7 precondition (c)); the scratch tapecopy is NOT used. 2026-11-02T01 + 201 h = 2026-11-10T10Z is reachable from hv7 alone
+MERGE_HOST_BLOB = "ba7050e1ed3bbf1538a2745f4604110cadb80a7f"  # git blob of tools/floor_lane_host.py at the stage-1 merge aa05923f
 MERGE_SHA = "aa05923fc7d2593c4d70c7c80b2f64dee371d700"
 SEED_HOUR = "2026-11-02T01"
 SEED_MIN_H = 201
@@ -180,10 +181,17 @@ def git(*args) -> str:
 
 
 def export_tree(sha: str, dest: str) -> str:
+    """git archive to a FILE first (both exit codes are checked: no pipefail in sh), then tar."""
     os.makedirs(dest, exist_ok=True)
-    p = subprocess.run("git -C %s archive %s tools observe | tar -x -C %s" % (_q(str(REPO)), _q(sha), _q(dest)), shell=True, capture_output=True, timeout=300)
-    if p.returncode != 0 or not os.path.exists(os.path.join(dest, "tools", "floor_lane_host.py")):
+    tarf = dest.rstrip("/") + ".tar"
+    with open(tarf, "wb") as f:
+        g = subprocess.run(["git", "-C", str(REPO), "archive", sha, "tools", "observe"], stdout=f, stderr=subprocess.PIPE, timeout=300)
+    if g.returncode != 0:
         refuse("git archive %s failed (shallow clone? fetch the history)" % sha)
+    t = subprocess.run(["tar", "-x", "-C", dest, "-f", tarf], capture_output=True, timeout=300)
+    os.remove(tarf)
+    if t.returncode != 0 or not os.path.exists(os.path.join(dest, "tools", "floor_lane_host.py")):
+        refuse("tar of the %s export failed" % sha)
     return dest
 
 
@@ -196,15 +204,16 @@ def host_md5(tree: str) -> str:
 
 
 def prepare_trees(a, out: str) -> tuple:
-    """-> (v1_tree, v2_tree, head_sha). v2 = HEAD's tools/ and must equal the working file."""
+    """-> (v1_tree, v2_tree, head_sha). v2 is PINNED to the stage-1 merge (not HEAD): HEAD's host blob and the merge's host blob must both equal --host-blob, and the working file must equal it."""
     head = git("rev-parse", "HEAD")
-    if a.v1_tree:
-        v1 = a.v1_tree
-    else:
-        v1 = export_tree(a.merge_sha + "^1", os.path.join(out, "trees", "v1"))
-    v2 = a.v2_tree or export_tree(head, os.path.join(out, "trees", "v2"))
+    if not a.test_mode:
+        for what, got in (("HEAD", git("rev-parse", "HEAD:tools/floor_lane_host.py")), ("the merge", git("rev-parse", a.merge_sha + ":tools/floor_lane_host.py"))):
+            if got != a.host_blob:
+                refuse("%s tools/floor_lane_host.py blob %s is not the stage-1 merge's %s" % (what, got, a.host_blob))
+    v1 = a.v1_tree or export_tree(a.merge_sha + "^1", os.path.join(out, "trees", "v1"))
+    v2 = a.v2_tree or export_tree(a.merge_sha, os.path.join(out, "trees", "v2"))
     if not a.v2_tree and md5_bytes((REPO / "tools" / "floor_lane_host.py").read_bytes()) != host_md5(v2):
-        refuse("the working tools/floor_lane_host.py differs from HEAD: run the proof from a clean checkout at the sha under test")
+        refuse("the working tools/floor_lane_host.py differs from the merge's: run the proof from a clean checkout")
     return v1, v2, head
 
 
@@ -328,19 +337,50 @@ def scan_gaps(tape_dir: str, lo_ms: int, hi_ms: int) -> dict:
 
 
 # ---------------------------------------------------------------------------------------------------------------- P0
-def p0_compare(r1: str, r2: str) -> dict:
+def ckpt_md5_stripped(root: str, drop=("guard", "ended")):
+    """md5 of the lane checkpoint without the additive keys (a flags-on run writes `guard`, and `ended` from run()'s finally)."""
+    p = Path(root) / "lane" / "checkpoint.json"
+    if not p.exists():
+        return None
+    d = json.loads(p.read_text())
+    for k in drop:
+        d.pop(k, None)
+    return md5_bytes(canon(d).encode())
+
+
+def kind_counts(rows: list) -> dict:
+    return {k: sum(1 for r in rows if r.get("kind") == k) for k in ("entry", "exit", "entry_refused_gap")}
+
+
+def p0_compare(r1: str, r2: str, r3: str | None = None) -> dict:
+    """r1 = v1 (flags absent), r2 = v2 (flags absent), r3 = v2 with BOTH flags on (optional). Every whole decision-log day file md5-equal across all; checkpoint equal for r1/r2 and
+    for r3 after removing only `guard` and `ended`."""
     a, b = file_md5s(r1), file_md5s(r2)
     names_equal = sorted(a) == sorted(b)
     n_equal = sum(1 for k in a if b.get(k) == a[k])
     c1, c2 = ckpt_md5(r1), ckpt_md5(r2)
-    return {"files_v1": len(a), "files_v2": len(b), "names_equal": names_equal, "files_md5_equal": n_equal, "files_md5_differ": len(set(a) | set(b)) - n_equal,
-            "all_log_md5": md5_bytes(canon(a).encode()), "all_log_md5_v2": md5_bytes(canon(b).encode()), "checkpoint_md5_v1": c1, "checkpoint_md5_v2": c2,
-            "checkpoint_equal": c1 is not None and c1 == c2,
-            "rows_v1": len(read_rows(r1)), "rows_v2": len(read_rows(r2))}
+    d = {"files_v1": len(a), "files_v2": len(b), "names_equal": names_equal, "files_md5_equal": n_equal, "files_md5_differ": len(set(a) | set(b)) - n_equal,
+         "all_log_md5": md5_bytes(canon(a).encode()), "all_log_md5_v2": md5_bytes(canon(b).encode()), "checkpoint_md5_v1": c1, "checkpoint_md5_v2": c2,
+         "checkpoint_equal": c1 is not None and c1 == c2, "rows_v1": len(read_rows(r1)), "rows_v2": len(read_rows(r2))}
+    kc = kind_counts(read_rows(r1))
+    d.update({"n_entry": kc["entry"], "n_exit": kc["exit"], "n_refusal": kc["entry_refused_gap"]})
+    if r3 is not None:
+        c = file_md5s(r3)
+        d.update({"files_v2on": len(c), "names_equal_on": sorted(c) == sorted(a), "files_md5_differ_on": len(set(a) | set(c)) - sum(1 for k in a if c.get(k) == a[k]),
+                  "all_log_md5_v2on": md5_bytes(canon(c).encode()), "rows_v2on": len(read_rows(r3)),
+                  "checkpoint_equal_on_minus_guard_ended": ckpt_md5_stripped(r3) is not None and ckpt_md5_stripped(r3) == ckpt_md5_stripped(r1)})
+    return d
 
 
 def p0_pass(c: dict, n_status: int) -> bool:
-    return c["names_equal"] and c["files_md5_differ"] == 0 and c["files_v1"] > 0 and c["checkpoint_equal"] and n_status == 0
+    ok = c["names_equal"] and c["files_md5_differ"] == 0 and c["files_v1"] > 0 and c["checkpoint_equal"] and n_status == 0
+    if "files_v2on" in c:
+        ok = ok and c["names_equal_on"] and c["files_md5_differ_on"] == 0 and c["checkpoint_equal_on_minus_guard_ended"]
+    return ok
+
+
+def p0_nonvacuous(c: dict) -> bool:
+    return c.get("n_entry", 0) + c.get("n_refusal", 0) >= 1
 
 
 # ---------------------------------------------------------------------------------------------------------------- P1
@@ -680,11 +720,15 @@ def cmd_p0(a) -> int:
     sh = a.seed_from_hour
     r1 = run_replay(v1, os.path.join(out, "v1"), tape, frm, to, sh, {}, a.test_mode)["root"]
     r2 = run_replay(v2, os.path.join(out, "v2"), tape, frm, to, sh, {}, a.test_mode)["root"]
-    c = p0_compare(r1, r2)
+    r3 = run_replay(v2, os.path.join(out, "v2on"), tape, frm, to, sh, {"cheap_restart": True, "status_span_no_loss": True}, a.test_mode)["root"]
+    c = p0_compare(r1, r2, r3)
     ok = p0_pass(c, sc["status_spans"])
-    c.update(status_spans_in_w1=sc["status_spans"], host_md5_v1=host_md5(v1), host_md5_v2=host_md5(v2), pass_=ok)
+    c.update(status_spans_in_w1=sc["status_spans"], host_md5_v1=host_md5(v1), host_md5_v2=host_md5(v2), pass_=ok, nonvacuous=p0_nonvacuous(c))
     emit("P0", c)
     Path(out, "p0.json").write_text(json.dumps(c, sort_keys=True))
+    if not p0_nonvacuous(c):
+        print("P0 VACUOUS: no entry and no refusal in W1; equality proves nothing", file=sys.stderr)
+        return EXIT_VACUOUS
     print("P0 %s" % ("PASS" if ok else "FAIL"))
     return 0 if ok else EXIT_FAIL
 
@@ -759,6 +803,7 @@ def build_parser() -> argparse.ArgumentParser:
         p.add_argument("--seed-from-hour", default=SEED_HOUR)
         p.add_argument("--tape-src", action="append", default=None)
         p.add_argument("--merge-sha", default=MERGE_SHA)
+        p.add_argument("--host-blob", default=MERGE_HOST_BLOB)
         p.add_argument("--v1-tree", default=None, help="a pre-exported v1 tree (tools/ of the parent commit)")
         p.add_argument("--v2-tree", default=None)
         p.add_argument("--count-only", action="store_true")
