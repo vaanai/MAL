@@ -245,7 +245,9 @@ def build_rows(host, bridge, lrows, fills, since_ms, stats=None):
             out.append({"kind": "restart", "t_ms": r["ms"], "failed": k.endswith("_failed"), "down_from_ms": r.get("down_from_ms"), "down_to_ms": r.get("down_to_ms"),
                         "shadow_complete": r.get("shadow_complete") is True, "fallback": r.get("fallback") if isinstance(r.get("fallback"), (str, type(None))) else None})
         elif k in ("start", "lane_start"):
-            out.append({"kind": "start", "t_ms": r["ms"], "start_kind": k})
+            # prev_last_ms: the instant of the last host decision-log row (of the kinds read here) before this start, None when there is none in the window. A crash leaves no restart row; this is its down-from instant.
+            prev = [h["ms"] for h in host if h["ms"] < r["ms"]]
+            out.append({"kind": "start", "t_ms": r["ms"], "start_kind": k, "prev_last_ms": max(prev) if prev else None})
     by_order = {}
     for r in bridge:
         k = r["kind"]
