@@ -13,9 +13,12 @@ Forward (Am.9 section 1): an entry is forward iff its entry instant >= the book'
 are the complete UTC days from the day holding the start instant on; forward_all counts forward entries closed on those days.
 unpriced_entries: entries present in the ledger with no priced exit decision: engine_excluded (the engine dropped it) plus closed rows with no exit instant. Open entries (no exit decision by
 the tape end) are listed in `open`, not counted here. Entries of an incomplete day are never dropped: they sit in day_in_progress / the trade list.
+Twins (QP ruling 2026-11-14 Q6): a book entry may carry "twin_of": "<book_id>" (the strict book); the twin's manifest has gap_exclusion "hold". When both books' decisions.md5 files (written by osb_follow) are equal the board
+adds a pair view (board.json `pairs`, a "Pair" section in board.md): the incl.-gap-in-hold set first, the strict set beside it, never one summed figure. Differing or missing md5: the twin is shown as a separate book with a line saying so. A book
+without a twin renders exactly as before.
 Exit codes: 0 ok; 2 refused (BOOKS.json, manifest pin, path guard, output guard, forbidden word in the output). Without --follow: one build.
 """
-import argparse, collections, contextlib, hashlib, io, json, os, re, shutil, subprocess, sys, tempfile, time
+import argparse, collections, contextlib, hashlib, io, json, math, os, re, shutil, subprocess, sys, tempfile, time
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -91,8 +94,8 @@ def load_books_file(path, roots=None):
         raise Refusal("BOOKS.json: object with a non-empty 'books' list and optional 'live'")
     books, ids = [], set()
     for b in spec["books"]:
-        if not isinstance(b, dict) or set(b) != {"manifest", "role", "start_instant_utc"}:
-            raise Refusal("each book needs exactly manifest, role, start_instant_utc")
+        if not isinstance(b, dict) or set(b) not in ({"manifest", "role", "start_instant_utc"}, {"manifest", "role", "start_instant_utc", "twin_of"}):
+            raise Refusal("each book needs exactly manifest, role, start_instant_utc (and optionally twin_of)")
         if b["role"] not in ("control", "variant"):
             raise Refusal("role must be control or variant")
         start_ms = parse_instant(b["start_instant_utc"])
@@ -104,7 +107,13 @@ def load_books_file(path, roots=None):
         if m["book_id"] in ids:
             raise Refusal("duplicate book id %s" % m["book_id"])
         ids.add(m["book_id"])
-        books.append({"m": m, "role": b["role"], "start_ms": start_ms, "start_utc": b["start_instant_utc"], "sha": O.manifest_sha256(m)})
+        twin_of = b.get("twin_of")
+        if "twin_of" in b and (m.get("gap_exclusion") != "hold" or not isinstance(twin_of, str) or twin_of == m["book_id"] or m.get("twin_of", twin_of) != twin_of):
+            raise Refusal("book %s: twin_of needs a manifest with gap_exclusion 'hold', another book's id, equal to the manifest's own twin_of" % m["book_id"])
+        books.append({"m": m, "role": b["role"], "start_ms": start_ms, "start_utc": b["start_instant_utc"], "sha": O.manifest_sha256(m), "twin_of": twin_of})
+    for b in books:
+        if b["twin_of"] is not None and b["twin_of"] not in ids:
+            raise Refusal("book %s: twin_of %s is not a book in this file" % (b["m"]["book_id"], b["twin_of"]))
     if sum(1 for b in books if b["role"] == "control") > 1:
         raise Refusal("at most one control book")
     return books, spec.get("live")
@@ -184,6 +193,44 @@ def sweep_snapshots(now_s=None):
         pass
 
 
+def _num_ok(v):
+    return isinstance(v, (int, float)) and not isinstance(v, bool) and math.isfinite(v) and v >= 0
+
+
+def gap_flags(led):
+    """-> (flags, malformed). flags: {position_id: {str(stake): {"blind_s", "gap_count", "exit_invalid"}}} of the snapshot's trade rows that carry gap_in_hold (osb_follow gap_exclusion "hold"); exit_invalid = the
+    row's flat 1p9 leg state is exit_invalid (priced as a strand). A row whose gap_in_hold / blind_s (finite, >= 0) / gap_count (int >= 0) / gap_holes (list of two-number pairs) does not validate, or a line that
+    does not parse, keeps its trade but gets no flag and is counted in malformed {str(stake): n} (shown as "malformed twin rows")."""
+    out, bad = {}, collections.Counter()
+    for f in sorted(Path(led).glob("*/trades-*.jsonl")):
+        for ln in f.read_bytes().splitlines():
+            if b'"gap_in_hold"' not in ln:
+                continue
+            try:
+                r = json.loads(ln)
+                if not (isinstance(r, dict) and r.get("kind") == "trade"):
+                    continue
+                sk = str(float(r["stake_sol"]))
+                pid = r["position_id"]
+            except (ValueError, TypeError, KeyError):
+                bad["?"] += 1
+                continue
+            if not r.get("gap_in_hold"):
+                continue
+            gc, holes = r.get("gap_count"), r.get("gap_holes")
+            if not (r["gap_in_hold"] is True and _num_ok(r.get("blind_s")) and isinstance(gc, int) and not isinstance(gc, bool) and gc >= 0
+                    and isinstance(holes, list) and all(isinstance(h, list) and len(h) == 2 and all(isinstance(x, (int, float)) and not isinstance(x, bool) for x in h) for h in holes)
+                    and isinstance(pid, str)):
+                bad[sk] += 1
+                continue
+            try:
+                st = r["legs"]["total"]["flat_1p9"]["state"]
+            except (KeyError, TypeError):
+                st = None
+            out.setdefault(pid, {})[sk] = {"blind_s": float(r["blind_s"]), "gap_count": gc, "exit_invalid": st == "exit_invalid"}
+    return out, dict(bad)
+
+
 def price_snapshot(b, run_dir, to_ms):
     """floor_nov_pnl in-process on a snapshot of the active run's ledger"""
     send = str(b["m"]["send_lamports"])
@@ -191,7 +238,13 @@ def price_snapshot(b, run_dir, to_ms):
         led = os.path.join(d, "ledger")
         snapshot_ledger(run_dir, led)
         P.main([led, os.path.join(d, "pnl.json"), "total", "1p9", "--send-lamports", send, "--ledger-send", send, "--to-ms", str(to_ms)])
-        return json.load(open(os.path.join(d, "pnl.json")))
+        pnl = json.load(open(os.path.join(d, "pnl.json")))
+        flags, bad = gap_flags(led)
+        if flags:  # twin ledgers only: the pnl reader is not changed, the board reads the flags off the snapshot's own trade rows
+            pnl["_gap_in_hold"] = flags
+        if bad:
+            pnl["_gap_malformed"] = bad
+        return pnl
 
 
 def inspect_book(b, now_ms, roots):
@@ -232,6 +285,7 @@ def inspect_book(b, now_ms, roots):
 def book_trades(pnl, stake, tape_end):
     """-> (trades, opens, unpriced). Ledger rows past the board's tape end (the driver may have appended the next hour) are not counted: an entry at or after tape_end is skipped, a close at or after it stays open. tid = sequential over ALL entries (closed, open, excluded) ordered (entry ms, ledger id): later rows never shift an earlier id."""
     sk, trades, opens, unpriced = str(float(stake)), [], [], 0
+    gih = pnl.get("_gap_in_hold") or {}
     for i, p in enumerate(sorted(pnl.get("positions", []), key=lambda q: (q["t0"], q["pid"])), 1):
         st = p["status"].get(sk)
         if p["t0"] >= tape_end:
@@ -243,12 +297,29 @@ def book_trades(pnl, stake, tape_end):
                 unpriced += 1
                 continue
             trades.append({"seq": i, "entry_ms": p["t0"], "exit_ms": p["t1"], "flat": p["net"][sk + ":flat"], "press": p["net"][sk + ":press"], "reason": str((p.get("exit_reason") or {}).get(sk) or ""),
-                           "close_day": day_of(p["t1"]), "filled": (p.get("leg_state") or {}).get(sk) == "filled"})
+                           "close_day": day_of(p["t1"]), "filled": (p.get("leg_state") or {}).get(sk) == "filled", **({"gap": gih[p["pid"]][sk]} if sk in gih.get(p["pid"], {}) else {})})
         elif st == "open_at_tape_end":
             opens.append({"seq": i, "entry_ms": p["t0"]})
         elif st == "engine_excluded":
             unpriced += 1
     return trades, opens, unpriced
+
+
+EXCL_KEYS = {"feed_gap_entry": "gap_at_entry", "feed_gap_exit": "gap_at_exit", "missing_v": "missing_v"}
+
+
+def excluded_counts(pnl, stake, tape_end):
+    """engine-excluded entries of one stake by reason: gap_at_entry, gap_at_exit, missing_v, feed_gap (a strict book's undivided gap exclusion), other; plus, from the twin's own trade rows,
+    exit_invalid_across_gap (flagged trades whose exit leg is exit_invalid, priced as a strand) and malformed_twin_rows (flag fields that did not validate)"""
+    sk, c = str(float(stake)), collections.Counter()
+    for pid, fl in (pnl.get("_gap_in_hold") or {}).items():
+        if fl.get(sk, {}).get("exit_invalid"):
+            c["exit_invalid_across_gap"] += 1
+    c["malformed_twin_rows"] = (pnl.get("_gap_malformed") or {}).get(sk, 0) + (pnl.get("_gap_malformed") or {}).get("?", 0)
+    for p in pnl.get("positions", []):
+        if p["t0"] < tape_end and p["status"].get(sk) == "engine_excluded":
+            c[EXCL_KEYS.get(str((p.get("reason") or {}).get(sk)), "feed_gap" if (p.get("reason") or {}).get(sk) == "feed_gap" else "other")] += 1
+    return {k: c.get(k, 0) for k in ("gap_at_entry", "gap_at_exit", "missing_v", "feed_gap", "other", "exit_invalid_across_gap", "malformed_twin_rows")}
 
 
 def sum_sol(lams):
@@ -290,7 +361,7 @@ def stake_rows(b, pnl, to_ms):
         fwd = [t for t in trades if t["entry_ms"] >= start_ms]
         n_open = len(opens)
         partial_days = sorted({t["close_day"] for t in trades if t["close_day"] > last})
-        out[stake] = {"trades": trades, "opens": opens, "unpriced": unpriced, "last": last, "all_days": all_days, "fdays": fdays, "fwd": fwd, "partial_days": partial_days, "start_ms": start_ms,
+        out[stake] = {"excluded_counts": excluded_counts(pnl, stake, to_ms), "trades": trades, "opens": opens, "unpriced": unpriced, "last": last, "all_days": all_days, "fdays": fdays, "fwd": fwd, "partial_days": partial_days, "start_ms": start_ms,
                       "windows": {"day_in_progress": dict(window(trades, partial_days, start_ms, n_open), partial_day=True, label="partial day", days_list=partial_days),
                                   "today": dict(window(trades, all_days[-1:], start_ms, n_open), day=all_days[-1] if all_days else None),
                                   "d7": window(trades, all_days[-7:], start_ms, n_open), "forward_all": window(fwd, fdays, start_ms, n_open), "incl_backfill": window(trades, all_days, start_ms, n_open)}}
@@ -364,8 +435,20 @@ def book_state(status, now_ms):
     return "STALE" if now_ms - wall > STALE_MS else "running"
 
 
-def book_row(b, info, srs, control, n_watched):
+def read_decisions_md5(b):
+    """the book's decisions md5: its decisions.md5 file, else computed from its ledger rows (osb_follow.book_decisions_md5; never written by the board). None = unreadable"""
+    try:
+        return O.book_decisions_md5(b["m"]["out_root"])
+    except (OSError, ValueError):
+        return None
+
+
+def book_row(b, info, srs, control, n_watched, control_twin=None):
+    """control: the strict control (a strict book compares only with it); control_twin: the control's incl.-gap-in-hold twin (a twin compares only with it, never with a strict book; none = n/a);
+    the control's own twin has no comparison (role text 'control (incl. gap-in-hold twin)')"""
     m, end = b["m"], info["end"]
+    if b.get("twin_of") is not None:
+        control = None if (control_twin is None or b is control_twin[0]) else control_twin
     status = info["status"]
     cf = Path(m["out_root"]) / "code.sha256"
     try:
@@ -390,8 +473,13 @@ def book_row(b, info, srs, control, n_watched):
                             "vs_control": None if pr is None else {"control_book": control[0]["m"]["book_id"], **{k: v for k, v in pr.items() if not k.startswith("_")}},
                             "disclosure": disclosure(b, b["role"], fw, pr, ctl_fw, n_watched),
                             "trades": [{"tid": tid(t["seq"]), "entry_utc": utc(t["entry_ms"]), "exit_utc": utc(t["exit_ms"]), "stake_sol": stake, "net_sol_flat": t["flat"] / 1e9, "net_sol_press": t["press"] / 1e9,
-                                        "ret_pct": 100.0 * t["flat"] / (stake * 1e9), "exit_reason": t["reason"], "in_sample": t["entry_ms"] < b["start_ms"]} for t in sorted(sr["trades"], key=lambda t: t["seq"])],
-                            "open": [{"tid": tid(o["seq"]), "entry_utc": utc(o["entry_ms"]), "stake_sol": stake, "age_h": (end - o["entry_ms"]) / HOUR_MS} for o in sr["opens"]]})
+                                        "ret_pct": 100.0 * t["flat"] / (stake * 1e9), "exit_reason": t["reason"], "in_sample": t["entry_ms"] < b["start_ms"],
+                                        **({"gap_in_hold": True, "blind_s": t["gap"]["blind_s"], "gap_count": t["gap"]["gap_count"]} if "gap" in t else {})} for t in sorted(sr["trades"], key=lambda t: t["seq"])],
+                            "open": [{"tid": tid(o["seq"]), "entry_utc": utc(o["entry_ms"]), "stake_sol": stake, "age_h": (end - o["entry_ms"]) / HOUR_MS} for o in sr["opens"]],
+                            **({"excluded_counts": sr["excluded_counts"]} if b.get("pair") else {}),
+                            **({"malformed_twin_rows": sr["excluded_counts"]["malformed_twin_rows"]} if sr["excluded_counts"]["malformed_twin_rows"] and not b.get("pair") else {})})
+    if b.get("pair"):
+        row["pair"] = b["pair"]
     return row
 
 
@@ -444,6 +532,32 @@ def recon_state(live, now_ms, control_id=None):
     return block, line, rest, r["status"] == "FAIL"
 
 
+PAIR_DIFFER = "twin decisions differ: not a pricing-only twin"
+PAIR_PENDING = "twin identity not yet checked (decisions.md5 missing): shown as a separate book"
+LABEL_STRICT = "strict: trades with any feed gap in the 24 h hold left out (%d left out, all days); in Nov 2-12 the left-out trades were net negative (DEC-035 Am.6 Erratum 3), so strict can overstate"
+LABEL_HOLD = "incl. gap-in-hold: priced through feed gaps inside the hold; take-profit blind during a gap, as live is when its feed has the same gap"
+LABEL_NEITHER = "neither set is decision-grade (recon NOT COMPARABLE); no stake step rests on either (Am.6)"
+
+
+def pair_books(books):
+    """[{twin, strict, status}] for every book entry with twin_of; marks b["pair"] = "twin"|"strict" on both books only when their decisions.md5 are equal (a pricing-only twin)"""
+    by_id = {b["m"]["book_id"]: b for b in books}
+    out = []
+    for b in books:
+        b.pop("pair", None)
+    for t in books:
+        if t.get("twin_of") is None:
+            continue
+        st = by_id[t["twin_of"]]
+        a, c = read_decisions_md5(st), read_decisions_md5(t)
+        status = "pending" if a is None or c is None else "pair" if a == c else "differ"
+        out.append({"twin": t["m"]["book_id"], "strict": st["m"]["book_id"], "status": status,
+                    "line": {"pair": None, "differ": PAIR_DIFFER, "pending": PAIR_PENDING}[status]})
+        if status == "pair":
+            t["pair"], st["pair"] = "twin", "strict"
+    return out
+
+
 def build(books, live, now_ms, roots=None):
     """one failing book is shown with state ERROR (exception class only) and never stops the others"""
     n_watched = sum(len(b["m"]["stakes_sol"]) for b in books)
@@ -457,10 +571,16 @@ def build(books, live, now_ms, roots=None):
             info, srs = {"state": "ERROR", "status": {}, "end": None, "last_hour": None, "pnl": None, "error": type(e).__name__}, None
         infos.append((b, info, srs))
     control = next(((b, srs) for b, _, srs in infos if b["role"] == "control" and srs is not None), None)
+    pairs = pair_books(books)
+    control_twin = None
+    if control is not None:
+        control_twin = next(((b, srs) for b, _, srs in infos if b.get("twin_of") == control[0]["m"]["book_id"] and b.get("pair") == "twin" and srs is not None), None)
     out_books = []
     for i, (b, info, srs) in enumerate(infos):
         try:
-            row = book_row(b, info, srs, control, n_watched)
+            row = book_row(b, info, srs, control, n_watched, control_twin)
+            if control_twin is not None and b is control_twin[0]:
+                row["role"] = "control (incl. gap-in-hold twin)"
             check_forbidden(row, "")
         except Refusal:
             row = withheld(i, b, "ForbiddenWord")
@@ -479,6 +599,8 @@ def build(books, live, now_ms, roots=None):
            "caveat": "%s (every book x stake row counts, also rows of books still starting). Book start instants and parameters are fixed; a change is a new book. Entries before a book's start instant are in-sample, also when they close later." % (WATCH_SENTENCE % n_watched),
            "booking": "net SOL is booked on the exit (close) UTC day; the complete-day windows (today, d7, forward_all, incl_backfill) count only UTC days with the tape at least 90 min past the day's end; day_in_progress is a partial day",
            "recon": recon, "recon_line": recon_line, "decision_grade": DECISION_GRADE, "limit_layer": "not applied", "live": live, "books": out_books}
+    if pairs:
+        res["pairs"] = pairs
     if sim_off:
         res["sim_off"] = SIM_OFF
         for bk in out_books:
@@ -499,6 +621,37 @@ def cell(w):
 
 def floor_word(v, grade=False, recon_word="NOT COMPARABLE"):
     return "n/a" if v is None else (("holds" if grade else FLOOR_NOT_GRADE.replace("NOT COMPARABLE", recon_word)) if v else "does not hold")
+
+
+def pair_md(res):
+    """the pair view: incl. gap-in-hold (the twin) first, the strict book beside it; never a summed figure. Empty for a board without twins"""
+    out = []
+    by_id = {b["id"]: b for b in res["books"]}
+    for pr in res.get("pairs", []):
+        if pr["status"] != "pair":
+            out += ["", "- %s (twin %s of %s)." % (pr["line"], pr["twin"], pr["strict"])]
+            continue
+        tw, sb = by_id[pr["twin"]], by_id[pr["strict"]]
+        for rt in tw["rows"]:
+            rs = next((r for r in sb["rows"] if r["stake_sol"] == rt["stake_sol"]), None)
+            if rs is None:
+                continue
+            ex_t, ex_s = rt["excluded_counts"], rs["excluded_counts"]
+            flagged = [t for t in rt["trades"] if t.get("gap_in_hold")]
+            out += ["", "## Pair, stake %.2f: %s (incl. gap-in-hold) beside %s (strict)" % (rt["stake_sol"], pr["twin"], pr["strict"]), "",
+                    "- %s: %s." % (pr["twin"], LABEL_HOLD),
+                    "- %s: %s." % (pr["strict"], LABEL_STRICT % ex_s["feed_gap"]),
+                    "- still excluded (%s): gap at entry %d, gap at exit %d, missing V %d, other %d." % (pr["twin"], ex_t["gap_at_entry"], ex_t["gap_at_exit"], ex_t["missing_v"], ex_t["other"]),
+                    "- gap-in-hold trades in %s: %d of %d closed." % (pr["twin"], len(flagged), len(rt["trades"])),
+                    "- exit_invalid across a gap (%s): %d (a strand, not dropped)." % (pr["twin"], ex_t["exit_invalid_across_gap"]),
+                    "- malformed twin rows (%s): %d." % (pr["twin"], ex_t["malformed_twin_rows"]), "",
+                    "| window (flat / press (n closed)) | incl. gap-in-hold | strict |", "|---|---|---|"]
+            for k, name in (("today", "today"), ("d7", "7-day"), ("forward_all", "forward"), ("incl_backfill", "all"), ("day_in_progress", "day in progress (partial)")):
+                out.append("| %s | %s | %s |" % (name, cell(rt["windows"][k]), cell(rs["windows"][k])))
+            for t in flagged[-30:]:
+                out.append("- %s: gap-in-hold, blind %s s" % (t["tid"], "%g" % t["blind_s"]))
+            out += ["", "- " + LABEL_NEITHER + "."]
+    return out
 
 
 def board_md(res):
@@ -522,6 +675,7 @@ def board_md(res):
             w = r["windows"]
             md.append("| %s | %s | %.2f | %s | %s | %s | %s | %s | %d | %d | %s | %s |" % (bk["id"], bk["role"] + ("" if bk["state"] == "running" else " " + bk["state"]), r["stake_sol"], (SIM_OFF + ": " if res.get("sim_off") else "") + r["impact_label"], ("" if bk["state"] == "running" or not bk["today_day"] else "(%s) " % bk["today_day"][5:]) + cell(w["today"]), cell(w["d7"]),
                                                                                     cell(w["forward_all"]), cell(w["incl_backfill"]), len(r["open"]), r["unpriced_entries"], floor_word(r["disclosure"]["floor_holds"], r["disclosure"]["decision_grade"]), cell(w["day_in_progress"])))
+    md += pair_md(res)
     md += ["", "## Books"]
     for bk in res["books"]:
         p = bk["params"]
@@ -548,7 +702,8 @@ def board_md(res):
             md += ["", "## %s, stake 0.25: last %d of %d closed trades (flat / pressure net SOL; IS = in-sample)" % (bk["id"], len(last), len(r["trades"])), "",
                    "| id | entry UTC | exit UTC | flat | press | ret % | exit | IS |", "|---|---|---|---|---|---|---|---|"]
             for t in last:
-                md.append("| %s | %s | %s | %s | %s | %.2f | %s | %s |" % (t["tid"], t["entry_utc"], t["exit_utc"], f4(t["net_sol_flat"]), f4(t["net_sol_press"]), t["ret_pct"], t["exit_reason"], "y" if t["in_sample"] else "n"))
+                md.append("| %s | %s | %s | %s | %s | %.2f | %s | %s |" % (t["tid"], t["entry_utc"], t["exit_utc"], f4(t["net_sol_flat"]), f4(t["net_sol_press"]), t["ret_pct"],
+                                                                                    t["exit_reason"] + (("; gap-in-hold, blind %s s" % ("%g" % t["blind_s"])) if t.get("gap_in_hold") else ""), "y" if t["in_sample"] else "n"))
             md += ["", "## %s, stake 0.25: open (%d)" % (bk["id"], len(r["open"])), ""]
             md += ["- %s entered %s, age %.1f h" % (o["tid"], o["entry_utc"], o["age_h"]) for o in r["open"]] or ["- none"]
     return "\n".join(md) + "\n"
@@ -568,7 +723,7 @@ def _walk(x):
 
 
 def check_forbidden(res, md):
-    for s in [x for x in _walk(res) if x != "unpriced_entries"] + [md.replace(UNPRICED_SENTENCE, "").replace(UNPRICED_HEAD, "")]:  # exempt: the exact key unpriced_entries and the two exact md strings
+    for s in [x for x in _walk(res) if x != "unpriced_entries"] + [md.replace(UNPRICED_SENTENCE, "").replace(UNPRICED_HEAD, "").replace(LABEL_HOLD, "")]:  # exempt: the exact key unpriced_entries and the exact md strings (unpriced sentence, unpriced head, the Q6 gap-in-hold label)
         low = s.lower()
         for w in FORBIDDEN:
             if w in low:

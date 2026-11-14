@@ -459,7 +459,7 @@ def test_f_sell_failure_rate_is_separate(tmp_path):
 GAP_PIDS = ("g0", "g1", "g2")
 
 
-def twin_world(tmp, gap_reasons=None, twin_over=None, twin_rows_mut=None, write_twin=True, a_md5="same", t_md5="same"):
+def twin_world(tmp, gap_reasons=None, twin_over=None, twin_rows_mut=None, write_twin=True, a_md5="a" * 32, t_md5="a" * 32, a_excl_real=False):
     """A = 7 plain tp trades + 3 strict-excluded (feed_gap) trades; the twin prices the 3 through their holes (gap_in_hold, blind_s, gap_count, gap_holes) unless gap_reasons says it still excludes them.
     -> (A manifest path, twin manifest path | None, live rows)"""
     plain = [("m%d" % k, k, 5_000_000, 0.10) for k in range(7)]
@@ -471,6 +471,10 @@ def twin_world(tmp, gap_reasons=None, twin_over=None, twin_rows_mut=None, write_
         a_rows += TB.tp(pid, entry_ms(i), net)
     for pid, i, net, _ in gaps:
         a_rows += TB.excluded(pid, entry_ms(i))
+        if a_excl_real:  # the strict excluded row as the engine writes it: with its decision instants (the twin prices the same decisions)
+            for r in a_rows:
+                if r["kind"] == "excluded" and r["position_id"] == pid:
+                    r["decision_ms"] = {"entry": entry_ms(i), "exit": entry_ms(i) + 2 * 3_600_000}
     out_a = Path(json.loads(mp.read_text())["out_root"])
     (out_a / "runs" / "0001" / "ledger" / "l1-floor-v2" / "trades-x.jsonl").write_text("\n".join(json.dumps(r) for r in a_rows) + "\n")
     if a_md5:
@@ -608,16 +612,34 @@ def test_twin_refusals_name_no_value(tmp_path, capsys):
         assert "aaaa" not in err and "bbbb" not in err and "P_" not in err and "M_" not in err
 
 
-def test_twin_decisions_md5_must_exist_on_both_sides_and_be_equal(tmp_path, capsys):
-    for n, kw in enumerate([dict(a_md5="only-a", t_md5=None), dict(a_md5=None, t_md5="only-t"), dict(a_md5=None, t_md5=None)]):
-        d = tmp_path / ("c%d" % n)
-        d.mkdir()
-        mp, tm, live = twin_world(d, **kw)
-        assert run_twin(d, mp, tm, live)[0] == 2
-        assert "only-a" not in capsys.readouterr().err
-    (tmp_path / "ok").mkdir()
-    mp, tm, live = twin_world(tmp_path / "ok")
-    assert run_twin(tmp_path / "ok", mp, tm, live)[0] == 0
+def test_twin_decisions_md5_file_no_file_and_mixed(tmp_path, capsys):
+    import osb_follow as OF
+    # files on both sides, equal: ok; files that differ: refused
+    (tmp_path / "f").mkdir()
+    mp, tm, live = twin_world(tmp_path / "f")
+    assert run_twin(tmp_path / "f", mp, tm, live)[0] == 0
+    (tmp_path / "fd").mkdir()
+    mp, tm, live = twin_world(tmp_path / "fd", t_md5="b" * 32)
+    assert run_twin(tmp_path / "fd", mp, tm, live)[0] == 2 and "differs" in capsys.readouterr().err
+    # no file on either side: each side is computed from its rows; equal decisions: ok, never written
+    (tmp_path / "n").mkdir()
+    mp, tm, live = twin_world(tmp_path / "n", a_md5=None, t_md5=None, a_excl_real=True)
+    assert run_twin(tmp_path / "n", mp, tm, live)[0] == 0
+    assert not (Path(json.loads(mp.read_text())["out_root"]) / "decisions.md5").exists()
+    # no file, rows that differ (A's excluded rows carry no decision instants here): refused
+    (tmp_path / "nd").mkdir()
+    mp, tm, live = twin_world(tmp_path / "nd", a_md5=None, t_md5=None)
+    assert run_twin(tmp_path / "nd", mp, tm, live)[0] == 2 and "differs" in capsys.readouterr().err
+    # mixed: A has no file, the twin has the file with A's computed value
+    (tmp_path / "m").mkdir()
+    mp, tm, live = twin_world(tmp_path / "m", a_md5=None, t_md5=None, a_excl_real=True)
+    (Path(json.loads(tm.read_text())["out_root"]) / "decisions.md5").write_text(OF.book_decisions_md5(json.loads(mp.read_text())["out_root"]) + "\n")
+    assert run_twin(tmp_path / "m", mp, tm, live)[0] == 0
+    # a side whose rows cannot be read (no file, no book link): refused
+    (tmp_path / "u").mkdir()
+    mp, tm, live = twin_world(tmp_path / "u", a_md5=None, t_md5=None, a_excl_real=True)
+    (Path(json.loads(mp.read_text())["out_root"]) / "book").unlink()
+    assert run_twin(tmp_path / "u", mp, tm, live)[0] == 2
 
 
 @pytest.mark.parametrize("over,key", [({"send_lamports": 1}, "send_lamports"), ({"stakes_sol": [0.10]}, "stakes_sol"), ({"rule_overrides": {"TP": 1.6}}, "rule_overrides"), ({"host": "hostv2"}, "host")])
