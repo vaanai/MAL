@@ -70,6 +70,9 @@ EXEC_EXACT = ("lane_full", "lane_daily_stop", "wallet_floor", "gap_hold", "stale
 EXEC_PREFIX = ("a3_pause:", "lane_budget_", "latched:")
 NO_SIM_WORDS = ("gap_entry", "gap_exit", "missing_v", "other")  # the fixed no_sim_price list
 CODED_TP_GAP = "tp_in_sim_gap"
+CODED_NONRULE, NONRULE_CLOSE_WORD = "live_nonrule_exit", "paper_refused"  # QP ruling 2026-11-14 point 2 (coded AFTER the first run: post hoc)
+NONRULE_LANDING_SLACK_MS = 60_000
+H3_NONRULE_MAX_N, H3_NONRULE_MAX_FRAC = 1, 0.10  # more than 1 such trade in the window's matched trades, or more than 10% of them: H3 FAIL
 EXIT_VOCAB = ("tp_1.5x", "time_24h", "time_stop", "time_stop_backstop", "sl_backstop")
 CODED_SIM, CODED_LIVE = "tp_1.5x", "time_stop_backstop"
 B58_RUN = re.compile(r"[1-9A-HJ-NP-Za-km-z]{20,}")
@@ -168,8 +171,8 @@ def read_extract(d):
             for f in NUM_FIELDS:
                 if r.get(f) is not None and not is_num(r[f]):
                     raise Refusal("extract field %s has the wrong type" % f)
-        elif r["kind"] in ("gap_refusal", "restart"):
-            for f in ("trig_ms", "t_ms", "down_from_ms", "down_to_ms", "blocked_until_ms"):
+        elif r["kind"] in ("gap_refusal", "restart", "start"):
+            for f in ("trig_ms", "t_ms", "down_from_ms", "down_to_ms", "blocked_until_ms", "prev_last_ms"):
                 if r.get(f) is not None and not is_num(r[f]):
                     raise Refusal("extract field %s has the wrong type" % f)
     return rows, meta
@@ -341,8 +344,18 @@ def tms(o):
     return None
 
 
-def down_spans(ex_rows):
-    return [(r["down_from_ms"], r["down_to_ms"]) for r in ex_rows if r["kind"] == "restart" and not r.get("failed") and is_num(r.get("down_from_ms")) and is_num(r.get("down_to_ms"))]
+def down_spans(ex_rows, with_starts=False):
+    """non-failed restart spans. with_starts: also the span of a crash, from a start row's prev_last_ms (last host log row before it) to the start's own instant. Only the live_nonrule_exit
+    check asks for these: a quiet host leaves a long prev_last_ms gap that is not proof of a down span, so H2's host_down_no_row and the tp-in-hole code keep the restart rows alone."""
+    out = [(r["down_from_ms"], r["down_to_ms"]) for r in ex_rows if r["kind"] == "restart" and not r.get("failed") and is_num(r.get("down_from_ms")) and is_num(r.get("down_to_ms"))]
+    if with_starts:
+        out += [(r["prev_last_ms"], r["t_ms"]) for r in ex_rows if r["kind"] == "start" and is_num(r.get("prev_last_ms")) and is_num(r.get("t_ms")) and r["prev_last_ms"] < r["t_ms"]]
+    return out
+
+
+def restart_type(r):
+    why = str(r.get("reason") or "")
+    return why.startswith("pool_blocked_after_restart") or "restart_shadow" in why or (why == "feed_gap" and r.get("gap_kind") == "host_down")
 
 
 def classify(ex_rows, sim, win_from, win_to):
@@ -351,11 +364,11 @@ def classify(ex_rows, sim, win_from, win_to):
     refusals = [r for r in ex_rows if r["kind"] == "gap_refusal"]
     spans = down_spans(ex_rows)
     inwin = lambda t: t is not None and win_from <= t < win_to
-    ref_by_key = {}
+    ref_by_key = {}  # ALL refusal rows per key (QP ruling 2026-11-14 point 1: the last row no longer wins)
     for r in refusals:
         k = key_of(r.get("pool"), r.get("trig_slot"), r.get("trig_ms"))
         if k:
-            ref_by_key[k] = r
+            ref_by_key.setdefault(k, []).append(r)
     sim_keys, dup_sim = {}, []
     for e in sorted((e for e in sim["entries"] if inwin(e["trig_ms"])), key=lambda e: (e["trig_ms"], e["order_id"])):
         k = key_of(e["pool"], e["trig_slot"], e["trig_ms"])
@@ -398,12 +411,19 @@ def classify(ex_rows, sim, win_from, win_to):
                     return code
                 extras["executor_unlisted"] += 1
             return "unexplained"
-        rf = ref_by_key.get(k)
-        if rf is not None:
-            why = str(rf.get("reason") or "")
-            if why.startswith("pool_blocked_after_restart") or "restart_shadow" in why or (why == "feed_gap" and rf.get("gap_kind") == "host_down"):
+        rfs = ref_by_key.get(k)
+        if rfs:
+            if any(restart_type(r) for r in rfs):  # (a)
                 return "restart_lockout"
-            return "feed_gap_mismatch" if why == "feed_gap" else "unexplained"
+            if any(str(r.get("reason") or "") == "feed_gap" for r in rfs):  # (b) a feed_gap that is not host_down (host_down is restart-type, caught above)
+                return "feed_gap_mismatch"
+            if all(str(r.get("reason") or "") == "pool_blocked_after_gap" for r in rfs):  # (c) the same pool's earlier feed_gap refusals whose block window covers this trigger
+                cause = [r for r in refusals if r.get("pool") == e["pool"] and str(r.get("reason") or "") == "feed_gap" and is_num(r.get("trig_ms")) and r["trig_ms"] < t
+                         and (not is_num(r.get("blocked_until_ms")) or r["blocked_until_ms"] >= t)]
+                if any(r.get("gap_kind") != "host_down" for r in cause):
+                    return "feed_gap_mismatch"
+                return "restart_lockout" if cause else "unexplained"
+            return "unexplained"  # (d)
         if any(a <= t <= b for a, b in spans):
             return "host_down_no_row"
         same = [r for r in refusals if r.get("pool") == e["pool"]]
@@ -422,7 +442,7 @@ def classify(ex_rows, sim, win_from, win_to):
     return rows, pairs, live_sent, extras
 
 
-def pair_metrics(o, e, sim, spans, win_to):
+def pair_metrics(o, e, sim, spans, win_to, nr_spans=()):
     lam = o.get("led_stake_lamports") or o.get("stake_lamports") or 0
     stake = lam / 1e9
     rung = rung_of(stake, sim["stakes"])
@@ -476,7 +496,11 @@ def pair_metrics(o, e, sim, spans, win_to):
     if is_num(close_ms) and is_num(sim_ms):
         m["exit_dt_ms"] = close_ms - sim_ms
     h3 = "open"
-    if live_closed and sim_closed:
+    nonrule = bool(live_closed and live_reason == NONRULE_CLOSE_WORD and not o.get("has_host_exit") and is_num(o.get("decision_ms"))
+                   and is_num(close_ms) and any(o["decision_ms"] < a <= close_ms + NONRULE_LANDING_SLACK_MS for a, _b in nr_spans))
+    if nonrule:
+        m["exit_coded"], m["reason"], h3 = True, CODED_NONRULE, "live_nonrule"
+    elif live_closed and sim_closed:
         if live_reason is None or sim_reason is None:
             h3 = "mismatch"
         elif live_reason != sim_reason:
@@ -527,10 +551,14 @@ def evaluate(rows, metrics, win_to, extras):
     h1 = band("INSUFFICIENT" if nothing else ("PASS" if len(lo) <= H1_MAX_LIVE_ONLY else "FAIL"), n_live_only=len(lo), max=H1_MAX_LIVE_ONLY)
     h2 = band("INSUFFICIENT" if nothing else ("PASS" if all(v <= H2_MAX_UNEXPLAINED_PER_DAY for v in per_day.values()) else "FAIL"), unexplained_by_day=dict(sorted(per_day.items())),
               max_per_day=H2_MAX_UNEXPLAINED_PER_DAY, executor_unlisted=extras["executor_unlisted"], duplicate_keys=extras["duplicate_keys"])
-    cmp_ = [m for m in metrics if m["_h3"] in ("ok", "coded", "mismatch")]
+    cmp_ = [m for m in metrics if m["_h3"] in ("ok", "coded", "mismatch", "live_nonrule")]
     mism = [m for m in metrics if m["_h3"] == "mismatch"]
-    h3 = band("FAIL" if len(mism) > H3_MAX_EXIT_MISMATCH else ("INSUFFICIENT" if not cmp_ else "PASS"), n_compared=len(cmp_), n_mismatch_uncoded=len(mism), n_coded=sum(1 for m in metrics if m["_h3"] == "coded"),
-              n_tp_in_sim_gap=sum(1 for m in metrics if m.get("reason") == CODED_TP_GAP))
+    nr = [m for m in metrics if m["_h3"] == "live_nonrule"]
+    nr_cap = len(nr) > H3_NONRULE_MAX_N or len(nr) > H3_NONRULE_MAX_FRAC * len(metrics)
+    h3 = band("FAIL" if len(mism) > H3_MAX_EXIT_MISMATCH or nr_cap else ("INSUFFICIENT" if not cmp_ else "PASS"), n_compared=len(cmp_), n_mismatch_uncoded=len(mism), n_coded=sum(1 for m in metrics if m["_h3"] == "coded"),
+              n_tp_in_sim_gap=sum(1 for m in metrics if m.get("reason") == CODED_TP_GAP),
+              n_live_nonrule_exit=len(nr), nonrule_cap_exceeded=nr_cap, nonrule_cap="max %d and %d%% of matched trades" % (H3_NONRULE_MAX_N, int(100 * H3_NONRULE_MAX_FRAC)),
+              nonrule_net_live_sol=[m["net_live_sol"] for m in nr])
     roll = [m for m in sorted(metrics, key=lambda m: m["_t"]) if not m["no_rung"] and win_to - S_RECENT_MS <= m["_t"] < win_to][-S_ROLLING_N:]
     slips = [m["entry_slip_pp"] for m in roll if m["entry_slip_pp"] is not None]
     if len(slips) < S1_MIN_MATCHED:
@@ -538,7 +566,7 @@ def evaluate(rows, metrics, win_to, extras):
     else:
         med, beyond = statistics.median(slips), sum(1 for x in slips if abs(x) > S1_BEYOND_PP)
         s1 = band("PASS" if S1_MEDIAN_SLIP_PP[0] <= med <= S1_MEDIAN_SLIP_PP[1] and beyond <= S1_MAX_BEYOND_N else "FAIL", n=len(slips), median_slip_pp=med, n_beyond=beyond, band_pp=list(S1_MEDIAN_SLIP_PP))
-    both = [m for m in roll if m["net_live_pp"] is not None and m["net_sim_pp"] is not None]
+    both = [m for m in roll if m["net_live_pp"] is not None and m["net_sim_pp"] is not None and m["_h3"] != "live_nonrule"]  # a live non-rule exit is not comparable: out of S2 only
 
     def split(xs):
         d = [m["net_live_pp"] - m["net_sim_pp"] for m in xs]
@@ -588,9 +616,9 @@ def wilson_block(k, n):
 def reconcile(ex_rows, ex_meta, sim, now_ms):
     head = ex_rows[0]
     win_from, win_to = max(head["since_ms"], sim["start_ms"]), min(head["as_of_ms"], sim["end_ms"])
-    spans = down_spans(ex_rows)
+    spans, nr_spans = down_spans(ex_rows), down_spans(ex_rows, with_starts=True)
     rows, pairs, live_sent, extras = classify(ex_rows, sim, win_from, win_to)
-    metrics = [pair_metrics(o, e, sim, spans, win_to) for o, e in pairs]
+    metrics = [pair_metrics(o, e, sim, spans, win_to, nr_spans) for o, e in pairs]
     bands, status = evaluate(rows, metrics, win_to, extras)
     sent_ids = {oid for oid, _ in live_sent}
     sent = [r for r in ex_rows if r["kind"] == "order" and r["order_id"] in sent_ids]
@@ -628,6 +656,9 @@ def recon_md(res):
           "- Counts: matched %d, live-only %d, sim-only %d. By reason: %s." % (res["counts"]["matched"], res["counts"]["live_only"], res["counts"]["sim_only"], json.dumps(res["counts_by_reason"], sort_keys=True))
           + " Bridge-only orders dropped from the extract (not ours): %d. Gap-in-hold trades in the twin set: %d. No sim figure (no_sim, outside S1/S2): gap at entry %d, gap at exit %d, missing V %d, other %d. Take-profits in a sim-side hole (tp_in_sim_gap): %d. Strict can overstate: in Nov 2-12 the trades it left out for a feed gap were net negative (DEC-035 Am.6 Erratum 3). Twin: %s." % (
               res["dropped_bridge_only"], res["gap_in_hold_n"], *(res["no_sim_price_counts"][w] for w in NO_SIM_WORDS), res["h3"].get("n_tp_in_sim_gap", 0), res["twin_book_id"] or "none"),
+          "- Live non-rule exits (coded live_nonrule_exit, set after the first run: post hoc; excluded from S2, kept in S1, S3, S4; cap %s): %d%s." % (
+              res["h3"]["nonrule_cap"], res["h3"]["n_live_nonrule_exit"],
+              "".join("; order %s live net %s SOL" % (r["order_id"], f2(r.get("net_live_sol"))) for r in res["rows"] if r.get("reason") == CODED_NONRULE)),
           "- Bands: " + "; ".join("%s %s" % (k.upper(), res[k]["status"]) for k in ("h1", "h2", "h3", "s1", "s2", "s3", "s4")) + ". Constants are fixed by QP before the first run.",
           "- Live failure (buy not filled / sent): %d / %d, Wilson 95%% %s to %s; sells failed / sent %d / %d; beside the flat %d%% assumption; live only, not combined with sim figures." % (
               res["live_failure"]["n_not_filled"], res["live_failure"]["n_sent"], f2(None if res["live_failure"]["wilson95_lo"] is None else 100 * res["live_failure"]["wilson95_lo"]),
