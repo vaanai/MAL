@@ -217,7 +217,7 @@ def test_output_allow_list_and_stdout(tmp_path, capsys):
         assert s not in text
     res = load(out)
     allowed = {"order_id", "tid", "class", "reason", "entry_utc", "stake_sol", "no_rung", "entry_slip_pp", "landing_ms", "landing_k", "exit_reason_host", "exit_reason_live", "exit_reason_sim", "exit_dt_ms", "exit_coded",
-               "net_live_sol", "net_sim_sol", "net_live_pp", "net_sim_pp", "fees_live_pp", "fees_model_pp", "rent_unreclaimed"}
+               "net_live_sol", "net_sim_sol", "net_live_pp", "net_sim_pp", "fees_live_pp", "fees_model_pp", "rent_unreclaimed", "gap_in_hold", "blind_s", "no_sim_price"}
     assert all(set(r) <= allowed for r in res["rows"])
     assert res["executor_unlisted"] == 1 and not any(r["reason"].startswith("executor:") for r in res["rows"])  # an unlisted word is never an explained reason
     assert "|" in (out / "recon.md").read_text()
@@ -453,3 +453,280 @@ def test_f_sell_failure_rate_is_separate(tmp_path):
     _, out = recon(tmp_path, specs, live)
     sells = load(out)["live_failure"]["sells"]
     assert sells["n_sent"] == 10 and sells["n_failed"] == 1 and sells["wilson95_hi"] is not None
+
+
+# ------------------------------------------------------------------------------------------------------------------------------ follow-up: the gap-in-hold twin (QP ruling Q4) and the #1378 minors
+GAP_PIDS = ("g0", "g1", "g2")
+
+
+def twin_world(tmp, gap_reasons=None, twin_over=None, twin_rows_mut=None, write_twin=True, a_md5="same", t_md5="same"):
+    """A = 7 plain tp trades + 3 strict-excluded (feed_gap) trades; the twin prices the 3 through their holes (gap_in_hold, blind_s, gap_count, gap_holes) unless gap_reasons says it still excludes them.
+    -> (A manifest path, twin manifest path | None, live rows)"""
+    plain = [("m%d" % k, k, 5_000_000, 0.10) for k in range(7)]
+    gaps = [(pid, 7 + j, 5_000_000, 0.10) for j, pid in enumerate(GAP_PIDS)]
+    specs = plain + gaps
+    mp = sim_book(tmp, specs)
+    a_rows = []
+    for pid, i, net, _ in plain:
+        a_rows += TB.tp(pid, entry_ms(i), net)
+    for pid, i, net, _ in gaps:
+        a_rows += TB.excluded(pid, entry_ms(i))
+    out_a = Path(json.loads(mp.read_text())["out_root"])
+    (out_a / "runs" / "0001" / "ledger" / "l1-floor-v2" / "trades-x.jsonl").write_text("\n".join(json.dumps(r) for r in a_rows) + "\n")
+    if a_md5:
+        (out_a / "decisions.md5").write_text(a_md5 + "\n")
+    tmp_path = None
+    if write_twin:
+        t_rows = []
+        for pid, i, net, _ in plain:
+            t_rows += TB.tp(pid, entry_ms(i), net)
+        for j, (pid, i, net, _) in enumerate(gaps):
+            why = (gap_reasons or {}).get(pid)
+            if why:
+                t_rows += [TB.op(pid, entry_ms(i))] + [{"kind": "excluded", "position_id": pid, "stake_sol": s, "exclusion_reason": why} for s in (0.10, 0.25)]
+            else:
+                rows = TB.tp(pid, entry_ms(i), net)
+                for r in rows:
+                    if r["kind"] == "trade":
+                        r.update(gap_in_hold=True, blind_s=120.0 + j, gap_count=1, gap_holes=[[entry_ms(i) + 3_600_000, entry_ms(i) + 3_700_000]])
+                t_rows += rows
+        if twin_rows_mut:
+            twin_rows_mut(t_rows)
+        over = {"twin_of": "A", "gap_exclusion": "hold"}
+        over.update(twin_over or {})
+        tm, tout = TB.make_book(tmp, "B", t_rows, **over)
+        if t_md5:
+            (tout / "decisions.md5").write_text(t_md5 + "\n")
+        tmp_path = tm
+    live = [live_order(pid, i) for pid, i, _, _ in specs]
+    return mp, tmp_path, live
+
+
+def run_twin(tmp, mp, tm, live, extra_meta=None):
+    ex = write_extract(tmp / "extract", live)
+    if extra_meta is not None:
+        meta = json.loads((ex / R.META_NAME).read_text())
+        meta.update(extra_meta)
+        (ex / R.META_NAME).write_text(json.dumps(meta))
+    out = tmp / "recon"
+    argv = ["--extract-dir", str(ex), "--manifest", str(mp), "--out-dir", str(out), "--now-ms", str(TB.END + 60_000)]
+    if tm is not None:
+        argv += ["--twin-manifest", str(tm)]
+    rc = R.main(argv, roots=(str(tmp),), out_roots=(str(out),))
+    return rc, out
+
+
+def rows_by_oid(res):
+    return {r["order_id"]: r for r in res["rows"] if r.get("order_id")}
+
+
+def test_twin_prices_gap_trades_flags_them_and_s1_s2_include_them(tmp_path):
+    mp, tm, live = twin_world(tmp_path)
+    rc, out = run_twin(tmp_path, mp, tm, live)
+    assert rc == 0
+    res = load(out)
+    rows = rows_by_oid(res)
+    for j, pid in enumerate(GAP_PIDS):
+        r = rows["L" + pid]
+        assert r["class"] == "matched" and r["gap_in_hold"] is True and r["blind_s"] == 120.0 + j and r["no_sim_price"] is None
+        assert r["entry_slip_pp"] is not None and r["net_sim_sol"] is not None
+    assert rows["Lm0"]["gap_in_hold"] is False and rows["Lm0"]["blind_s"] is None and rows["Lm0"]["no_sim_price"] is None
+    assert res["s1"]["n"] == 10 and res["s2"]["n"] == 10
+    assert res["s2"]["by_flag"]["flagged"]["n"] == 3 and res["s2"]["by_flag"]["unflagged"]["n"] == 7
+    assert res["s2"]["by_flag"]["flagged"]["median_diff_pp"] is not None and res["s2"]["by_flag"]["flagged"]["sum_live_sol"] > 0
+    assert res["gap_in_hold_n"] == 3 and res["no_sim_price_counts"] == {"gap_entry": 0, "gap_exit": 0, "missing_v": 0, "other": 0} and res["twin_book_id"] == "B"
+    md = (out / "recon.md").read_text()
+    assert "S2 by flag" in md and "flagged n 3" in md and "unflagged n 7" in md
+
+
+def test_without_twin_a_gap_excluded_trade_is_no_sim_price_other_and_outside_s1_s2(tmp_path):
+    mp, _, live = twin_world(tmp_path, write_twin=False)
+    rc, out = run_twin(tmp_path, mp, None, live)
+    assert rc == 0
+    res = load(out)
+    rows = rows_by_oid(res)
+    for pid in GAP_PIDS:
+        r = rows["L" + pid]
+        assert r["class"] == "matched" and r["no_sim_price"] == "other" and r["gap_in_hold"] is False and r["entry_slip_pp"] is None and r["net_sim_sol"] is None
+    assert res["no_sim_price_counts"]["other"] == 3 and res["twin_book_id"] is None
+    assert res["s1"]["n"] == 7 and res["s1"]["status"] == "INSUFFICIENT" and res["s2"]["by_flag"]["flagged"]["n"] == 0
+    assert res["counts"] == {"matched": 10, "live_only": 0, "sim_only": 0}  # as before: a matched row without a sim figure
+
+
+def test_trades_still_excluded_in_the_twin_carry_the_fixed_word(tmp_path):
+    mp, tm, live = twin_world(tmp_path, gap_reasons={"g0": "feed_gap_entry", "g1": "feed_gap_exit", "g2": "missing_v"})
+    rc, out = run_twin(tmp_path, mp, tm, live)
+    assert rc == 0
+    res = load(out)
+    rows = rows_by_oid(res)
+    assert [rows["L" + p]["no_sim_price"] for p in GAP_PIDS] == ["gap_entry", "gap_exit", "missing_v"]  # the twin's own reason decides, mapped to the fixed list
+    assert all(rows["L" + p]["gap_in_hold"] is False and rows["L" + p]["entry_slip_pp"] is None for p in GAP_PIDS)
+    assert res["s1"]["n"] == 7 and res["s2"]["n"] == 7 and res["s2"]["by_flag"]["flagged"]["n"] == 0
+    assert sum(res["no_sim_price_counts"].values()) == 3 and res["no_sim_price_counts"]["gap_entry"] == 1 and res["no_sim_price_counts"]["gap_exit"] == 1 and res["no_sim_price_counts"]["missing_v"] == 1
+
+
+def test_missing_v_and_an_unknown_word_map_into_the_fixed_list():
+    assert [R.no_sim_word(x) for x in ("feed_gap_entry", "feed_gap_exit", "missing_v", "missing_v_at_exit", "guard_ref_missing", "feed_gap", None, "pool_gone_" + ID58)] == [
+        "gap_entry", "gap_exit", "missing_v", "missing_v", "other", "other", "other", "other"]
+
+
+def test_live_tp_inside_a_sim_hole_is_the_coded_case_and_outside_it_is_a_mismatch(tmp_path):
+    def sim_time_stop(rows):  # the twin was blind in the hole: it exits on time, not on the take-profit
+        for r in rows:
+            if r["kind"] == "trade" and r["position_id"] == "g0":
+                r["exit_reason"] = "time_24h"
+    mp, tm, live = twin_world(tmp_path, twin_rows_mut=sim_time_stop)
+    for o in live:  # the live host's take-profit instant: inside the hole [t0+3.6e6, t0+3.7e6] for g0
+        if o["order_id"] == "Lg0":
+            o.update(exit_ms=entry_ms(7) + 3_650_000)
+    rc, out = run_twin(tmp_path, mp, tm, live)
+    assert rc == 0
+    res = load(out)
+    r = rows_by_oid(res)["Lg0"]
+    assert r["reason"] == "tp_in_sim_gap" and r["exit_coded"] is True
+    assert res["h3"]["n_tp_in_sim_gap"] == 1 and res["h3"]["n_mismatch_uncoded"] == 0 and res["h3"]["status"] == "PASS"
+    # outside every hole: a plain mismatch, H3 fails
+    (tmp_path / "y").mkdir()
+    mp2, tm2, live2 = twin_world(tmp_path / "y", twin_rows_mut=sim_time_stop)
+    for o in live2:
+        if o["order_id"] == "Lg0":
+            o.update(exit_ms=entry_ms(7) + 5_000_000)
+    rc3, out3 = run_twin(tmp_path / "y", mp2, tm2, live2)
+    res3 = load(out3)
+    assert res3["h3"]["status"] == "FAIL" and res3["h3"]["n_tp_in_sim_gap"] == 0 and rows_by_oid(res3)["Lg0"]["reason"] == ""
+
+
+def test_twin_refusals_name_no_value(tmp_path, capsys):
+    cases = [dict(twin_over={"twin_of": "Z"}), dict(twin_over={"gap_exclusion": "on"}), dict(a_md5="aaaa", t_md5="bbbb")]
+    for n, kw in enumerate(cases):
+        d = tmp_path / ("c%d" % n)
+        d.mkdir()
+        mp, tm, live = twin_world(d, **kw)
+        rc, _ = run_twin(d, mp, tm, live)
+        err = capsys.readouterr().err
+        assert rc == 2 and err.startswith("osb_recon: refused:")
+        assert "aaaa" not in err and "bbbb" not in err and "P_" not in err and "M_" not in err
+
+
+def test_twin_decisions_md5_must_exist_on_both_sides_and_be_equal(tmp_path, capsys):
+    for n, kw in enumerate([dict(a_md5="only-a", t_md5=None), dict(a_md5=None, t_md5="only-t"), dict(a_md5=None, t_md5=None)]):
+        d = tmp_path / ("c%d" % n)
+        d.mkdir()
+        mp, tm, live = twin_world(d, **kw)
+        assert run_twin(d, mp, tm, live)[0] == 2
+        assert "only-a" not in capsys.readouterr().err
+    (tmp_path / "ok").mkdir()
+    mp, tm, live = twin_world(tmp_path / "ok")
+    assert run_twin(tmp_path / "ok", mp, tm, live)[0] == 0
+
+
+@pytest.mark.parametrize("over,key", [({"send_lamports": 1}, "send_lamports"), ({"stakes_sol": [0.10]}, "stakes_sol"), ({"rule_overrides": {"TP": 1.6}}, "rule_overrides"), ({"host": "hostv2"}, "host")])
+def test_twin_manifest_must_equal_a_except_the_allowed_keys(tmp_path, capsys, over, key):
+    mp, tm, live = twin_world(tmp_path, twin_over=over)
+    rc, _ = run_twin(tmp_path, mp, tm, live)
+    err = capsys.readouterr().err
+    assert rc == 2 and ("key " + key in err or "refused" in err)
+
+
+def test_twin_may_differ_in_title_and_start_keys(tmp_path):
+    mp, tm, live = twin_world(tmp_path, twin_over={"title": "another title", "seed_from_hour": "2026-11-04T00"})
+    assert run_twin(tmp_path, mp, tm, live)[0] == 0
+
+
+def test_twin_priced_trade_without_the_flag_is_no_sim_price_other_not_clean(tmp_path):
+    def drop(rows):
+        for r in rows:
+            if r["kind"] == "trade" and r["position_id"] == "g1":
+                r.pop("gap_in_hold")
+            if r["kind"] == "trade" and r["position_id"] == "g2":
+                r["gap_in_hold"] = False
+    mp, tm, live = twin_world(tmp_path, twin_rows_mut=drop)
+    rc, out = run_twin(tmp_path, mp, tm, live)
+    res = load(out)
+    rows = rows_by_oid(res)
+    assert rc == 0 and rows["Lg1"]["no_sim_price"] == "other" and rows["Lg2"]["no_sim_price"] == "other" and rows["Lg0"]["gap_in_hold"] is True
+    assert rows["Lg1"]["gap_in_hold"] is False and rows["Lg1"]["entry_slip_pp"] is None and rows["Lg1"]["net_sim_sol"] is None
+    assert res["s2"]["by_flag"]["flagged"]["n"] == 1 and res["s2"]["by_flag"]["unflagged"]["n"] == 7
+
+
+@pytest.mark.parametrize("bad", [float("nan"), float("inf"), -1.0])
+def test_blind_s_must_be_finite_and_non_negative(tmp_path, capsys, bad):
+    def mut(rows):
+        for r in rows:
+            if r["kind"] == "trade" and r["position_id"] == "g0":
+                r["blind_s"] = bad
+    mp, tm, live = twin_world(tmp_path, twin_rows_mut=mut)
+    rc, _ = run_twin(tmp_path, mp, tm, live)
+    assert rc == 2 and "blind_s" in capsys.readouterr().err
+
+
+def _tp_world(tmp, sim_reason="time_24h", live_mut=None, hole=None):
+    def mut(rows):
+        for r in rows:
+            if r["kind"] == "trade" and r["position_id"] == "g0":
+                r["exit_reason"] = sim_reason
+                if hole is not None:
+                    r["gap_holes"] = [hole]
+    mp, tm, live = twin_world(tmp, twin_rows_mut=mut)
+    for o in live:
+        if o["order_id"] == "Lg0":
+            o.update(exit_ms=entry_ms(7) + 3_650_000)
+            if live_mut:
+                o.update(live_mut)
+    rc, out = run_twin(tmp, mp, tm, live)
+    assert rc == 0
+    return load(out)
+
+
+@pytest.mark.parametrize("n,kw,coded", [
+    (0, {}, True),
+    (1, {"sim_reason": "time_stop"}, False),                          # the twin's exit is not time_24h
+    (2, {"live_mut": {"exit_reason": "time_stop"}}, False),           # host exit reason is not the take-profit
+    (3, {"live_mut": {"has_host_exit": False}}, False),               # no host exit row: no fallback to the sell landing
+    (4, {"live_mut": {"sell_reason_bridge": "time_stop_backstop", "led_close_reason": "time_stop_backstop"}}, False),  # the executor did not sell on the take-profit
+    (5, {"hole": [0, 1]}, False),                                     # the hole is outside the trade's hold
+    (6, {"hole": [entry_ms(7) - 10, entry_ms(7) + 3_700_000]}, False),  # starts before the entry decision
+])
+def test_tp_in_sim_gap_needs_every_condition(tmp_path, n, kw, coded):
+    res = _tp_world(tmp_path, **kw)
+    r = rows_by_oid(res)["Lg0"]
+    assert (r["reason"] == "tp_in_sim_gap") is coded
+    assert res["h3"]["n_tp_in_sim_gap"] == (1 if coded else 0)
+    if coded:
+        assert res["h3"]["status"] == "PASS"
+    assert "tp_in_sim_gap): %d" % (1 if coded else 0) in (tmp_path / "recon" / "recon.md").read_text()
+
+
+def test_a_twin_that_is_book_a_itself_is_refused(tmp_path, capsys):
+    mp, _, live = twin_world(tmp_path, write_twin=False)
+    rc, _ = run_twin(tmp_path, mp, mp, live)
+    assert rc == 2 and "refused" in capsys.readouterr().err
+
+
+def test_twin_outputs_and_stdio_carry_no_forbidden_string(tmp_path, capsys):
+    mp, tm, live = twin_world(tmp_path)
+    rc, out = run_twin(tmp_path, mp, tm, live)
+    assert rc == 0
+    text = texts(out, capsys)
+    low = text.lower()
+    for s in FIXTURE_STRINGS:
+        assert s not in text
+    for w in B.FORBIDDEN:
+        assert w not in low.replace("no_sim_price", "")  # the owner-visible field name itself is the only allowed 'price'
+    for k in ("gap_in_hold", "blind_s", "no_sim_price"):
+        assert k in text
+
+
+def test_dropped_bridge_only_goes_to_json_and_md_and_defaults_to_zero(tmp_path):
+    mp, _, live = twin_world(tmp_path, write_twin=False)
+    rc, out = run_twin(tmp_path, mp, None, live)
+    assert load(out)["dropped_bridge_only"] == 0 and "dropped from the extract (not ours): 0" in (out / "recon.md").read_text()
+    (tmp_path / "z").mkdir()
+    mp2, _, live2 = twin_world(tmp_path / "z", write_twin=False)
+    rc, out2 = run_twin(tmp_path / "z", mp2, None, live2, extra_meta={"stats": {"dropped_bridge_only": 3}})
+    assert load(out2)["dropped_bridge_only"] == 3 and "dropped from the extract (not ours): 3" in (out2 / "recon.md").read_text()
+
+
+def test_check_output_has_no_dead_loop():
+    import inspect
+    assert "pass" not in inspect.getsource(R.check_output).replace("password", "")
