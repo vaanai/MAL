@@ -18,6 +18,11 @@ Checks, for every hour of the INCLUSIVE range [--from-hour, --to-hour]:
   * exactly one `.keeper-hours.jsonl` row by name `tape-<h>.jsonl.zst`, or duplicate rows with identical (zst_bytes, zst_sha, dev, inode);
   * the file exists (opened read-only with O_NOFOLLOW, regular file);
   * its size equals `zst_bytes`; its streamed sha256 equals `zst_sha`; its `st_dev` and `st_ino` equal the row's `dev` and `inode`.
+The keeper dir must be a real directory: a symlinked keeper dir is refused. Any malformed COMPLETE line of `.keeper-hours.jsonl` (bad JSON, a missing field, a wrong type,
+a bool for an int, a sha that is not 64 lower-case hex), in range or not, is a refusal; only a torn last line (no trailing newline) is ignored. All refusals are checked
+before any mismatch, so a refusal (2) wins over a mismatch (3). Options are exact (no abbreviations); a help request is not a pass: it prints usage and exits 2.
+Usage in the read job: `python -m tools.r4bt_keeper_check --keeper-dir D --from-hour A --to-hour B && <r4bt_price_bot ...>` over the same hour range as the pricer's
+`--tape-dir` range, so the pricer runs only when this exits 0.
 Exits: 0 all equal; 3 any mismatch or differing duplicate rows; 2 refusal (an hour with no row, an hour with no file, a path under a closed root of
 `tools/r4bt_gate.py`, a bad argument). Prints the count of hours checked, the first and last hour and, on a failure, the first failing hour and the failure kind.
 """
@@ -66,44 +71,15 @@ def hours_in_range(a: str, b: str) -> list[str]:
     return out
 
 
-def load_rows(keeper: Path) -> tuple[dict[str, list[dict]], int]:
-    """{file name: [rows]} from `.keeper-hours.jsonl` (every valid row kept, so duplicates are seen); unreadable lines are counted and skipped."""
-    p = keeper / KEEPER_HOURS
-    try:
-        fd = os.open(str(p), os.O_RDONLY | os.O_NOFOLLOW)
-    except OSError:
-        raise G.Refused(f"{KEEPER_HOURS} cannot be opened") from None
-    try:
-        with os.fdopen(fd, "rb") as f:
-            data = f.read()
-    except OSError:
-        raise G.Refused(f"{KEEPER_HOURS} cannot be read") from None
-    rows: dict[str, list[dict]] = {}
-    bad = 0
-    for line in data.split(b"\n"):
-        if not line.strip():
-            continue
-        try:
-            r = json.loads(line)
-        except ValueError:
-            bad += 1
-            continue
-        if not (isinstance(r, dict) and isinstance(r.get("name"), str) and _is_int(r.get("zst_bytes")) and isinstance(r.get("zst_sha"), str)
-                and SHA_RE.match(r["zst_sha"]) and _is_int(r.get("dev")) and _is_int(r.get("inode"))):
-            bad += 1
-            continue
-        rows.setdefault(r["name"], []).append(r)
-    return rows, bad
-
-
-def _key(r: dict) -> tuple:
-    return (r["zst_bytes"], r["zst_sha"], r["dev"], r["inode"])
+def _valid_row(r) -> bool:
+    return (isinstance(r, dict) and isinstance(r.get("name"), str) and _is_int(r.get("zst_bytes")) and isinstance(r.get("zst_sha"), str)
+            and SHA_RE.match(r["zst_sha"]) is not None and _is_int(r.get("dev")) and _is_int(r.get("inode")))
 
 
 def _open_ro(path: Path) -> int:
-    """Read-only, never through a symlink. Raises G.Refused when the hour file is missing, a link or not a regular file."""
+    """Read-only, never through a symlink, never blocking on a FIFO. Raises G.Refused when missing, a link or not a regular file."""
     try:
-        fd = os.open(str(path), os.O_RDONLY | os.O_NOFOLLOW)
+        fd = os.open(str(path), os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
     except OSError:
         raise G.Refused("no readable regular file") from None
     try:
@@ -115,13 +91,51 @@ def _open_ro(path: Path) -> int:
     return fd
 
 
+def load_rows(keeper: Path) -> tuple[dict[str, list[dict]], int]:
+    """({file name: [rows]}, torn count). Every valid row is kept so duplicates are seen. A malformed COMPLETE line refuses; a torn last line (no newline) is ignored."""
+    try:
+        fd = _open_ro(keeper / KEEPER_HOURS)
+        with os.fdopen(fd, "rb") as f:
+            data = f.read()
+    except (G.Refused, OSError):
+        raise G.Refused(f"{KEEPER_HOURS} cannot be read as a regular file") from None
+    parts = data.split(b"\n")
+    torn = 1 if parts[-1].strip() else 0
+    parts = parts[:-1]  # the piece after the last newline is empty or torn
+    rows: dict[str, list[dict]] = {}
+    bad = 0
+    for line in parts:
+        if not line.strip():
+            continue
+        try:
+            r = json.loads(line)
+        except ValueError:
+            bad += 1
+            continue
+        if not _valid_row(r):
+            bad += 1
+            continue
+        rows.setdefault(r["name"], []).append(r)
+    if bad:
+        raise G.Refused(f"{bad} malformed line(s) in {KEEPER_HOURS} (malformed_lines)")
+    return rows, torn
+
+
+def _key(r: dict) -> tuple:
+    return (r["zst_bytes"], r["zst_sha"], r["dev"], r["inode"])
+
+
 def check(keeper_dir: str | Path, from_hour: str, to_hour: str) -> dict:
     """Returns {"n", "first", "last", "ok", "fail_hour", "fail_kind"}. Raises G.Refused (exit 2) on a missing row or hour file."""
+    if os.path.islink(str(keeper_dir).rstrip("/") or "/"):
+        raise G.Refused("the keeper dir is a symlink: it must be a real directory")
     keeper = G.check_path(keeper_dir, "the keeper dir")
+    if not keeper.is_dir():
+        raise G.Refused("the keeper dir is not a directory")
     if os.environ.get("PYTEST_CURRENT_TEST") and str(keeper) == REAL_KEEPER_DIR:
         raise G.Refused("the real keeper dir is never used under pytest")
     hours = hours_in_range(from_hour, to_hour)
-    rows, _bad = load_rows(keeper)
+    rows, _torn = load_rows(keeper)
     res = {"n": len(hours), "first": hours[0], "last": hours[-1], "ok": True, "fail_hour": None, "fail_kind": None}
     # pass 1: refusals (an hour with no row or no file), before any byte is hashed
     for h in hours:
@@ -168,14 +182,23 @@ def check(keeper_dir: str | Path, from_hour: str, to_hour: str) -> dict:
 
 
 def main(argv: Sequence[str] | None = None) -> int:
-    ap = argparse.ArgumentParser(description="zst_sha pre-check of the r4-b price keeper (DEC-031 Amendment 30 Erratum 3 item 1). Exit 0 all equal, 3 mismatch, 2 refusal.")
-    ap.add_argument("--keeper-dir", required=True, help="the keeper dir holding .keeper-hours.jsonl and the tape-<h>.jsonl.zst links")
-    ap.add_argument("--from-hour", required=True, help="first hour, YYYY-MM-DDTHH (inclusive)")
-    ap.add_argument("--to-hour", required=True, help="last hour, YYYY-MM-DDTHH (inclusive)")
+    ap = argparse.ArgumentParser(add_help=False, allow_abbrev=False, prog="r4bt_keeper_check",
+                                 description="zst_sha pre-check of the r4-b price keeper (DEC-031 Amendment 30 Erratum 3 item 1). Exit 0 all equal, 3 mismatch, 2 refusal (also for a help request).")
+    ap.add_argument("--keeper-dir", help="the keeper dir (a real directory) holding .keeper-hours.jsonl and the tape-<h>.jsonl.zst links")
+    ap.add_argument("--from-hour", help="first hour, YYYY-MM-DDTHH (inclusive)")
+    ap.add_argument("--to-hour", help="last hour, YYYY-MM-DDTHH (inclusive)")
+    ap.add_argument("-h", "--help", action="store_true", help="print this text and exit 2 (never 0, so a chained pricer cannot run unchecked)")
     try:
         a = ap.parse_args(argv)
-    except SystemExit as e:
-        return EXIT_REFUSED if e.code not in (0, None) else 0
+    except SystemExit:
+        return EXIT_REFUSED
+    if a.help:
+        print(ap.format_help(), file=sys.stderr)
+        return EXIT_REFUSED
+    if not (a.keeper_dir and a.from_hour and a.to_hour):
+        ap.print_usage(sys.stderr)
+        print("r4bt_keeper_check: REFUSED: --keeper-dir, --from-hour and --to-hour are required", file=sys.stderr)
+        return EXIT_REFUSED
     try:
         r = check(a.keeper_dir, a.from_hour, a.to_hour)
     except G.Refused as e:
