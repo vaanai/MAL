@@ -164,7 +164,7 @@ def stored_hours(out_root):
     out = []
     try:
         text = (Path(out_root) / "md5-by-hour.jsonl").read_text()
-    except OSError:
+    except (OSError, ValueError):  # a non-UTF-8 byte is an empty list, not a crash of the board loop
         return out
     for line in text.split("\n"):
         try:
@@ -581,15 +581,18 @@ def stored_digests(out_root):
     out = {}
     try:
         text = (Path(out_root) / "md5-by-hour.jsonl").read_text()
-    except OSError:
+    except (OSError, ValueError):  # ValueError: a non-UTF-8 byte (UnicodeDecodeError)
         return out
     for line in text.split("\n"):
+        if not line.strip():
+            continue
         try:
             r = json.loads(line)
         except ValueError:
-            continue
-        if isinstance(r, dict) and isinstance(r.get("end_ms"), int) and not isinstance(r["end_ms"], bool) and isinstance(r.get("hour"), str) and isinstance(r.get("decision_md5"), str):
-            out[r["hour"]] = (r["end_ms"], r["decision_md5"])
+            break  # unreadable from this line on (a torn last line is the usual case)
+        if not (isinstance(r, dict) and isinstance(r.get("end_ms"), int) and not isinstance(r["end_ms"], bool) and isinstance(r.get("hour"), str) and isinstance(r.get("decision_md5"), str)):
+            break  # a non-object or a line missing a field: unreadable from here on
+        out[r["hour"]] = (r["end_ms"], r["decision_md5"])
     return out
 
 
@@ -607,9 +610,44 @@ def hour_now(b):
     """the book's last verified hour as stored right now (re-read), else None"""
     try:
         h = stored_hours(Path(b["m"]["out_root"]))
-    except OSError:
+    except (OSError, ValueError):
         return None
     return h[-1]["hour"] if h else None
+
+
+def _pair_entry(t, st, infos, now_ms, prev_since):
+    """the pair entry of one twin (see pair_books); may raise: pair_books ends the pair pending then"""
+    tid, sid = t["m"]["book_id"], st["m"]["book_id"]
+    ti, si = infos.get(tid), infos.get(sid)
+    th, sh = (ti or {}).get("last_hour"), (si or {}).get("last_hour")
+    starting = ti is None or si is None or ti["state"] == "starting" or si["state"] == "starting" or th is None or sh is None
+    ident, h = (None, None) if starting else identity(t, st)
+    if not starting and (hour_now(t) != th or hour_now(st) != sh):
+        ident, h = None, None  # a book moved between the reads: nothing is decided in this build
+    status, line = "pending", None
+    if ident == "differ":
+        status, line = "differ", PAIR_DIFFER
+    elif ident == "same" and th == sh and h == th:
+        status = "pair"
+    elif ident == "same":
+        line = PAIR_CONFIRMED % h
+    ent = {"twin": tid, "strict": sid, "status": status, "line": line}
+    if status == "pending":
+        ent.update(twin_last_hour=th, strict_last_hour=sh)
+        if ent["line"] is None:
+            ent["line"] = PAIR_HOURS % (th or "no hour yet", sh or "no hour yet")
+        since = (prev_since or {}).get(tid)
+        ent["pending_since_source"] = "carried" if isinstance(since, str) and since else "reset"
+        if not isinstance(since, str) or not since:
+            since = utc(now_ms) if now_ms is not None else None
+        ent["pending_since_utc"] = since
+        try:
+            age = now_ms - parse_utc_ms(since) if since and now_ms is not None else 0
+        except ValueError:
+            age = 0
+        if age > PENDING_WARN_MS:
+            ent["line"] = PAIR_LONG % (age // 3_600_000, th or "no hour yet", sh or "no hour yet") + (PAIR_LONG24 if age >= PENDING_STOP_MS else "")
+    return ent
 
 
 def pair_books(books, infos, now_ms=None, prev_since=None):
@@ -619,8 +657,11 @@ def pair_books(books, infos, now_ms=None, prev_since=None):
     Display: the pair view only when both books report the SAME last hour (infos: {book_id: inspect_book result}), that hour is H, and identity holds; marks b["pair"] = "twin"|"strict".
     Otherwise (identity confirmed through H but the hours differ, or identity not yet readable) the twin is "pending": b["pair"] = "pending", not in the pair view, its rows withheld (state "pending"), so a half-replayed twin
     contributes no number. A stored last hour that changed since the info read (re-read after the digests) also gives "pending" for this build.
+    Each pair is evaluated in its own try (_pair_entry): ANY exception ends that pair "pending" (twin rows withheld, no detail) and never touches another pair or book. A non-UTF-8 byte or a bad line in md5-by-hour.jsonl is
+    unreadable from that line on (pending, never "differ").
     Escalation: a pending pair carries pending_since_utc (prev_since {twin id: iso} from the previous board.json, else now_ms; cleared when the pair is not pending). Pending more than 6 h of wall time: line PAIR_LONG;
-    from 24 h the line adds that the manager stops the twin or records why."""
+    from 24 h the line adds that the manager stops the twin or records why. pending_since_source is "carried" when read back from the previous board.json, "reset" when the clock starts now (no or unreadable previous file,
+    no entry for this pair): a pair removed from BOOKS.json and added back therefore restarts the 6 h / 24 h clock and shows "reset"."""
     by_id = {b["m"]["book_id"]: b for b in books}
     out = []
     for b in books:
@@ -630,34 +671,11 @@ def pair_books(books, infos, now_ms=None, prev_since=None):
             continue
         st = by_id[t["twin_of"]]
         tid, sid = t["m"]["book_id"], st["m"]["book_id"]
-        ti, si = infos.get(tid), infos.get(sid)
-        th, sh = (ti or {}).get("last_hour"), (si or {}).get("last_hour")
-        starting = ti is None or si is None or ti["state"] == "starting" or si["state"] == "starting" or th is None or sh is None
-        ident, h = (None, None) if starting else identity(t, st)
-        if not starting and (hour_now(t) != th or hour_now(st) != sh):
-            ident, h = None, None  # a book moved between the reads: nothing is decided in this build
-        status, line = "pending", None
-        if ident == "differ":
-            status, line = "differ", PAIR_DIFFER
-        elif ident == "same" and th == sh and h == th:
-            status = "pair"
-        elif ident == "same":
-            line = PAIR_CONFIRMED % h
-        ent = {"twin": tid, "strict": sid, "status": status, "line": line}
-        if status == "pending":
-            ent.update(twin_last_hour=th, strict_last_hour=sh)
-            if ent["line"] is None:
-                ent["line"] = PAIR_HOURS % (th or "no hour yet", sh or "no hour yet")
-            since = (prev_since or {}).get(tid)
-            if not isinstance(since, str) or not since:
-                since = utc(now_ms) if now_ms is not None else None
-            ent["pending_since_utc"] = since
-            try:
-                age = now_ms - parse_utc_ms(since) if since and now_ms is not None else 0
-            except ValueError:
-                age = 0
-            if age > PENDING_WARN_MS:
-                ent["line"] = PAIR_LONG % (age // 3_600_000, th or "no hour yet", sh or "no hour yet") + (PAIR_LONG24 if age >= PENDING_STOP_MS else "")
+        try:
+            ent = _pair_entry(t, st, infos, now_ms, prev_since)
+        except Exception:  # noqa: BLE001 - one pair never takes the board or another pair down: pending, twin rows withheld, no detail
+            ent = {"twin": tid, "strict": sid, "status": "pending", "line": PAIR_HOURS % ("no hour yet", "no hour yet"), "twin_last_hour": None, "strict_last_hour": None, "pending_since_utc": None, "pending_since_source": "reset"}
+        status = ent["status"]
         if lat_of(t) is not None:
             ent.update(kind="latency", pricing_lat_entry_s=lat_of(t), label=LABEL_LAT % ("%.3f" % lat_of(t)))
         out.append(ent)
