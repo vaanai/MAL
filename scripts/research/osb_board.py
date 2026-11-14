@@ -16,6 +16,8 @@ the tape end) are listed in `open`, not counted here. Entries of an incomplete d
 Twins (QP ruling 2026-11-14 Q6): a book entry may carry "twin_of": "<book_id>" (the strict book); the twin's manifest has gap_exclusion "hold". When both books' decisions.md5 files (written by osb_follow) are equal the board
 adds a pair view (board.json `pairs`, a "Pair" section in board.md): the incl.-gap-in-hold set first, the strict set beside it, never one summed figure. Differing or missing md5: the twin is shown as a separate book with a line saying so. A book
 without a twin renders exactly as before.
+The md5s are compared only when the twin and its strict book are at the SAME last hour; otherwise (either behind, ahead, no hour yet or still starting) the pair is "pending" (line "twin identity pending: ..."), never "differ".
+A pending twin is not in the pair view and is not shown as a separate priced book (its rows are withheld, state "pending"), and the header's "tape through" ignores it ("catching up: <ids>" is printed).
 Latency twins (QP ruling 2026-11-14 osb latency twin, sections 2 and 5): a book entry whose manifest carries pricing_lat_entry_s (and twin_of, gap_exclusion on) is a pricing-only latency twin of its strict book; its pair view
 ("Latency pair" section, board.json `pairs` entries with kind "latency") shows the twin first and the strict book beside it, with the ruling's label and the line "exit before entry landed (<twin>): n (not counted as a trade)".
 A latency twin is compared only with the control book's latency twin of the SAME pricing_lat_entry_s (else n/a; the control's own latency twin gets no comparison), never with a strict book, a gap-in-hold twin or a twin
@@ -567,8 +569,14 @@ LINE_EXIT_BEFORE = "exit before entry landed (%s): %d (not counted as a trade)"
 LABEL_NEITHER = "neither set is decision-grade (recon NOT COMPARABLE); no stake step rests on either (Am.6)"
 
 
-def pair_books(books):
-    """[{twin, strict, status}] for every book entry with twin_of; marks b["pair"] = "twin"|"strict" on both books only when their decisions.md5 are equal (a pricing-only twin)"""
+PAIR_HOURS = "twin identity pending: the twin is at %s, its strict book at %s; compared when both are at the same hour"
+
+
+def pair_books(books, infos=None):
+    """[{twin, strict, status}] for every book entry with twin_of. A twin's decisions md5 is compared with its strict book's only at the SAME last hour (infos: {book_id: inspect_book result});
+    when the last hours differ, or either is missing or still starting, the pair is "pending" (line PAIR_HOURS), never "differ": the two md5s then cover different histories. A pending twin is marked
+    b["pair"] = "pending": it is not in the pair view and not shown as a separate priced book (its rows are withheld, state "pending"), so a half-replayed twin never contributes numbers.
+    At equal hours: marks b["pair"] = "twin"|"strict" on both books only when their decisions.md5 are equal (a pricing-only twin); different md5 = "differ" (twin shown as a separate book)."""
     by_id = {b["m"]["book_id"]: b for b in books}
     out = []
     for b in books:
@@ -577,6 +585,15 @@ def pair_books(books):
         if t.get("twin_of") is None:
             continue
         st = by_id[t["twin_of"]]
+        ti, si = (infos or {}).get(t["m"]["book_id"]), (infos or {}).get(st["m"]["book_id"])
+        if infos is not None and (ti is None or si is None or ti["state"] == "starting" or si["state"] == "starting" or ti["last_hour"] is None or si["last_hour"] is None or ti["last_hour"] != si["last_hour"]):
+            ent = {"twin": t["m"]["book_id"], "strict": st["m"]["book_id"], "status": "pending", "line": PAIR_HOURS % ((ti or {}).get("last_hour") or "no hour yet", (si or {}).get("last_hour") or "no hour yet"),
+                   "twin_last_hour": (ti or {}).get("last_hour"), "strict_last_hour": (si or {}).get("last_hour")}
+            if lat_of(t) is not None:
+                ent.update(kind="latency", pricing_lat_entry_s=lat_of(t), label=LABEL_LAT % ("%.3f" % lat_of(t)))
+            out.append(ent)
+            t["pair"] = "pending"
+            continue
         a, c = read_decisions_md5(st), read_decisions_md5(t)
         status = "pending" if a is None or c is None else "pair" if a == c else "differ"
         ent = {"twin": t["m"]["book_id"], "strict": st["m"]["book_id"], "status": status,
@@ -602,7 +619,7 @@ def build(books, live, now_ms, roots=None):
             info, srs = {"state": "ERROR", "status": {}, "end": None, "last_hour": None, "pnl": None, "error": type(e).__name__}, None
         infos.append((b, info, srs))
     control = next(((b, srs) for b, _, srs in infos if b["role"] == "control" and srs is not None), None)
-    pairs = pair_books(books)
+    pairs = pair_books(books, {b["m"]["book_id"]: i for b, i, _ in infos})
     control_twin, control_lat = None, {}
     if control is not None:
         control_twin = next(((b, srs) for b, _, srs in infos if b.get("twin_of") == control[0]["m"]["book_id"] and b.get("pair") == "twin" and srs is not None and lat_of(b) is None), None)
@@ -612,6 +629,12 @@ def build(books, live, now_ms, roots=None):
     out_books = []
     for i, (b, info, srs) in enumerate(infos):
         try:
+            if b.get("pair") == "pending":  # a twin not yet at its strict book's hour: no numbers, no pair view
+                row = withheld(i, b, "pending")
+                row.pop("error_class")
+                row.update(state="pending", title="pending", last_hour=info["last_hour"])
+                out_books.append(row)
+                continue
             row = book_row(b, info, srs, control, n_watched, control_twin, control_lat)
             if control_twin is not None and b is control_twin[0]:
                 row["role"] = "control (incl. gap-in-hold twin)"
@@ -623,7 +646,8 @@ def build(books, live, now_ms, roots=None):
         except Exception as e:  # noqa: BLE001
             row = withheld(i, b, type(e).__name__)
         out_books.append(row)
-    ends = [i["end"] for _, i, srs in infos if srs is not None and i["end"] is not None]
+    ends = [i["end"] for b, i, srs in infos if srs is not None and i["end"] is not None and b.get("pair") != "pending" and i["state"] != "starting"]
+    catching = [b["m"]["book_id"] for b, i, srs in infos if b.get("pair") == "pending"]
     here = os.path.dirname(os.path.abspath(__file__))
     ver = " ".join("%s=%s" % (n, AB._blob_id(os.path.join(here, n))) for n in ("osb_board.py", "floor_nov_pnl.py", "floor_forward_ab.py", "osb_follow.py"))
     recon, recon_line, live, sim_off = recon_state(live, now_ms, next((b["m"]["book_id"] for b in books if b["role"] == "control"), None))
@@ -635,6 +659,8 @@ def build(books, live, now_ms, roots=None):
            "caveat": "%s (every book x stake row counts, also rows of books still starting). Book start instants and parameters are fixed; a change is a new book. Entries before a book's start instant are in-sample, also when they close later." % (WATCH_SENTENCE % n_watched),
            "booking": "net SOL is booked on the exit (close) UTC day; the complete-day windows (today, d7, forward_all, incl_backfill) count only UTC days with the tape at least 90 min past the day's end; day_in_progress is a partial day",
            "recon": recon, "recon_line": recon_line, "decision_grade": DECISION_GRADE, "limit_layer": "not applied", "live": live, "books": out_books}
+    if catching:
+        res["catching_up"] = catching
     if pairs:
         res["pairs"] = pairs
     if sim_off:
@@ -713,7 +739,8 @@ def exit_label(reason, bk):
 
 def board_md(res):
     md = ["# Open sim board (FLOOR open simulation books, paper)", "", "> " + res["banner"], "",
-          "- Generated %s; tape through %s (the slowest book with data); board_version %s." % (res["generated_utc"], res["tape_through_utc"] or "n/a (no book has a completed hour)", res["board_version"]),
+          "- Generated %s; tape through %s (the slowest book with data); board_version %s." % (res["generated_utc"], res["tape_through_utc"] or "n/a (no book has a completed hour)", res["board_version"])] + (
+          ["- catching up: %s." % ", ".join(res["catching_up"])] if res.get("catching_up") else []) + [
           "- Recon: %s." % res["recon_line"]] + (["- " + SIM_OFF + ": the live bot and book A disagree outside the bands; every figure below is greyed and no live step rests on it."] if res.get("sim_off") else []) + [
           "- Net SOL is flat 15% fail leg / pressure leg, booked on the EXIT (close) UTC day. Complete UTC days only (tape at least 90 min past the day's end) in today, 7-day, forward and all; "
           "day in progress is a PARTIAL day (trades closed after the newest complete day), shown so trades are visible as they happen.",

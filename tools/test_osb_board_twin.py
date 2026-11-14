@@ -205,3 +205,65 @@ def test_twin_of_on_a_strict_manifest_is_refused(tmp_path):
                                        {"manifest": str(tm), "role": "variant", "start_instant_utc": START}], "live": None}))
     with pytest.raises(B.Refusal):
         B.load_books_file(p, roots=(str(tmp_path),))
+
+
+# ---- pending until both books are at the same hour (no false "differ" during catch-up)
+from tools.test_osb_board import END, set_status  # noqa: E402
+
+PENDING_LINE = "twin identity pending: the twin is at %s, its strict book at %s; compared when both are at the same hour"
+
+
+def _pending_run(tmp, twin_end, strict_end=END, twin_md5=None):
+    sm, tm, so, to = two_books(tmp)
+    set_status(to, twin_end)
+    set_status(so, strict_end)
+    if twin_md5:
+        (to / "decisions.md5").write_text(twin_md5 * 32 + "\n")
+        (so / "decisions.md5").write_text("a" * 32 + "\n")
+    rc, out = run(tmp, bf(tmp, sm, tm))
+    assert rc == 0
+    return load(out), (out / "board.md").read_text()
+
+
+def _assert_pending(res, md, tw, st):
+    pr = res["pairs"][0]
+    assert pr["status"] == "pending" and pr["line"] == PENDING_LINE % (tw, st)
+    assert PENDING_LINE % (tw, st) in md
+    assert "differ" not in md and "not a pricing-only twin" not in md and "## Pair" not in md
+    twin = next(b for b in res["books"] if b["id"] == "T")
+    assert twin["state"] == "pending" and twin["rows"] == []  # withheld: no numbers as a separate book either
+    assert any(b["id"] == "S" and b["rows"] for b in res["books"])
+
+
+def test_twin_behind_is_pending_not_differ(tmp_path):
+    res, md = _pending_run(tmp_path, END - 29 * H, twin_md5="b")  # differing md5 files must not matter
+    _assert_pending(res, md, B.utc(END - 30 * H)[:13], B.utc(END - H)[:13])
+
+
+def test_twin_ahead_is_pending(tmp_path):
+    res, md = _pending_run(tmp_path, END, strict_end=END - 2 * H, twin_md5="b")
+    _assert_pending(res, md, B.utc(END - H)[:13], B.utc(END - 3 * H)[:13])
+
+
+def test_twin_without_hour_is_pending(tmp_path):
+    res, md = _pending_run(tmp_path, None)
+    _assert_pending(res, md, "no hour yet", B.utc(END - H)[:13])
+
+
+def test_equal_hours_pair_view_and_differ_only_there(tmp_path):
+    res, md = _pending_run(tmp_path, END, twin_md5="a")
+    assert res["pairs"][0]["status"] == "pair" and "## Pair" in md and "catching up" not in md and "catching_up" not in res
+    res, md = _pending_run(tmp_path / "x", END, twin_md5="b") if (tmp_path / "x").mkdir() is None else None
+    assert res["pairs"][0]["status"] == "differ" and "twin decisions differ: not a pricing-only twin" in md
+    assert next(b for b in res["books"] if b["id"] == "T")["state"] != "pending"
+
+
+def test_header_ignores_a_pending_twin_and_says_so(tmp_path):
+    res, md = _pending_run(tmp_path, END - 29 * H)
+    assert res["tape_through_utc"] == B.utc(END) and res["catching_up"] == ["T"]
+    assert "- catching up: T." in md and "tape through %s" % B.utc(END) in md
+
+
+def test_pending_output_passes_the_forbidden_word_check(tmp_path):
+    res, md = _pending_run(tmp_path, END - 29 * H)
+    B.check_forbidden(res, md)
