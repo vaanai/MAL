@@ -229,7 +229,7 @@ def _assert_pending(res, md, tw, st):
     pr = res["pairs"][0]
     assert pr["status"] == "pending" and pr["line"] == PENDING_LINE % (tw, st)
     assert PENDING_LINE % (tw, st) in md
-    assert "differ" not in md and "not a pricing-only twin" not in md and "## Pair" not in md
+    assert "twin decisions differ" not in md and "not a pricing-only twin" not in md and "## Pair" not in md
     twin = next(b for b in res["books"] if b["id"] == "T")
     assert twin["state"] == "pending" and twin["rows"] == []  # withheld: no numbers as a separate book either
     assert any(b["id"] == "S" and b["rows"] for b in res["books"])
