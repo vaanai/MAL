@@ -18,23 +18,86 @@ What it changes, and only this:
 Exit-window time form: for a print whose order key carries no receive time (tx_index form) the print's time is estimated from the slot clock; that can narrow the time form, but every Gap also carries a slot range
 and the window's slot form [ps, need] uses the print's true slot, so a gap in that stretch matches by slot whatever the estimate (QP comment on PR #1380, m1).
 The decisions of the rule do not depend on the exclusion (the host does not read the engine's trade/excluded rows), so entries are identical with and without it.
+  * pricing_lat_entry_s (latency twin books; QP ruling 2026-11-14 osb latency twin, sections 1 and 2; None = today's behaviour, byte-identical rows): the entry latency of the DECIDING leg
+    (LATS[1], ledger tag "1p9") is the TOTAL chain time from the decision to the landing, in the frame of the live "decision slot to landed slot" figure (both are feed slots; the engine adds the
+    feed delay d separately): k_twin = max(0, ceil(pricing_lat_entry_s / sps_entry - SLOT_TOL) - d), sps_entry = the position's own measured seconds per slot (the engine's slot clock, not a
+    constant). The 1.3 s leg and the exit lag are unchanged. Pricing only: decisions are the host's and are not touched (section 1 (c): the take-profit mark stays the rule's 1.9 s mark). An exit whose
+    landing slot xs + d + exit_lag is at or below the twin's entry landing slot sd + d + k_twin is excluded `exit_before_entry_landing` (section 1 (a)): counted, shown, never priced; it is checked after
+    every other exclusion (guard_ref_missing, feed_gap, missing_v), so a position the strict engine excludes keeps its reason and only a priced strict position can move to it. Every trade and excluded row
+    of a latency twin carries `pricing_lat_entry_s` and `k_entry_slots` in its `stack` block. The sell-time refusal (a sell decided before the slower entry leg lands) keeps the STRICT k, so the twin
+    refuses exactly what the strict book refuses (the host sees the same engine answers). Not combinable with gap_exclusion "hold" (one dimension per twin, section 2).
 """
 import dataclasses
+import math
 import numpy as np
 from tools import arena_rule_l1 as L
-from tools.arena_paper import ArenaEngine, F, LATS
+from tools.arena_paper import ArenaEngine, F, LATS, bonding_states, mint_states
 
 HOLD = "hold"  # gap_exclusion value of a "gap-in-hold twin" book (QP RULING 2026-11-14 board-gap-in-hold, Q1/Q2/Q3)
 
 
+EXIT_BEFORE_ENTRY = "exit_before_entry_landing"  # QP ruling 2026-11-14 osb latency twin, section 1 (a)
+
+
 class GapRangeEngine(ArenaEngine):
-    def __init__(self, *a, gap_exclusion=True, ts_variant=False, **k):
+    def __init__(self, *a, gap_exclusion=True, ts_variant=False, pricing_lat_entry_s=None, **k):
         super().__init__(*a, **k)
+        if pricing_lat_entry_s is not None:
+            if isinstance(pricing_lat_entry_s, bool) or not isinstance(pricing_lat_entry_s, (int, float)) or not math.isfinite(pricing_lat_entry_s) or pricing_lat_entry_s <= 0:
+                raise ValueError("pricing_lat_entry_s must be a positive finite number of seconds or None")
+            if gap_exclusion == HOLD:  # an explicit refusal (an assert vanishes under python -O)
+                raise ValueError("pricing_lat_entry_s cannot be combined with gap_exclusion 'hold' (one dimension per twin; QP ruling 2026-11-14 osb latency twin, section 2)")
+        self.pricing_lat_entry_s = pricing_lat_entry_s
+        self._sell_check = False  # True only while ArenaEngine.sell runs its own "decided before the slower entry leg lands" check (strict k)
         self.hold = gap_exclusion == HOLD
         self.gap_exclusion, self.ts_variant = (True if self.hold else gap_exclusion), ts_variant
         self._hold_info = {}  # position_id -> {"gap_count", "blind_s"} (hold mode only)
         self._ov = {}        # position_id -> list of [t_lo, t_hi] of overlapping data_loss gaps
         self._shadows = []   # [due_ms, shadow_id]
+
+    # ---------------------------------------------------------------------------------------------------- latency twin (QP ruling 2026-11-14 osb latency twin, sections 1 and 2)
+    def _k_twin(self, sps):
+        """k of the deciding leg for the twin: max(0, ceil(pricing_lat_entry_s / sps - SLOT_TOL) - d), d = the engine's feed delay in slots"""
+        return max(0, int(math.ceil(self.pricing_lat_entry_s / sps - F.SLOT_TOL)) - self._check_delay_set())
+
+    def _k(self, lat, sps):
+        if self.pricing_lat_entry_s is None or lat != LATS[1] or self._sell_check:
+            return super()._k(lat, sps)
+        return self._k_twin(sps)
+
+    def sell(self, *a, **k):
+        self._sell_check = True  # the refusal check inside sell reads the strict k
+        try:
+            return super().sell(*a, **k)
+        finally:
+            self._sell_check = False
+
+    def _try_pending(self, pool, final):
+        saved, self._sell_check = self._sell_check, False  # sell() prices at the end: pricing always uses the twin k
+        try:
+            return super()._try_pending(pool, final)
+        finally:
+            self._sell_check = saved
+
+    def leg_inputs(self, pos, h):
+        st = super().leg_inputs(pos, h)
+        if self.pricing_lat_entry_s is None:
+            return st
+        # mint_states / bonding_states derive k themselves from the latency, so the deciding leg is recomputed here at the twin's landing slot; the 1.3 leg and the exit state are the base class's own values
+        lat, d, cfg = LATS[1], self._check_delay_set(), self.cfg
+        sdc = pos.sd + d
+        x = sdc + self._k_twin(pos.sps_entry)
+        a = h.arrays()
+        if pos.prog == "pumpswap":
+            ms = mint_states(a["sl"], a["ib"], a["so"], a["tk"], a["q"], a["b"], a["v"], np.array([x]), pos.sps_entry, lats=(0.0,), rounding=cfg.k_rounding)  # k = 0 at the twin's landing slot
+            for key in ("Qe", "Be", "ssb", "nearby"):
+                st[key][lat] = float(ms[key][0.0][0])
+        else:
+            bs = bonding_states(h, self._ref_slot(pos), {lat: x}, pos.xs + d + F.exit_lag_slots(pos.sps_exit), int(round(F.NEARBY_WINDOW_S / pos.sps_entry)))
+            for key in ("Qe", "Be", "ssb", "nearby"):
+                st[key][lat] = bs[key][lat]
+        st["land"][lat] = x
+        return st
 
     def _holes(self, pos, src, need):
         t_lo, t_hi, s_lo, s_hi = self._span(pos, need, src)
@@ -109,6 +172,14 @@ class GapRangeEngine(ArenaEngine):
                                             "gap_holes": [[lo, hi] for lo, hi in iv]}  # [t_lo_ms, t_hi_ms] per gap, clipped to the hold; times only
 
     def _exclusion(self, pos, h, src, need):
+        why = self._exclusion_gap(pos, h, src, need)
+        if why is None and self.pricing_lat_entry_s is not None and not pos.position_id.endswith("-ts"):
+            lag = F.exit_lag_slots(pos.sps_exit)
+            if pos.xs + lag <= pos.sd + self._k_twin(pos.sps_entry):  # exit landing (xs + d + lag) at or below the entry landing (sd + d + k_twin): live would hold no tokens yet
+                return EXIT_BEFORE_ENTRY
+        return why
+
+    def _exclusion_gap(self, pos, h, src, need):
         if self.hold and not pos.position_id.endswith("-ts"):
             self._hold_note(pos, src, need)
             return self._hold_exclusion(pos, h, src, need)
@@ -129,6 +200,9 @@ class GapRangeEngine(ArenaEngine):
 
     def _base_row(self, pos, kind, s_sol, src):
         row = super()._base_row(pos, kind, s_sol, src)
+        if self.pricing_lat_entry_s is not None:  # latency twin rows only (section 2); absent = the plain engine's row
+            row["stack"]["pricing_lat_entry_s"] = self.pricing_lat_entry_s
+            row["stack"]["k_entry_slots"] = self._k_twin(pos.sps_entry)
         if not pos.position_id.endswith("-ts"):
             info = self._hold_info.get(pos.position_id) if self.hold and kind == "trade" else None
             if info and info["matched"]:
