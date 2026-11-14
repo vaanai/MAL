@@ -122,6 +122,32 @@ def test_extract_orders_and_rows(world, capsys):
     assert meta["source_sizes"]["bridge_log"] > 0 and meta["as_of_ms"] == AS_OF
 
 
+def test_start_row_carries_prev_last_ms(world):
+    _, argv, out = world
+    X.main(argv)
+    rows, _ = load(out)
+    st = [r for r in rows if r["kind"] == "start"]
+    assert len(st) == 1 and set(st[0]) == {"kind", "t_ms", "start_kind", "prev_last_ms"}
+    assert st[0]["prev_last_ms"] == S_MS - 5  # the last row of ANY kind before it: here the pre-window entry row of the day file
+
+
+def test_prev_last_ms_counts_a_row_of_any_kind(world):
+    tmp, argv, out = world
+    day = tmp / "root" / "decisions" / "l1-floor-v2" / (DAY + ".jsonl")
+    day.write_text(jl(host_rows() + [{"kind": "heartbeat", "ms": S_MS + 5_000_000}, {"kind": "start", "ms": S_MS + 5_999_000, "x": {"ms": 1}}]))
+    X.main(argv)
+    rows, _ = load(out)
+    st = sorted((r for r in rows if r["kind"] == "start"), key=lambda r: r["t_ms"])
+    assert [r["prev_last_ms"] for r in st][-1] == S_MS + 5_000_000
+
+
+def test_prev_last_ms_is_last_host_row_before_start():
+    host = [{"kind": "entry", "ms": 1000, "order_id": "a", "pool": "P", "meta": {}}, {"kind": "exit", "ms": 2000, "order_id": "a"}, {"kind": "start", "ms": 9000},
+            {"kind": "lane_start", "ms": 9500}]
+    rows = [r for r in X.build_rows(host, [], [], [], 0) if r["kind"] == "start"]
+    assert [(r["t_ms"], r["prev_last_ms"]) for r in rows] == [(9000, 2000), (9500, 9000)]
+
+
 def test_no_mint_signature_in_extract_and_stdout_is_counts_only(world, capsys):
     tmp, argv, out = world
     X.main(argv)

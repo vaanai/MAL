@@ -752,3 +752,208 @@ def test_dropped_bridge_only_goes_to_json_and_md_and_defaults_to_zero(tmp_path):
 def test_check_output_has_no_dead_loop():
     import inspect
     assert "pass" not in inspect.getsource(R.check_output).replace("password", "")
+
+
+# ---------------------------------------------------------------------------------------------------- QP ruling 2026-11-14, point 1: all refusal rows per key
+def _ref(pool_id, i, reason, gap_kind=None, trig_ms=None, **kw):
+    r = {"kind": "gap_refusal", "t_ms": 1, "pool": "P_" + pool_id, "trig_slot": 1000 + i, "trig_ms": entry_ms(i) - 800 if trig_ms is None else trig_ms, "reason": reason, "gap_kind": gap_kind}
+    r.update(kw)
+    return r
+
+
+def _h2_reason(tmp, rows, i=0):
+    _, out = recon(tmp, [("a", i, 1, 0.1)], rows)
+    res = load(out)
+    return [r["reason"] for r in res["rows"] if r["class"] == "sim_only"], res
+
+
+def _sub(tmp, name):
+    d = tmp / name
+    d.mkdir()
+    return d
+
+
+@pytest.mark.parametrize("host_down_first", [True, False])
+def test_h2_real_shape_one_host_down_plus_29_blocked_rows_on_one_key(tmp_path, host_down_first):
+    hd = _ref("a", 0, "feed_gap", "host_down")
+    blocked = [_ref("a", 0, "pool_blocked_after_gap") for _ in range(29)]
+    rows = [hd] + blocked if host_down_first else blocked + [hd]
+    reasons, res = _h2_reason(tmp_path, rows)
+    assert reasons == ["restart_lockout"] and res["h2"]["status"] == "PASS"
+
+
+def test_h2_branch_a_any_restart_type_row_wins(tmp_path):
+    for n, extra in enumerate([_ref("a", 0, "pool_blocked_after_restart"), _ref("a", 0, "lane_restart_shadow")]):
+        reasons, _ = _h2_reason(_sub(tmp_path, "a%d" % n), [_ref("a", 0, "feed_gap", "data_loss"), extra, _ref("a", 0, "cooldown")])
+        assert reasons == ["restart_lockout"]  # (a) beats a data_loss feed_gap on the same key
+
+
+def test_h2_branch_b_feed_gap_not_host_down_is_a_mismatch(tmp_path):
+    for n, rows in enumerate([[_ref("a", 0, "feed_gap", "data_loss")], [_ref("a", 0, "pool_blocked_after_gap"), _ref("a", 0, "feed_gap", None)]]):
+        reasons, res = _h2_reason(_sub(tmp_path, "b%d" % n), rows)
+        assert reasons == ["feed_gap_mismatch"] and res["h2"]["status"] == "FAIL"
+
+
+def test_h2_branch_c_blocked_only_keys_look_at_earlier_feed_gap_rows_of_the_pool(tmp_path):
+    t = entry_ms(0) - 800
+    blocked = _ref("a", 0, "pool_blocked_after_gap")
+    early = lambda kind, **kw: _ref("a", 5, "feed_gap", kind, trig_ms=t - 60_000, **kw)
+    cases = {"any_not_host_down": ([early("host_down"), early("data_loss")], "feed_gap_mismatch"),
+             "any_not_host_down_reversed": ([early("data_loss"), early("host_down")], "feed_gap_mismatch"),
+             "all_host_down": ([early("host_down"), early("host_down")], "restart_lockout"),
+             "none": ([], "unexplained"),
+             "later_not_earlier": ([_ref("a", 5, "feed_gap", "data_loss", trig_ms=t + 60_000)], "unexplained"),
+             "window_does_not_cover": ([early("data_loss", blocked_until_ms=t - 1)], "unexplained"),
+             "other_pool": ([dict(early("data_loss"), pool="P_zz")], "unexplained")}
+    for name, (extra, want) in cases.items():
+        reasons, _ = _h2_reason(_sub(tmp_path, name), [blocked] + extra)
+        assert reasons == [want], name
+
+
+def test_h2_branch_d_any_other_reason_with_no_restart_row_is_unexplained(tmp_path):
+    reasons, res = _h2_reason(tmp_path, [_ref("a", 0, "cooldown"), _ref("a", 0, "pool_blocked_after_gap")])
+    assert reasons == ["unexplained"] and res["h2"]["status"] == "FAIL"
+
+
+# ---------------------------------------------------------------------------------------------------- QP ruling 2026-11-14, point 2: live_nonrule_exit
+def _nr_world(n_nr=1, n_total=10, mut=None, span=None, starts=True):
+    """matched trades; the first n_nr closed by the executor on paper_refused with no host exit; a crash start row whose prev_last_ms is just after the sell landed"""
+    specs = [("m%d" % k, k, 5_000_000, 0.10) for k in range(n_total)]
+    live = [live_order("m%d" % k, k) for k in range(n_total)]
+    for o in live[:n_nr]:
+        land = o["decision_ms"] + 3_000
+        o.update(has_host_exit=False, exit_reason=None, exit_ms=None, sell_reason_bridge="paper_refused", led_close_reason="paper_refused", sell_landed_ms=land, led_close_ms=land, led_net_lamports=-2_000_000)
+        if mut:
+            mut(o)
+    for k in range(n_nr if starts else 0):
+        a = (live[k]["decision_ms"] + 3_000 + 7_000) if span is None else span(live[k])
+        live.append({"kind": "start", "t_ms": a + 3 * H, "start_kind": "start", "prev_last_ms": a})
+    return specs, live
+
+
+def test_nonrule_coded_excluded_from_s2_kept_in_s1_s3_s4(tmp_path):
+    specs, live = _nr_world()
+    _, out = recon(tmp_path, specs, live)
+    res = load(out)
+    h3 = res["h3"]
+    assert h3["n_live_nonrule_exit"] == 1 and h3["n_mismatch_uncoded"] == 0 and h3["status"] == "PASS" and h3["nonrule_net_live_sol"] == [-0.002]
+    row = [r for r in res["rows"] if r["reason"] == "live_nonrule_exit"]
+    assert len(row) == 1 and row[0]["exit_coded"] is True and row[0]["net_live_sol"] == -0.002
+    assert res["s2"]["n"] == 9  # excluded from S2
+    assert res["s1"]["n"] == 10 and res["s3"]["n"] == 10 and res["s4"]["n"] == 10  # kept in S1, S3, S4
+    md = (out / "recon.md").read_text()
+    assert "live_nonrule_exit" in md and "post hoc" in md and "live net -0.00 SOL" in md
+
+
+@pytest.mark.parametrize("name", ["a_close_word_other", "b_host_exit_row_exists", "c_no_span", "c_span_before_decision", "c_span_after_landing_plus_60s"])
+def test_nonrule_each_condition_failing_leaves_an_uncoded_mismatch(tmp_path, name):
+    mut = {"a_close_word_other": lambda o: o.update(sell_reason_bridge="sl_backstop", led_close_reason="sl_backstop"),
+           "b_host_exit_row_exists": lambda o: o.update(has_host_exit=True, exit_reason="tp_1.5x")}.get(name)
+    span = {"c_span_before_decision": lambda o: o["decision_ms"] - 1, "c_span_after_landing_plus_60s": lambda o: o["decision_ms"] + 3_000 + 60_001}.get(name)
+    specs, live = _nr_world(mut=mut, span=span, starts=name != "c_no_span")
+    _, out = recon(tmp_path, specs, live)
+    h3 = load(out)["h3"]
+    assert h3["n_live_nonrule_exit"] == 0 and h3["n_mismatch_uncoded"] == 1 and h3["status"] == "FAIL", name
+
+
+def test_nonrule_span_at_landing_plus_60s_is_inside(tmp_path):
+    specs, live = _nr_world(span=lambda o: o["decision_ms"] + 3_000 + 60_000)
+    _, out = recon(tmp_path, specs, live)
+    assert load(out)["h3"]["n_live_nonrule_exit"] == 1
+
+
+def test_nonrule_failed_restart_is_no_span_and_a_good_restart_is(tmp_path):
+    specs, live = _nr_world(starts=False)
+    bad = live + [{"kind": "restart", "t_ms": 1, "failed": True, "down_from_ms": entry_ms(0) + 5_000, "down_to_ms": entry_ms(0) + 9_000}]
+    _, out = recon(_sub(tmp_path, "f"), specs, bad)
+    assert load(out)["h3"]["n_live_nonrule_exit"] == 0 and load(out)["h3"]["status"] == "FAIL"
+    good = live + [{"kind": "restart", "t_ms": 1, "failed": False, "down_from_ms": entry_ms(0) + 6_000, "down_to_ms": entry_ms(0) + 9_000_000}]
+    _, out = recon(_sub(tmp_path, "g"), specs, good)
+    assert load(out)["h3"]["n_live_nonrule_exit"] == 1
+
+
+def test_start_rows_do_not_widen_h2_host_down_no_row(tmp_path):
+    t = entry_ms(0)
+    live = [{"kind": "start", "t_ms": t + H, "start_kind": "start", "prev_last_ms": t - H}]
+    reasons, _ = _h2_reason(tmp_path, live)
+    assert reasons == ["unexplained"]
+
+
+def test_nonrule_cap_one_of_ten_ok_two_fail_one_of_five_fails(tmp_path):
+    for name, n_nr, n_total, status in (("one_of_ten", 1, 10, "PASS"), ("two_of_twenty", 2, 20, "FAIL"), ("one_of_five", 1, 5, "FAIL"), ("two_of_thirty", 2, 30, "FAIL")):
+        specs, live = _nr_world(n_nr=n_nr, n_total=n_total)
+        _, out = recon(_sub(tmp_path, name), specs, live)
+        h3 = load(out)["h3"]
+        assert h3["n_live_nonrule_exit"] == n_nr and h3["status"] == status and h3["nonrule_cap_exceeded"] == (status == "FAIL"), name
+
+
+# ---------------------------------------------------------------------------------------------------- fix round for PR #1382 (QP + reviewer verdicts at bdc33ff7)
+def test_nonrule_last_host_row_equal_to_the_entry_is_coded(tmp_path):
+    specs, live = _nr_world(span=lambda o: o["decision_ms"])  # the host's own entry row is its last row: prev_last_ms == decision_ms
+    _, out = recon(tmp_path, specs, live)
+    h3 = load(out)["h3"]
+    assert h3["n_live_nonrule_exit"] == 1 and h3["n_mismatch_uncoded"] == 0
+
+
+def test_nonrule_a_host_row_two_minutes_after_the_close_is_uncoded(tmp_path):
+    specs, live = _nr_world(span=lambda o: o["decision_ms"] + 3_000 + 120_000)
+    _, out = recon(tmp_path, specs, live)
+    h3 = load(out)["h3"]
+    assert h3["n_live_nonrule_exit"] == 0 and h3["n_mismatch_uncoded"] == 1 and h3["status"] == "FAIL"
+
+
+def _planned_restart(live, o, after_sell_ms=6 * H, failed=False, lag_ms=5_000):
+    """a start row whose own restart row (down 60 s before the start) comes lag_ms after it; prev_last_ms is the quiet host's last row 1 s after the entry"""
+    land = o["decision_ms"] + 3_000
+    st = land + after_sell_ms
+    return live + [{"kind": "start", "t_ms": st, "start_kind": "start", "prev_last_ms": o["decision_ms"] + 1_000},
+                   {"kind": "restart", "t_ms": st + lag_ms, "failed": failed, "down_from_ms": st - 60_000, "down_to_ms": st, "shadow_complete": True}]
+
+
+def test_nonrule_planned_restart_hours_after_the_sell_with_its_own_restart_row_is_not_coded(tmp_path):
+    specs, live = _nr_world(starts=False)
+    live = _planned_restart(live, live[0])
+    _, out = recon(tmp_path, specs, live)
+    h3 = load(out)["h3"]
+    assert h3["n_live_nonrule_exit"] == 0 and h3["n_mismatch_uncoded"] == 1 and h3["status"] == "FAIL"
+
+
+def test_nonrule_restart_row_that_belongs_to_a_start_wins_over_the_start_gap_and_failed_gives_no_span(tmp_path):
+    specs, live = _nr_world(starts=False)
+    o = live[0]
+    land = o["decision_ms"] + 3_000
+    # the restart row's own down_from is 10 s after the sell: coded by that span, though prev_last_ms is far earlier
+    ok = live + [{"kind": "start", "t_ms": land + 3 * H, "start_kind": "start", "prev_last_ms": o["decision_ms"]},
+                 {"kind": "restart", "t_ms": land + 3 * H + 1_000, "failed": False, "down_from_ms": land + 10_000, "down_to_ms": land + 3 * H, "shadow_complete": True}]
+    _, out = recon(_sub(tmp_path, "ok"), specs, ok)
+    assert load(out)["h3"]["n_live_nonrule_exit"] == 1
+    bad = live + [{"kind": "start", "t_ms": land + 3 * H, "start_kind": "start", "prev_last_ms": o["decision_ms"]},
+                  {"kind": "restart", "t_ms": land + 3 * H + 1_000, "failed": True, "down_from_ms": land + 10_000, "down_to_ms": land + 3 * H}]
+    _, out = recon(_sub(tmp_path, "bad"), specs, bad)
+    assert load(out)["h3"]["n_live_nonrule_exit"] == 0 and load(out)["h3"]["status"] == "FAIL"  # a failed row belongs too: no span at all
+
+
+def test_down_spans_belongs_rule_bounds():
+    S = 1_000_000_000
+    st = [{"kind": "start", "t_ms": S, "prev_last_ms": S - 500_000}]
+    rs = lambda t: {"kind": "restart", "t_ms": t, "failed": False, "down_from_ms": 1, "down_to_ms": 2}
+    crash = [(S - 500_000, S)]
+    assert R.down_spans(st + [rs(S)], True) == [(1, 2)]  # at the start instant: belongs
+    assert R.down_spans(st + [rs(S + R.RESTART_BELONGS_MS - 1)], True)[-1:] == [(1, 2)] and (S - 500_000, S) not in R.down_spans(st + [rs(S + R.RESTART_BELONGS_MS - 1)], True)
+    assert R.down_spans(st + [rs(S + R.RESTART_BELONGS_MS)], True) == [(1, 2)] + crash  # at the bound: does not belong
+    assert R.down_spans(st + [rs(S - 1)], True) == [(1, 2)] + crash  # before the start: does not belong
+    nxt = st + [{"kind": "start", "t_ms": S + 1_000, "prev_last_ms": S + 500}]
+    assert (S - 500_000, S) in R.down_spans(nxt + [rs(S + 1_000)], True)  # a restart row at the NEXT start belongs to the next one
+    assert R.down_spans(st + [rs(S)], False) == [(1, 2)]
+
+
+def test_h2_c_feed_gap_row_without_blocked_until_covers_only_24h(tmp_path):
+    t = entry_ms(0) - 800
+    blocked = _ref("a", 0, "pool_blocked_after_gap")
+    old = lambda age: _ref("a", 5, "feed_gap", "data_loss", trig_ms=t - age)
+    reasons, _ = _h2_reason(_sub(tmp_path, "in"), [blocked, old(R.FEED_GAP_LOCK_MS)])
+    assert reasons == ["feed_gap_mismatch"]
+    reasons, _ = _h2_reason(_sub(tmp_path, "out"), [blocked, old(R.FEED_GAP_LOCK_MS + 1)])
+    assert reasons == ["unexplained"]
+    reasons, _ = _h2_reason(_sub(tmp_path, "explicit"), [blocked, dict(old(R.FEED_GAP_LOCK_MS + 5 * H), blocked_until_ms=t + 1)])
+    assert reasons == ["feed_gap_mismatch"]  # an explicit blocked_until_ms is used as is
