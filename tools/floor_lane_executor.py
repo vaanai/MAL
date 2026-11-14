@@ -27,6 +27,7 @@ import argparse
 import ast
 import dataclasses
 import fcntl
+import functools
 import hashlib
 import json
 import math
@@ -120,11 +121,26 @@ def parse_lane(raw: Any) -> H.LaneConfig:
     return H.LaneConfig(Path(raw["ledger_path"]), Path(raw["stop_path"]), LANE_BOT_ID, stake, max_open, budget, daily, reserve, float(stale), "", False)
 
 
+RPC_RPS_DEFAULT = 2.0  # == probe_executor.MAX_RPS, the limiter rate the lane has always used
+RPC_RPS_MAX = 5.0  # == probe_live.LIVE_MAX_RPS (the live ceiling; a test pins the equality)
+
+
+def parse_rpc_rps(raw: Mapping[str, Any]) -> float:
+    """Optional top-level key `rpc_rps`: the lane RPC limiter rate. Absent = 2.0 (unchanged). Range [2.0, 5.0]; anything else is a refusal (explicit raise, python -O safe)."""
+    if "rpc_rps" not in raw:
+        return RPC_RPS_DEFAULT
+    v = raw["rpc_rps"]
+    if isinstance(v, bool) or not isinstance(v, (int, float)) or not math.isfinite(v) or v < RPC_RPS_DEFAULT or v > RPC_RPS_MAX:
+        raise ValueError(f"config rpc_rps must be a number in [{RPC_RPS_DEFAULT}, {RPC_RPS_MAX}] (got {v!r})")
+    return float(v)
+
+
 def make_config(raw: Mapping[str, Any]) -> tuple[B.Config, H.LaneConfig, str]:
     """(bridge Config, lane config, live_ok_path). Fail closed: ValueError on any pin that does not hold. All FLOOR pins of F.make_config apply (bot arm, frozen sha, hold)."""
     mode = raw.get("mode", B.DRY)
     if mode not in (B.DRY, B.LIVE):
         raise ValueError("config mode must be 'dry' or 'live'")
+    parse_rpc_rps(raw)
     if mode == B.LIVE and not LIVE_BUILT:
         raise ValueError("live_not_built")
     if mode == B.LIVE and any(raw.get(k) for k in ("stop_file", "halt_file")):
@@ -660,7 +676,7 @@ class FloorLaneBridge(F.FloorBridge):
 # --- run ------------------------------------------------------------------------------------------------------------------------------------------------
 
 
-def build_live_port(cfg: B.Config) -> FloorLanePort:
+def build_live_port(cfg: B.Config, rpc_rps: float = RPC_RPS_DEFAULT) -> FloorLanePort:
     """The LIVE port (only `run --live` with a live config reaches this). The key comes ONLY from the systemd credential (probe_live.load_probe_key reads $CREDENTIALS_DIRECTORY; no path
     argument); no Claude session reads it. Imports are local: a DRY run never imports the solana stack."""
     from tools import probe_executor as pe
@@ -671,7 +687,7 @@ def build_live_port(cfg: B.Config) -> FloorLanePort:
         raise SystemExit("floor lane live start refused: rpc_key_missing")
     pl.harden_process()
     kp = pl.load_probe_key()
-    rpc = pe.LimitedRpc(pe.ProbeRpc(sim.load_rpc_url(None, None, use_env_file=False)), rps=float(pe.MAX_RPS), max_rps=pl.LIVE_MAX_RPS)
+    rpc = pe.LimitedRpc(pe.ProbeRpc(sim.load_rpc_url(None, None, use_env_file=False)), rps=float(rpc_rps), max_rps=pl.LIVE_MAX_RPS)
     return FloorLanePort(B.make_live_port(cfg, rpc, kp), cfg)
 
 
@@ -703,6 +719,7 @@ def run(raw: Mapping[str, Any], *, live_flag: bool, once: bool = False, root_che
         return 2
     a3_file = str(raw.get("a3_record_file") or "")
     a3_fl = raw.get("a3_floor_flag_list", False) is True
+    rpc_rps = parse_rpc_rps(raw)  # already validated by make_config
     if live_flag and not (a3_file and os.path.isabs(a3_file)):
         print("floor_lane_executor ALERT startup_refused a3_record_file_missing", flush=True)
         return 2
@@ -717,9 +734,9 @@ def run(raw: Mapping[str, Any], *, live_flag: bool, once: bool = False, root_che
         except SystemExit as exc:
             print(f"floor_lane_executor ALERT startup_refused {exc}", flush=True)
             return 2
-    port = (port_factory or build_live_port)(cfg) if live_flag else B.DryPort(cfg.dry_balance_lamports)
+    port = (port_factory or functools.partial(build_live_port, rpc_rps=rpc_rps))(cfg) if live_flag else B.DryPort(cfg.dry_balance_lamports)
     br = FloorLaneBridge(cfg, port, lane, now_ms=now_ms, live_ok_path=live_ok, root_checks=root_checks, a3_record_file=a3_file, bot_lock=lock, a3_floor_flag_list=a3_fl)
-    print(f"floor_lane_executor mode={cfg.mode} lane_bot={LANE_BOT_ID} book={cfg.bot_id} stake={cfg.stake_lamports}", flush=True)
+    print(f"floor_lane_executor mode={cfg.mode} lane_bot={LANE_BOT_ID} book={cfg.bot_id} stake={cfg.stake_lamports} rpc_rps={rpc_rps}", flush=True)
     kw = {"sleep": sleep} if sleep is not None else {}
     br.run(once=once, **kw)
     return 0
