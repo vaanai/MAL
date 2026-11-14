@@ -8,7 +8,8 @@ open positions stay in memory across hours. The tape_dir is only READ (a separat
 
 Manifest (JSON, required): book_id, title, host ("lane" | "hostv2"), rule_overrides {NAME: number} (only Q_STAR AGE_LO AGE_HI VOL_MIN_LAMPORTS R6_MAX TP HOLD_S), stakes_sol [..],
 send_lamports, start_hour "YYYY-MM-DDTHH", seed_from_hour (>= SEED_MIN_H = 201 h before start_hour), tape_dir, out_root; optional: lane {gap_lookback_s, status_span_no_loss,
-cheap_restart} (host "lane" only; replay never runs lane_start, so cheap_restart only labels the checkpoint), gap_exclusion "on"|"off" (default "on").
+cheap_restart} (host "lane" only; replay never runs lane_start, so cheap_restart only labels the checkpoint), gap_exclusion "on"|"off"|"hold" (default "on"; "hold" = a gap-in-hold twin: the feed_gap exclusion only for a gap in the entry or exit window,
+trades with a gap elsewhere in the hold priced and flagged gap_in_hold / blind_s / gap_count, see scripts/research/floor_gap_range_engine.py), twin_of "<book_id>" (only with gap_exclusion "hold").
 The sha256 of the canonical manifest is written to out_root/manifest.sha256 on first start; a later start with a different manifest is refused (a tweak is a new book).
 
 Layout under out_root (same as floor_nov_paper.py, inside a per-run directory so floor_nov_pnl.py can read `book/ledger`): runs/NNNN/{ledger, bots.json, variant.json, decision log};
@@ -19,6 +20,8 @@ Version pin: code.sha256 (written at first start) is the sha256 of {path: sha256
 floor_lane_host.verify_pins() lists; a later start whose value differs is refused (a changed simulator is a new book). md5-by-hour.jsonl stores decision_md5 AND ledger_md5 per hour; both are compared on restart.
 One process per book: out_root/.osb.lock is flock'ed for the process lifetime. While an hour file is missing status.json carries waiting_for_hour / waiting_since_utc and a fresh wall_time_utc each poll.
 A torn last line of md5-by-hour.jsonl (a partial write) is dropped, said on stderr, and the file is rewritten without it; that hour is verified or appended again.
+decisions.md5 (out_root, rewritten after every hour of an active book): md5 of the ordered (position_id, entry decision_ms, exit decision_ms) rows of the active run's ledger, for every book,
+so a twin can be compared with its strict book (a pricing-only twin has the same value).
 Exit codes: 0 ok (with --once and stored hours not yet covered by the tape: 0, `book` unmoved, a message on stderr); 1 uncaught error (OSError, bad JSON, disk full: a traceback);
 2 refused (manifest, path, override, pins, code version, lock held by another process); 3 host fatal during run (R.HostFatal: a log or ledger write failed); 4 md5 mismatch against the stored segment.
 Usage: osb_follow.py MANIFEST.json [--once] [--max-hours N]
@@ -45,8 +48,8 @@ OSB_ROOT = "/data2/mal/scratch/floor-open-sim"  # the only root a tape_dir or ou
 HOUR_MS = 3_600_000
 POLL_S = 60
 EXIT_OK, EXIT_REFUSED, EXIT_FATAL, EXIT_MISMATCH = 0, 2, 3, 4
-MANIFEST_KEYS = {"book_id", "title", "host", "rule_overrides", "stakes_sol", "send_lamports", "start_hour", "seed_from_hour", "tape_dir", "out_root", "lane", "gap_exclusion"}
-REQUIRED_KEYS = MANIFEST_KEYS - {"lane", "gap_exclusion"}
+MANIFEST_KEYS = {"book_id", "title", "host", "rule_overrides", "stakes_sol", "send_lamports", "start_hour", "seed_from_hour", "tape_dir", "out_root", "lane", "gap_exclusion", "twin_of"}
+REQUIRED_KEYS = MANIFEST_KEYS - {"lane", "gap_exclusion", "twin_of"}
 LANE_KEYS = {"gap_lookback_s", "status_span_no_loss", "cheap_restart"}
 OVERRIDE_TYPES = {"Q_STAR": float, "AGE_LO": int, "AGE_HI": int, "VOL_MIN_LAMPORTS": float, "R6_MAX": float, "TP": float, "HOLD_S": float}
 
@@ -112,8 +115,13 @@ def load_manifest(path):
             raise Refused("lane.gap_lookback_s must be an integer in [%d, %d]" % (H.LOOKBACK_MIN_S, H.LOOKBACK_MAX_S))
     elif "lane" in m:
         raise Refused("'lane' belongs to host 'lane' only")
-    if m.get("gap_exclusion", "on") not in ("on", "off"):
-        raise Refused("gap_exclusion must be 'on' or 'off'")
+    if m.get("gap_exclusion", "on") not in ("on", "off", "hold"):
+        raise Refused("gap_exclusion must be 'on', 'off' or 'hold'")
+    if "twin_of" in m:
+        if m.get("gap_exclusion") != "hold":
+            raise Refused("twin_of needs gap_exclusion 'hold'")
+        if not isinstance(m["twin_of"], str) or not re.fullmatch(r"[A-Za-z0-9_.-]{1,64}", m["twin_of"]) or m["twin_of"] == m["book_id"]:
+            raise Refused("twin_of must be another book_id matching [A-Za-z0-9_.-]{1,64}")
     return m
 
 
@@ -189,7 +197,7 @@ def build_book(m, run_dir, *, table_mode=None, engine_kw=None):
                                                        "book_id": m["book_id"], "host": m["host"], "reason_labels_fixed": True}, indent=1, sort_keys=True) + "\n")
     scratch_register(registry, start_ms)
     cfg = dataclasses.replace(stack_config_for(2, R.DEFAULT_FEED_DELAY_SLOTS), send=m["send_lamports"], stakes_sol=tuple(float(x) for x in m["stakes_sol"]))
-    engine = GapRangeEngine(ledger, registry, cfg=cfg, gap_exclusion=(m.get("gap_exclusion", "on") == "on"), **(engine_kw or {}))
+    engine = GapRangeEngine(ledger, registry, cfg=cfg, gap_exclusion={"on": True, "off": False, "hold": "hold"}[m.get("gap_exclusion", "on")], **(engine_kw or {}))
     warm_ms = start_ms - WARM_MIN_DEFAULT * R.MIN_MS
     if m["host"] == "lane":
         lane = m.get("lane", {})
@@ -211,6 +219,24 @@ def build_book(m, run_dir, *, table_mode=None, engine_kw=None):
 
 def decision_md5(run_dir):
     return H.decision_digest(run_dir)
+
+
+def _atomic_text(path, text):
+    tmp = Path(str(path) + ".tmp")
+    tmp.write_text(text)
+    os.replace(tmp, path)
+
+
+def decisions_md5(run_dir):
+    """md5 of the ordered (position_id, entry decision_ms, exit decision_ms) rows of the run's ledger (one row per position: the per-stake rows of a trade / excluded row collapse).
+    Strict and twin books on the same decisions give the same value (QP ruling 2026-11-14 Q1, the Am.9 erratum text)."""
+    seen = {}
+    for _, r in ledger_rows(Path(run_dir) / "ledger"):
+        if r.get("kind") in ("trade", "excluded"):
+            dm = r.get("decision_ms") or {}
+            seen[r["position_id"]] = (r["position_id"], dm.get("entry"), dm.get("exit"))
+    rows = sorted(seen.values(), key=lambda t: (t[1] if t[1] is not None else -1, t[0]))
+    return hashlib.md5(canon(rows).encode()).hexdigest()
 
 
 def count_rows(run_dir):
@@ -379,7 +405,10 @@ def _locked(m, out_root, once, max_hours, sleep_fn, roots, table_mode, engine_kw
                     fh.write(canon({"hour": key, "end_ms": end, "decision_md5": md5, "ledger_md5": lmd5}) + "\n")
                     fh.flush()
                     os.fsync(fh.fileno())
-            status.update(last_hour=key, last_hour_end_ms=end, wall_time_utc=datetime.now(timezone.utc).isoformat(), active=verified, catching_up_to_stored_hours=not verified,
+            dmd5 = decisions_md5(run_dir)
+            if verified:
+                _atomic_text(out_root / "decisions.md5", dmd5 + "\n")
+            status.update(decisions_md5=dmd5, last_hour=key, last_hour_end_ms=end, wall_time_utc=datetime.now(timezone.utc).isoformat(), active=verified, catching_up_to_stored_hours=not verified,
                           decision_md5=md5, ledger_md5=lmd5, **count_rows(run_dir))
             _atomic_json(out_root / "status.json", status)
             cursor, done = end, done + 1

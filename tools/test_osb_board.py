@@ -332,9 +332,9 @@ def test_without_follow_one_build_and_files_are_atomic(world):
 
 
 def test_nothing_in_existing_pricing_scripts_changed():
-    """this PR adds osb_board only: the v0 board code and the pnl reader are untouched (their own tests carry the byte-identical goldens)"""
+    """the twin PR changes osb_follow (gap_exclusion hold) and osb_board only: the v0 board code and the pnl reader are untouched (their own tests carry the byte-identical goldens)"""
     import subprocess
-    r = subprocess.run(["git", "-C", str(ROOT), "diff", "--name-only", "origin/main", "--", "scripts/research/floor_forward_ab.py", "scripts/research/floor_nov_pnl.py", "scripts/research/osb_follow.py"], capture_output=True, text=True)
+    r = subprocess.run(["git", "-C", str(ROOT), "diff", "--name-only", "origin/main", "--", "scripts/research/floor_forward_ab.py", "scripts/research/floor_nov_pnl.py"], capture_output=True, text=True)
     assert r.returncode != 0 or r.stdout.strip() == ""
 
 

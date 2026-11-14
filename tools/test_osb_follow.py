@@ -451,3 +451,52 @@ def test_a_torn_last_line_of_md5_by_hour_is_dropped_and_the_restart_goes_on(worl
     assert "torn last line" in capsys.readouterr().err
     lines = [json.loads(x) for x in f.read_text().splitlines()]
     assert [x["hour"] for x in lines][:5] == [json.loads(x)["hour"] for x in good][:5] and len(lines) == 8
+
+
+# ------------------------------------------------------------------------------------------------------------------------------ gap_exclusion "hold" twins
+def _old_engine_class():
+    """the GapRangeEngine of origin/main 8c7061e7 (frozen copy), the 'old code path' of the byte-identity regression"""
+    import types
+    mod = types.ModuleType("floor_gap_range_engine_old")
+    src = (Path(__file__).resolve().parent / "fixtures_osb" / "floor_gap_range_engine_8c7061e7.py.txt").read_text()
+    exec(compile(src, "floor_gap_range_engine_8c7061e7.py", "exec"), mod.__dict__)
+    return mod.GapRangeEngine
+
+
+@pytest.mark.parametrize("flag", ["on", "off"])
+@pytest.mark.parametrize("use_gap_fixture", [False, True])
+def test_on_and_off_are_byte_identical_to_the_old_engine(request, monkeypatch, flag, use_gap_fixture):
+    tmp, src, names = request.getfixturevalue("gworld" if use_gap_fixture else "world")
+    mp, m = manifest(tmp, rule_overrides=FAST, gap_exclusion=flag)
+    new = one_shot(tmp, m, 48, run="new")
+    monkeypatch.setattr(O, "GapRangeEngine", _old_engine_class())
+    old = one_shot(tmp, m, 48, run="old")
+    assert O.ledger_rows(new / "ledger"), "fixture has no ledger rows"
+    assert O.tree_md5(new / "ledger") == O.tree_md5(old / "ledger"), tree_diff(new / "ledger", old / "ledger")  # the ledger projection (engine_id / start rows dropped) is the contract
+    assert O.decision_md5(new) == O.decision_md5(old)
+
+
+def test_hold_manifest_and_twin_of_validation(world):
+    tmp, src, names = world
+    mp, m = manifest(tmp, gap_exclusion="hold", twin_of="strict-1")
+    assert O.load_manifest(mp)["twin_of"] == "strict-1"
+    for bad in ({"gap_exclusion": "hold", "twin_of": "t-a"}, {"gap_exclusion": "on", "twin_of": "x"}, {"twin_of": "x"}, {"gap_exclusion": "hold", "twin_of": "a b"}, {"gap_exclusion": "maybe"}):
+        mp, _ = manifest(tmp, **bad)
+        with pytest.raises(O.Refused):
+            O.load_manifest(mp)
+
+
+def test_decisions_md5_is_equal_between_a_strict_book_and_its_twin(world):
+    tmp, src, names = world
+    link(src, tmp / "tape", names, 48)
+    mp_s, m_s = manifest(tmp, book_id="strict-1", rule_overrides=FAST, out_root=str(tmp / "out_s"))
+    mp_t, m_t = manifest(tmp, book_id="twin-1", rule_overrides=FAST, out_root=str(tmp / "out_t"), gap_exclusion="hold", twin_of="strict-1")
+    assert run_once(tmp, mp_s) == 0 and run_once(tmp, mp_t) == 0
+    a, b = (tmp / "out_s" / "decisions.md5").read_text(), (tmp / "out_t" / "decisions.md5").read_text()
+    assert a == b and len(a.strip()) == 32
+    st = json.loads((tmp / "out_t" / "status.json").read_text())
+    assert st["decisions_md5"] == a.strip()
+    assert O.decisions_md5((tmp / "out_t" / "book").resolve()) == a.strip()
+    mp_o, _ = manifest(tmp, book_id="other-1", rule_overrides={"HOLD_S": 36000}, out_root=str(tmp / "out_o"))  # a different decision set gives a different value
+    assert run_once(tmp, mp_o) == 0
+    assert (tmp / "out_o" / "decisions.md5").read_text() != a
