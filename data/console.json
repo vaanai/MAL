@@ -25,7 +25,7 @@
    "atUtc": "2026-11-14T01:00:18Z",
    "approx": false,
    "title": "EXP-029 gate read, done once: FAIL (procedural)",
-   "detail": "Job #2654, record #1376. 6 trades in [S, C) on 3 days, all six negative, total -8,691,510 lamports; n 6, 0 positive days of 3, CI lower -2,486,050 lamports, ex-top-3 -6,045,667 all fail the four tests. Listed apart: 5 pre-S sends total +19,687,886 lamports. Sum of all 12 live round trips +10,363,342 lamports (lane cost-capped pnl). EXP-029 is closed. No book has cleared the promotion gate."
+   "detail": "Job #2654, record #1376. 6 trades in [S, C) on 3 days, all six negative, total -8,691,510 lamports; n 6, 0 positive days of 3, CI lower -2,486,050 lamports, ex-top-3 -6,045,667 all fail the four tests. Listed apart: 5 pre-S sends total +19,687,886 lamports. Sum of all 12 live round trips +10,363,342 lamports (lane cost-capped pnl); mostly one take-profit of 18,778,152 lamports, without it -8,414,810 lamports. EXP-029 is closed. No book has cleared the promotion gate."
   },
   {
    "id": "a3-repin-1114",
@@ -33,7 +33,7 @@
    "atUtc": "2026-11-14T09:17:44Z",
    "approx": false,
    "title": "Pump program redeploy (2026-11-13T20:12:28Z): A3 re-pinned, loop #2708 at pin c687753b, resume run met",
-   "detail": "Review #1383 (10303de6), pin commit c687753b8d220b4de3efb379741a8178e15ba58a (tag a3-guard-pin-1114), #1898 cancelled, successor #2708 (ends ~2026-11-27T09:17Z); resume run 2026-11-14T09:17:44Z met every pre-declared condition; dry decision job #2713. Research-0 monitor pin 9a7cd01c, #2710/#2711. Owed: T1 resume record within 24 h, first-candidate evidence, later pins PR for disc_len and DepositEvent. No book has cleared the promotion gate."
+   "detail": "Review #1383 (10303de6), pin commit c687753b8d220b4de3efb379741a8178e15ba58a (tag a3-guard-pin-1114), #1898 cancelled, successor #2708 (ends ~2026-11-27T09:17Z); resume run 2026-11-14T09:17:44Z met every pre-declared condition; dry decision job #2713. 0 a3 rows in the bridge log: A3 was never exercised in this episode (not evidence that it worked). Research-0 monitor pin 9a7cd01c, #2710/#2711. Owed: T1 resume record within 24 h, first-candidate evidence, later pins PR for disc_len and DepositEvent. No book has cleared the promotion gate."
   },
   {
    "id": "open-sim-books-started-1114",
@@ -41,7 +41,7 @@
    "atUtc": "2026-11-14T07:17:23Z",
    "approx": false,
    "title": "Open simulation books started (DEC-035 Am.9): six strict books, proof #2662 PASS",
-   "detail": "Books A #2670, D1 #2672, C #2673, E1 #2674, E2 #2675, D0 #2677 from 2026-11-14T07:17:23Z to 07:19:00Z; board #2744, recon #2700, extract #2696. First recon FAIL (a tool bug and one order unwound at the 11-13 host crash); the hourly recon still reads FAIL by the non-rule cap. Strict books land an entry 16 slots (~3.44 s) after the decision; live median 19 slots (~4.09 s). Twin books: gap-in-hold twin check #2731 PASS, twin A-gh restarted as book job #2743 at 2026-11-14T15:35:15Z after a title-only manifest fix (the board refused the words priced / slots; board job now #2744); latency twins and wider-rule twins in proof (#2723 to #2727). All closed trades in the books so far are in-sample. No book has cleared the promotion gate."
+   "detail": "Books A #2670, D1 #2672, C #2673, E1 #2674, E2 #2675, D0 #2677 from 2026-11-14T07:17:23Z to 07:19:00Z; board #2744, recon #2700, extract #2696. First recon FAIL (a tool bug and one order unwound at the 11-13 host crash); the hourly recon still reads FAIL by the non-rule cap. Strict books land an entry 16 slots (~3.44 s) after the decision; live median 19 slots (~4.09 s). Twin books: gap-in-hold twin check #2731 PASS, twin A-gh restarted as book job #2743 at 2026-11-14T15:35:15Z after a title-only manifest fix (the board refused the words priced / slots; board job now #2744); latency twins and wider-rule twins in proof (#2723 to #2727). Twin books are pricing-only, never summed with their strict book; no stake or live step rests on them. All closed trades in the books so far are in-sample. No book has cleared the promotion gate."
   },
   {
    "id": "am10-rpc-rps-1114",
@@ -1858,7 +1858,7 @@
    "id": "FLOOR",
    "title": "FLOOR",
    "stage": "LIVE in DEC-035 lane as floor-lane-1 (since 2026-11-08T14:19:43Z); EXP-029 read done 2026-11-14T01:00:18Z: FAIL (procedural); Am.6 gate count 2 of 20",
-   "note": "floor-lane-1 is live on mal-fast-0: stake 0.10 SOL, budget 1.20 SOL, daily stop 0.20 SOL, max_open 16. At 2026-11-14T15:31Z: wallet 3,155,784,860 lamports, 0 open, lane cost-capped pnl +0.010363342 SOL over 12 round trips, Amendment 6 gate count 2 of 20 closed 0.10 trades. Executor PID 3018006 (Am.8 part B, 2026-11-13T17:40:26Z); host PID 3750092 (Am.8 part A, 2026-11-14T15:01Z, the first cheap restart); the kill-line check is owed after the first live entry. A3 re-pinned (loop #2708), so FLOOR is not blocked by the pump redeploy. Am.10 (rpc_rps) merged, not installed. A count, not a gate read. No profit claim. No book has cleared the promotion gate.",
+   "note": "floor-lane-1 is live on mal-fast-0: stake 0.10 SOL, budget 1.20 SOL, daily stop 0.20 SOL, max_open 16. At 2026-11-14T15:31Z: wallet 3,155,784,860 lamports, 0 open, lane cost-capped pnl +0.010363342 SOL over 12 round trips (without one take-profit of 0.018778152 SOL: -0.008414810 SOL), Amendment 6 gate count 2 of 20 closed 0.10 trades. Executor PID 3018006 (Am.8 part B, 2026-11-13T17:40:26Z); host PID 3750092 (Am.8 part A, 2026-11-14T15:01Z, the first cheap restart); the kill-line check is owed after the first live entry. A3 re-pinned (loop #2708), so FLOOR is not blocked by the pump redeploy. Am.10 (rpc_rps) merged, not installed. A count, not a gate read. No profit claim. No book has cleared the promotion gate.",
    "tag": {
     "text": "LIVE (lane)",
     "tone": "accent"
@@ -2568,7 +2568,7 @@
    "kind": "result",
    "atUtc": "2026-11-14T15:31:00Z",
    "approx": false,
-   "text": "FLOOR at 15:31Z: the wallet is 3,155,784,860 lamports; 0 open; no trade today so far (entries were locked out until about 14:48Z). Lane cost-capped pnl +0.010363342 SOL over 12 round trips; 2 of 20 trades toward the Am.6 gate. EXP-029 was read once at 01:00Z: FAIL (procedural). Helm restarted the host at 15:01Z on your word (status_span_no_loss on): the first cheap restart, no new 24 h lock-out. The pump redeploy halt of A3 is re-pinned and cleared, so FLOOR is not blocked by it. Six open simulation books run since 07:17Z; the recon against live fills reads FAIL so far (2 matched orders), so they are not decision-grade. No book has cleared the promotion gate."
+   "text": "FLOOR at 15:31Z: the wallet is 3,155,784,860 lamports; 0 open; no trade today so far (entries were locked out until about 14:48Z). Lane cost-capped pnl +0.010363342 SOL over 12 round trips (without one take-profit of 0.018778152 SOL: -0.008414810 SOL); 2 of 20 trades toward the Am.6 gate. EXP-029 was read once at 01:00Z: FAIL (procedural). Helm restarted the host at 15:01Z on your word (status_span_no_loss on): the first cheap restart, no new 24 h lock-out. The pump redeploy halt of A3 is re-pinned and cleared, so FLOOR is not blocked by it. Six open simulation books run since 07:17Z; the recon against live fills reads FAIL so far (2 matched orders), so they are not decision-grade. No book has cleared the promotion gate."
   },
   {
    "id": "s-20261113-floor-stage1",
