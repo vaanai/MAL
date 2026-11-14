@@ -354,16 +354,33 @@ def test_two_alias_names_on_one_row_refuse_naming_the_field_only(world, capsys, 
     assert not out.exists()
 
 
-def test_alias_names_split_over_rows_of_one_kind_refuse(world, capsys):
+def test_alias_names_split_over_rows_of_one_kind_do_not_refuse(world):
     tmp, argv, out = world
 
-    def mut(rows):  # o1 uses signal_slot, o2 uses trigger_slot: one field, two names in one kind
+    def mut(rows):  # o1 uses signal_slot, o2 uses trigger_slot: each row has ONE name, so no row conflicts
         del rows[2]["meta"]["signal_slot"]
         rows[2]["meta"]["trigger_slot"] = 600
     _host_with(tmp, mut)
-    with pytest.raises(SystemExit) as e:
+    assert X.main(argv) == 0
+
+
+def test_entry_refused_why_and_buy_port_refused_label_in_one_window_extract_fine(world):
+    tmp, argv, out = world
+    with open(tmp / "bridge.jsonl", "a") as f:
+        f.write(json.dumps({"kind": "buy_port_refused", "ts_ms": S_MS + 70_000, "mode": "live", "order_id": "o3", "label": "port_x"}) + "\n")
+    assert X.main(argv) == 0
+    rows, _ = load(out)
+    orders = {r["order_id"]: r for r in rows if r["kind"] == "order"}
+    assert orders["o2"]["refused_why"] == "lane_full" and orders["o3"]["refused_why"] == "port_x"
+
+
+def test_one_refusal_row_with_why_and_label_refuses(world, capsys):
+    tmp, argv, out = world
+    with open(tmp / "bridge.jsonl", "a") as f:
+        f.write(json.dumps({"kind": "entry_refused", "ts_ms": S_MS + 70_000, "mode": "live", "order_id": "o3", "why": "a", "label": "b"}) + "\n")
+    with pytest.raises(SystemExit):
         X.main(argv)
-    assert e.value.code == 2 and "field trig_slot" in capsys.readouterr().err
+    assert "field refusal_why" in capsys.readouterr().err
 
 
 def test_fill_alias_conflict_refuses(world, capsys):
