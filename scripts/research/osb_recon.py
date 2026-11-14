@@ -175,8 +175,11 @@ def read_extract(d):
     return rows, meta
 
 
+TWIN_MAY_DIFFER = ("book_id", "title", "out_root", "twin_of", "gap_exclusion", "start_hour", "seed_from_hour")  # start keys only while the Am.9 erratum is not in force (QP ruling on PR #1379)
+
+
 def load_twin_manifest(path):
-    """the twin's manifest as written (keys twin_of / gap_exclusion "hold" kept). The follow loader validates it when it knows those keys; until then they are set aside for its checks only."""
+    """the twin's manifest as the follow loader returns it, with twin_of / gap_exclusion "hold" put back. Until the follow loader knows those two keys they are set aside for its validation only."""
     try:
         raw = json.loads(Path(path).read_text())
     except (OSError, ValueError):
@@ -184,8 +187,7 @@ def load_twin_manifest(path):
     if not isinstance(raw, dict):
         raise Refusal("twin manifest is not an object")
     try:
-        O.load_manifest(path)
-        return raw
+        return O.load_manifest(path)
     except O.Refused:
         pass
     plain = {k: v for k, v in raw.items() if k != "twin_of"}
@@ -195,10 +197,18 @@ def load_twin_manifest(path):
         f = Path(d) / "m.json"
         f.write_text(json.dumps(plain))
         try:
-            O.load_manifest(str(f))
+            m = O.load_manifest(str(f))
         except O.Refused:
             raise Refusal("twin manifest refused")
-    return raw
+    if "twin_of" in raw:
+        m["twin_of"] = raw["twin_of"]
+    if "gap_exclusion" in raw:
+        m["gap_exclusion"] = raw["gap_exclusion"]
+    return m
+
+
+def blind_ok(v):
+    return is_num(v) and math.isfinite(v) and v >= 0
 
 
 def read_twin_flags(run_dir):
@@ -212,6 +222,8 @@ def read_twin_flags(run_dir):
             except ValueError:
                 continue
             if isinstance(r, dict) and r.get("kind") == "trade" and isinstance(r.get("position_id"), str) and is_num(r.get("stake_sol")):
+                if r.get("blind_s") is not None and not blind_ok(r["blind_s"]):
+                    raise Refusal("twin ledger field blind_s is malformed")
                 out[(r["position_id"], str(float(r["stake_sol"])))] = {k: r[k] for k in ("gap_in_hold", "blind_s", "gap_count", "gap_holes") if k in r}
     return out
 
@@ -227,14 +239,16 @@ def read_twin(twin_path, a_manifest, roots=None):
         O.guard_paths(m, roots or (O.OSB_ROOT,))
     except O.Refused:
         raise Refusal("twin manifest refused")
+    for k in sorted((set(m) | set(a_manifest)) - set(TWIN_MAY_DIFFER)):
+        if m.get(k) != a_manifest.get(k):
+            raise Refusal("twin manifest differs from book A in key %s" % k)
     fa, ft = Path(a_manifest["out_root"]) / "decisions.md5", Path(m["out_root"]) / "decisions.md5"
-    if fa.exists() and ft.exists():
-        try:
-            same = fa.read_bytes().strip() == ft.read_bytes().strip()
-        except OSError:
-            raise Refusal("decisions.md5 unreadable")
-        if not same:
-            raise Refusal("twin decisions.md5 differs from book A")
+    try:
+        same = fa.read_bytes().strip() == ft.read_bytes().strip()
+    except OSError:
+        raise Refusal("decisions.md5 missing or unreadable for book A or the twin")
+    if not same or not fa.read_bytes().strip():
+        raise Refusal("twin decisions.md5 differs from book A")
     b = {"m": m, "role": "variant", "start_ms": 0, "sha": O.manifest_sha256(m)}
     link = Path(m["out_root"]) / "book"
     run0 = os.path.realpath(link)
@@ -419,23 +433,27 @@ def pair_metrics(o, e, sim, spans, win_to):
         tw = sim.get("twin")
         if tw is not None and is_gap_reason(why):
             tp = tw["positions"].get(e["order_id"])
+            fl = tw["flags"].get((e["order_id"], sk)) or {}
             if tp is not None and (tp.get("status") or {}).get(sk) == "closed":
-                twin_pos, flag = tp, tw["flags"].get((e["order_id"], sk)) or {}
+                if fl.get("gap_in_hold") is True:
+                    twin_pos, flag = tp, fl
+                else:
+                    no_word = "other"  # a twin price for a trade strict left out for a gap, without the gap_in_hold flag: the inputs disagree
             else:
                 no_word = no_sim_word(((tp or {}).get("reason") or {}).get(sk) if tp is not None else why)
         else:
             no_word = no_sim_word(why)
     if twin_pos is not None:
         pos = twin_pos
-    gih = flag.get("gap_in_hold") is True
-    blind = flag.get("blind_s") if is_num(flag.get("blind_s")) else None
+    gih = twin_pos is not None  # the flag is "priced by the twin"
+    blind = flag.get("blind_s") if blind_ok(flag.get("blind_s")) else None
     m = {"order_id": o["order_id"], "tid": sim["tids"].get(e["order_id"]), "entry_utc": utc(tms(o)), "stake_sol": stake, "no_rung": rung is None, "class": "matched", "reason": "",
          "gap_in_hold": gih, "blind_s": blind if gih else None, "no_sim_price": no_word,
          "entry_slip_pp": None, "landing_ms": None, "landing_k": None, "exit_reason_live": None, "exit_reason_host": None, "exit_reason_sim": None, "exit_dt_ms": None, "exit_coded": None,
          "net_live_sol": None, "net_sim_sol": None, "net_live_pp": None, "net_sim_pp": None, "fees_live_pp": None, "fees_model_pp": None, "rent_unreclaimed": o.get("led_rent_unreclaimed_lamports") or 0,
          "_t": tms(o)}
     lp, sp = live_price(o), sim_price(pos, stake)
-    if lp and sp:
+    if lp and sp and no_word is None:
         m["entry_slip_pp"] = (lp / sp - 1.0) * 100.0
     if is_num(o.get("landed_ms")) and is_num(o.get("decision_ms")):
         m["landing_ms"] = o["landed_ms"] - o["decision_ms"]
@@ -463,8 +481,10 @@ def pair_metrics(o, e, sim, spans, win_to):
         elif live_reason != sim_reason:
             coded = bool(sim_reason == CODED_SIM and live_reason == CODED_LIVE and not o.get("has_host_exit") and is_num(sim_ms) and any(a <= sim_ms <= b for a, b in spans))
             holes = [h for h in (flag.get("gap_holes") or []) if isinstance(h, (list, tuple)) and len(h) == 2 and is_num(h[0]) and is_num(h[1])]
-            live_tp_ms = o.get("exit_ms") if is_num(o.get("exit_ms")) else close_ms
-            tp_gap = bool(not coded and gih and live_reason == CODED_SIM and is_num(live_tp_ms) and any(a <= live_tp_ms <= b for a, b in holes))
+            t_in, t_out = (pos or {}).get("t0"), sim_ms
+            hx_ms = o.get("exit_ms")
+            tp_gap = bool(not coded and gih and live_reason == CODED_SIM and o.get("has_host_exit") and host == CODED_SIM and is_num(hx_ms) and sim_reason == "time_24h"
+                          and is_num(t_in) and is_num(t_out) and any(a <= hx_ms <= b and t_in <= a and b <= t_out for a, b in holes))
             m["exit_coded"] = coded or tp_gap
             if tp_gap:
                 m["reason"] = CODED_TP_GAP
@@ -605,8 +625,8 @@ def recon_md(res):
     md = ["# Open sim recon: book %s against the live FLOOR bot (paper)" % res["book_id"], "", "> " + res["banner"], "",
           "- Status: **%s**. Window %s to %s; extract as of %s (%s). Generated %s." % (res["status"], res["window"]["from_utc"], res["window"]["to_utc"], res["extract_as_of_utc"], res["extract_sha256_12"], res["generated_utc"]),
           "- Counts: matched %d, live-only %d, sim-only %d. By reason: %s." % (res["counts"]["matched"], res["counts"]["live_only"], res["counts"]["sim_only"], json.dumps(res["counts_by_reason"], sort_keys=True))
-          + " Bridge-only orders dropped from the extract (not ours): %d. Gap-in-hold trades in the twin set: %d. No sim figure (no_sim, outside S1/S2): gap at entry %d, gap at exit %d, missing V %d, other %d. Twin: %s." % (
-              res["dropped_bridge_only"], res["gap_in_hold_n"], *(res["no_sim_price_counts"][w] for w in NO_SIM_WORDS), res["twin_book_id"] or "none"),
+          + " Bridge-only orders dropped from the extract (not ours): %d. Gap-in-hold trades in the twin set: %d. No sim figure (no_sim, outside S1/S2): gap at entry %d, gap at exit %d, missing V %d, other %d. Take-profits in a sim-side hole (tp_in_sim_gap): %d. Strict can overstate: in Nov 2-12 the trades it left out for a feed gap were net negative (DEC-035 Am.6 Erratum 3). Twin: %s." % (
+              res["dropped_bridge_only"], res["gap_in_hold_n"], *(res["no_sim_price_counts"][w] for w in NO_SIM_WORDS), res["h3"].get("n_tp_in_sim_gap", 0), res["twin_book_id"] or "none"),
           "- Bands: " + "; ".join("%s %s" % (k.upper(), res[k]["status"]) for k in ("h1", "h2", "h3", "s1", "s2", "s3", "s4")) + ". Constants are fixed by QP before the first run.",
           "- Live failure (buy not filled / sent): %d / %d, Wilson 95%% %s to %s; sells failed / sent %d / %d; beside the flat %d%% assumption; live only, not combined with sim figures." % (
               res["live_failure"]["n_not_filled"], res["live_failure"]["n_sent"], f2(None if res["live_failure"]["wilson95_lo"] is None else 100 * res["live_failure"]["wilson95_lo"]),

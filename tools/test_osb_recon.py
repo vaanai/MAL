@@ -459,7 +459,7 @@ def test_f_sell_failure_rate_is_separate(tmp_path):
 GAP_PIDS = ("g0", "g1", "g2")
 
 
-def twin_world(tmp, gap_reasons=None, twin_over=None, twin_rows_mut=None, write_twin=True, a_md5=None, t_md5=None):
+def twin_world(tmp, gap_reasons=None, twin_over=None, twin_rows_mut=None, write_twin=True, a_md5="same", t_md5="same"):
     """A = 7 plain tp trades + 3 strict-excluded (feed_gap) trades; the twin prices the 3 through their holes (gap_in_hold, blind_s, gap_count, gap_holes) unless gap_reasons says it still excludes them.
     -> (A manifest path, twin manifest path | None, live rows)"""
     plain = [("m%d" % k, k, 5_000_000, 0.10) for k in range(7)]
@@ -574,7 +574,7 @@ def test_live_tp_inside_a_sim_hole_is_the_coded_case_and_outside_it_is_a_mismatc
     def sim_time_stop(rows):  # the twin was blind in the hole: it exits on time, not on the take-profit
         for r in rows:
             if r["kind"] == "trade" and r["position_id"] == "g0":
-                r["exit_reason"] = "time_stop"
+                r["exit_reason"] = "time_24h"
     mp, tm, live = twin_world(tmp_path, twin_rows_mut=sim_time_stop)
     for o in live:  # the live host's take-profit instant: inside the hole [t0+3.6e6, t0+3.7e6] for g0
         if o["order_id"] == "Lg0":
@@ -608,12 +608,93 @@ def test_twin_refusals_name_no_value(tmp_path, capsys):
         assert "aaaa" not in err and "bbbb" not in err and "P_" not in err and "M_" not in err
 
 
-def test_twin_decisions_md5_equal_or_only_one_present_is_accepted(tmp_path):
-    for n, kw in enumerate([dict(a_md5="same", t_md5="same"), dict(a_md5="only-a")]):
+def test_twin_decisions_md5_must_exist_on_both_sides_and_be_equal(tmp_path, capsys):
+    for n, kw in enumerate([dict(a_md5="only-a", t_md5=None), dict(a_md5=None, t_md5="only-t"), dict(a_md5=None, t_md5=None)]):
         d = tmp_path / ("c%d" % n)
         d.mkdir()
         mp, tm, live = twin_world(d, **kw)
-        assert run_twin(d, mp, tm, live)[0] == 0
+        assert run_twin(d, mp, tm, live)[0] == 2
+        assert "only-a" not in capsys.readouterr().err
+    (tmp_path / "ok").mkdir()
+    mp, tm, live = twin_world(tmp_path / "ok")
+    assert run_twin(tmp_path / "ok", mp, tm, live)[0] == 0
+
+
+@pytest.mark.parametrize("over,key", [({"send_lamports": 1}, "send_lamports"), ({"stakes_sol": [0.10]}, "stakes_sol"), ({"rule_overrides": {"TP": 1.6}}, "rule_overrides"), ({"host": "hostv2"}, "host")])
+def test_twin_manifest_must_equal_a_except_the_allowed_keys(tmp_path, capsys, over, key):
+    mp, tm, live = twin_world(tmp_path, twin_over=over)
+    rc, _ = run_twin(tmp_path, mp, tm, live)
+    err = capsys.readouterr().err
+    assert rc == 2 and ("key " + key in err or "refused" in err)
+
+
+def test_twin_may_differ_in_title_and_start_keys(tmp_path):
+    mp, tm, live = twin_world(tmp_path, twin_over={"title": "another title", "seed_from_hour": "2026-11-04T00"})
+    assert run_twin(tmp_path, mp, tm, live)[0] == 0
+
+
+def test_twin_priced_trade_without_the_flag_is_no_sim_price_other_not_clean(tmp_path):
+    def drop(rows):
+        for r in rows:
+            if r["kind"] == "trade" and r["position_id"] == "g1":
+                r.pop("gap_in_hold")
+            if r["kind"] == "trade" and r["position_id"] == "g2":
+                r["gap_in_hold"] = False
+    mp, tm, live = twin_world(tmp_path, twin_rows_mut=drop)
+    rc, out = run_twin(tmp_path, mp, tm, live)
+    res = load(out)
+    rows = rows_by_oid(res)
+    assert rc == 0 and rows["Lg1"]["no_sim_price"] == "other" and rows["Lg2"]["no_sim_price"] == "other" and rows["Lg0"]["gap_in_hold"] is True
+    assert rows["Lg1"]["gap_in_hold"] is False and rows["Lg1"]["entry_slip_pp"] is None and rows["Lg1"]["net_sim_sol"] is None
+    assert res["s2"]["by_flag"]["flagged"]["n"] == 1 and res["s2"]["by_flag"]["unflagged"]["n"] == 7
+
+
+@pytest.mark.parametrize("bad", [float("nan"), float("inf"), -1.0])
+def test_blind_s_must_be_finite_and_non_negative(tmp_path, capsys, bad):
+    def mut(rows):
+        for r in rows:
+            if r["kind"] == "trade" and r["position_id"] == "g0":
+                r["blind_s"] = bad
+    mp, tm, live = twin_world(tmp_path, twin_rows_mut=mut)
+    rc, _ = run_twin(tmp_path, mp, tm, live)
+    assert rc == 2 and "blind_s" in capsys.readouterr().err
+
+
+def _tp_world(tmp, sim_reason="time_24h", live_mut=None, hole=None):
+    def mut(rows):
+        for r in rows:
+            if r["kind"] == "trade" and r["position_id"] == "g0":
+                r["exit_reason"] = sim_reason
+                if hole is not None:
+                    r["gap_holes"] = [hole]
+    mp, tm, live = twin_world(tmp, twin_rows_mut=mut)
+    for o in live:
+        if o["order_id"] == "Lg0":
+            o.update(exit_ms=entry_ms(7) + 3_650_000)
+            if live_mut:
+                o.update(live_mut)
+    rc, out = run_twin(tmp, mp, tm, live)
+    assert rc == 0
+    return load(out)
+
+
+@pytest.mark.parametrize("n,kw,coded", [
+    (0, {}, True),
+    (1, {"sim_reason": "time_stop"}, False),                          # the twin's exit is not time_24h
+    (2, {"live_mut": {"exit_reason": "time_stop"}}, False),           # host exit reason is not the take-profit
+    (3, {"live_mut": {"has_host_exit": False}}, False),               # no host exit row: no fallback to the sell landing
+    (4, {"live_mut": {"sell_reason_bridge": "time_stop_backstop", "led_close_reason": "time_stop_backstop"}}, False),  # the executor did not sell on the take-profit
+    (5, {"hole": [0, 1]}, False),                                     # the hole is outside the trade's hold
+    (6, {"hole": [entry_ms(7) - 10, entry_ms(7) + 3_700_000]}, False),  # starts before the entry decision
+])
+def test_tp_in_sim_gap_needs_every_condition(tmp_path, n, kw, coded):
+    res = _tp_world(tmp_path, **kw)
+    r = rows_by_oid(res)["Lg0"]
+    assert (r["reason"] == "tp_in_sim_gap") is coded
+    assert res["h3"]["n_tp_in_sim_gap"] == (1 if coded else 0)
+    if coded:
+        assert res["h3"]["status"] == "PASS"
+    assert "tp_in_sim_gap): %d" % (1 if coded else 0) in (tmp_path / "recon" / "recon.md").read_text()
 
 
 def test_a_twin_that_is_book_a_itself_is_refused(tmp_path, capsys):
