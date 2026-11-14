@@ -852,6 +852,29 @@ The other sentences of that paragraph (strict books stay at commit 457795f4; nei
 
 **What it does not change.** Every other condition of Erratum 1 (C1, C3, C4, C5, C7) and of Erratum 2 (L1, L3 to L7), the declared latency values, the board rules, Amendment 6 and the promotion gate. Neither set is decision-grade while the reconciliation says NOT COMPARABLE, and no stake, limit or live step rests on a twin. A twin's identity check says the pricing code agrees with the strict code on those rows; it is not evidence that any book makes money. No book has cleared the promotion gate.
 
+## Amendment 9, Erratum 4 (2026-11-14): the board pairs a twin with its strict book on the host decision md5, at a common hour
+In force from its merge. Records only; changes no threshold, window, pin or clock, and no code. Source: the QP ruling addendum `/data/mal/hunt-1008/ops/QP-RULING-1114-board-gap-in-hold-ADD2.md` (sha256 `e9cfb10833f6a24f356d081f72d1323146040662083f12edcaeadbec30262e98`). The text below is QP's, from the ruling's "Erratum 4 text". As with the earlier errata, Errata 1 to 3 are not edited in place; this block follows them and controls where they differ.
+
+**Binding text (QP, verbatim).**
+> Am.9 Erratum 4: "its decisions.md5 equals the strict book's" in Errata 1 and 2 means, at each board build: the per-hour host decision_md5 (md5-by-hour.jsonl, floor_lane_host.decision_digest) stored for the latest hour present in both books' files is equal. The pair view, and any twin figure, is shown only when both books report the same last hour; otherwise the twin is "pending" with its rows withheld, and after 6 h pending the board says so and names both hours. A twin pending more than 24 h is stopped, or the reason is recorded in its notebook entry. A differing decision_md5 shows the twin as "twin decisions differ: not a pricing-only twin". The first-run conditions C3/L3 are unchanged.
+
+- The stored `decision_md5` is cumulative through that hour (explanatory note, not part of the quoted text).
+
+**Why (from the ruling).**
+- A ledger row is written only when the position resolves: the pool's next print, or 10,000 slots of feed (`grace_slots`), which is unbounded in a feed hole because `hw_slot` does not advance. No ledger cut, by `written_ms` or by a fixed number of hours, is comparable between two books.
+- The host decision digest is written at decision time and does not depend on pricing, on resolution or on `written_ms`.
+- C3 / L3 already require it equal per hour (62 of 62 equal on the gap twin, job #2729).
+
+**Records.**
+- QP ruling: `/data/mal/hunt-1008/ops/QP-RULING-1114-board-gap-in-hold-ADD2.md`, sha256 `e9cfb10833f6a24f356d081f72d1323146040662083f12edcaeadbec30262e98`.
+- Code PR #1395, merge commit `8bec1d9146433c1ed4c1d403f773cc4ef569b831` (QP OK and REVIEWER APPROVE at head `bfc8a7356fa3adfd3d02c7d2d4d779a3aa5b5aa3`). The board has run from a clean worktree at that commit since 2026-11-14T19:45:51Z (job #2753). Its first build shows the pair osb-a-gh / osb-a with both books at last hour 2026-11-14T18 and equal decision_md5.
+- Earlier board builds compared `decisions.md5` files. One build, at 2026-11-14T16:30:25Z, printed "twin decisions differ" for the gap twin while it was catching up. That line was false; the twin was then taken off the board until this fix. No figure or decision rested on it.
+- Owed by earlier errata: Erratum 2's code PR is #1390 (merge commit `861952ee3fb3ddd936f48f9dd071ddfd150cf504`); Erratum 3's tool PR is #1393 (merge commit `6061edb72faf1a0c173f6c2f7a8a00b928cdb885`).
+
+**What does not change.** First-run conditions C1 to C5 and L1 to L7 (C3 / L3 as stated above), the start-instant rule, and "twin and strict sets are never summed". `book_decisions_md5` / `decisions.md5` stay what the recon uses, a separate check at the twin-run level. No stake, limit or live step rests on a board, recon or twin number.
+
+No book has cleared the promotion gate. Nothing here says any book makes money.
+
 ## Amendment 10 (2026-11-14): floor-lane-1 executor key `rpc_rps` 4.0
 **Status: DRAFT until merge. NOT installed. It authorises nothing until the owner's own word and a Helm install.** Written 2026-11-14T10:15Z (`date -u`) for manager23, at main e5fd255b. Amendment 10 was the next free number (Amendment 9 and its Erratum 1 are the last). Records only: no code, host or live file is touched. Nothing here says FLOOR or any variant makes money, and no promotion-gate threshold changes.
 
