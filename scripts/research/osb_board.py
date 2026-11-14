@@ -18,7 +18,7 @@ adds a pair view (board.json `pairs`, a "Pair" section in board.md): the incl.-g
 without a twin renders exactly as before.
 Exit codes: 0 ok; 2 refused (BOOKS.json, manifest pin, path guard, output guard, forbidden word in the output). Without --follow: one build.
 """
-import argparse, collections, contextlib, hashlib, io, json, os, re, shutil, subprocess, sys, tempfile, time
+import argparse, collections, contextlib, hashlib, io, json, math, os, re, shutil, subprocess, sys, tempfile, time
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -193,17 +193,42 @@ def sweep_snapshots(now_s=None):
         pass
 
 
+def _num_ok(v):
+    return isinstance(v, (int, float)) and not isinstance(v, bool) and math.isfinite(v) and v >= 0
+
+
 def gap_flags(led):
-    """{position_id: {str(stake): {"blind_s", "gap_count"}}} of the snapshot's trade rows that carry gap_in_hold (osb_follow gap_exclusion "hold")"""
-    out = {}
+    """-> (flags, malformed). flags: {position_id: {str(stake): {"blind_s", "gap_count", "exit_invalid"}}} of the snapshot's trade rows that carry gap_in_hold (osb_follow gap_exclusion "hold"); exit_invalid = the
+    row's flat 1p9 leg state is exit_invalid (priced as a strand). A row whose gap_in_hold / blind_s (finite, >= 0) / gap_count (int >= 0) / gap_holes (list of two-number pairs) does not validate, or a line that
+    does not parse, keeps its trade but gets no flag and is counted in malformed {str(stake): n} (shown as "malformed twin rows")."""
+    out, bad = {}, collections.Counter()
     for f in sorted(Path(led).glob("*/trades-*.jsonl")):
         for ln in f.read_bytes().splitlines():
             if b'"gap_in_hold"' not in ln:
                 continue
-            r = json.loads(ln)
-            if r.get("kind") == "trade" and r.get("gap_in_hold"):
-                out.setdefault(r["position_id"], {})[str(float(r["stake_sol"]))] = {"blind_s": r.get("blind_s"), "gap_count": r.get("gap_count")}
-    return out
+            try:
+                r = json.loads(ln)
+                if not (isinstance(r, dict) and r.get("kind") == "trade"):
+                    continue
+                sk = str(float(r["stake_sol"]))
+                pid = r["position_id"]
+            except (ValueError, TypeError, KeyError):
+                bad["?"] += 1
+                continue
+            if not r.get("gap_in_hold"):
+                continue
+            gc, holes = r.get("gap_count"), r.get("gap_holes")
+            if not (r["gap_in_hold"] is True and _num_ok(r.get("blind_s")) and isinstance(gc, int) and not isinstance(gc, bool) and gc >= 0
+                    and isinstance(holes, list) and all(isinstance(h, list) and len(h) == 2 and all(isinstance(x, (int, float)) and not isinstance(x, bool) for x in h) for h in holes)
+                    and isinstance(pid, str)):
+                bad[sk] += 1
+                continue
+            try:
+                st = r["legs"]["total"]["flat_1p9"]["state"]
+            except (KeyError, TypeError):
+                st = None
+            out.setdefault(pid, {})[sk] = {"blind_s": float(r["blind_s"]), "gap_count": gc, "exit_invalid": st == "exit_invalid"}
+    return out, dict(bad)
 
 
 def price_snapshot(b, run_dir, to_ms):
@@ -214,9 +239,11 @@ def price_snapshot(b, run_dir, to_ms):
         snapshot_ledger(run_dir, led)
         P.main([led, os.path.join(d, "pnl.json"), "total", "1p9", "--send-lamports", send, "--ledger-send", send, "--to-ms", str(to_ms)])
         pnl = json.load(open(os.path.join(d, "pnl.json")))
-        flags = gap_flags(led)
+        flags, bad = gap_flags(led)
         if flags:  # twin ledgers only: the pnl reader is not changed, the board reads the flags off the snapshot's own trade rows
             pnl["_gap_in_hold"] = flags
+        if bad:
+            pnl["_gap_malformed"] = bad
         return pnl
 
 
@@ -282,12 +309,17 @@ EXCL_KEYS = {"feed_gap_entry": "gap_at_entry", "feed_gap_exit": "gap_at_exit", "
 
 
 def excluded_counts(pnl, stake, tape_end):
-    """engine-excluded entries of one stake by reason: gap_at_entry, gap_at_exit, missing_v, feed_gap (a strict book's undivided gap exclusion), other"""
+    """engine-excluded entries of one stake by reason: gap_at_entry, gap_at_exit, missing_v, feed_gap (a strict book's undivided gap exclusion), other; plus, from the twin's own trade rows,
+    exit_invalid_across_gap (flagged trades whose exit leg is exit_invalid, priced as a strand) and malformed_twin_rows (flag fields that did not validate)"""
     sk, c = str(float(stake)), collections.Counter()
+    for pid, fl in (pnl.get("_gap_in_hold") or {}).items():
+        if fl.get(sk, {}).get("exit_invalid"):
+            c["exit_invalid_across_gap"] += 1
+    c["malformed_twin_rows"] = (pnl.get("_gap_malformed") or {}).get(sk, 0) + (pnl.get("_gap_malformed") or {}).get("?", 0)
     for p in pnl.get("positions", []):
         if p["t0"] < tape_end and p["status"].get(sk) == "engine_excluded":
             c[EXCL_KEYS.get(str((p.get("reason") or {}).get(sk)), "feed_gap" if (p.get("reason") or {}).get(sk) == "feed_gap" else "other")] += 1
-    return {k: c.get(k, 0) for k in ("gap_at_entry", "gap_at_exit", "missing_v", "feed_gap", "other")}
+    return {k: c.get(k, 0) for k in ("gap_at_entry", "gap_at_exit", "missing_v", "feed_gap", "other", "exit_invalid_across_gap", "malformed_twin_rows")}
 
 
 def sum_sol(lams):
@@ -404,15 +436,19 @@ def book_state(status, now_ms):
 
 
 def read_decisions_md5(b):
+    """the book's decisions md5: its decisions.md5 file, else computed from its ledger rows (osb_follow.book_decisions_md5; never written by the board). None = unreadable"""
     try:
-        v = (Path(b["m"]["out_root"]) / "decisions.md5").read_text().strip()
-    except OSError:
+        return O.book_decisions_md5(b["m"]["out_root"])
+    except (OSError, ValueError):
         return None
-    return v if re.fullmatch(r"[0-9a-f]{32}", v) else None
 
 
-def book_row(b, info, srs, control, n_watched):
+def book_row(b, info, srs, control, n_watched, control_twin=None):
+    """control: the strict control (a strict book compares only with it); control_twin: the control's incl.-gap-in-hold twin (a twin compares only with it, never with a strict book; none = n/a);
+    the control's own twin has no comparison (role text 'control (incl. gap-in-hold twin)')"""
     m, end = b["m"], info["end"]
+    if b.get("twin_of") is not None:
+        control = None if (control_twin is None or b is control_twin[0]) else control_twin
     status = info["status"]
     cf = Path(m["out_root"]) / "code.sha256"
     try:
@@ -440,7 +476,8 @@ def book_row(b, info, srs, control, n_watched):
                                         "ret_pct": 100.0 * t["flat"] / (stake * 1e9), "exit_reason": t["reason"], "in_sample": t["entry_ms"] < b["start_ms"],
                                         **({"gap_in_hold": True, "blind_s": t["gap"]["blind_s"], "gap_count": t["gap"]["gap_count"]} if "gap" in t else {})} for t in sorted(sr["trades"], key=lambda t: t["seq"])],
                             "open": [{"tid": tid(o["seq"]), "entry_utc": utc(o["entry_ms"]), "stake_sol": stake, "age_h": (end - o["entry_ms"]) / HOUR_MS} for o in sr["opens"]],
-                            **({"excluded_counts": sr["excluded_counts"]} if b.get("pair") else {})})
+                            **({"excluded_counts": sr["excluded_counts"]} if b.get("pair") else {}),
+                            **({"malformed_twin_rows": sr["excluded_counts"]["malformed_twin_rows"]} if sr["excluded_counts"]["malformed_twin_rows"] and not b.get("pair") else {})})
     if b.get("pair"):
         row["pair"] = b["pair"]
     return row
@@ -497,7 +534,7 @@ def recon_state(live, now_ms, control_id=None):
 
 PAIR_DIFFER = "twin decisions differ: not a pricing-only twin"
 PAIR_PENDING = "twin identity not yet checked (decisions.md5 missing): shown as a separate book"
-LABEL_STRICT = "strict: trades with any feed gap in the 24 h hold left out (%d left out); in Nov 2-12 the left-out trades were net negative (DEC-035 Am.6 Erratum 3), so strict can overstate"
+LABEL_STRICT = "strict: trades with any feed gap in the 24 h hold left out (%d left out, all days); in Nov 2-12 the left-out trades were net negative (DEC-035 Am.6 Erratum 3), so strict can overstate"
 LABEL_HOLD = "incl. gap-in-hold: priced through feed gaps inside the hold; take-profit blind during a gap, as live is when its feed has the same gap"
 LABEL_NEITHER = "neither set is decision-grade (recon NOT COMPARABLE); no stake step rests on either (Am.6)"
 
@@ -535,10 +572,15 @@ def build(books, live, now_ms, roots=None):
         infos.append((b, info, srs))
     control = next(((b, srs) for b, _, srs in infos if b["role"] == "control" and srs is not None), None)
     pairs = pair_books(books)
+    control_twin = None
+    if control is not None:
+        control_twin = next(((b, srs) for b, _, srs in infos if b.get("twin_of") == control[0]["m"]["book_id"] and b.get("pair") == "twin" and srs is not None), None)
     out_books = []
     for i, (b, info, srs) in enumerate(infos):
         try:
-            row = book_row(b, info, srs, control, n_watched)
+            row = book_row(b, info, srs, control, n_watched, control_twin)
+            if control_twin is not None and b is control_twin[0]:
+                row["role"] = "control (incl. gap-in-hold twin)"
             check_forbidden(row, "")
         except Refusal:
             row = withheld(i, b, "ForbiddenWord")
@@ -600,7 +642,9 @@ def pair_md(res):
                     "- %s: %s." % (pr["twin"], LABEL_HOLD),
                     "- %s: %s." % (pr["strict"], LABEL_STRICT % ex_s["feed_gap"]),
                     "- still excluded (%s): gap at entry %d, gap at exit %d, missing V %d, other %d." % (pr["twin"], ex_t["gap_at_entry"], ex_t["gap_at_exit"], ex_t["missing_v"], ex_t["other"]),
-                    "- gap-in-hold trades in %s: %d of %d closed." % (pr["twin"], len(flagged), len(rt["trades"])), "",
+                    "- gap-in-hold trades in %s: %d of %d closed." % (pr["twin"], len(flagged), len(rt["trades"])),
+                    "- exit_invalid across a gap (%s): %d (a strand, not dropped)." % (pr["twin"], ex_t["exit_invalid_across_gap"]),
+                    "- malformed twin rows (%s): %d." % (pr["twin"], ex_t["malformed_twin_rows"]), "",
                     "| window (flat / press (n closed)) | incl. gap-in-hold | strict |", "|---|---|---|"]
             for k, name in (("today", "today"), ("d7", "7-day"), ("forward_all", "forward"), ("incl_backfill", "all"), ("day_in_progress", "day in progress (partial)")):
                 out.append("| %s | %s | %s |" % (name, cell(rt["windows"][k]), cell(rs["windows"][k])))
