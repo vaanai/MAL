@@ -217,7 +217,7 @@ def test_output_allow_list_and_stdout(tmp_path, capsys):
         assert s not in text
     res = load(out)
     allowed = {"order_id", "tid", "class", "reason", "entry_utc", "stake_sol", "no_rung", "entry_slip_pp", "landing_ms", "landing_k", "exit_reason_host", "exit_reason_live", "exit_reason_sim", "exit_dt_ms", "exit_coded",
-               "net_live_sol", "net_sim_sol", "net_live_pp", "net_sim_pp", "fees_live_pp", "fees_model_pp", "rent_unreclaimed"}
+               "net_live_sol", "net_sim_sol", "net_live_pp", "net_sim_pp", "fees_live_pp", "fees_model_pp", "rent_unreclaimed", "gap_in_hold", "blind_s", "no_sim_price"}
     assert all(set(r) <= allowed for r in res["rows"])
     assert res["executor_unlisted"] == 1 and not any(r["reason"].startswith("executor:") for r in res["rows"])  # an unlisted word is never an explained reason
     assert "|" in (out / "recon.md").read_text()

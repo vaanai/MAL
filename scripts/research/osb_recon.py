@@ -2,7 +2,7 @@
 """osb_recon: step R of the open-sim accuracy check (design section 3): open simulation book A against the live FLOOR bot. Runs on research-0; the ONLY reader of the live extract
 written by scripts/ops/osb_live_extract.py. PAPER ONLY; an open simulation, not a gate read (DEC-035 Amendment 9). Nothing here says any book makes money.
 
-Usage: osb_recon.py --extract-dir DIR --manifest PATH --out-dir DIR [--now-ms N]
+Usage: osb_recon.py --extract-dir DIR --manifest PATH --out-dir DIR [--now-ms N] [--twin-manifest PATH]
 Join: every live host entry in the window (sent or not) to A's entry decisions on (pool, trigger slot, trigger ms). One A entry is matched by at most ONE live order; a second order on the same key is
 live_only (duplicate_key). Classes: matched (both entered, the live buy filled); live_only (a host entry, sent or not, with no A entry: band H1); sim_only with a reason code: restart_lockout,
 host_down_no_row, executor:<word> (ONLY the design's allow-list: lane_full, lane_daily_stop, wallet_floor, gap_hold, stale_decision, canary_expired, stop_file and the prefixes a3_pause:, lane_budget_,
@@ -11,13 +11,17 @@ row), timing_edge (a cooldown or block row within +-10 s; a nearby feed_gap refu
 Per matched filled trade: entry slip in pp (live spend / tokens against A's landing state at the live stake, constant product with the pool fee tier); live decision-to-landed ms and in landing steps
 (`landing_k`); the exit reason of the executor's sell (bridge sell_sent, else the ledger close reason) against A's, the host exit reason kept apart as exit_reason_host; net per trade live vs sim in pp
 of stake and SOL at the rung equal to the live stake (no rung, e.g. 0.03: marked no_rung, out of S1/S2); fees against 2 x 160,000 lamports. A's flat leg is compared only when its state is `filled`.
-Live failure rates (buy not filled, sell failed) with Wilson 95% intervals, beside the flat 15% assumption, never combined with sim figures (DEC-035 section 6).
+Gap-in-hold twin (QP ruling 2026-11-14 Q4; optional --twin-manifest, book A's `gap_exclusion: "hold"` twin; refused unless its `twin_of` is A's book_id and its decisions.md5 file equals A's when both exist):
+a matched live trade whose strict sim trade is excluded for a feed gap is compared against the twin's price; its row carries gap_in_hold and blind_s (from the twin's ledger trade rows: gap_in_hold, blind_s,
+gap_count, gap_holes). S1 and S2 include those trades; S2 is also printed split by flag. A live take-profit whose instant falls inside a sim-side gap of that hold is the coded H3 case tp_in_sim_gap (counted, not
+a failure). A trade still excluded (strict without a twin, or in the twin) has the row field no_sim_price = gap_entry | gap_exit | missing_v | other, is counted, and stays outside S1/S2 (as before the twin:
+it is a matched row with no sim price). Live failure rates (buy not filled, sell failed) with Wilson 95% intervals, beside the flat 15% assumption, never combined with sim figures (DEC-035 section 6).
 Bands H1..H3 (whole window, FAIL at any n) and S1..S4 (the newest 20 matched filled trades at a rung with entry in the last 7 days of the window, INSUFFICIENT below 10) are the module constants below.
 Output: recon.json and recon.md. Every reason and exit reason is mapped to a fixed word list (unknown -> other); rows carry only the allow-listed fields; at write time a forbidden word or an id-shaped value
 (a run of 20+ base58 characters, 16+ hex characters other than an order id) refuses the write, and the refusal message names the field and the rule, never the value.
 Exit codes: 0 written; 2 refused (incl. a malformed extract).
 """
-import argparse, fcntl, hashlib, json, math, os, re, statistics, sys, time
+import argparse, fcntl, hashlib, json, math, os, re, statistics, sys, tempfile, time
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -64,6 +68,8 @@ FILLED_TOKEN_SOURCES = ("meta", "ata_balance")
 STALE_MS = B.STALE_MS
 EXEC_EXACT = ("lane_full", "lane_daily_stop", "wallet_floor", "gap_hold", "stale_decision", "canary_expired", "stop_file")
 EXEC_PREFIX = ("a3_pause:", "lane_budget_", "latched:")
+NO_SIM_WORDS = ("gap_entry", "gap_exit", "missing_v", "other")  # the fixed no_sim_price list
+CODED_TP_GAP = "tp_in_sim_gap"
 EXIT_VOCAB = ("tp_1.5x", "time_24h", "time_stop", "time_stop_backstop", "sl_backstop")
 CODED_SIM, CODED_LIVE = "tp_1.5x", "time_stop_backstop"
 B58_RUN = re.compile(r"[1-9A-HJ-NP-Za-km-z]{20,}")
@@ -115,6 +121,22 @@ def executor_code(why):
     return None
 
 
+def no_sim_word(reason):
+    """an engine exclusion reason as a word of the fixed list (never the raw text). A plain strict `feed_gap` does not say entry or exit, so it is `other`."""
+    r = str(reason or "").lower()
+    if r == "feed_gap_entry":
+        return "gap_entry"
+    if r == "feed_gap_exit":
+        return "gap_exit"
+    if "missing_v" in r:
+        return "missing_v"
+    return "other"
+
+
+def is_gap_reason(reason):
+    return str(reason or "").startswith("feed_gap")
+
+
 def xr(raw):
     """an exit reason as it may be shown: a word of the fixed list, else `other`"""
     return None if raw is None else (raw if raw in EXIT_VOCAB else "other")
@@ -153,7 +175,79 @@ def read_extract(d):
     return rows, meta
 
 
-def read_sim(manifest_path, roots=None):
+def load_twin_manifest(path):
+    """the twin's manifest as written (keys twin_of / gap_exclusion "hold" kept). The follow loader validates it when it knows those keys; until then they are set aside for its checks only."""
+    try:
+        raw = json.loads(Path(path).read_text())
+    except (OSError, ValueError):
+        raise Refusal("twin manifest unreadable")
+    if not isinstance(raw, dict):
+        raise Refusal("twin manifest is not an object")
+    try:
+        O.load_manifest(path)
+        return raw
+    except O.Refused:
+        pass
+    plain = {k: v for k, v in raw.items() if k != "twin_of"}
+    if plain.get("gap_exclusion") == "hold":
+        plain["gap_exclusion"] = "on"
+    with tempfile.TemporaryDirectory(prefix="osb-recon-tm-") as d:
+        f = Path(d) / "m.json"
+        f.write_text(json.dumps(plain))
+        try:
+            O.load_manifest(str(f))
+        except O.Refused:
+            raise Refusal("twin manifest refused")
+    return raw
+
+
+def read_twin_flags(run_dir):
+    """{(position_id, stake): {gap_in_hold, blind_s, gap_count, gap_holes}} from the twin run's ledger trade rows; absent fields stay absent (tolerant)"""
+    out = {}
+    for f in sorted(Path(run_dir, "ledger").glob("*/trades-*.jsonl")):
+        data = f.read_bytes()
+        for ln in data[: data.rfind(b"\n") + 1].split(b"\n"):
+            try:
+                r = json.loads(ln)
+            except ValueError:
+                continue
+            if isinstance(r, dict) and r.get("kind") == "trade" and isinstance(r.get("position_id"), str) and is_num(r.get("stake_sol")):
+                out[(r["position_id"], str(float(r["stake_sol"])))] = {k: r[k] for k in ("gap_in_hold", "blind_s", "gap_count", "gap_holes") if k in r}
+    return out
+
+
+def read_twin(twin_path, a_manifest, roots=None):
+    """-> {positions, flags, book_id}: the twin's own board pricing. Refused unless it is the declared twin of A (twin_of == A's book_id, gap_exclusion hold) and its decisions.md5 equals A's when both exist."""
+    m = load_twin_manifest(twin_path)
+    if m.get("twin_of") != a_manifest["book_id"] or m.get("book_id") == a_manifest["book_id"]:
+        raise Refusal("twin manifest: twin_of is not book A")
+    if m.get("gap_exclusion") != "hold":
+        raise Refusal("twin manifest: gap_exclusion is not hold")
+    try:
+        O.guard_paths(m, roots or (O.OSB_ROOT,))
+    except O.Refused:
+        raise Refusal("twin manifest refused")
+    fa, ft = Path(a_manifest["out_root"]) / "decisions.md5", Path(m["out_root"]) / "decisions.md5"
+    if fa.exists() and ft.exists():
+        try:
+            same = fa.read_bytes().strip() == ft.read_bytes().strip()
+        except OSError:
+            raise Refusal("decisions.md5 unreadable")
+        if not same:
+            raise Refusal("twin decisions.md5 differs from book A")
+    b = {"m": m, "role": "variant", "start_ms": 0, "sha": O.manifest_sha256(m)}
+    link = Path(m["out_root"]) / "book"
+    run0 = os.path.realpath(link)
+    info = B.inspect_book(b, int(time.time() * 1000), roots)
+    if info["pnl"] is None or info["end"] is None:
+        raise Refusal("twin has no priced hour yet (state %s)" % info["state"])
+    flags = read_twin_flags(run0)
+    if os.path.realpath(link) != run0:
+        raise Refusal("twin link moved while reading")
+    return {"book_id": m["book_id"], "positions": {p["pid"]: p for p in info["pnl"].get("positions", [])}, "flags": flags}
+
+
+def read_sim(manifest_path, roots=None, twin_path=None):
     """-> dict for book A: the board's own pricing (osb_board.inspect_book) and A's decision rows, both from ONE run directory (a moved `book` link is refused)."""
     try:
         m = O.load_manifest(manifest_path)
@@ -189,7 +283,8 @@ def read_sim(manifest_path, roots=None):
     order = sorted(info["pnl"].get("positions", []), key=lambda q: (q["t0"], q["pid"]))  # the board's own tid ordering (osb_board.book_trades)
     tids = {p["pid"]: "%s-%05d" % (m["book_id"], i) for i, p in enumerate(order, 1)}
     start_ms = B.parse_instant(m["start_hour"] + ":00:00Z") if re.fullmatch(r"\d{4}-\d\d-\d\dT\d\d", str(m["start_hour"])) else 0
-    return {"book_id": m["book_id"], "entries": entries, "exits": exits, "positions": positions, "tids": tids, "stakes": m["stakes_sol"], "end_ms": info["end"], "start_ms": start_ms, "state": info["state"]}
+    twin = read_twin(twin_path, m, roots) if twin_path else None
+    return {"twin": twin, "book_id": m["book_id"], "entries": entries, "exits": exits, "positions": positions, "tids": tids, "stakes": m["stakes_sol"], "end_ms": info["end"], "start_ms": start_ms, "state": info["state"]}
 
 
 # ------------------------------------------------------------------------------------------------------------------------------ core
@@ -318,7 +413,24 @@ def pair_metrics(o, e, sim, spans, win_to):
     rung = rung_of(stake, sim["stakes"])
     sk = str(float(rung)) if rung is not None else None
     pos = sim["positions"].get(e["order_id"])
+    twin_pos, flag, no_word = None, {}, None
+    if pos is not None and sk and (pos.get("status") or {}).get(sk) == "engine_excluded":
+        why = (pos.get("reason") or {}).get(sk)
+        tw = sim.get("twin")
+        if tw is not None and is_gap_reason(why):
+            tp = tw["positions"].get(e["order_id"])
+            if tp is not None and (tp.get("status") or {}).get(sk) == "closed":
+                twin_pos, flag = tp, tw["flags"].get((e["order_id"], sk)) or {}
+            else:
+                no_word = no_sim_word(((tp or {}).get("reason") or {}).get(sk) if tp is not None else why)
+        else:
+            no_word = no_sim_word(why)
+    if twin_pos is not None:
+        pos = twin_pos
+    gih = flag.get("gap_in_hold") is True
+    blind = flag.get("blind_s") if is_num(flag.get("blind_s")) else None
     m = {"order_id": o["order_id"], "tid": sim["tids"].get(e["order_id"]), "entry_utc": utc(tms(o)), "stake_sol": stake, "no_rung": rung is None, "class": "matched", "reason": "",
+         "gap_in_hold": gih, "blind_s": blind if gih else None, "no_sim_price": no_word,
          "entry_slip_pp": None, "landing_ms": None, "landing_k": None, "exit_reason_live": None, "exit_reason_host": None, "exit_reason_sim": None, "exit_dt_ms": None, "exit_coded": None,
          "net_live_sol": None, "net_sim_sol": None, "net_live_pp": None, "net_sim_pp": None, "fees_live_pp": None, "fees_model_pp": None, "rent_unreclaimed": o.get("led_rent_unreclaimed_lamports") or 0,
          "_t": tms(o)}
@@ -330,7 +442,12 @@ def pair_metrics(o, e, sim, spans, win_to):
     if is_num(o.get("landed_slot")) and is_num(o.get("decision_slot")):
         m["landing_k"] = o["landed_slot"] - o["decision_slot"]
     sx = sim["exits"].get(e["order_id"]) or []
-    sim_reason, sim_ms = (sx[0][0], sx[0][1]) if sx else (((pos or {}).get("exit_reason") or {}).get(sk) if sk else None, (pos or {}).get("t1"))
+    if twin_pos is not None:  # the twin's own exit (take-profit blind in a hole) rather than the decision row
+        sim_reason, sim_ms = ((pos.get("exit_reason") or {}).get(sk), pos.get("t1"))
+        if sim_reason is None and sx:
+            sim_reason, sim_ms = sx[0]
+    else:
+        sim_reason, sim_ms = (sx[0][0], sx[0][1]) if sx else (((pos or {}).get("exit_reason") or {}).get(sk) if sk else None, (pos or {}).get("t1"))
     sim_closed = bool(sx) or (pos or {}).get("t1") is not None
     live_closed = o.get("led_close_ev") == "exit" or is_num(o.get("sell_landed_ms"))
     live_reason = o.get("sell_reason_bridge") or (o.get("led_close_reason") if o.get("led_close_ev") == "exit" else None)
@@ -345,8 +462,13 @@ def pair_metrics(o, e, sim, spans, win_to):
             h3 = "mismatch"
         elif live_reason != sim_reason:
             coded = bool(sim_reason == CODED_SIM and live_reason == CODED_LIVE and not o.get("has_host_exit") and is_num(sim_ms) and any(a <= sim_ms <= b for a, b in spans))
-            m["exit_coded"] = coded
-            h3 = "coded" if coded else "mismatch"
+            holes = [h for h in (flag.get("gap_holes") or []) if isinstance(h, (list, tuple)) and len(h) == 2 and is_num(h[0]) and is_num(h[1])]
+            live_tp_ms = o.get("exit_ms") if is_num(o.get("exit_ms")) else close_ms
+            tp_gap = bool(not coded and gih and live_reason == CODED_SIM and is_num(live_tp_ms) and any(a <= live_tp_ms <= b for a, b in holes))
+            m["exit_coded"] = coded or tp_gap
+            if tp_gap:
+                m["reason"] = CODED_TP_GAP
+            h3 = "coded" if (coded or tp_gap) else "mismatch"
         elif host is not None and host != live_reason:
             h3 = "mismatch"
         else:
@@ -355,6 +477,7 @@ def pair_metrics(o, e, sim, spans, win_to):
         cm = close_ms if live_closed else sim_ms
         h3 = "mismatch" if is_num(cm) and win_to - cm > H3_OPEN_TOLERANCE_MS else "pending"
     m["_h3"] = h3
+    m["_blind_priced"] = twin_pos is not None
     closed_cash = o.get("led_close_ev") == "exit" and lam > 0 and is_int(o.get("led_net_lamports"))
     if closed_cash:
         m["net_live_sol"], m["net_live_pp"] = o["led_net_lamports"] / 1e9, o["led_net_lamports"] / lam * 100.0
@@ -385,7 +508,8 @@ def evaluate(rows, metrics, win_to, extras):
               max_per_day=H2_MAX_UNEXPLAINED_PER_DAY, executor_unlisted=extras["executor_unlisted"], duplicate_keys=extras["duplicate_keys"])
     cmp_ = [m for m in metrics if m["_h3"] in ("ok", "coded", "mismatch")]
     mism = [m for m in metrics if m["_h3"] == "mismatch"]
-    h3 = band("FAIL" if len(mism) > H3_MAX_EXIT_MISMATCH else ("INSUFFICIENT" if not cmp_ else "PASS"), n_compared=len(cmp_), n_mismatch_uncoded=len(mism), n_coded=sum(1 for m in metrics if m["_h3"] == "coded"))
+    h3 = band("FAIL" if len(mism) > H3_MAX_EXIT_MISMATCH else ("INSUFFICIENT" if not cmp_ else "PASS"), n_compared=len(cmp_), n_mismatch_uncoded=len(mism), n_coded=sum(1 for m in metrics if m["_h3"] == "coded"),
+              n_tp_in_sim_gap=sum(1 for m in metrics if m.get("reason") == CODED_TP_GAP))
     roll = [m for m in sorted(metrics, key=lambda m: m["_t"]) if not m["no_rung"] and win_to - S_RECENT_MS <= m["_t"] < win_to][-S_ROLLING_N:]
     slips = [m["entry_slip_pp"] for m in roll if m["entry_slip_pp"] is not None]
     if len(slips) < S1_MIN_MATCHED:
@@ -394,13 +518,18 @@ def evaluate(rows, metrics, win_to, extras):
         med, beyond = statistics.median(slips), sum(1 for x in slips if abs(x) > S1_BEYOND_PP)
         s1 = band("PASS" if S1_MEDIAN_SLIP_PP[0] <= med <= S1_MEDIAN_SLIP_PP[1] and beyond <= S1_MAX_BEYOND_N else "FAIL", n=len(slips), median_slip_pp=med, n_beyond=beyond, band_pp=list(S1_MEDIAN_SLIP_PP))
     both = [m for m in roll if m["net_live_pp"] is not None and m["net_sim_pp"] is not None]
+
+    def split(xs):
+        d = [m["net_live_pp"] - m["net_sim_pp"] for m in xs]
+        return {"n": len(xs), "median_diff_pp": statistics.median(d) if d else None, "sum_live_sol": sum(m["net_live_sol"] for m in xs), "sum_sim_sol": sum(m["net_sim_sol"] for m in xs)}
+    by_flag = {"flagged": split([m for m in both if m.get("gap_in_hold")]), "unflagged": split([m for m in both if not m.get("gap_in_hold")])}
     if len(both) < S1_MIN_MATCHED:
-        s2 = band("INSUFFICIENT", n=len(both), min=S1_MIN_MATCHED)
+        s2 = band("INSUFFICIENT", n=len(both), min=S1_MIN_MATCHED, by_flag=by_flag)
     else:
         diffs = [m["net_live_pp"] - m["net_sim_pp"] for m in both]
         sl, ss, st = sum(m["net_live_sol"] for m in both), sum(m["net_sim_sol"] for m in both), sum(m["stake_sol"] for m in both)
         med = statistics.median(diffs)
-        s2 = band("PASS" if abs(med) <= S2_MEDIAN_NET_DIFF_PP and abs(sl - ss) <= S2_SUM_REL * st else "FAIL", n=len(both), median_diff_pp=med, sum_live_sol=sl, sum_sim_sol=ss, sum_stake_sol=st)
+        s2 = band("PASS" if abs(med) <= S2_MEDIAN_NET_DIFF_PP and abs(sl - ss) <= S2_SUM_REL * st else "FAIL", n=len(both), median_diff_pp=med, sum_live_sol=sl, sum_sim_sol=ss, sum_stake_sol=st, by_flag=by_flag)
     fm = [m for m in roll if m["fees_live_pp"] is not None]
     rent_all = sum(m["rent_unreclaimed"] for m in metrics)  # any closed matched trade in the window
     if rent_all > S3_MAX_RENT_UNRECLAIMED:
@@ -423,6 +552,13 @@ def evaluate(rows, metrics, win_to, extras):
     return bands, ("FAIL" if "FAIL" in sts else "INSUFFICIENT" if "INSUFFICIENT" in sts else "PASS")
 
 
+def dropped_bridge_only(meta):
+    """the extract meta's stats.dropped_bridge_only (orders only in a shared bridge log, dropped as not ours); 0 when the key is absent or not a whole number"""
+    st = meta.get("stats") if isinstance(meta.get("stats"), dict) else {}
+    v = st.get("dropped_bridge_only", meta.get("dropped_bridge_only", 0))
+    return v if is_int(v) and v >= 0 else 0
+
+
 def wilson_block(k, n):
     lo, hi = wilson(k, n)
     return {"n": n, "n_failed": k, "rate": (k / n) if n else None, "wilson95_lo": lo, "wilson95_hi": hi}
@@ -441,6 +577,7 @@ def reconcile(ex_rows, ex_meta, sim, now_ms):
     for r in rows:
         k = r["class"] + ":" + r["reason"]
         reasons[k] = reasons.get(k, 0) + 1
+    nsp = {w: sum(1 for m in metrics if m.get("no_sim_price") == w) for w in NO_SIM_WORDS}
     leg = {"sim_leg_failed_live_filled": sum(1 for m in metrics if m["_sim_leg_state"] not in (None, "filled")), "no_rung": sum(1 for m in metrics if m["no_rung"])}
     out_rows = rows + [{k: v for k, v in m.items() if not k.startswith("_")} for m in metrics]
     out_rows.sort(key=lambda r: (r["entry_utc"], str(r.get("order_id") or ""), str(r.get("tid") or "")))
@@ -449,7 +586,9 @@ def reconcile(ex_rows, ex_meta, sim, now_ms):
     sell = wilson_block(sum(1 for r in sells if r.get("sell_failed")), len(sells))
     return {"schema": SCHEMA, "banner": B.BANNER, "generated_utc": utc(now_ms), "generated_ms": now_ms, "status": status, "book_id": sim["book_id"],
             "window": {"from_utc": utc(win_from), "to_utc": utc(win_to)}, "extract_as_of_utc": utc(head["as_of_ms"]), "extract_as_of_ms": head["as_of_ms"], "extract_sha256_12": ex_meta["extract_sha256"][:12],
-            **bands, "counts": {"matched": len(metrics), "live_only": sum(1 for r in rows if r["class"] == "live_only"), "sim_only": sum(1 for r in rows if r["class"] == "sim_only")},
+            **bands, "twin_book_id": (sim.get("twin") or {}).get("book_id"), "dropped_bridge_only": dropped_bridge_only(ex_meta),
+            "no_sim_price_counts": nsp, "gap_in_hold_n": sum(1 for m in metrics if m.get("gap_in_hold")),
+            "counts": {"matched": len(metrics), "live_only": sum(1 for r in rows if r["class"] == "live_only"), "sim_only": sum(1 for r in rows if r["class"] == "sim_only")},
             "counts_by_reason": dict(sorted(reasons.items())), "executor_unlisted": extras["executor_unlisted"], "discordance": leg,
             "live_failure": {"n_sent": buy["n"], "n_not_filled": buy["n_failed"], "rate": buy["rate"], "wilson95_lo": buy["wilson95_lo"], "wilson95_hi": buy["wilson95_hi"], "flat_fail_assumed": FLAT_FAIL_ASSUMED,
                              "sells": {"n_sent": sell["n"], "n_failed": sell["n_failed"], "rate": sell["rate"], "wilson95_lo": sell["wilson95_lo"], "wilson95_hi": sell["wilson95_hi"]},
@@ -465,17 +604,21 @@ def f2(x):
 def recon_md(res):
     md = ["# Open sim recon: book %s against the live FLOOR bot (paper)" % res["book_id"], "", "> " + res["banner"], "",
           "- Status: **%s**. Window %s to %s; extract as of %s (%s). Generated %s." % (res["status"], res["window"]["from_utc"], res["window"]["to_utc"], res["extract_as_of_utc"], res["extract_sha256_12"], res["generated_utc"]),
-          "- Counts: matched %d, live-only %d, sim-only %d. By reason: %s." % (res["counts"]["matched"], res["counts"]["live_only"], res["counts"]["sim_only"], json.dumps(res["counts_by_reason"], sort_keys=True)),
+          "- Counts: matched %d, live-only %d, sim-only %d. By reason: %s." % (res["counts"]["matched"], res["counts"]["live_only"], res["counts"]["sim_only"], json.dumps(res["counts_by_reason"], sort_keys=True))
+          + " Bridge-only orders dropped from the extract (not ours): %d. Gap-in-hold trades in the twin set: %d. No sim figure (no_sim, outside S1/S2): gap at entry %d, gap at exit %d, missing V %d, other %d. Twin: %s." % (
+              res["dropped_bridge_only"], res["gap_in_hold_n"], *(res["no_sim_price_counts"][w] for w in NO_SIM_WORDS), res["twin_book_id"] or "none"),
           "- Bands: " + "; ".join("%s %s" % (k.upper(), res[k]["status"]) for k in ("h1", "h2", "h3", "s1", "s2", "s3", "s4")) + ". Constants are fixed by QP before the first run.",
           "- Live failure (buy not filled / sent): %d / %d, Wilson 95%% %s to %s; sells failed / sent %d / %d; beside the flat %d%% assumption; live only, not combined with sim figures." % (
               res["live_failure"]["n_not_filled"], res["live_failure"]["n_sent"], f2(None if res["live_failure"]["wilson95_lo"] is None else 100 * res["live_failure"]["wilson95_lo"]),
               f2(None if res["live_failure"]["wilson95_hi"] is None else 100 * res["live_failure"]["wilson95_hi"]), res["live_failure"]["sells"]["n_failed"], res["live_failure"]["sells"]["n_sent"], int(100 * FLAT_FAIL_ASSUMED)),
-          "", "| order | tid | class | reason | entry UTC | stake | slip pp | landing ms | landing k | exit live | exit host | exit sim | exit dt ms | net live SOL | net sim SOL |", "|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|"]
+          "- S2 by flag (gap-in-hold through the twin / not): " + "; ".join("%s n %d, median diff %s pp, live %s SOL, sim %s SOL" % (
+              k, v["n"], f2(v["median_diff_pp"]), f2(v["sum_live_sol"]), f2(v["sum_sim_sol"])) for k, v in res["s2"]["by_flag"].items()) + ". Neither set is decision-grade (recon NOT COMPARABLE).",
+          "", "| order | tid | class | reason | entry UTC | stake | slip pp | landing ms | landing k | exit live | exit host | exit sim | exit dt ms | net live SOL | net sim SOL | gap-in-hold | blind s | no_sim |", "|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|"]
     for r in res["rows"][-200:]:
-        md.append("| %s | %s | %s | %s | %s | %s | %s | %s | %s | %s | %s | %s | %s | %s | %s |" % (
+        md.append("| %s | %s | %s | %s | %s | %s | %s | %s | %s | %s | %s | %s | %s | %s | %s | %s | %s | %s |" % (
             r.get("order_id") or "-", r.get("tid") or "-", r["class"] + (" no_rung" if r.get("no_rung") else ""), r["reason"] or "-", r["entry_utc"], "n/a" if r.get("stake_sol") is None else "%.2f" % r["stake_sol"],
             f2(r.get("entry_slip_pp")), r.get("landing_ms", "-"), r.get("landing_k", "-"), r.get("exit_reason_live") or "-", r.get("exit_reason_host") or "-", r.get("exit_reason_sim") or "-", r.get("exit_dt_ms", "-"),
-            f2(r.get("net_live_sol")), f2(r.get("net_sim_sol"))))
+            f2(r.get("net_live_sol")), f2(r.get("net_sim_sol")), "yes" if r.get("gap_in_hold") else "-", f2(r.get("blind_s")) if r.get("blind_s") is not None else "-", r.get("no_sim_price") or "-"))
     return "\n".join(md) + "\n"
 
 
@@ -504,8 +647,6 @@ def check_output(res, md):
                 raise Refusal("output field %s: forbidden word rule (%s)" % (re.sub(r"\[\d+\]", "[]", path), w))
         if B58_RUN.search(s) or HEX_RUN.search(s):
             raise Refusal("output field %s: id-shaped value rule" % re.sub(r"\[\d+\]", "[]", path))
-    for k in {p.rsplit(".", 1)[-1] for p, _ in _walk(res)}:
-        pass
     oids = sorted({r["order_id"] for r in res["rows"] if r.get("order_id")}, key=len, reverse=True)
     text = md
     for oid in oids:
@@ -541,7 +682,7 @@ def guard(paths, out_dir, out_roots=None):
 
 
 def run(a, roots=None, out_roots=None, now_ms=None):
-    out_dir = guard([a.extract_dir, a.manifest, a.out_dir], a.out_dir, out_roots)
+    out_dir = guard([a.extract_dir, a.manifest, a.out_dir] + ([a.twin_manifest] if a.twin_manifest else []), a.out_dir, out_roots)
     now = now_ms if now_ms is not None else (a.now_ms if a.now_ms is not None else int(time.time() * 1000))
     os.makedirs(out_dir, exist_ok=True)
     lock = open(os.path.join(out_dir, ".osb-recon.lock"), "a")
@@ -550,7 +691,7 @@ def run(a, roots=None, out_roots=None, now_ms=None):
     except OSError:
         raise Refusal("another osb_recon run holds the lock")
     ex_rows, ex_meta = read_extract(a.extract_dir)
-    sim = read_sim(a.manifest, roots)
+    sim = read_sim(a.manifest, roots, a.twin_manifest)
     res = reconcile(ex_rows, ex_meta, sim, now)
     md = recon_md(res)
     check_output(res, md)
@@ -567,6 +708,7 @@ def main(argv=None, **kw):
     ap.add_argument("--manifest", required=True)
     ap.add_argument("--out-dir", required=True)
     ap.add_argument("--now-ms", type=int, default=None)
+    ap.add_argument("--twin-manifest", default=None, help="book A's gap_exclusion hold twin (optional)")
     a = ap.parse_args(argv)
     try:
         return run(a, **kw)
