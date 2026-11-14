@@ -8,7 +8,8 @@ Run: python3 -I s05_fetch_sample.py          (sample A + C, post-redeploy; RAW =
 import gzip, json, os, sys
 from common import RAW, OUT, LClient, m
 
-PRE = os.environ.get("SAMPLE") == "pre"
+PRE2 = os.environ.get("SAMPLE") == "pre2"   # added after QP ruling 384d99f3: pre control extension P2
+PRE = os.environ.get("SAMPLE") in ("pre", "pre2")
 DEPLOY = 469055660
 PROGS = {"6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P", "pAMMBay6oceH9fJKBRHGP5D4bD4sWpmSwMn52FMfXEA", "pfeeUxB6jkeY1Hxd7CsFCAjcbHA9rWtchMGdZ6VojVZ"}
 (RAW / "blocks").mkdir(parents=True, exist_ok=True); (RAW / "txs").mkdir(parents=True, exist_ok=True)
@@ -27,7 +28,9 @@ def cached(kind, key, method, params):
 
 
 latest = c.call("getSlot", [{"commitment": "finalized"}])
-if PRE:
+if PRE2:
+    n_anchor, lo, hi = 10, DEPLOY - 80000, DEPLOY - 41000    # P2: the 40,000 slots before P, so that P+P2 span 80,000 slots (about 8.9 h)
+elif PRE:
     n_anchor, lo, hi = 10, DEPLOY - 40000, DEPLOY - 600     # anchors evenly spaced; last anchor + 10 non-skipped slots ends >= 500 slots before the deploy
 else:
     n_anchor, lo, hi = 24, DEPLOY + 3000, latest - 1000
@@ -73,6 +76,6 @@ if not PRE:
             cached("txs", ps, "getTransaction", [ps, {"encoding": "json", "commitment": "finalized", "maxSupportedTransactionVersion": MAXV}])
         c_info.append({"mig_sig": sig, "pool": g["pool"], "quote_wsol": g.get("quote_wsol"), "n_sigs": len(ok), "picked": pick})
 plan.update(n_a_txs=len(a_txs), rpc_attempts=c.total_calls, c_candidates=c_info)
-(OUT / ("s05_plan_pre.json" if PRE else "s05_plan.json")).write_text(json.dumps(plan, indent=1))
+(OUT / ("s05_plan_pre2.json" if PRE2 else "s05_plan_pre.json" if PRE else "s05_plan.json")).write_text(json.dumps(plan, indent=1))
 (RAW / "sample_index.json").write_text(json.dumps({"a": a_txs, "b": {}, "c": c_info}))
 print("A", len(a_txs), "C", len(c_info), "rpc", c.total_calls, dict(c.calls))
