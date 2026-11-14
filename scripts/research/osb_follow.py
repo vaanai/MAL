@@ -228,13 +228,14 @@ def _atomic_text(path, text):
 
 
 def decisions_md5(run_dir):
-    """md5 of the ordered (position_id, entry decision_ms, exit decision_ms) rows of the run's ledger (one row per position: the per-stake rows of a trade / excluded row collapse).
+    """md5 of the ordered (position_id, entry decision_ms, exit decision_ms) rows of the run's ledger (open, trade and excluded rows; one row per position: the per-stake rows collapse).
     Strict and twin books on the same decisions give the same value (QP ruling 2026-11-14 Q1, the Am.9 erratum text)."""
     seen = {}
     for _, r in ledger_rows(Path(run_dir) / "ledger"):
-        if r.get("kind") in ("trade", "excluded"):
+        if r.get("kind") in ("open", "trade", "excluded"):  # the open row carries the entry decision; the trade / excluded row adds the exit decision
             dm = r.get("decision_ms") or {}
-            seen[r["position_id"]] = (r["position_id"], dm.get("entry"), dm.get("exit"))
+            old = seen.get(r["position_id"])
+            seen[r["position_id"]] = (r["position_id"], dm.get("entry"), dm.get("exit") if dm.get("exit") is not None else (old[2] if old else None))
     rows = sorted(seen.values(), key=lambda t: (t[1] if t[1] is not None else -1, t[0]))
     return hashlib.md5(canon(rows).encode()).hexdigest()
 
