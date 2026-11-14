@@ -764,6 +764,49 @@ Written 2026-11-14 for manager23, at main 3c3d1920. Records only; changes no thr
 
 **Limits.** The strict books stay at commit 457795f4. A strict book moves to a later commit only as a new book, or after a full-history md5 check (a restart at the new commit re-derives every stored hour and finds every stored decision_md5 and ledger_md5 equal) under a further erratum. Neither set is decision-grade while the reconciliation says NOT COMPARABLE. No stake, budget or live step rests on either (Amendment 6). Paper only. No book has cleared the promotion gate.
 
+## Amendment 9, Erratum 2 (2026-11-14): pricing-only latency twins (entry latency)
+**Status: DRAFT until merge. No latency twin runs before L1 to L7 below are met.** Written 2026-11-14T11:40Z (`date -u`) for manager23. Records only; changes no threshold, window, pin or clock. Source: the QP ruling `/data/mal/hunt-1008/ops/QP-RULING-1114-osb-latency-twin.md` (sha256 prefix cd2bfde2), sections 3 to 7. The code is the PR `claude/osb-latency-twin` (the code PR, number to be filled by the manager at merge; not merged at writing).
+
+**Text (QP, verbatim).**
+> Erratum 2 (2026-11-14, QP ruling osb latency twin): a pricing-only latency twin of an open simulation book (same rule, parameters, host, stakes, send and gap_exclusion "on"; only the engine's entry latency `pricing_lat_entry_s` differs, from the declared set 3.010, 4.085, 5.590 s of total chain time from decision to landing; manifest key `twin_of`) keeps its strict book's start instant if, at every board build, its decisions.md5 equals the strict book's and it passed the first-run checks recorded in its notebook entry; while they differ it is shown as a separate book with "twin decisions differ: not a pricing-only twin". An exit decided before the twin's entry lands is excluded as `exit_before_entry_landing`, counted and shown, never priced. A latency twin's figures are compared only with the control book's latency twin of the same value, never with a strict book or a twin of another value. The latency values were fixed from live timings (job #2702) before any twin output; no other value is used without a further erratum. Latency-twin trades are open-simulation trades under §1: no gate read, §6 read or registration uses them. No stake, limit or live step rests on them.
+
+**What it changes.** It adds a second kind of pricing-only twin beside Erratum 1's gap twin. Latency does not change FLOOR decisions in this engine (QP ruling, verdict on questions 1 and 2: entries and exits are host decisions on tape rows; the take-profit gate and mark use the rule's constants LAT_DECIDING = 1.9 and FEED_D = 7, not the engine's latency), so the twin changes only the engine's entry k for the deciding leg, and its decisions.md5 is expected equal to the strict book's.
+
+**Values, declared before any output (fixed; cannot be retuned).** Section 3 of the ruling:
+- **LT-a "post-Am.10 expectation": `pricing_lat_entry_s` = 3.010** (14 slots x 0.215 s).
+- **LT-b "live now": `pricing_lat_entry_s` = 4.085** (19 slots x 0.215 s, the median decision-to-landed of the 12 live FLOOR buys in job #2702).
+- **LT-c "slowest live": `pricing_lat_entry_s` = 5.590** (26 slots x 0.215 s, the slowest of the same 12).
+- Entry only; the exit is unchanged in all three. One twin per value for the control (D-type) book; a twin per value for a variant only if that variant already has a book.
+- Derivation (ruling, section 3): job #2702 (median and maximum decision-to-landed slots of the 12 live buys, timings only); 0.215 s/slot from the A3 record 213 to 215 ms/slot.
+- **Declaration.** Before the first twin output, the manager writes a MiScusi notebook entry (kind decision) holding the three values, their derivation and the manifests' sha256, and the sentence: "These latency values were fixed from live timings before any twin output was seen; no other value is used without a new Am.9 erratum; a later measured value (e.g. after Am.10 installs) is a new twin with a new start instant beside these, not a change to them."
+
+**Mechanism (ruling, section 2; derived from code reading, not measured).** `pricing_lat_entry_s` is the total chain time from decision to landing, in the same frame as the live "decision slot to landed slot" figure. For the deciding leg only (ledger tag "1p9"): `k_twin = max(0, ceil(pricing_lat_entry_s / sps - SLOT_TOL) - d)`, d = feed_delay_slots, sps the position's own measured sps_entry. The 1.3 leg and the exit lag are unchanged. Every trade and excluded row of a latency twin carries `pricing_lat_entry_s` and `k_entry_slots` in its `stack` block. With the option absent the engine is byte-identical to today's.
+
+**Rows that can differ (ruling, section 1).** (a) An exit decided before the twin's buy lands is not priced: an `excluded` row, reason `exit_before_entry_landing`, counted and shown, never dropped silently. (b) Entry state, the 15% guard, ssb and nearby (pressure leg), fees by tier and the exit with our own buy re-injected are priced as the engine does at the later landing. (c) The take-profit mark stays the rule's 1.9 s mark, so a later fill makes the realised take-profit return smaller; that is the live effect, kept. (d) Exclusion spans and `need` start from the decision slot and use x_max = sd + d + max k, so a larger k can add a `feed_gap` or `missing_v` exclusion or delay resolution of a position whose exit falls within a few seconds of its entry; counted by reason. (e) Nothing else: if any other row type differs, the twin refuses to start (exit 2) until QP rules.
+
+**First-run conditions (ruling, section 4; the strict books stay at 457795f4).**
+- **L1.** The tool PR merged at commit ML; a 48 h osb_proof PASS at ML.
+- **L2.** Off-path identity: with `pricing_lat_entry_s` absent, an "on" copy of each strict manifest that gets a twin, run at ML over job #2632's 48 h window, has every hour's ledger_md5 and decision_md5 equal to the strict book's stored values.
+- **L3.** Each latency twin at ML, over the same window: decisions md5 (osb_follow.book_decisions_md5) equal to its strict book's at the same last hour, and per-hour decision_md5 equal for every hour.
+- **L4.** Leg identity: for positions priced in both books, the md5 of (position_id, stake, legs.total.flat_1p3, legs.total.press_1p3, calc."1p3") is equal between twin and strict, because the 1.3 leg is untouched.
+- **L5.** Conservation per stake: twin priced + twin excluded (by reason, incl. `exit_before_entry_landing`) = strict priced + strict excluded, over the same position_ids.
+- **L6.** QP OK on the tool PR at its exact head, with a fixture test: a twin whose `pricing_lat_entry_s` gives k_twin = 9 at sps 0.215 reproduces the strict rows byte for byte, apart from the two new stack fields.
+- **L7.** Am.9 Erratum 2 merged, and SEALS (k)/(m) lines amended to name the latency twins' manifest keys and row fields, before the first output.
+- Record the L2 to L5 md5s and counts in each twin's notebook entry.
+
+**Board label and recon use (ruling, section 5).** Driver: manifest keys `pricing_lat_entry_s` (a number from the declared set, nothing else) and `twin_of`; `gap_exclusion` must be "on" (one dimension per twin). Board: pair view beside its own strict book, the latency twin first, never summed; compared only with the control book's latency twin of the SAME `pricing_lat_entry_s`, otherwise n/a (the control's own latency twin gets no comparison); `exit_before_entry_landing` counted and shown.
+- Label (no "price" or "slot" word, which the board's guard refuses): "latency twin: entry lands <L> s after the decision (chain time; live median 4.085 s on 12 buys, job #2702); exits and decisions as the strict book; take-profit mark unchanged, as live".
+- Line: "exit before entry landed (<twin>): n (not counted as a trade)".
+- Recon: it may show S1 (entry slip) and S2 (net) against LT-b as a labelled diagnostic column. The bands (H1 to H3, S1 to S4) and the recon status stay computed against the control book (strict model) until a QP ruling on a recon PR moves the comparison. S4 keeps measuring live latency against the strict model's 3.44 s.
+
+**What must not be concluded (ruling, section 6).**
+- No stake, limit, budget or live step rests on a latency twin (Am.6, Am.9 §3). Neither set is decision-grade while the recon says NOT COMPARABLE.
+- The latency values are not a choice among results. No value may be picked, dropped or replaced after seeing its numbers.
+- Every twin row adds to n_books_watched and the best-of-N sentence.
+- A latency twin measures the cost of slower fills on the same decisions. It is not evidence that any book makes money, and not evidence about Am.10's live effect until live fills after Am.10 are reconciled.
+
+**What it does not change.** The strict books (changing their latency or d is a new simulator version, so new books, Am.9 §1; shown first in twins), Erratum 1's gap twins, any limit, threshold, window, pin or clock, and the promotion gate. No book has cleared the promotion gate.
+
 ## Amendment 10 (2026-11-14): floor-lane-1 executor key `rpc_rps` 4.0
 **Status: DRAFT until merge. NOT installed. It authorises nothing until the owner's own word and a Helm install.** Written 2026-11-14T10:15Z (`date -u`) for manager23, at main e5fd255b. Amendment 10 was the next free number (Amendment 9 and its Erratum 1 are the last). Records only: no code, host or live file is touched. Nothing here says FLOOR or any variant makes money, and no promotion-gate threshold changes.
 
@@ -823,3 +866,14 @@ Sources (host paths under `/data/mal/hunt-1008/ops/reports/2026-11-14/`): `floor
 **8. Scope.** Later steps (a priority context for the pre-send reads, removing duplicate reads, a warm blockhash) are separate code PRs and separate amendments.
 
 **Unchanged.** §2 (every limit, the STOP files, keys), §3 to §7, the Amendment 6 gate and its count, Amendments 1 to 9 and their errata, EXP-029 Erratum 1g rule 3 (a later registration splits trades by host sha and executor config, using the install instants recorded here), and the promotion gate. No book has cleared the promotion gate.
+
+## Amendment 10, Erratum 1 (2026-11-14): the simulator-latency sentence
+**Status: DRAFT until merge.** Written 2026-11-14T11:40Z (`date -u`) for manager23. Records only; wording correction. Source: the QP ruling `/data/mal/hunt-1008/ops/QP-RULING-1114-osb-latency-twin.md` (sha256 prefix cd2bfde2), "Verdict on questions 1 and 2". As with Amendment 9 Erratum 1, the amended sentence is not edited in place; this block follows Amendment 10 and controls where they differ.
+
+**Wrong sentence (Amendment 10, "Why"):** "**What the simulator assumes:** 1.9 s from decision to landed. The live buys land at 17 to 26 slots (median 19), which is later than that assumption."
+
+**Corrected statement.** The strict books do not price a flat 1.9 s landing. The engine indexes tape slots and converts seconds to slots with the measured seconds per slot, and it adds a fixed feed delay d = 7 slots (held in slots, measured once) before the 1.9 s latency. At about 215 ms a slot the strict entry k(1.9) = ceil(1.9 / 0.215) = 9 slots, so the strict books land an entry 7 + 9 = 16 slots (about 3.44 s) after the decision. Live: median 19 slots (about 4.09 s), slowest 26 (about 5.59 s). The simulator is therefore about 3 slots (about 0.65 s) early on the median and up to 10 slots (about 2.15 s) early on the slowest buy, not about 2 s early across the board. If Amendment 10 works as its arithmetic expects (about 14 slots), live would land slightly earlier than the simulator's 16.
+
+**Measured and derived.** Measured: job #2702 timings, 12 live buys (decision slot to landed slot 17 to 26, median 19). Derived from code reading, not measured: the 16 slots (QP reading of `ArenaEngine.sps()`, `k_slots`, FEED_D) and the 0.215 s per slot (A3 record 213 to 215 ms/slot). The 14-slot figure is arithmetic, not measured.
+
+**What it changes.** Only the sentence above. It changes no condition, limit, measure or install step of Amendment 10: item 5's class thresholds are on the bridge `decision_to_send_ms`, not on a simulator comparison. The recon's S4 band is not a valid yardstick as written (already stated in Amendment 10 item 7). Latency pricing twins of the simulator are in Amendment 9 Erratum 2. Nothing here says FLOOR or any variant makes money. No book has cleared the promotion gate.
