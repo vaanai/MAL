@@ -15,7 +15,7 @@ import osb_board as B  # noqa: E402
 import osb_follow as O  # noqa: E402
 from tools.test_arena_paper import SC, _row, _tape, register_bot, tms  # noqa: E402
 from tools.test_osb_board import CONTROL_ROWS, VARIANT_ROWS, START, ms, load, make_book, row, run, snap_root, tp  # noqa: E402,F401
-from tools.test_osb_board_twin import excl, pbooks  # noqa: E402
+from tools.test_osb_board_twin import excl, pbooks, set_dmd5  # noqa: E402
 from tools.test_osb_follow import (EK, FAST, _env, gworld, link, manifest, one_shot, run_once, tree_diff, world)  # noqa: E402,F401  (_env: the autouse env fixture of that module)
 import floor_gap_range_engine as G  # noqa: E402
 
@@ -296,8 +296,6 @@ def lat_world(tmp, with_control_twins=(4.085,), variant_twins=(4.085, 5.590)):
         mp, out = make_book(tmp, bid, rows, ov=ov, twin_of=strict, pricing_lat_entry_s=lat)
         specs.append((mp, "variant", strict))
         md5s[out] = "a" if strict == "A" else "b"
-    for out, c in md5s.items():
-        (out / "decisions.md5").write_text(c * 32 + "\n")
     return pbooks(tmp, specs)
 
 
@@ -338,7 +336,7 @@ def test_latency_twins_do_not_take_the_gap_twin_slot_and_rows_count_in_best_of_n
 
 def test_differing_decisions_show_the_latency_twin_as_a_separate_book(tmp_path):
     p = lat_world(tmp_path, variant_twins=())
-    (tmp_path / "books" / "A4" / "decisions.md5").write_text("c" * 32 + "\n")
+    set_dmd5(tmp_path / "books" / "A4", "c" * 32)
     res, md = load(run(tmp_path, p)[1]), (tmp_path / "board" / "board.md").read_text()
     pr = next(x for x in res["pairs"] if x["twin"] == "A4")
     assert pr["status"] == "differ" and "twin decisions differ: not a pricing-only twin" in md and "## Latency pair" not in md

@@ -13,9 +13,13 @@ Forward (Am.9 section 1): an entry is forward iff its entry instant >= the book'
 are the complete UTC days from the day holding the start instant on; forward_all counts forward entries closed on those days.
 unpriced_entries: entries present in the ledger with no priced exit decision: engine_excluded (the engine dropped it) plus closed rows with no exit instant. Open entries (no exit decision by
 the tape end) are listed in `open`, not counted here. Entries of an incomplete day are never dropped: they sit in day_in_progress / the trade list.
-Twins (QP ruling 2026-11-14 Q6): a book entry may carry "twin_of": "<book_id>" (the strict book); the twin's manifest has gap_exclusion "hold". When both books' decisions.md5 files (written by osb_follow) are equal the board
-adds a pair view (board.json `pairs`, a "Pair" section in board.md): the incl.-gap-in-hold set first, the strict set beside it, never one summed figure. Differing or missing md5: the twin is shown as a separate book with a line saying so. A book
+Twins (QP ruling 2026-11-14 Q6): a book entry may carry "twin_of": "<book_id>" (the strict book); the twin's manifest has gap_exclusion "hold". When the two books' host decision digests (decision_md5 in md5-by-hour.jsonl, at the latest hour present in both; never decisions.md5 files or ledger rows; QP ruling ADD2 2026-11-14) are equal and both are at the same last hour the board
+adds a pair view (board.json `pairs`, a "Pair" section in board.md): the incl.-gap-in-hold set first, the strict set beside it, never one summed figure. A differing decision_md5 at the latest common hour: the twin is shown as a separate book with a line saying so. A book
 without a twin renders exactly as before.
+decision_md5 is cumulative through its hour (md5 over all entry/exit decision rows of the run, taken after that hour ran), so the latest common hour is the only one compared. A missing or unreadable file, no common hour or a
+book still starting is "pending", never "differ". Hours differ but identity holds at the common hour: "twin identity confirmed through <H>; pair view when both are at the same hour". Pending more than 6 h of wall time: "twin identity pending for <n> h: ...; check the twin's job"
+(from 24 h: the manager stops the twin or records why); pending_since_utc is carried in board.json pairs and read back from the previous board.json in the out dir (absent = starts now).
+A pending twin is not in the pair view and is not shown as a separate priced book (its rows are withheld, state "pending"), and the header's "tape through" ignores it ("catching up (pending twins only ...): <ids>" is printed; STALE books are not named there, their state column shows it).
 Latency twins (QP ruling 2026-11-14 osb latency twin, sections 2 and 5): a book entry whose manifest carries pricing_lat_entry_s (and twin_of, gap_exclusion on) is a pricing-only latency twin of its strict book; its pair view
 ("Latency pair" section, board.json `pairs` entries with kind "latency") shows the twin first and the strict book beside it, with the ruling's label and the line "exit before entry landed (<twin>): n (not counted as a trade)".
 A latency twin is compared only with the control book's latency twin of the SAME pricing_lat_entry_s (else n/a; the control's own latency twin gets no comparison), never with a strict book, a gap-in-hold twin or a twin
@@ -67,6 +71,12 @@ class Refusal(Exception):
 
 def utc(ms):
     return AB._utc(ms)
+
+
+def parse_utc_ms(text):
+    """the inverse of utc(): '2026-11-16T06:01:00Z' -> ms (ValueError when it does not parse)"""
+    import datetime as _dt
+    return int(_dt.datetime.strptime(text, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=_dt.timezone.utc).timestamp() * 1000)
 
 
 def day_of(ms):
@@ -154,7 +164,7 @@ def stored_hours(out_root):
     out = []
     try:
         text = (Path(out_root) / "md5-by-hour.jsonl").read_text()
-    except OSError:
+    except (OSError, ValueError):  # a non-UTF-8 byte is an empty list, not a crash of the board loop
         return out
     for line in text.split("\n"):
         try:
@@ -455,14 +465,6 @@ def book_state(status, now_ms):
     return "STALE" if now_ms - wall > STALE_MS else "running"
 
 
-def read_decisions_md5(b):
-    """the book's decisions md5: its decisions.md5 file, else computed from its ledger rows (osb_follow.book_decisions_md5; never written by the board). None = unreadable"""
-    try:
-        return O.book_decisions_md5(b["m"]["out_root"])
-    except (OSError, ValueError):
-        return None
-
-
 def book_row(b, info, srs, control, n_watched, control_twin=None, control_lat=None):
     """control: the strict control (a strict book compares only with it); control_twin: the control's incl.-gap-in-hold twin (a twin compares only with it, never with a strict book; none = n/a);
     the control's own twin has no comparison (role text 'control (incl. gap-in-hold twin)'). control_lat: {pricing_lat_entry_s: (book, rows)} of the control's latency twins: a latency twin compares only with
@@ -559,7 +561,6 @@ def recon_state(live, now_ms, control_id=None):
 
 
 PAIR_DIFFER = "twin decisions differ: not a pricing-only twin"
-PAIR_PENDING = "twin identity not yet checked (decisions.md5 missing): shown as a separate book"
 LABEL_STRICT = "strict: trades with any feed gap in the 24 h hold left out (%d left out, all days); in Nov 2-12 the left-out trades were net negative (DEC-035 Am.6 Erratum 3), so strict can overstate"
 LABEL_HOLD = "incl. gap-in-hold: priced through feed gaps inside the hold; take-profit blind during a gap, as live is when its feed has the same gap"
 LABEL_LAT = "latency twin: entry lands %s s after the decision (chain time; live median 4.085 s on 12 buys, job #2702); exits and decisions as the strict book; take-profit mark unchanged, as live"  # QP ruling 2026-11-14 osb latency twin, section 5, verbatim
@@ -567,8 +568,100 @@ LINE_EXIT_BEFORE = "exit before entry landed (%s): %d (not counted as a trade)"
 LABEL_NEITHER = "neither set is decision-grade (recon NOT COMPARABLE); no stake step rests on either (Am.6)"
 
 
-def pair_books(books):
-    """[{twin, strict, status}] for every book entry with twin_of; marks b["pair"] = "twin"|"strict" on both books only when their decisions.md5 are equal (a pricing-only twin)"""
+PAIR_HOURS = "twin identity pending: the twin is at %s, its strict book at %s; compared when both are at the same hour"
+PAIR_CONFIRMED = "twin identity confirmed through %s; pair view when both are at the same hour"
+PAIR_LONG = "twin identity pending for %d h: the twin is at %s, its strict book at %s; check the twin's job"
+PAIR_LONG24 = "; the manager stops the twin or records why"
+PENDING_WARN_MS, PENDING_STOP_MS = 6 * 3_600_000, 24 * 3_600_000
+
+
+def stored_digests(out_root):
+    """{hour: (end_ms, decision_md5)} of the verified hours in the active run's md5-by-hour.jsonl (a torn or bad line is skipped). decision_md5 is floor_lane_host.decision_digest (osb_follow.decision_md5): an md5 over ALL
+    the run's entry/exit decision-log rows, written at decision time, taken right after hour H ran: it is CUMULATIVE through H (not per hour), so equal values at the latest common hour mean the whole decision history through H is equal."""
+    out = {}
+    try:
+        text = (Path(out_root) / "md5-by-hour.jsonl").read_text()
+    except (OSError, ValueError):  # ValueError: a non-UTF-8 byte (UnicodeDecodeError)
+        return out
+    for line in text.split("\n"):
+        if not line.strip():
+            continue
+        try:
+            r = json.loads(line)
+        except ValueError:
+            break  # unreadable from this line on (a torn last line is the usual case)
+        if not (isinstance(r, dict) and isinstance(r.get("end_ms"), int) and not isinstance(r["end_ms"], bool) and isinstance(r.get("hour"), str) and isinstance(r.get("decision_md5"), str)):
+            break  # a non-object or a line missing a field: unreadable from here on
+        out[r["hour"]] = (r["end_ms"], r["decision_md5"])
+    return out
+
+
+def identity(t, st):
+    """-> ("same"|"differ"|None, H): the two books' decision_md5 at the latest hour H present in BOTH md5-by-hour.jsonl files (QP ruling 2026-11-14 board gap-in-hold ADD2). None = no common hour / unreadable: never "differ"."""
+    a, c = stored_digests(t["m"]["out_root"]), stored_digests(st["m"]["out_root"])
+    common = [h for h in a if h in c]
+    if not common:
+        return None, None
+    h = max(common, key=lambda k: a[k][0])
+    return ("same" if a[h][1] == c[h][1] else "differ"), h
+
+
+def hour_now(b):
+    """the book's last verified hour as stored right now (re-read), else None"""
+    try:
+        h = stored_hours(Path(b["m"]["out_root"]))
+    except (OSError, ValueError):
+        return None
+    return h[-1]["hour"] if h else None
+
+
+def _pair_entry(t, st, infos, now_ms, prev_since):
+    """the pair entry of one twin (see pair_books); may raise: pair_books ends the pair pending then"""
+    tid, sid = t["m"]["book_id"], st["m"]["book_id"]
+    ti, si = infos.get(tid), infos.get(sid)
+    th, sh = (ti or {}).get("last_hour"), (si or {}).get("last_hour")
+    starting = ti is None or si is None or ti["state"] == "starting" or si["state"] == "starting" or th is None or sh is None
+    ident, h = (None, None) if starting else identity(t, st)
+    if not starting and (hour_now(t) != th or hour_now(st) != sh):
+        ident, h = None, None  # a book moved between the reads: nothing is decided in this build
+    status, line = "pending", None
+    if ident == "differ":
+        status, line = "differ", PAIR_DIFFER
+    elif ident == "same" and th == sh and h == th:
+        status = "pair"
+    elif ident == "same":
+        line = PAIR_CONFIRMED % h
+    ent = {"twin": tid, "strict": sid, "status": status, "line": line}
+    if status == "pending":
+        ent.update(twin_last_hour=th, strict_last_hour=sh)
+        if ent["line"] is None:
+            ent["line"] = PAIR_HOURS % (th or "no hour yet", sh or "no hour yet")
+        since = (prev_since or {}).get(tid)
+        ent["pending_since_source"] = "carried" if isinstance(since, str) and since else "reset"
+        if not isinstance(since, str) or not since:
+            since = utc(now_ms) if now_ms is not None else None
+        ent["pending_since_utc"] = since
+        try:
+            age = now_ms - parse_utc_ms(since) if since and now_ms is not None else 0
+        except ValueError:
+            age = 0
+        if age > PENDING_WARN_MS:
+            ent["line"] = PAIR_LONG % (age // 3_600_000, th or "no hour yet", sh or "no hour yet") + (PAIR_LONG24 if age >= PENDING_STOP_MS else "")
+    return ent
+
+
+def pair_books(books, infos, now_ms=None, prev_since=None):
+    """[{twin, strict, status}] for every book entry with twin_of (ADD2 of the QP ruling 2026-11-14, board gap-in-hold; no ledger rows, no cut, no decisions.md5 file in the pairing).
+    Identity: decision_md5 of both books' md5-by-hour.jsonl at the latest hour H present in both (the host decision digest, cumulative through H; see stored_digests). Different = "differ" (twin shown as a separate book).
+    Missing or unreadable file, no common hour, torn last line, or a book still starting = "pending", never "differ".
+    Display: the pair view only when both books report the SAME last hour (infos: {book_id: inspect_book result}), that hour is H, and identity holds; marks b["pair"] = "twin"|"strict".
+    Otherwise (identity confirmed through H but the hours differ, or identity not yet readable) the twin is "pending": b["pair"] = "pending", not in the pair view, its rows withheld (state "pending"), so a half-replayed twin
+    contributes no number. A stored last hour that changed since the info read (re-read after the digests) also gives "pending" for this build.
+    Each pair is evaluated in its own try (_pair_entry): ANY exception ends that pair "pending" (twin rows withheld, no detail) and never touches another pair or book. A non-UTF-8 byte or a bad line in md5-by-hour.jsonl is
+    unreadable from that line on (pending, never "differ").
+    Escalation: a pending pair carries pending_since_utc (prev_since {twin id: iso} from the previous board.json, else now_ms; cleared when the pair is not pending). Pending more than 6 h of wall time: line PAIR_LONG;
+    from 24 h the line adds that the manager stops the twin or records why. pending_since_source is "carried" when read back from the previous board.json, "reset" when the clock starts now (no or unreadable previous file,
+    no entry for this pair): a pair removed from BOOKS.json and added back therefore restarts the 6 h / 24 h clock and shows "reset"."""
     by_id = {b["m"]["book_id"]: b for b in books}
     out = []
     for b in books:
@@ -577,19 +670,23 @@ def pair_books(books):
         if t.get("twin_of") is None:
             continue
         st = by_id[t["twin_of"]]
-        a, c = read_decisions_md5(st), read_decisions_md5(t)
-        status = "pending" if a is None or c is None else "pair" if a == c else "differ"
-        ent = {"twin": t["m"]["book_id"], "strict": st["m"]["book_id"], "status": status,
-               "line": {"pair": None, "differ": PAIR_DIFFER, "pending": PAIR_PENDING}[status]}
+        tid, sid = t["m"]["book_id"], st["m"]["book_id"]
+        try:
+            ent = _pair_entry(t, st, infos, now_ms, prev_since)
+        except Exception:  # noqa: BLE001 - one pair never takes the board or another pair down: pending, twin rows withheld, no detail
+            ent = {"twin": tid, "strict": sid, "status": "pending", "line": PAIR_HOURS % ("no hour yet", "no hour yet"), "twin_last_hour": None, "strict_last_hour": None, "pending_since_utc": None, "pending_since_source": "reset"}
+        status = ent["status"]
         if lat_of(t) is not None:
             ent.update(kind="latency", pricing_lat_entry_s=lat_of(t), label=LABEL_LAT % ("%.3f" % lat_of(t)))
         out.append(ent)
         if status == "pair":
             t["pair"], st["pair"] = "twin", "strict"
+        elif status == "pending":
+            t["pair"] = "pending"
     return out
 
 
-def build(books, live, now_ms, roots=None):
+def build(books, live, now_ms, roots=None, prev_since=None):
     """one failing book is shown with state ERROR (exception class only) and never stops the others"""
     n_watched = sum(len(b["m"]["stakes_sol"]) for b in books)
     sweep_snapshots()
@@ -602,7 +699,7 @@ def build(books, live, now_ms, roots=None):
             info, srs = {"state": "ERROR", "status": {}, "end": None, "last_hour": None, "pnl": None, "error": type(e).__name__}, None
         infos.append((b, info, srs))
     control = next(((b, srs) for b, _, srs in infos if b["role"] == "control" and srs is not None), None)
-    pairs = pair_books(books)
+    pairs = pair_books(books, {b["m"]["book_id"]: i for b, i, _ in infos}, now_ms, prev_since)
     control_twin, control_lat = None, {}
     if control is not None:
         control_twin = next(((b, srs) for b, _, srs in infos if b.get("twin_of") == control[0]["m"]["book_id"] and b.get("pair") == "twin" and srs is not None and lat_of(b) is None), None)
@@ -612,6 +709,12 @@ def build(books, live, now_ms, roots=None):
     out_books = []
     for i, (b, info, srs) in enumerate(infos):
         try:
+            if b.get("pair") == "pending":  # a twin not yet at its strict book's hour: no numbers, no pair view
+                row = withheld(i, b, "pending")
+                row.pop("error_class")
+                row.update(state="pending", title="pending", last_hour=info["last_hour"])
+                out_books.append(row)
+                continue
             row = book_row(b, info, srs, control, n_watched, control_twin, control_lat)
             if control_twin is not None and b is control_twin[0]:
                 row["role"] = "control (incl. gap-in-hold twin)"
@@ -623,7 +726,8 @@ def build(books, live, now_ms, roots=None):
         except Exception as e:  # noqa: BLE001
             row = withheld(i, b, type(e).__name__)
         out_books.append(row)
-    ends = [i["end"] for _, i, srs in infos if srs is not None and i["end"] is not None]
+    ends = [i["end"] for b, i, srs in infos if srs is not None and i["end"] is not None and b.get("pair") != "pending" and i["state"] != "starting"]
+    catching = [b["m"]["book_id"] for b, i, srs in infos if b.get("pair") == "pending"]
     here = os.path.dirname(os.path.abspath(__file__))
     ver = " ".join("%s=%s" % (n, AB._blob_id(os.path.join(here, n))) for n in ("osb_board.py", "floor_nov_pnl.py", "floor_forward_ab.py", "osb_follow.py"))
     recon, recon_line, live, sim_off = recon_state(live, now_ms, next((b["m"]["book_id"] for b in books if b["role"] == "control"), None))
@@ -635,6 +739,8 @@ def build(books, live, now_ms, roots=None):
            "caveat": "%s (every book x stake row counts, also rows of books still starting). Book start instants and parameters are fixed; a change is a new book. Entries before a book's start instant are in-sample, also when they close later." % (WATCH_SENTENCE % n_watched),
            "booking": "net SOL is booked on the exit (close) UTC day; the complete-day windows (today, d7, forward_all, incl_backfill) count only UTC days with the tape at least 90 min past the day's end; day_in_progress is a partial day",
            "recon": recon, "recon_line": recon_line, "decision_grade": DECISION_GRADE, "limit_layer": "not applied", "live": live, "books": out_books}
+    if catching:
+        res["catching_up"] = catching
     if pairs:
         res["pairs"] = pairs
     if sim_off:
@@ -713,7 +819,8 @@ def exit_label(reason, bk):
 
 def board_md(res):
     md = ["# Open sim board (FLOOR open simulation books, paper)", "", "> " + res["banner"], "",
-          "- Generated %s; tape through %s (the slowest book with data); board_version %s." % (res["generated_utc"], res["tape_through_utc"] or "n/a (no book has a completed hour)", res["board_version"]),
+          "- Generated %s; tape through %s (the slowest book with data); board_version %s." % (res["generated_utc"], res["tape_through_utc"] or "n/a (no book has a completed hour)", res["board_version"])] + (
+          ["- catching up (pending twins only; a STALE book is shown by its own state): %s." % ", ".join(res["catching_up"])] if res.get("catching_up") else []) + [
           "- Recon: %s." % res["recon_line"]] + (["- " + SIM_OFF + ": the live bot and book A disagree outside the bands; every figure below is greyed and no live step rests on it."] if res.get("sim_off") else []) + [
           "- Net SOL is flat 15% fail leg / pressure leg, booked on the EXIT (close) UTC day. Complete UTC days only (tape at least 90 min past the day's end) in today, 7-day, forward and all; "
           "day in progress is a PARTIAL day (trades closed after the newest complete day), shown so trades are visible as they happen.",
@@ -822,8 +929,17 @@ def signature(books, now_ms):
     return tuple(sig)
 
 
+def prev_pending_since(out_dir):
+    """{twin id: pending_since_utc} of the pending pairs in the previous board.json of the out dir; absent or unreadable = {} (pending starts now)"""
+    try:
+        prev = json.loads(Path(out_dir, "board.json").read_text())
+        return {p["twin"]: p["pending_since_utc"] for p in prev.get("pairs", []) if p.get("status") == "pending" and isinstance(p.get("pending_since_utc"), str)}
+    except (OSError, ValueError, KeyError, TypeError, AttributeError):
+        return {}
+
+
 def one_build(books, live, out_dir, now_ms, roots):
-    res = build(books, live, now_ms, roots)
+    res = build(books, live, now_ms, roots, prev_pending_since(out_dir))
     write_board(res, out_dir)
     first = [(bk["id"], bk["state"], (bk["rows"][0]["windows"]["forward_all"]["n_closed"] if bk["rows"] else None)) for bk in res["books"]]
     print("osb_board: generated %s tape_through %s books_with_data %d n_closed_first_stake(forward) %s" % (res["generated_utc"], res["tape_through_utc"], sum(1 for bk in res["books"] if bk["rows"]), first), flush=True)
