@@ -9,7 +9,11 @@ open positions stay in memory across hours. The tape_dir is only READ (a separat
 Manifest (JSON, required): book_id, title, host ("lane" | "hostv2"), rule_overrides {NAME: number} (only Q_STAR AGE_LO AGE_HI VOL_MIN_LAMPORTS R6_MAX TP HOLD_S), stakes_sol [..],
 send_lamports, start_hour "YYYY-MM-DDTHH", seed_from_hour (>= SEED_MIN_H = 201 h before start_hour), tape_dir, out_root; optional: lane {gap_lookback_s, status_span_no_loss,
 cheap_restart} (host "lane" only; replay never runs lane_start, so cheap_restart only labels the checkpoint), gap_exclusion "on"|"off"|"hold" (default "on"; "hold" = a gap-in-hold twin: the feed_gap exclusion only for a gap in the entry or exit window,
-trades with a gap elsewhere in the hold priced and flagged gap_in_hold / blind_s / gap_count, see scripts/research/floor_gap_range_engine.py), twin_of "<book_id>" (only with gap_exclusion "hold").
+trades with a gap elsewhere in the hold priced and flagged gap_in_hold / blind_s / gap_count, see scripts/research/floor_gap_range_engine.py), twin_of "<book_id>" (only with gap_exclusion "hold" or with
+pricing_lat_entry_s), pricing_lat_entry_s (a LATENCY twin; QP ruling 2026-11-14 osb latency twin, sections 2 and 3: the TOTAL chain time in seconds from the decision to the entry landing, exactly one of
+LATENCY_VALUES_S = 3.010, 4.085, 5.590, only together with twin_of, gap_exclusion "on" or absent; the engine converts it to slots with its own measured seconds per slot; the exit and every decision are the strict
+book's, so decisions.md5 equals the strict book's). A latency twin differs from its strict book in no other key than book_id, title, out_root, twin_of and pricing_lat_entry_s (twin_manifest_diff): the board checks
+it for every pair, and the driver checks it at start when given --strict-manifest PATH (refused, exit 2, on a difference).
 The sha256 of the canonical manifest is written to out_root/manifest.sha256 on first start; a later start with a different manifest is refused (a tweak is a new book).
 
 Layout under out_root (same as floor_nov_paper.py, inside a per-run directory so floor_nov_pnl.py can read `book/ledger`): runs/NNNN/{ledger, bots.json, variant.json, decision log};
@@ -24,7 +28,7 @@ decisions.md5 (out_root, rewritten after every hour of an active book): md5 of t
 so a twin can be compared with its strict book (a pricing-only twin has the same value).
 Exit codes: 0 ok (with --once and stored hours not yet covered by the tape: 0, `book` unmoved, a message on stderr); 1 uncaught error (OSError, bad JSON, disk full: a traceback);
 2 refused (manifest, path, override, pins, code version, lock held by another process); 3 host fatal during run (R.HostFatal: a log or ledger write failed); 4 md5 mismatch against the stored segment.
-Usage: osb_follow.py MANIFEST.json [--once] [--max-hours N]
+Usage: osb_follow.py MANIFEST.json [--once] [--max-hours N] [--strict-manifest PATH]
 """
 import argparse, dataclasses, fcntl, hashlib, json, math, os, re, sys, time
 from datetime import datetime, timezone
@@ -48,8 +52,10 @@ OSB_ROOT = "/data2/mal/scratch/floor-open-sim"  # the only root a tape_dir or ou
 HOUR_MS = 3_600_000
 POLL_S = 60
 EXIT_OK, EXIT_REFUSED, EXIT_FATAL, EXIT_MISMATCH = 0, 2, 3, 4
-MANIFEST_KEYS = {"book_id", "title", "host", "rule_overrides", "stakes_sol", "send_lamports", "start_hour", "seed_from_hour", "tape_dir", "out_root", "lane", "gap_exclusion", "twin_of"}
-REQUIRED_KEYS = MANIFEST_KEYS - {"lane", "gap_exclusion", "twin_of"}
+MANIFEST_KEYS = {"book_id", "title", "host", "rule_overrides", "stakes_sol", "send_lamports", "start_hour", "seed_from_hour", "tape_dir", "out_root", "lane", "gap_exclusion", "twin_of", "pricing_lat_entry_s"}
+REQUIRED_KEYS = MANIFEST_KEYS - {"lane", "gap_exclusion", "twin_of", "pricing_lat_entry_s"}
+LATENCY_VALUES_S = (3.010, 4.085, 5.590)  # QP ruling 2026-11-14 osb latency twin, section 3: declared before any output; nothing else is accepted (a new value needs a new erratum)
+TWIN_FREE_KEYS = {"book_id", "title", "out_root", "twin_of", "pricing_lat_entry_s"}  # the only manifest keys a latency twin may differ from its strict book in (section 2)
 LANE_KEYS = {"gap_lookback_s", "status_span_no_loss", "cheap_restart"}
 OVERRIDE_TYPES = {"Q_STAR": float, "AGE_LO": int, "AGE_HI": int, "VOL_MIN_LAMPORTS": float, "R6_MAX": float, "TP": float, "HOLD_S": float}
 
@@ -117,12 +123,52 @@ def load_manifest(path):
         raise Refused("'lane' belongs to host 'lane' only")
     if m.get("gap_exclusion", "on") not in ("on", "off", "hold"):
         raise Refused("gap_exclusion must be 'on', 'off' or 'hold'")
+    if "pricing_lat_entry_s" in m:  # explicit refusals throughout (an assert vanishes under python -O)
+        v = m["pricing_lat_entry_s"]
+        if "twin_of" not in m:
+            raise Refused("pricing_lat_entry_s needs twin_of (a latency twin of a strict book)")
+        if m.get("gap_exclusion", "on") != "on":
+            raise Refused("pricing_lat_entry_s needs gap_exclusion 'on' or absent (one dimension per twin; a latency twin cannot also be a gap-in-hold twin)")
+        if isinstance(v, bool) or not isinstance(v, (int, float)) or v not in LATENCY_VALUES_S:
+            raise Refused("pricing_lat_entry_s must be one of the declared values %s" % (list(LATENCY_VALUES_S),))
     if "twin_of" in m:
-        if m.get("gap_exclusion") != "hold":
-            raise Refused("twin_of needs gap_exclusion 'hold'")
+        if "pricing_lat_entry_s" not in m and m.get("gap_exclusion") != "hold":
+            raise Refused("twin_of needs gap_exclusion 'hold' or pricing_lat_entry_s")
         if not isinstance(m["twin_of"], str) or not re.fullmatch(r"[A-Za-z0-9_.-]{1,64}", m["twin_of"]) or m["twin_of"] == m["book_id"]:
             raise Refused("twin_of must be another book_id matching [A-Za-z0-9_.-]{1,64}")
     return m
+
+
+def twin_manifest_diff(twin, strict):
+    """-> sorted list of the manifest keys (and problems) that make `twin` (a latency twin's manifest) something other than a pricing-only twin of `strict`: [] = fine. QP ruling 2026-11-14 osb latency
+    twin, section 2. Every key other than TWIN_FREE_KEYS must be equal (gap_exclusion compared with its default "on"); the strict manifest must itself be a strict book (no twin_of, no pricing_lat_entry_s,
+    gap_exclusion "on"), and the twin's twin_of must name it."""
+    bad = []
+    if strict.get("book_id") != twin.get("twin_of"):
+        bad.append("twin_of is not the strict manifest's book_id")
+    for k in ("twin_of", "pricing_lat_entry_s"):
+        if k in strict:
+            bad.append("strict manifest carries %s" % k)
+    if strict.get("gap_exclusion", "on") != "on":
+        bad.append("strict manifest gap_exclusion is not 'on'")
+    for k in sorted((set(twin) | set(strict)) - TWIN_FREE_KEYS - {"gap_exclusion"}):
+        if twin.get(k, None) != strict.get(k, None) or (k in twin) != (k in strict):
+            bad.append(k)
+    if twin.get("gap_exclusion", "on") != strict.get("gap_exclusion", "on"):
+        bad.append("gap_exclusion")
+    return bad
+
+
+def check_strict_manifest(m, strict_manifest_path):
+    """driver-side start check (--strict-manifest PATH): the twin's manifest against its strict book's. Refused (exit 2) on any difference; a strict book needs no such file"""
+    if strict_manifest_path is None:
+        return
+    if "pricing_lat_entry_s" not in m:
+        raise Refused("--strict-manifest is for a latency twin (pricing_lat_entry_s)")
+    s = load_manifest(strict_manifest_path)
+    bad = twin_manifest_diff(m, s)
+    if bad:
+        raise Refused("latency twin %s differs from its strict book %s in %s: not a pricing-only twin" % (m["book_id"], m["twin_of"], bad))
 
 
 def manifest_sha256(m):
@@ -197,7 +243,8 @@ def build_book(m, run_dir, *, table_mode=None, engine_kw=None):
                                                        "book_id": m["book_id"], "host": m["host"], "reason_labels_fixed": True}, indent=1, sort_keys=True) + "\n")
     scratch_register(registry, start_ms)
     cfg = dataclasses.replace(stack_config_for(2, R.DEFAULT_FEED_DELAY_SLOTS), send=m["send_lamports"], stakes_sol=tuple(float(x) for x in m["stakes_sol"]))
-    engine = GapRangeEngine(ledger, registry, cfg=cfg, gap_exclusion={"on": True, "off": False, "hold": "hold"}[m.get("gap_exclusion", "on")], **(engine_kw or {}))
+    engine = GapRangeEngine(ledger, registry, cfg=cfg, gap_exclusion={"on": True, "off": False, "hold": "hold"}[m.get("gap_exclusion", "on")],
+                            **({"pricing_lat_entry_s": float(m["pricing_lat_entry_s"])} if "pricing_lat_entry_s" in m else {}), **(engine_kw or {}))
     warm_ms = start_ms - WARM_MIN_DEFAULT * R.MIN_MS
     if m["host"] == "lane":
         lane = m.get("lane", {})
@@ -348,10 +395,10 @@ def _flip(out_root, run_dir):
 
 
 # ------------------------------------------------------------------------------------------------------------------------------ follow
-def follow(manifest_path, once=False, max_hours=None, *, sleep_fn=time.sleep, _roots=None, _table_mode=None, _engine_kw=None):
-    """-> exit code. _roots / _table_mode / _engine_kw are test-only (the CLI does not expose them)."""
+def follow(manifest_path, once=False, max_hours=None, *, sleep_fn=time.sleep, _roots=None, _table_mode=None, _engine_kw=None, strict_manifest=None):
+    """-> exit code. _roots / _table_mode / _engine_kw are test-only (the CLI does not expose them). strict_manifest: a latency twin's strict book's manifest path (start check)."""
     try:
-        return _follow(manifest_path, once, max_hours, sleep_fn, _roots or (OSB_ROOT,), _table_mode, _engine_kw)
+        return _follow(manifest_path, once, max_hours, sleep_fn, _roots or (OSB_ROOT,), _table_mode, _engine_kw, strict_manifest)
     except Refused as e:
         print("osb_follow: refused: %s" % e, file=sys.stderr)
         return EXIT_REFUSED
@@ -366,8 +413,9 @@ def follow(manifest_path, once=False, max_hours=None, *, sleep_fn=time.sleep, _r
         return EXIT_REFUSED
 
 
-def _follow(manifest_path, once, max_hours, sleep_fn, roots, table_mode, engine_kw=None):
+def _follow(manifest_path, once, max_hours, sleep_fn, roots, table_mode, engine_kw=None, strict_manifest=None):
     m = load_manifest(manifest_path)
+    check_strict_manifest(m, strict_manifest)
     guard_paths(m, roots)
     TP.require_files_ok(m["tape_dir"], roots)  # the folder and the realpath of every tape-* entry (seed hours and hours ahead of the cursor included)
     out_root = Path(m["out_root"])
@@ -461,8 +509,9 @@ def main(argv=None):
     ap.add_argument("manifest")
     ap.add_argument("--once", action="store_true", help="process the closed hours present now, then exit")
     ap.add_argument("--max-hours", type=int, default=None, help="stop after this many processed hours (tests, catch-up)")
+    ap.add_argument("--strict-manifest", default=None, help="a latency twin's strict book's manifest: refuse at start if the twin differs in any key other than book_id, title, out_root, twin_of, pricing_lat_entry_s")
     a = ap.parse_args(argv)
-    return follow(a.manifest, once=a.once, max_hours=a.max_hours)
+    return follow(a.manifest, once=a.once, max_hours=a.max_hours, strict_manifest=a.strict_manifest)
 
 
 if __name__ == "__main__":
