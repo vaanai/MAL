@@ -27,7 +27,7 @@ def cached(kind, key, method, params):
     return r
 
 
-latest = c.call("getSlot", [{"commitment": "finalized"}])
+latest = int(os.environ["S05_LATEST"]) if os.environ.get("S05_LATEST") else c.call("getSlot", [{"commitment": "finalized"}])   # S05_LATEST only resumes a cached run with the same anchors (first run: 469263564)
 if PRE2:
     n_anchor, lo, hi = 10, DEPLOY - 80000, DEPLOY - 41000    # P2: the 40,000 slots before P, so that P+P2 span 80,000 slots (about 8.9 h)
 elif PRE:
@@ -55,11 +55,13 @@ for anchor in anchors:
 # sample C (post only): up to 6 migration txs found in sample A (first 6 in slot order), boost vault signatures as in 1021: 2 oldest + 2 newest successful
 c_info = []
 if not PRE:
-    done_pools = set()
+    done_pools = set(); _blk = {}
     for sig, meta in sorted(a_txs.items(), key=lambda kv: kv[1]["slot"]):
         if len(c_info) >= 6:
             break
-        blk = json.loads(gzip.open(RAW / "blocks" / f"{meta['slot']}.json.gz").read())["r"]
+        if meta["slot"] not in _blk:
+            _blk.clear(); _blk[meta["slot"]] = json.loads(gzip.open(RAW / "blocks" / f"{meta['slot']}.json.gz").read())["r"]   # one block in memory (a_txs is in slot order)
+        blk = _blk[meta["slot"]]
         tx = next(t for t in blk["transactions"] if t["transaction"]["signatures"][0] == sig)
         try:
             g = m.parse_migrate_tx(tx)

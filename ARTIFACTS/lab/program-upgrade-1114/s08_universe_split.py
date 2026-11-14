@@ -12,7 +12,9 @@ exec(open("s06_parity.py").read().split("acc = dict(")[0])
 from common import LClient, OUT
 WSOL = td.WSOL_MINT
 ZERO = "11111111111111111111111111111111"
-ROOTS = {"post": Path("/data2/mal/scratch/a3-repin-1114/raw"), "pre": Path("/data2/mal/scratch/a3-repin-1114/raw_pre")}
+BASE = Path("/data2/mal/scratch/a3-repin-1114")
+ROOTS = {"post": BASE / "raw", "pre": BASE / "raw_pre", "pre2": BASE / "raw_pre2"}
+MIG = json.load(open(BASE / "raw" / "migrate_index.json"))
 EPISODE_POOL = "34tiphuqXUgkH9c2KCrFqCiyuhz58HEbhQBk61ub46bU"
 
 def txs_of(root, label):
@@ -23,6 +25,13 @@ def txs_of(root, label):
         for tx in blk["transactions"]:
             if tx["transaction"]["signatures"][0] in idx["a"]:
                 yield "A", tx
+    mrows = MIG["post"] if label == "post" else MIG["pre"] if label == "pre" else []
+    seenm = set(idx["a"])
+    for row in mrows:
+        pth = BASE / "raw" / "txs" / f"{row['sig']}.json.gz"
+        if row["sig"] not in seenm and pth.exists():
+            r_ = json.loads(gzip.open(pth).read())["r"]
+            if r_: seenm.add(row["sig"]); yield "M", r_
     if label == "post":
         seen = set(idx["a"])
         for sig in idx["b"]:
@@ -97,11 +106,11 @@ for label, root in ROOTS.items():
                 pump_q[q] += 1
                 if tr: pump_q_nz[q] += 1
                 cls["pump_trade_quote_wsol_or_zero" if q in (WSOL, ZERO) else "pump_trade_quote_other"]["nonzero" if tr else "zero"] += 1
-            elif label == "post" and idl == "pump_amm" and nm == "CreatePoolEvent":
-                base_mints.setdefault(ev["base_mint"], set()).add(("CreatePool", ev["quote_mint"]))
-            elif label == "post" and idl == "pump" and nm == "CompletePumpAmmMigrationEvent":
+            elif idl == "pump_amm" and nm == "CreatePoolEvent":
+                base_mints.setdefault(ev["base_mint"], set()).add((label, "CreatePool", ev["quote_mint"]))
+            elif idl == "pump" and nm == "CompletePumpAmmMigrationEvent":
                 qq = ev.get("quote_mint") or ev.get("pump_amm_quote_mint") or ZERO
-                base_mints.setdefault(ev["mint"], set()).add(("Migration", WSOL if qq == ZERO else qq))
+                base_mints.setdefault(ev["mint"], set()).add((label, "Migration", WSOL if qq == ZERO else qq))
         if has_amm_trade:
             tx_cls[klass] += 1
             if trunc: tx_cls_trunc[klass] += 1
@@ -145,17 +154,26 @@ mints = sorted(base_mints)
 info = owner_and_ext(mints)
 rows = []
 for mnt in mints:
-    for kind, q in sorted(base_mints[mnt]):
-        rows.append(dict(base_mint=mnt, kind=kind, quote_mint=q, **info[mnt]))
+    for lab, kind, q in sorted(base_mints[mnt]):
+        rows.append(dict(sample=lab, base_mint=mnt, kind=kind, quote_mint=q, **info[mnt]))
 sumry = collections.Counter()
 for r in rows:
     w = "wsol" if r["quote_mint"] == WSOL else "non_wsol"
-    sumry[(w, r["kind"], "closed" if r.get("closed") else r["owner"])] += 1
+    sumry[(r["sample"], w, r["kind"], "closed" if r.get("closed") else r["owner"])] += 1
     if r.get("transfer_fee_config"):
-        sumry[(w, r["kind"], "token2022_transferfee_nonzero" if r["transfer_fee_config"]["nonzero"] else "token2022_transferfee_zero")] += 1
+        sumry[(r["sample"], w, r["kind"], "token2022_transferfee_nonzero" if r["transfer_fee_config"]["nonzero"] else "token2022_transferfee_zero")] += 1
 nzm = sorted(set(res["post"]["pumpswap_nonzero_by_quote_mint"]) | set(res["post"]["pump_trade_nonzero_by_event_quote_mint"]) - {WSOL, ZERO, "(none)"})
 nzm = [m_ for m_ in nzm if m_ not in (WSOL, ZERO, "(none)")]
 res["nonzero_field_quote_mints_account_info"] = owner_and_ext(nzm)   # hypothesis test only: do the quote mints that carry non-zero values have a TransferFeeConfig?
+ext_by = {"post": collections.Counter(), "pre": collections.Counter()}
+for r in rows:
+    grp = "post" if r["sample"] == "post" else "pre"
+    if r.get("owner") == "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb":
+        for t in set(r.get("extensions") or []): ext_by[grp][t] += 1
+        ext_by[grp]["_token2022_mints"] += 1
+    elif r.get("owner"): ext_by[grp]["_owner_" + r["owner"][:8]] += 1
+res["extension_types_by_group"] = {k: {str(a): b for a, b in v.items()} for k, v in ext_by.items()}
+res["extension_types_post_not_in_pre"] = sorted(str(t) for t in ext_by["post"] if not str(t).startswith("_") and t not in ext_by["pre"])
 res["wsol_mint"] = wsol_info
 res["base_mints"] = {"n_unique_base_mints": len(mints), "n_rows": len(rows), "summary": {"|".join(k): v for k, v in sorted(sumry.items())}, "rows": rows, "rpc_attempts": c.total_calls}
 (OUT / "s08_universe_split.json").write_text(json.dumps(res, indent=1, sort_keys=True, default=str) + "\n")
