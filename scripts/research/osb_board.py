@@ -572,10 +572,34 @@ LABEL_NEITHER = "neither set is decision-grade (recon NOT COMPARABLE); no stake 
 PAIR_HOURS = "twin identity pending: the twin is at %s, its strict book at %s; compared when both are at the same hour"
 
 
+def cut_decisions_md5(b, cut_ms):
+    """the book's decisions md5 over its active run's ledger rows CUT at cut_ms (the end of the book's last verified hour), by osb_follow.decisions_md5_from_rows(rows, cut_ms): the same canonical form as
+    book_decisions_md5. NEVER the decisions.md5 file (it may be one hour ahead of or behind status). None = no ledger / no open row."""
+    led = Path(b["m"]["out_root"]) / "book" / "ledger"
+    try:
+        if not led.is_dir():
+            return None
+        rows = list(O.decision_rows(led))
+    except (OSError, ValueError):
+        return None
+    return O.decisions_md5_from_rows(rows, cut_ms) if any(r.get("kind") == "open" for r in rows) else None
+
+
+def hour_now(b):
+    """the book's last verified hour as stored right now (re-read), else None"""
+    try:
+        h = stored_hours(Path(b["m"]["out_root"]))
+    except OSError:
+        return None
+    return h[-1]["hour"] if h else None
+
+
 def pair_books(books, infos=None):
     """[{twin, strict, status}] for every book entry with twin_of. A twin's decisions md5 is compared with its strict book's only at the SAME last hour (infos: {book_id: inspect_book result});
     when the last hours differ, or either is missing or still starting, the pair is "pending" (line PAIR_HOURS), never "differ": the two md5s then cover different histories. A pending twin is marked
     b["pair"] = "pending": it is not in the pair view and not shown as a separate priced book (its rows are withheld, state "pending"), so a half-replayed twin never contributes numbers.
+    At equal hours H the pair md5s are computed by the board itself over each book's decision rows cut at the end of hour H (cut_decisions_md5), never from a decisions.md5 file, so rows a driver already
+    appended for hour H+1 cannot make a false "differ"; if either book's stored last hour changed between the info read and this one (re-read after the rows) the pair is "pending" for this build.
     At equal hours: marks b["pair"] = "twin"|"strict" on both books only when their decisions.md5 are equal (a pricing-only twin); different md5 = "differ" (twin shown as a separate book)."""
     by_id = {b["m"]["book_id"]: b for b in books}
     out = []
@@ -594,7 +618,18 @@ def pair_books(books, infos=None):
             out.append(ent)
             t["pair"] = "pending"
             continue
-        a, c = read_decisions_md5(st), read_decisions_md5(t)
+        if infos is not None:
+            a, c = cut_decisions_md5(st, si["end"]), cut_decisions_md5(t, ti["end"])
+            nt, ns = hour_now(t), hour_now(st)
+            if nt != ti["last_hour"] or ns != si["last_hour"]:
+                ent = {"twin": t["m"]["book_id"], "strict": st["m"]["book_id"], "status": "pending", "line": PAIR_HOURS % (nt or "no hour yet", ns or "no hour yet"), "twin_last_hour": nt, "strict_last_hour": ns}
+                if lat_of(t) is not None:
+                    ent.update(kind="latency", pricing_lat_entry_s=lat_of(t), label=LABEL_LAT % ("%.3f" % lat_of(t)))
+                out.append(ent)
+                t["pair"] = "pending"
+                continue
+        else:
+            a, c = read_decisions_md5(st), read_decisions_md5(t)
         status = "pending" if a is None or c is None else "pair" if a == c else "differ"
         ent = {"twin": t["m"]["book_id"], "strict": st["m"]["book_id"], "status": status,
                "line": {"pair": None, "differ": PAIR_DIFFER, "pending": PAIR_PENDING}[status]}

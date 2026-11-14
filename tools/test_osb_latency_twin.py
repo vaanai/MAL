@@ -15,7 +15,7 @@ import osb_board as B  # noqa: E402
 import osb_follow as O  # noqa: E402
 from tools.test_arena_paper import SC, _row, _tape, register_bot, tms  # noqa: E402
 from tools.test_osb_board import CONTROL_ROWS, VARIANT_ROWS, START, ms, load, make_book, row, run, snap_root, tp  # noqa: E402,F401
-from tools.test_osb_board_twin import excl, pbooks  # noqa: E402
+from tools.test_osb_board_twin import excl, pbooks, _fixture_identity_from_md5_files  # noqa: E402,F401  (autouse: fixture identity from md5 files)
 from tools.test_osb_follow import (EK, FAST, _env, gworld, link, manifest, one_shot, run_once, tree_diff, world)  # noqa: E402,F401  (_env: the autouse env fixture of that module)
 import floor_gap_range_engine as G  # noqa: E402
 

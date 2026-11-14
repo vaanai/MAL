@@ -1,10 +1,25 @@
 """osb_board twin pair view (QP ruling 2026-11-14 Q6). Synthetic ledgers only; no tape, no real book, no host path. Nothing here says any book makes money."""
 import json
+from pathlib import Path
 
 import pytest
 
 from tools.test_osb_board import (H, VARIANT_ROWS, row, CONTROL_ROWS, START, books_file, load, make_book, ms, op, run, snap_root, tp, tr, tstop)  # noqa: F401
 import osb_board as B  # noqa: E402  (tools.test_osb_board puts scripts/research on sys.path)
+
+@pytest.fixture(autouse=True)
+def _fixture_identity_from_md5_files(monkeypatch):
+    """fixture shorthand: the board's pair identity is computed from the ledger rows cut at the last hour (never from decisions.md5); these fixtures set a book's identity with a decisions.md5 file instead,
+    so the cut function returns that file's value when the fixture wrote one, else the real cut md5. The tests of the real cut path write no md5 files."""
+    real = B.cut_decisions_md5
+
+    def fake(b, cut_ms):
+        try:
+            return (Path(b["m"]["out_root"]) / "decisions.md5").read_text().strip()
+        except OSError:
+            return real(b, cut_ms)
+    monkeypatch.setattr(B, "cut_decisions_md5", fake)
+
 
 STRICT_ROWS = tp("a1", ms(14, 13), 4_000_000) + tstop("a3", ms(14, 16), -3_000_000) + [
     op("a7", ms(14, 14))] + [{"kind": "excluded", "position_id": "a7", "stake_sol": s, "exclusion_reason": "feed_gap"} for s in (0.10, 0.25)]
@@ -213,13 +228,12 @@ from tools.test_osb_board import END, set_status  # noqa: E402
 PENDING_LINE = "twin identity pending: the twin is at %s, its strict book at %s; compared when both are at the same hour"
 
 
-def _pending_run(tmp, twin_end, strict_end=END, twin_md5=None):
-    sm, tm, so, to = two_books(tmp)
+def _pending_run(tmp, twin_end, strict_end=END, twin_rows=TWIN2, strict_rows=STRICT2):
+    """no md5 file is written: the real cut-md5 path (from the rows) decides"""
+    sm, so = make_book(tmp, "S", strict_rows)
+    tm, to = make_book(tmp, "T", twin_rows, gap_exclusion="hold", twin_of="S")
     set_status(to, twin_end)
     set_status(so, strict_end)
-    if twin_md5:
-        (to / "decisions.md5").write_text(twin_md5 * 32 + "\n")
-        (so / "decisions.md5").write_text("a" * 32 + "\n")
     rc, out = run(tmp, bf(tmp, sm, tm))
     assert rc == 0
     return load(out), (out / "board.md").read_text()
@@ -236,12 +250,12 @@ def _assert_pending(res, md, tw, st):
 
 
 def test_twin_behind_is_pending_not_differ(tmp_path):
-    res, md = _pending_run(tmp_path, END - 29 * H, twin_md5="b")  # differing md5 files must not matter
+    res, md = _pending_run(tmp_path, END - 29 * H, twin_rows=TWIN2 + [op("zz", ms(15, 1))])  # a differing history must not matter while behind
     _assert_pending(res, md, B.utc(END - 30 * H)[:13], B.utc(END - H)[:13])
 
 
 def test_twin_ahead_is_pending(tmp_path):
-    res, md = _pending_run(tmp_path, END, strict_end=END - 2 * H, twin_md5="b")
+    res, md = _pending_run(tmp_path, END, strict_end=END - 2 * H, twin_rows=TWIN2 + [op("zz", ms(15, 1))])
     _assert_pending(res, md, B.utc(END - H)[:13], B.utc(END - 3 * H)[:13])
 
 
@@ -251,11 +265,38 @@ def test_twin_without_hour_is_pending(tmp_path):
 
 
 def test_equal_hours_pair_view_and_differ_only_there(tmp_path):
-    res, md = _pending_run(tmp_path, END, twin_md5="a")
+    res, md = _pending_run(tmp_path, END)
     assert res["pairs"][0]["status"] == "pair" and "## Pair" in md and "catching up" not in md and "catching_up" not in res
-    res, md = _pending_run(tmp_path / "x", END, twin_md5="b") if (tmp_path / "x").mkdir() is None else None
+    (tmp_path / "x").mkdir()
+    # a real difference inside hour <= H (a position only the twin has, entered before END)
+    res, md = _pending_run(tmp_path / "x", END, twin_rows=TWIN2 + [op("zz", END - 3 * H)])
     assert res["pairs"][0]["status"] == "differ" and "twin decisions differ: not a pricing-only twin" in md
     assert next(b for b in res["books"] if b["id"] == "T")["state"] != "pending"
+
+
+def test_twin_mid_append_is_a_pair_not_differ(tmp_path):
+    """rows of hour H+1 already in the twin's files (both statuses at H): cut at the end of H, the pair view"""
+    res, md = _pending_run(tmp_path, END, twin_rows=TWIN2 + [op("h1", END + 10 * 60_000)] + excl_real("h2", END + 20 * 60_000))
+    assert res["pairs"][0]["status"] == "pair" and "## Pair" in md
+
+
+def test_status_change_between_reads_is_pending(tmp_path, monkeypatch):
+    real = B.hour_now
+    monkeypatch.setattr(B, "hour_now", lambda b: "2099-01-01T00" if b["m"]["book_id"] == "T" else real(b))
+    res, md = _pending_run(tmp_path, END)
+    assert res["pairs"][0]["status"] == "pending" and "twin identity pending: the twin is at 2099-01-01T00" in md and "twin decisions differ" not in md
+    assert next(b for b in res["books"] if b["id"] == "T")["state"] == "pending"
+
+
+def test_cut_md5_equals_book_md5_when_no_row_is_past_the_cut_and_default_is_unchanged(tmp_path):
+    import osb_follow as OF
+    rows = [{"kind": "open", "position_id": "p1", "decision_ms": {"entry": 1000}}, {"kind": "trade", "position_id": "p1", "decision_ms": {"entry": 1000, "exit": 2000}},
+            {"kind": "open", "position_id": "p2", "decision_ms": {"entry": 3000}}]
+    assert OF.decisions_md5_from_rows(rows, cut_ms=10**12) == OF.decisions_md5_from_rows(rows) == OF.decisions_md5_from_rows(rows, None)
+    assert OF.decisions_md5_from_rows(rows, cut_ms=3000) != OF.decisions_md5_from_rows(rows) and OF.decisions_md5_from_rows(rows, cut_ms=3000) == OF.decisions_md5_from_rows(rows[:2], cut_ms=3000)
+    assert OF.decisions_md5_from_rows(rows, cut_ms=1500) == OF.decisions_md5_from_rows([rows[0], {**rows[1], "decision_ms": {"entry": 1000}}])  # an exit at/after the cut is not yet decided
+    sm, so = make_book(tmp_path, "S", STRICT2)
+    assert B.cut_decisions_md5({"m": {"out_root": str(so)}}, 10**15) == OF.book_decisions_md5(so)
 
 
 def test_header_ignores_a_pending_twin_and_says_so(tmp_path):
