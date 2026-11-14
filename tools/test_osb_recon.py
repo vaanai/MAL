@@ -260,3 +260,196 @@ def test_atomic_outputs_no_tmp(tmp_path):
     _, out = recon(tmp_path, specs, live)
     assert sorted(p for p in os.listdir(out) if not p.startswith(".")) == ["recon.json", "recon.md"]
     assert not [p for p in os.listdir(out) if ".tmp" in p]
+
+
+# ------------------------------------------------------------------------------------------------------------------------------ review round 2
+ID58 = "7xKXtg2CW87d97TXJSDpbD5jBkheTqA83TZRuJosgAsU"  # an id-shaped (base58, 44 characters) fixture string
+
+
+def texts(out, capsys):
+    so = capsys.readouterr()
+    return (out / "recon.json").read_text() + (out / "recon.md").read_text() + so.out + so.err
+
+
+def test_id_in_exit_reason_latched_and_refusal_word_never_reach_any_output(tmp_path, capsys):
+    specs, live = ten()
+    live[0].update(sell_reason_bridge="tp_" + ID58, led_close_reason="tp_" + ID58, exit_reason="tp_" + ID58)
+    live[1].update(sell_reason_bridge="pool_gone_" + ID58)
+    live.append(live_order("x1", 40, sent=False, refused_why="latched:" + ID58, led_ok_buy=False))
+    live.append(live_order("x2", 41, sent=False, refused_why="who_" + ID58, led_ok_buy=False))
+    _, out = recon(tmp_path, specs + [("x1", 40, 1, 0.1), ("x2", 41, 1, 0.1)], live)
+    text = texts(out, capsys)
+    assert ID58 not in text and ID58[:20] not in text and ID58.lower()[:20] not in text
+    res = load(out)
+    reasons = res["counts_by_reason"]
+    assert reasons["sim_only:executor:latched"] == 1 and reasons["sim_only:unexplained"] == 1 and res["executor_unlisted"] == 1
+    assert {r["exit_reason_live"] for r in res["rows"] if r.get("exit_reason_live")} >= {"other"}
+
+
+def test_write_time_rule_refuses_an_id_and_names_the_field_not_the_value(capsys):
+    res = {"rows": [{"order_id": "0123456789abcdef", "reason": "x", "exit_reason_live": "tp_" + ID58}], "book_id": "A"}
+    with pytest.raises(R.Refusal) as e:
+        R.check_output(res, "")
+    assert "rows[].exit_reason_live" in str(e.value) and "id-shaped" in str(e.value) and ID58 not in str(e.value)
+    with pytest.raises(R.Refusal) as e2:
+        R.check_output({"rows": [{"order_id": "0123456789abcdef", "reason": "pool_gone_" + ID58}]}, "")
+    assert "forbidden word" in str(e2.value) and ID58 not in str(e2.value)
+    with pytest.raises(R.Refusal) as e3:
+        R.check_output({"rows": [{"order_id": ID58}]}, "")  # an id in the order id field itself
+    assert ID58 not in str(e3.value)
+    with pytest.raises(R.Refusal):
+        R.check_output({"rows": []}, "| x | " + "a" * 16 + " |")  # a hex run in the md
+    R.check_output({"rows": [{"order_id": "0123456789abcdef"}]}, "| 0123456789abcdef | x |")  # our own 16-hex order id is fine
+
+
+def test_a_refusal_in_main_prints_no_value(tmp_path, capsys, monkeypatch):
+    specs, live = ten()
+    monkeypatch.setattr(R, "xr", lambda raw: raw)  # break the mapping on purpose: the write-time rule must still hold
+    live[0].update(sell_reason_bridge="tp_" + ID58, led_close_reason="tp_" + ID58)
+    rc, out = recon(tmp_path, specs, live)
+    so = capsys.readouterr()
+    assert rc == 2 and ID58 not in so.out + so.err and "id-shaped" in so.err and not (out / "recon.json").exists()
+
+
+def test_b1_unsent_host_entry_without_sim_entry_is_live_only(tmp_path):
+    specs, live = ten()
+    live.append(live_order("u1", 50, sent=False, refused_why="lane_full", led_ok_buy=False))
+    _, out = recon(tmp_path, specs, live)
+    res = load(out)
+    assert res["counts_by_reason"] == {"live_only:superset_violation": 1} and res["h1"]["status"] == "FAIL"
+    assert res["live_failure"]["n_sent"] == 10  # an unsent order is not a send
+
+
+def test_b2_executor_allow_list(tmp_path):
+    words = {"a3_pause:burst": "executor:a3_pause", "lane_budget_stop": "executor:lane_budget", "lane_daily_stop": "executor:lane_daily_stop", "weird_word": "unexplained", "other": "unexplained"}
+    specs = [("w%d" % i, i, 1, 0.1) for i in range(len(words))]
+    live = [live_order("w%d" % i, i, sent=False, refused_why=w, led_ok_buy=False) for i, w in enumerate(words)]
+    _, out = recon(tmp_path, specs, live)
+    res = load(out)
+    got = sorted(r["reason"] for r in res["rows"])
+    assert got == sorted(words.values()) and res["executor_unlisted"] == 2 and res["h2"]["status"] == "FAIL"
+
+
+def test_b3_buy_not_landed_needs_positive_evidence(tmp_path):
+    specs = [("n%d" % i, i, 1, 0.1) for i in range(4)]
+    base = dict(led_ok_buy=False, led_close_ev=None, landed_ms=None)
+    live = [live_order("n0", 0, buy_failed=True, **base),                                           # a bridge buy_failed row
+            live_order("n1", 1, led_writeoff="not_sent", **base),                                   # a ledger writeoff not_sent
+            live_order("n2", 2, **base),                                                            # no evidence at all
+            live_order("n3", 3, led_writeoff="buy_expired", led_ok_buy=False, led_close_ev=None)]   # a buy_landed row exists (landed_ms set)
+    _, out = recon(tmp_path, specs, live)
+    assert load(out)["counts_by_reason"] == {"sim_only:buy_not_landed": 2, "sim_only:unexplained": 2}
+
+
+def test_b4_nearby_feed_gap_is_never_a_timing_edge(tmp_path):
+    specs = [("g1", 0, 1, 0.1)]
+    live = [{"kind": "gap_refusal", "t_ms": 1, "pool": "P_g1", "trig_slot": 7, "trig_ms": entry_ms(0) - 800 + 5_000, "reason": "feed_gap", "gap_kind": "data_loss"},
+            {"kind": "gap_refusal", "t_ms": 1, "pool": "P_g1", "trig_slot": 8, "trig_ms": entry_ms(0) - 800 + 6_000, "reason": "pool_blocked_after_gap"}]
+    _, out = recon(tmp_path, specs, live)
+    assert load(out)["counts_by_reason"] == {"sim_only:feed_gap_mismatch": 1}
+
+
+def test_c_s4_landing_step_test(tmp_path):
+    assert (R.S4_K_P50, R.S4_K_P90) == (5, 8)
+    specs, live = ten()
+    for o in live:
+        o["landed_slot"] = o["decision_slot"] + 6  # 6 steps: ms fine (1.8 s), steps above p50 <= 5
+    _, out = recon(tmp_path, specs, live)
+    res = load(out)
+    assert res["s4"]["status"] == "FAIL" and res["s4"]["landing_k_p50"] == 6 and "slot" not in json.dumps(res).lower()
+    specs, live = ten()
+    for o in live:
+        o["landed_slot"] = None
+    _, out2 = recon(tmp_path / "again", specs, live) if (tmp_path / "again").mkdir() is None else (None, None)
+    assert load(out2)["s4"]["status"] == "INSUFFICIENT"
+
+
+def test_d_exit_reason_rules(tmp_path):
+    def h3(mut, n=10):
+        d = tmp_path / ("d%d" % len(list(tmp_path.iterdir())))
+        d.mkdir()
+        specs, live = ten()
+        mut(live[0])
+        _, out = recon(d, specs, live)
+        return load(out)["h3"]
+
+    assert h3(lambda o: None)["n_mismatch_uncoded"] == 0
+    assert h3(lambda o: o.update(sell_reason_bridge="time_stop_backstop", led_close_reason="time_stop_backstop"))["n_mismatch_uncoded"] == 1  # host row exists: not coded
+    assert h3(lambda o: o.update(sell_reason_bridge=None, led_close_reason=None))["n_mismatch_uncoded"] == 1  # a missing reason on a closed live trade
+    assert h3(lambda o: o.update(sell_reason_bridge="tp_1.5x", exit_reason="time_24h"))["n_mismatch_uncoded"] == 1  # host row differs from the executor's sell
+    assert h3(lambda o: o.update(led_close_ev=None, sell_landed_ms=None, led_net_lamports=None, led_close_ms=None))["n_mismatch_uncoded"] == 1  # live open, sim closed > 1 h ago
+    assert h3(lambda o: o.update(sell_reason_bridge="x" * 5))["n_mismatch_uncoded"] == 1  # an unknown word is a plain difference, shown as other
+
+
+def test_d_coded_exception_exactness(tmp_path):
+    specs, live = ten()
+    o = live[0]
+    o.update(has_host_exit=False, exit_reason=None, sell_reason_bridge="time_stop", led_close_reason="time_stop")
+    live.append({"kind": "restart", "t_ms": 1, "failed": False, "down_from_ms": entry_ms(0) + H, "down_to_ms": entry_ms(0) + 3 * H})
+    _, out = recon(tmp_path, specs, live)
+    assert load(out)["h3"]["n_coded"] == 0 and load(out)["h3"]["status"] == "FAIL"  # only time_stop_backstop is coded
+    o.update(sell_reason_bridge="time_stop_backstop", led_close_reason="time_stop_backstop")
+    live[-1]["failed"] = True  # a failed restart row is no down span
+    _, out2 = recon(tmp_path / "x", specs, live) if (tmp_path / "x").mkdir() is None else (None, None)
+    assert load(out2)["h3"]["status"] == "FAIL"
+
+
+def test_e_rolling_set_only_last_seven_days():
+    old = [{"_t": 1_000 + i, "no_rung": False, "entry_slip_pp": 0.0, "net_live_pp": 1.0, "net_sim_pp": 1.0, "net_live_sol": 0.0, "net_sim_sol": 0.0, "stake_sol": 0.1, "fees_live_pp": 0.3, "fees_model_pp": 0.32,
+            "rent_unreclaimed": 0, "landing_ms": 1800, "landing_k": 4, "_h3": "ok"} for i in range(12)]
+    extras = {"executor_unlisted": 0, "duplicate_keys": 0}
+    bands, status = R.evaluate([], old, 1_000 + 8 * R.DAY_MS, extras)
+    assert bands["s1"]["status"] == "INSUFFICIENT" and bands["s4"]["status"] == "INSUFFICIENT" and status == "INSUFFICIENT"
+    bands2, status2 = R.evaluate([], old, 1_000 + 6 * R.DAY_MS, extras)
+    assert bands2["s1"]["status"] == "PASS" and status2 == "PASS"
+
+
+def test_e_s3_gating_and_rent():
+    base = {"_t": 5, "no_rung": False, "entry_slip_pp": 0.0, "net_live_pp": 1.0, "net_sim_pp": 1.0, "net_live_sol": 0.0, "net_sim_sol": 0.0, "stake_sol": 0.1, "fees_live_pp": 0.3, "fees_model_pp": 0.32,
+            "rent_unreclaimed": 0, "landing_ms": 1800, "landing_k": 4, "_h3": "ok"}
+    extras = {"executor_unlisted": 0, "duplicate_keys": 0}
+    assert R.evaluate([], [dict(base)], 10, extras)[0]["s3"]["status"] == "INSUFFICIENT"  # one fee row never decides the mean
+    assert R.evaluate([], [dict(base, rent_unreclaimed=1)], 10, extras)[0]["s3"]["status"] == "FAIL"  # rent above 0 fails at any n
+    many = [dict(base, fees_live_pp=1.0) for _ in range(10)]
+    assert R.evaluate([], many, 10, extras)[0]["s3"]["status"] == "FAIL"  # mean excess 0.68 pp > 0.5
+
+
+def test_f_duplicate_live_order_on_one_sim_entry_is_live_only(tmp_path):
+    specs, live = ten()
+    live.append(live_order("m0", 0, order_id="Ldup"))
+    _, out = recon(tmp_path, specs, live)
+    res = load(out)
+    assert res["counts"]["matched"] == 10 and res["counts_by_reason"] == {"live_only:duplicate_key": 1} and res["h1"]["status"] == "FAIL"
+
+
+@pytest.mark.parametrize("bad", ["meta_list", "header_not_dict", "stake_string", "order_no_id", "row_not_object"])
+def test_f_malformed_extract_is_a_counted_refusal(tmp_path, capsys, bad):
+    specs, live = ten()
+    mp = sim_book(tmp_path, specs)
+    ex = tmp_path / "extract"
+    write_extract(ex, live)
+    rows = [json.loads(x) for x in (ex / R.EXTRACT_NAME).read_text().splitlines()]
+    if bad == "stake_string":
+        rows[1]["stake_lamports"] = "100"
+    elif bad == "order_no_id":
+        rows[1].pop("order_id")
+    elif bad == "row_not_object":
+        rows.append(["x"])
+    elif bad == "header_not_dict":
+        rows[0] = "h"
+    body = "".join(json.dumps(r) + "\n" for r in rows).encode()
+    (ex / R.EXTRACT_NAME).write_bytes(body)
+    meta = [1] if bad == "meta_list" else {"extract_sha256": hashlib.sha256(body).hexdigest()}
+    (ex / R.META_NAME).write_text(json.dumps(meta))
+    out = tmp_path / "recon"
+    rc = R.main(["--extract-dir", str(ex), "--manifest", str(mp), "--out-dir", str(out), "--now-ms", str(TB.END)], roots=(str(tmp_path),), out_roots=(str(out),))
+    err = capsys.readouterr().err
+    assert rc == 2 and "Traceback" not in err and "refused" in err
+
+
+def test_f_sell_failure_rate_is_separate(tmp_path):
+    specs, live = ten()
+    live[0]["sell_failed"] = True
+    _, out = recon(tmp_path, specs, live)
+    sells = load(out)["live_failure"]["sells"]
+    assert sells["n_sent"] == 10 and sells["n_failed"] == 1 and sells["wilson95_hi"] is not None

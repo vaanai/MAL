@@ -3,7 +3,7 @@
 (DEC-035 Amendment 9). Nothing here says any book makes money.
 
 Usage: osb_board.py BOOKS.json --out-dir DIR [--now-ms N] [--follow] [--poll-s 60]
-BOOKS.json: {"books": [{"manifest": PATH, "role": "control"|"variant", "start_instant_utc": "YYYY-MM-DDTHH:MM:SSZ"}], "live": null | {...passed through verbatim...} | {"recon": "<path to recon.json of osb_recon.py>", ...rest passed through}}; zero or one control. A valid recon.json (schema osb_recon.v1, at most 3 h old) with status PASS or FAIL replaces the NOT COMPARABLE line (FAIL marks every book SIM OFF); INSUFFICIENT, missing, invalid or stale keeps it.
+BOOKS.json: {"books": [{"manifest": PATH, "role": "control"|"variant", "start_instant_utc": "YYYY-MM-DDTHH:MM:SSZ"}], "live": null | {...passed through verbatim...} | {"recon": "<path to recon.json of osb_recon.py>", ...rest passed through}}; zero or one control. A valid recon.json (schema osb_recon.v1, under a recon output root, book_id = the control book, the recon AND its extract at most 3 h old) with status PASS or FAIL replaces the NOT COMPARABLE line (FAIL marks every book SIM OFF); INSUFFICIENT, missing, invalid or stale keeps it.
 Per book the manifest is loaded with osb_follow.load_manifest and its sha256 must equal <out_root>/manifest.sha256 (else exit 2). The ledger is <out_root>/book/ledger, priced in-process
 with floor_nov_pnl (rule total, latency 1p9, --send-lamports = the manifest's send, --ledger-send = the same value: the follow driver already prices at that send, so no rent restatement),
 --to-ms = the end of the newest hour in <out_root>/status.json. Nothing is changed in floor_nov_pnl / floor_forward_ab.
@@ -32,6 +32,7 @@ RECON = {"status": "NOT COMPARABLE: not decision-grade"}
 RECON_LINE = "NOT COMPARABLE: not decision-grade"
 DECISION_GRADE = False  # stays False: a recon PASS is shown (recon block, recon_line) but never turns a board figure decision-grade by itself
 RECON_SCHEMA = "osb_recon.v1"
+RECON_ROOTS = ("/data2/mal/scratch/floor-open-sim/recon", "~/data/open-sim")  # the only places a live.recon path may point into (the board reads exactly one recon.json)
 SIM_OFF = "SIM OFF: not decision-grade"
 REFRESH_MS = 15 * 60_000  # the board is rebuilt at least this often even when no status changes, so STALE can appear
 UNPRICED_HEAD = " | unpriced | "
@@ -407,7 +408,7 @@ def withheld(idx, b, why):
             "last_hour": None, "last_hour_end_utc": None, "gap_guard_note": None, "start_instant_utc": None, "code_sha256": None, "manifest_sha256": None, "stakes_sol": None, "today_day": None}
 
 
-def recon_state(live, now_ms):
+def recon_state(live, now_ms, control_id=None):
     """-> (recon block, recon_line, live without the recon path, sim_off). `live` may carry {"recon": "<path to recon.json>"} (osb_recon.py). Only a valid, fresh (at most STALE_MS old) PASS or FAIL
     changes the default; INSUFFICIENT, a missing, unreadable, invalid or stale file keeps the NOT COMPARABLE wording. FAIL: every book is marked SIM OFF."""
     default = (dict(RECON), RECON_LINE, live, False)
@@ -415,10 +416,17 @@ def recon_state(live, now_ms):
         return default
     rest = {k: v for k, v in live.items() if k != "recon"} or None
     default = (dict(RECON), RECON_LINE, rest, False)
-    r = read_json(live["recon"]) if isinstance(live["recon"], str) else None
+    r = None
+    if isinstance(live["recon"], str):
+        rp = os.path.realpath(os.path.expanduser(live["recon"]))
+        roots = [os.path.realpath(os.path.expanduser(x)) for x in RECON_ROOTS]
+        if os.path.basename(rp) == "recon.json" and any(rp.startswith(x + os.sep) for x in roots):
+            r = read_json(rp)
     try:
         ok = (isinstance(r, dict) and r.get("schema") == RECON_SCHEMA and r.get("status") in ("PASS", "FAIL", "INSUFFICIENT") and isinstance(r.get("generated_ms"), int) and not isinstance(r.get("generated_ms"), bool)
-              and 0 <= now_ms - r["generated_ms"] <= STALE_MS and isinstance(r.get("window"), dict) and isinstance(r.get("counts"), dict) and isinstance(r.get("counts_by_reason"), dict))
+              and 0 <= now_ms - r["generated_ms"] <= STALE_MS and isinstance(r.get("window"), dict)
+              and isinstance(r.get("extract_as_of_ms"), int) and not isinstance(r.get("extract_as_of_ms"), bool) and 0 <= now_ms - r["extract_as_of_ms"] <= STALE_MS
+              and control_id is not None and r.get("book_id") == control_id and isinstance(r.get("counts"), dict) and isinstance(r.get("counts_by_reason"), dict))
         if not ok or r["status"] == "INSUFFICIENT":
             return default
         c = r["counts"]
@@ -462,7 +470,7 @@ def build(books, live, now_ms, roots=None):
     ends = [i["end"] for _, i, srs in infos if srs is not None and i["end"] is not None]
     here = os.path.dirname(os.path.abspath(__file__))
     ver = " ".join("%s=%s" % (n, AB._blob_id(os.path.join(here, n))) for n in ("osb_board.py", "floor_nov_pnl.py", "floor_forward_ab.py", "osb_follow.py"))
-    recon, recon_line, live, sim_off = recon_state(live, now_ms)
+    recon, recon_line, live, sim_off = recon_state(live, now_ms, next((b["m"]["book_id"] for b in books if b["role"] == "control"), None))
     try:
         check_forbidden(live, "")
     except Refusal:

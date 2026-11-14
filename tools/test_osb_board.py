@@ -20,6 +20,7 @@ START = "2026-11-14T12:00:00Z"
 @pytest.fixture(autouse=True)
 def snap_root(tmp_path, monkeypatch):
     monkeypatch.setattr(B, "SNAP_ROOT", str(tmp_path / "snap"))  # never the real /data2 path
+    monkeypatch.setattr(B, "RECON_ROOTS", (str(tmp_path),))
 
 
 def ms(d, h=12, m=0):
@@ -532,7 +533,7 @@ def test_real_snapshot_root_is_refused_under_pytest(monkeypatch):
 
 # ------------------------------------------------------------------------------------------------------------------------------ recon wiring (PR-3)
 def recon_file(tmp, status="PASS", generated_ms=None, **over):
-    r = {"schema": "osb_recon.v1", "status": status, "generated_ms": END + 30_000 if generated_ms is None else generated_ms, "generated_utc": "2026-11-16T06:00:30Z",
+    r = {"schema": "osb_recon.v1", "status": status, "generated_ms": END + 30_000 if generated_ms is None else generated_ms, "generated_utc": "2026-11-16T06:00:30Z", "book_id": "A", "extract_as_of_ms": END,
          "window": {"from_utc": "2026-11-14T12:00:00Z", "to_utc": "2026-11-16T06:00:00Z"}, "counts": {"matched": 12, "live_only": 0 if status != "FAIL" else 1, "sim_only": 3},
          "counts_by_reason": {"sim_only:restart_lockout": 2, "sim_only:executor:lane_full": 1}, **{k: {"status": status} for k in ("h1", "h2", "h3", "s1", "s2", "s3", "s4")}}
     r.update(over)
@@ -589,3 +590,21 @@ def test_recon_fresh_boundary_and_forbidden_word_in_recon_is_ignored(tmp_path):
     assert res["recon"]["status"] == "PASS"  # exactly 3 h old is still fresh
     res2, _ = board_with(tmp_path, {"recon": str(recon_file(tmp_path, "PASS", counts_by_reason={"sim_only:pool_x": 1}))})
     assert res2["recon"] == {"status": "NOT COMPARABLE: not decision-grade"}  # a forbidden word never reaches the board
+
+
+@pytest.mark.parametrize("over", [{"extract_as_of_ms": END + 60_000 - 3 * 3_600_000 - 1}, {"book_id": "C"}, {"book_id": None}, {"extract_as_of_ms": "x"}])
+def test_recon_stale_extract_or_other_book_keeps_not_comparable(tmp_path, over):
+    res, _ = board_with(tmp_path, {"recon": str(recon_file(tmp_path, "FAIL", **over))})
+    assert res["recon"] == {"status": "NOT COMPARABLE: not decision-grade"} and "sim_off" not in res  # a stale extract or another book never switches the board off or on
+
+
+def test_recon_path_outside_the_recon_roots_is_not_read(tmp_path, monkeypatch):
+    p = recon_file(tmp_path, "FAIL")
+    monkeypatch.setattr(B, "RECON_ROOTS", (str(tmp_path / "elsewhere"),))
+    res, _ = board_with(tmp_path, {"recon": str(p)})
+    assert res["recon"] == {"status": "NOT COMPARABLE: not decision-grade"}
+    other = tmp_path / "notrecon.json"
+    other.write_text(p.read_text())
+    monkeypatch.setattr(B, "RECON_ROOTS", (str(tmp_path),))
+    res2, _ = board_with(tmp_path, {"recon": str(other)})
+    assert res2["recon"] == {"status": "NOT COMPARABLE: not decision-grade"}  # only a file named recon.json
