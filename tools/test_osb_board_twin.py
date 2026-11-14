@@ -368,3 +368,71 @@ def test_new_lines_pass_the_forbidden_word_check(tmp_path):
     p, to, so = world(tmp_path, twin_end=END - 5 * H)
     res, md = go(tmp_path, p, now=END + 30 * H)
     B.check_forbidden(res, md)
+
+
+# ---- small fix round: an unreadable file or a failing pair never takes the board down; pending_since_source
+def _strict_rows_of(res):
+    """the strict book's figures (windows, trades, open); the disclosure's best-of-N counts every watched book x stake row, the twin's included, so it is left out"""
+    return [{k: r[k] for k in ("id", "stake_sol", "windows", "trades", "open")} for r in next(b for b in res["books"] if b["id"] == "S")["rows"]]
+
+
+def _strict_only(tmp):
+    sm, so = make_book(tmp, "S", STRICT2)
+    write_hours(so, END, count=10)
+    p = tmp / "books.json"
+    p.write_text(json.dumps({"books": [{"manifest": str(sm), "role": "variant", "start_instant_utc": START}], "live": None}))
+    return p
+
+
+def test_non_utf8_byte_in_the_twin_file_leaves_the_board_up_and_the_pair_pending(tmp_path):
+    (tmp_path / "ref").mkdir()
+    ref = go(tmp_path / "ref", _strict_only(tmp_path / "ref"))[0]
+    p, to, so = world(tmp_path)
+    (to / "md5-by-hour.jsonl").write_bytes(b"\xff\xfe\x00garbage\n")
+    res, md = go(tmp_path, p)
+    assert res["pairs"][0]["status"] == "pending" and "twin decisions differ" not in md
+    assert next(b for b in res["books"] if b["id"] == "T")["state"] == "pending"
+    assert _strict_rows_of(res) == _strict_rows_of(ref)
+
+
+def test_non_utf8_byte_in_the_strict_file_leaves_the_board_up_and_the_pair_pending(tmp_path):
+    p, to, so = world(tmp_path)
+    (so / "md5-by-hour.jsonl").write_bytes(b"\xff\xfe\x00garbage\n")
+    res, md = go(tmp_path, p)
+    assert res["pairs"][0]["status"] == "pending" and "twin decisions differ" not in md
+    assert next(b for b in res["books"] if b["id"] == "T")["state"] == "pending"
+
+
+def test_an_exception_inside_one_pair_leaves_the_other_pair_a_pair(tmp_path, monkeypatch):
+    sm, so = make_book(tmp_path, "S", STRICT2)
+    tm, to = make_book(tmp_path, "T", TWIN2, gap_exclusion="hold", twin_of="S")
+    s2m, s2o = make_book(tmp_path, "S2", STRICT2)
+    t2m, t2o = make_book(tmp_path, "T2", TWIN2, gap_exclusion="hold", twin_of="S2")
+    for o in (so, to, s2o, t2o):
+        write_hours(o, END, count=10)
+    p = tmp_path / "books.json"
+    p.write_text(json.dumps({"books": [{"manifest": str(sm), "role": "variant", "start_instant_utc": START}, {"manifest": str(tm), "role": "variant", "start_instant_utc": START, "twin_of": "S"},
+                                       {"manifest": str(s2m), "role": "variant", "start_instant_utc": START}, {"manifest": str(t2m), "role": "variant", "start_instant_utc": START, "twin_of": "S2"}], "live": None}))
+    real = B.identity
+
+    def boom(t, st):
+        if t["m"]["book_id"] == "T":
+            raise RuntimeError("boom")
+        return real(t, st)
+    monkeypatch.setattr(B, "identity", boom)
+    res, md = go(tmp_path, p)
+    by = {x["twin"]: x for x in res["pairs"]}
+    assert by["T"]["status"] == "pending" and by["T2"]["status"] == "pair" and "boom" not in md and "RuntimeError" not in md
+    assert next(b for b in res["books"] if b["id"] == "T")["state"] == "pending" and next(b for b in res["books"] if b["id"] == "T2")["state"] != "pending"
+
+
+def test_pending_since_source_reset_then_carried(tmp_path):
+    p, to, so = world(tmp_path, twin_end=END - 5 * H)
+    (tmp_path / "board").mkdir()
+    (tmp_path / "board" / "board.json").write_text("{not json")
+    res, md = go(tmp_path, p)
+    assert res["pairs"][0]["pending_since_source"] == "reset"
+    res, md = go(tmp_path, p, now=END + 2 * H)
+    assert res["pairs"][0]["pending_since_source"] == "carried" and res["pairs"][0]["pending_since_utc"] == B.utc(END + 60_000)
+    write_hours(to, END)
+    assert "pending_since_source" not in go(tmp_path, p, now=END + 3 * H)[0]["pairs"][0]
