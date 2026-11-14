@@ -11,7 +11,7 @@ row), timing_edge (a cooldown or block row within +-10 s; a nearby feed_gap refu
 Per matched filled trade: entry slip in pp (live spend / tokens against A's landing state at the live stake, constant product with the pool fee tier); live decision-to-landed ms and in landing steps
 (`landing_k`); the exit reason of the executor's sell (bridge sell_sent, else the ledger close reason) against A's, the host exit reason kept apart as exit_reason_host; net per trade live vs sim in pp
 of stake and SOL at the rung equal to the live stake (no rung, e.g. 0.03: marked no_rung, out of S1/S2); fees against 2 x 160,000 lamports. A's flat leg is compared only when its state is `filled`.
-Gap-in-hold twin (QP ruling 2026-11-14 Q4; optional --twin-manifest, book A's `gap_exclusion: "hold"` twin; refused unless its `twin_of` is A's book_id and its decisions.md5 file equals A's when both exist):
+Gap-in-hold twin (QP ruling 2026-11-14 Q4; optional --twin-manifest, book A's `gap_exclusion: "hold"` twin; refused unless its `twin_of` is A's book_id and its decisions md5 (decisions.md5 file, else computed from its ledger rows) equals A's):
 a matched live trade whose strict sim trade is excluded for a feed gap is compared against the twin's price; its row carries gap_in_hold and blind_s (from the twin's ledger trade rows: gap_in_hold, blind_s,
 gap_count, gap_holes). S1 and S2 include those trades; S2 is also printed split by flag. A live take-profit whose instant falls inside a sim-side gap of that hold is the coded H3 case tp_in_sim_gap (counted, not
 a failure). A trade still excluded (strict without a twin, or in the twin) has the row field no_sim_price = gap_entry | gap_exit | missing_v | other, is counted, and stays outside S1/S2 (as before the twin:
@@ -242,13 +242,14 @@ def read_twin(twin_path, a_manifest, roots=None):
     for k in sorted((set(m) | set(a_manifest)) - set(TWIN_MAY_DIFFER)):
         if m.get(k) != a_manifest.get(k):
             raise Refusal("twin manifest differs from book A in key %s" % k)
-    fa, ft = Path(a_manifest["out_root"]) / "decisions.md5", Path(m["out_root"]) / "decisions.md5"
-    try:
-        same = fa.read_bytes().strip() == ft.read_bytes().strip()
-    except OSError:
-        raise Refusal("decisions.md5 missing or unreadable for book A or the twin")
-    if not same or not fa.read_bytes().strip():
-        raise Refusal("twin decisions.md5 differs from book A")
+    try:  # each side: its decisions.md5 file when present, else computed from that book's ledger rows (osb_follow.book_decisions_md5: the one definition; never written here)
+        da, dt = O.book_decisions_md5(a_manifest["out_root"]), O.book_decisions_md5(m["out_root"])
+    except (OSError, ValueError):
+        da = dt = None
+    if da is None or dt is None:
+        raise Refusal("decisions md5 unreadable for book A or the twin (no file and no ledger rows)")
+    if da != dt:
+        raise Refusal("twin decisions md5 differs from book A")
     b = {"m": m, "role": "variant", "start_ms": 0, "sha": O.manifest_sha256(m)}
     link = Path(m["out_root"]) / "book"
     run0 = os.path.realpath(link)
