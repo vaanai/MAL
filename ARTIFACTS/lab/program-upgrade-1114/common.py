@@ -1,4 +1,4 @@
-"""Shared helpers for the 2026-10-21 pump / PumpSwap program-upgrade review scripts (precedent: ../program-upgrade-1014/common.py).
+"""Shared helpers for the 2026-11-14 pump program-upgrade review scripts (adapted from 2026-10-21) (precedent: ../program-upgrade-1014/common.py).
 
 Public RPC only (api.mainnet-beta.solana.com). No Helius key, no key file, no sealed ledger is read. Every real network
 attempt (retries included) is appended to RAW/rpc_calls.log. Counts and structure only: nothing here reads a fill, exit,
