@@ -101,14 +101,14 @@ def test_each_class_and_reason(tmp_path):
              ("s_edge", 6, 1, 0.1), ("s_edge11", 7, 1, 0.1), ("s_gap", 8, 1, 0.1), ("s_unx", 9, 1, 0.1), ("s_blk", 10, 1, 0.1)]
     live = [live_order("m1", 0), live_order("L1", 20),  # matched; live-only (no A entry)
             live_order("s_exec", 4, sent=False, refused_why="lane_full", led_ok_buy=False, led_close_ev=None),
-            live_order("s_nl", 5, led_ok_buy=False, led_close_ev="writeoff", led_close_reason="buy_expired", landed_ms=None)]
+            live_order("s_nl", 5, led_ok_buy=False, led_close_ev="writeoff", led_close_reason="buy_expired", led_writeoff="buy_expired", landed_ms=None)]
     t = lambda i: entry_ms(i) - 800
     live += [{"kind": "gap_refusal", "t_ms": entry_ms(1), "pool": "P_s_lock", "trig_slot": 1001, "trig_ms": t(1), "reason": "feed_gap", "gap_kind": "host_down"},
              {"kind": "gap_refusal", "t_ms": entry_ms(2), "pool": "P_s_lock2", "trig_slot": 1002, "trig_ms": t(2), "reason": "pool_blocked_after_restart"},
              {"kind": "restart", "t_ms": entry_ms(3) + 5, "failed": False, "down_from_ms": t(3) - 1000, "down_to_ms": t(3) + 1000, "shadow_complete": True},
              # timing edge: a refusal on the same pool at another slot, exactly 10 s away (inside) and 10.001 s away (outside)
-             {"kind": "gap_refusal", "t_ms": 1, "pool": "P_s_edge", "trig_slot": 5, "trig_ms": t(6) + 10_000, "reason": "feed_gap", "gap_kind": "data_loss"},
-             {"kind": "gap_refusal", "t_ms": 1, "pool": "P_s_edge11", "trig_slot": 5, "trig_ms": t(7) + 10_001, "reason": "feed_gap", "gap_kind": "data_loss"},
+             {"kind": "gap_refusal", "t_ms": 1, "pool": "P_s_edge", "trig_slot": 5, "trig_ms": t(6) + 10_000, "reason": "pool_blocked_after_gap"},
+             {"kind": "gap_refusal", "t_ms": 1, "pool": "P_s_edge11", "trig_slot": 5, "trig_ms": t(7) + 10_001, "reason": "pool_blocked_after_gap"},
              {"kind": "gap_refusal", "t_ms": entry_ms(8), "pool": "P_s_gap", "trig_slot": 1008, "trig_ms": t(8), "reason": "feed_gap", "gap_kind": "data_loss"},
              {"kind": "gap_refusal", "t_ms": entry_ms(10), "pool": "P_s_blk", "trig_slot": 1010, "trig_ms": t(10), "reason": "pool_blocked_after_gap"}]
     rc, out = recon(tmp_path, specs, live)
@@ -178,7 +178,7 @@ def test_s1_beyond_8pp_count(tmp_path):
 def test_h3_coded_exception_host_down_at_take_profit(tmp_path):
     specs, live = ten()
     o = live[0]
-    o.update(has_host_exit=False, exit_reason=None, sell_reason_bridge="time_24h", exit_ms=None)
+    o.update(has_host_exit=False, exit_reason=None, sell_reason_bridge="time_stop_backstop", led_close_reason="time_stop_backstop", exit_ms=None)
     live.append({"kind": "restart", "t_ms": 1, "failed": False, "down_from_ms": entry_ms(0) + H, "down_to_ms": entry_ms(0) + 3 * H, "shadow_complete": False})
     _, out = recon(tmp_path, specs, live)
     res = load(out)
@@ -209,17 +209,17 @@ def test_live_failure_wilson_and_not_pooled(tmp_path):
 def test_output_allow_list_and_stdout(tmp_path, capsys):
     specs, live = ten()
     live.append({"kind": "gap_refusal", "t_ms": 1, "pool": "P_zzz", "trig_slot": 1, "trig_ms": 1, "reason": "feed_gap", "gap_kind": "host_down"})
-    live.append(live_order("odd", 30, sent=False, refused_why="stale_slot_price_X!", led_ok_buy=False))
+    live.append(live_order("odd", 30, sent=False, refused_why="stale_slot_price_X!", led_ok_buy=False))  # an unlisted refusal word
     live.append(live_order("odd2", 31))
     _, out = recon(tmp_path, specs + [("odd", 30, 1, 0.1)], live)
     text = (out / "recon.json").read_text() + (out / "recon.md").read_text() + capsys.readouterr().out
     for s in FIXTURE_STRINGS:
         assert s not in text
     res = load(out)
-    allowed = {"order_id", "tid", "class", "reason", "entry_utc", "stake_sol", "no_rung", "entry_slip_pp", "landing_ms", "exit_reason_live", "exit_reason_sim", "exit_dt_ms", "exit_coded",
+    allowed = {"order_id", "tid", "class", "reason", "entry_utc", "stake_sol", "no_rung", "entry_slip_pp", "landing_ms", "landing_k", "exit_reason_host", "exit_reason_live", "exit_reason_sim", "exit_dt_ms", "exit_coded",
                "net_live_sol", "net_sim_sol", "net_live_pp", "net_sim_pp", "fees_live_pp", "fees_model_pp", "rent_unreclaimed"}
     assert all(set(r) <= allowed for r in res["rows"])
-    assert any(r["reason"] == "executor:other" for r in res["rows"])  # a live word holding a forbidden string never reaches the output
+    assert res["executor_unlisted"] == 1 and not any(r["reason"].startswith("executor:") for r in res["rows"])  # an unlisted word is never an explained reason
     assert "|" in (out / "recon.md").read_text()
 
 
