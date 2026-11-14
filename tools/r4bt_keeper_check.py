@@ -18,8 +18,10 @@ Checks, for every hour of the INCLUSIVE range [--from-hour, --to-hour]:
   * exactly one `.keeper-hours.jsonl` row by name `tape-<h>.jsonl.zst`, or duplicate rows with identical (zst_bytes, zst_sha, dev, inode);
   * the file exists (opened read-only with O_NOFOLLOW, regular file);
   * its size equals `zst_bytes`; its streamed sha256 equals `zst_sha`; its `st_dev` and `st_ino` equal the row's `dev` and `inode`.
-The keeper dir must be a real directory: a symlinked keeper dir is refused. Any malformed COMPLETE line of `.keeper-hours.jsonl` (bad JSON, a missing field, a wrong type,
-a bool for an int, a sha that is not 64 lower-case hex), in range or not, is a refusal; only a torn last line (no trailing newline) is ignored. All refusals are checked
+The keeper dir must be a real directory: a symlinked keeper dir is refused. A malformed complete line of `.keeper-hours.jsonl` (bad JSON, a missing field, a wrong type,
+a bool for an int, a sha that is not 64 lower-case hex) that names an in-range hour's file (`tape-<h>.jsonl.zst`, substring test on the raw line) is a refusal; any other
+malformed complete line is counted and printed as `malformed lines outside range <n>` and does not change the exit code (QP verdict on PR #1387 at edf4bf59: the file
+is append-only, so a line about an hour never read must not end a read). A torn last line (no trailing newline) is ignored. All refusals are checked
 before any mismatch, so a refusal (2) wins over a mismatch (3). Options are exact (no abbreviations); a help request is not a pass: it prints usage and exits 2.
 Usage in the read job: `python -m tools.r4bt_keeper_check --keeper-dir D --from-hour A --to-hour B && <r4bt_price_bot ...>` over the same hour range as the pricer's
 `--tape-dir` range, so the pricer runs only when this exits 0.
@@ -91,8 +93,9 @@ def _open_ro(path: Path) -> int:
     return fd
 
 
-def load_rows(keeper: Path) -> tuple[dict[str, list[dict]], int]:
-    """({file name: [rows]}, torn count). Every valid row is kept so duplicates are seen. A malformed COMPLETE line refuses; a torn last line (no newline) is ignored."""
+def load_rows(keeper: Path, in_range_names: Sequence[str] = ()) -> tuple[dict[str, list[dict]], int, int]:
+    """({file name: [rows]}, torn count, malformed lines outside range). Every valid row is kept so duplicates are seen. A malformed COMPLETE line naming an in-range hour file
+    refuses; any other is counted; a torn last line (no newline) is ignored."""
     try:
         fd = _open_ro(keeper / KEEPER_HOURS)
         with os.fdopen(fd, "rb") as f:
@@ -103,22 +106,21 @@ def load_rows(keeper: Path) -> tuple[dict[str, list[dict]], int]:
     torn = 1 if parts[-1].strip() else 0
     parts = parts[:-1]  # the piece after the last newline is empty or torn
     rows: dict[str, list[dict]] = {}
-    bad = 0
+    outside = 0
     for line in parts:
         if not line.strip():
             continue
         try:
             r = json.loads(line)
         except ValueError:
-            bad += 1
-            continue
+            r = None
         if not _valid_row(r):
-            bad += 1
+            if any(n.encode() in line for n in in_range_names):
+                raise G.Refused(f"a malformed line in {KEEPER_HOURS} names an in-range hour file (malformed_line_in_range)")
+            outside += 1
             continue
         rows.setdefault(r["name"], []).append(r)
-    if bad:
-        raise G.Refused(f"{bad} malformed line(s) in {KEEPER_HOURS} (malformed_lines)")
-    return rows, torn
+    return rows, torn, outside
 
 
 def _key(r: dict) -> tuple:
@@ -135,8 +137,8 @@ def check(keeper_dir: str | Path, from_hour: str, to_hour: str) -> dict:
     if os.environ.get("PYTEST_CURRENT_TEST") and str(keeper) == REAL_KEEPER_DIR:
         raise G.Refused("the real keeper dir is never used under pytest")
     hours = hours_in_range(from_hour, to_hour)
-    rows, _torn = load_rows(keeper)
-    res = {"n": len(hours), "first": hours[0], "last": hours[-1], "ok": True, "fail_hour": None, "fail_kind": None}
+    rows, _torn, outside = load_rows(keeper, [f"tape-{h}.jsonl.zst" for h in hours])
+    res = {"malformed_outside": outside, "n": len(hours), "first": hours[0], "last": hours[-1], "ok": True, "fail_hour": None, "fail_kind": None}
     # pass 1: refusals (an hour with no row or no file), before any byte is hashed
     for h in hours:
         name = f"tape-{h}.jsonl.zst"
@@ -204,7 +206,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     except G.Refused as e:
         print(f"r4bt_keeper_check: REFUSED: {e}", file=sys.stderr)
         return EXIT_REFUSED
-    print(f"r4bt_keeper_check: hours checked {r['n']}, first {r['first']}, last {r['last']}")
+    print(f"r4bt_keeper_check: hours checked {r['n']}, first {r['first']}, last {r['last']}, malformed lines outside range {r['malformed_outside']}")
     if not r["ok"]:
         print(f"r4bt_keeper_check: FAIL first failing hour {r['fail_hour']}: {r['fail_kind']}", file=sys.stderr)
         return EXIT_MISMATCH

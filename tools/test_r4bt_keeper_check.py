@@ -194,32 +194,62 @@ def test_abbreviations_are_refused(tmp_path):
     assert K.main(["--keeper", str(d), "--from-hour", HOURS[0], "--to-hour", HOURS[-1]]) == 2
 
 
-@pytest.mark.parametrize("bad", [
+BADS = [
     lambda r: {k: v for k, v in r.items() if k != "inode"},
     lambda r: dict(r, dev=str(r["dev"])),
     lambda r: dict(r, zst_sha=r["zst_sha"].upper()),
     lambda r: dict(r, zst_sha=r["zst_sha"][:-1]),
     lambda r: dict(r, zst_bytes=True),
     lambda r: dict(r, inode=True),
-    lambda r: [1, 2],
-])
-def test_malformed_complete_line_refuses_in_or_out_of_range(tmp_path, capsys, bad):
-    d, rows = keeper(tmp_path)
-    for target in (rows[1], dict(rows[1], name=name("2030-01-01T00"))):  # a second row for an in-range hour; a row for an hour out of range
-        write_rows(d, rows)
-        with open(d / K.KEEPER_HOURS, "a") as fh:
-            fh.write(json.dumps(bad(target)) + "\n")
-        assert run(d) == 2
-        assert "1 malformed line(s)" in capsys.readouterr().err
+]
 
 
-def test_garbage_complete_lines_refuse_and_count(tmp_path, capsys):
+@pytest.mark.parametrize("bad", BADS)
+def test_malformed_complete_line_naming_an_in_range_hour_refuses(tmp_path, capsys, bad):
     d, rows = keeper(tmp_path)
-    write_rows(d, rows)
+    with open(d / K.KEEPER_HOURS, "a") as fh:
+        fh.write(json.dumps(bad(rows[1])) + "\n")
+    assert run(d) == 2
+    assert "malformed_line_in_range" in capsys.readouterr().err
+
+
+def test_garbage_line_naming_an_in_range_hour_refuses(tmp_path):
+    d, _ = keeper(tmp_path)
+    with open(d / K.KEEPER_HOURS, "a") as fh:
+        fh.write("garbage " + name(HOURS[2]) + " {\n")
+    assert run(d) == 2
+
+
+@pytest.mark.parametrize("bad", BADS)
+def test_malformed_line_naming_an_out_of_range_hour_passes_with_the_count(tmp_path, capsys, bad):
+    d, rows = keeper(tmp_path)
+    with open(d / K.KEEPER_HOURS, "a") as fh:
+        fh.write(json.dumps(bad(dict(rows[1], name=name("2030-01-01T00")))) + "\n")
+    assert run(d) == 0
+    assert "malformed lines outside range 1" in capsys.readouterr().out
+
+
+def test_malformed_lines_naming_no_hour_pass_with_the_count(tmp_path, capsys):
+    d, _ = keeper(tmp_path)
     with open(d / K.KEEPER_HOURS, "a") as fh:
         fh.write("not json\n{\n\n[]\n")
-    assert run(d) == 2
-    assert "3 malformed line(s)" in capsys.readouterr().err
+    assert run(d) == 0
+    assert "malformed lines outside range 3" in capsys.readouterr().out
+
+
+def test_clean_file_prints_zero_outside_count(tmp_path, capsys):
+    d, _ = keeper(tmp_path)
+    assert run(d) == 0
+    assert "malformed lines outside range 0" in capsys.readouterr().out
+
+
+def test_malformed_line_outside_range_does_not_hide_a_mismatch(tmp_path, capsys):
+    d, rows = keeper(tmp_path)
+    rows[1]["zst_bytes"] += 1
+    write_rows(d, rows)
+    with open(d / K.KEEPER_HOURS, "a") as fh:
+        fh.write("junk\n")
+    assert run(d) == 3
 
 
 def test_a_valid_unterminated_last_line_is_ignored_as_torn(tmp_path):
