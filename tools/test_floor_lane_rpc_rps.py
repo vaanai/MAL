@@ -107,3 +107,37 @@ def test_run_logs_effective_value(tmp_path, capsys, extra, shown):
     raw = lane_raw(tmp_path, a3_record_file=str(a3_file(tmp_path)), **extra)
     X.run(raw, live_flag=True, once=True, root_checks=False, port_factory=lambda c: X.FloorLanePort(FakeInner(), c), now_ms=Clock(T0), sleep=lambda s: None)
     assert shown in capsys.readouterr().out
+
+
+def test_run_passes_key_to_build_live_port(tmp_path, monkeypatch):
+    """The wiring in run(): port_factory=None resolves build_live_port at call time; a recorder sees the value."""
+    from tools.test_floor_lane_a3_flag_list import Clock, T0, a3_file
+    for i, (extra, exp) in enumerate((({"rpc_rps": 4}, 4.0), ({}, 2.0))):
+        seen = []
+
+        def rec(cfg, rpc_rps=-1.0, seen=seen):
+            seen.append(rpc_rps)
+            return X.FloorLanePort(FakeInner(), cfg)
+        monkeypatch.setattr(X, "build_live_port", rec)
+        d = tmp_path / f"r{i}"
+        d.mkdir()
+        write_live_ok(d)
+        raw = lane_raw(d, a3_record_file=str(a3_file(d)), **extra)
+        X.run(raw, live_flag=True, once=True, root_checks=False, port_factory=None, now_ms=Clock(T0), sleep=lambda s: None)
+        assert seen == [exp]
+
+
+@pytest.mark.parametrize("big", [10**400, -(10**400), 10**5000], ids=["p400", "n400", "p5000"])
+def test_huge_int_is_a_config_refusal(tmp_path, big):
+    with pytest.raises(ValueError, match="rpc_rps"):
+        X.make_config(lane_raw(tmp_path, rpc_rps=big))
+    assert X.check(lane_raw(tmp_path, rpc_rps=big))["ok"] is False
+    write_live_ok(tmp_path)
+    assert X.run(lane_raw(tmp_path, rpc_rps=big), live_flag=True, root_checks=False, port_factory=lambda c: pytest.fail("port built")) == 2
+
+
+def test_lane_rps_is_refused(tmp_path):
+    raw = lane_raw(tmp_path)
+    raw["lane"] = {**raw["lane"], "rps": 4.0}  # the bridge's own main reads a top-level "rps"; the lane block refuses it
+    with pytest.raises(X.LaneConfigError, match="unknown keys"):
+        X.make_config(raw)
