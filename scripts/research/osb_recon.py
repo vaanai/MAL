@@ -72,6 +72,8 @@ NO_SIM_WORDS = ("gap_entry", "gap_exit", "missing_v", "other")  # the fixed no_s
 CODED_TP_GAP = "tp_in_sim_gap"
 CODED_NONRULE, NONRULE_CLOSE_WORD = "live_nonrule_exit", "paper_refused"  # QP ruling 2026-11-14 point 2 (coded AFTER the first run: post hoc)
 NONRULE_LANDING_SLACK_MS = 60_000
+RESTART_BELONGS_MS = 600_000          # a restart row belongs to a start row when its t_ms is in [start t_ms, min(next start t_ms, start t_ms + this)); not a band constant
+FEED_GAP_LOCK_MS = 86_400_000         # H2 (c): a same-pool feed_gap row with no numeric blocked_until_ms covers a later trigger only within this age (the 24 h lock); not a band constant
 H3_NONRULE_MAX_N, H3_NONRULE_MAX_FRAC = 1, 0.10  # more than 1 such trade in the window's matched trades, or more than 10% of them: H3 FAIL
 EXIT_VOCAB = ("tp_1.5x", "time_24h", "time_stop", "time_stop_backstop", "sl_backstop")
 CODED_SIM, CODED_LIVE = "tp_1.5x", "time_stop_backstop"
@@ -345,11 +347,20 @@ def tms(o):
 
 
 def down_spans(ex_rows, with_starts=False):
-    """non-failed restart spans. with_starts: also the span of a crash, from a start row's prev_last_ms (last host log row before it) to the start's own instant. Only the live_nonrule_exit
-    check asks for these: a quiet host leaves a long prev_last_ms gap that is not proof of a down span, so H2's host_down_no_row and the tp-in-hole code keep the restart rows alone."""
+    """non-failed restart spans. with_starts: also the span of a crash, from a start row's prev_last_ms (the last host log row of any kind before it) to the start's own instant, but ONLY for a start
+    to which no restart row belongs. A restart row BELONGS to a start row when its t_ms is in [start t_ms, min(next start t_ms, start t_ms + RESTART_BELONGS_MS)); a clean or cheap restart writes its own
+    restart row, and then only that row's span counts (its `failed` flag is honoured: a failed row gives no span at all). Only the live_nonrule_exit check asks for these: a quiet host leaves a long
+    prev_last_ms gap that is not proof of a down span, so H2's host_down_no_row and the tp-in-hole code keep the restart rows alone."""
     out = [(r["down_from_ms"], r["down_to_ms"]) for r in ex_rows if r["kind"] == "restart" and not r.get("failed") and is_num(r.get("down_from_ms")) and is_num(r.get("down_to_ms"))]
     if with_starts:
-        out += [(r["prev_last_ms"], r["t_ms"]) for r in ex_rows if r["kind"] == "start" and is_num(r.get("prev_last_ms")) and is_num(r.get("t_ms")) and r["prev_last_ms"] < r["t_ms"]]
+        starts = sorted(r["t_ms"] for r in ex_rows if r["kind"] == "start" and is_num(r.get("t_ms")))
+        restarts = [r["t_ms"] for r in ex_rows if r["kind"] == "restart" and is_num(r.get("t_ms"))]
+        for r in ex_rows:
+            if r["kind"] != "start" or not (is_num(r.get("prev_last_ms")) and is_num(r.get("t_ms")) and r["prev_last_ms"] < r["t_ms"]):
+                continue
+            hi = min([x for x in starts if x > r["t_ms"]] + [r["t_ms"] + RESTART_BELONGS_MS])
+            if not any(r["t_ms"] <= x < hi for x in restarts):
+                out.append((r["prev_last_ms"], r["t_ms"]))
     return out
 
 
@@ -419,7 +430,7 @@ def classify(ex_rows, sim, win_from, win_to):
                 return "feed_gap_mismatch"
             if all(str(r.get("reason") or "") == "pool_blocked_after_gap" for r in rfs):  # (c) the same pool's earlier feed_gap refusals whose block window covers this trigger
                 cause = [r for r in refusals if r.get("pool") == e["pool"] and str(r.get("reason") or "") == "feed_gap" and is_num(r.get("trig_ms")) and r["trig_ms"] < t
-                         and (not is_num(r.get("blocked_until_ms")) or r["blocked_until_ms"] >= t)]
+                         and ((r["blocked_until_ms"] >= t) if is_num(r.get("blocked_until_ms")) else (t - r["trig_ms"] <= FEED_GAP_LOCK_MS))]
                 if any(r.get("gap_kind") != "host_down" for r in cause):
                     return "feed_gap_mismatch"
                 return "restart_lockout" if cause else "unexplained"
@@ -497,7 +508,7 @@ def pair_metrics(o, e, sim, spans, win_to, nr_spans=()):
         m["exit_dt_ms"] = close_ms - sim_ms
     h3 = "open"
     nonrule = bool(live_closed and live_reason == NONRULE_CLOSE_WORD and not o.get("has_host_exit") and is_num(o.get("decision_ms"))
-                   and is_num(close_ms) and any(o["decision_ms"] < a <= close_ms + NONRULE_LANDING_SLACK_MS for a, _b in nr_spans))
+                   and is_num(close_ms) and any(o["decision_ms"] <= a <= close_ms + NONRULE_LANDING_SLACK_MS for a, _b in nr_spans))  # the host's own entry row can be its last row: a == decision_ms is inside (QP, PR #1382)
     if nonrule:
         m["exit_coded"], m["reason"], h3 = True, CODED_NONRULE, "live_nonrule"
     elif live_closed and sim_closed:

@@ -885,3 +885,75 @@ def test_nonrule_cap_one_of_ten_ok_two_fail_one_of_five_fails(tmp_path):
         _, out = recon(_sub(tmp_path, name), specs, live)
         h3 = load(out)["h3"]
         assert h3["n_live_nonrule_exit"] == n_nr and h3["status"] == status and h3["nonrule_cap_exceeded"] == (status == "FAIL"), name
+
+
+# ---------------------------------------------------------------------------------------------------- fix round for PR #1382 (QP + reviewer verdicts at bdc33ff7)
+def test_nonrule_last_host_row_equal_to_the_entry_is_coded(tmp_path):
+    specs, live = _nr_world(span=lambda o: o["decision_ms"])  # the host's own entry row is its last row: prev_last_ms == decision_ms
+    _, out = recon(tmp_path, specs, live)
+    h3 = load(out)["h3"]
+    assert h3["n_live_nonrule_exit"] == 1 and h3["n_mismatch_uncoded"] == 0
+
+
+def test_nonrule_a_host_row_two_minutes_after_the_close_is_uncoded(tmp_path):
+    specs, live = _nr_world(span=lambda o: o["decision_ms"] + 3_000 + 120_000)
+    _, out = recon(tmp_path, specs, live)
+    h3 = load(out)["h3"]
+    assert h3["n_live_nonrule_exit"] == 0 and h3["n_mismatch_uncoded"] == 1 and h3["status"] == "FAIL"
+
+
+def _planned_restart(live, o, after_sell_ms=6 * H, failed=False, lag_ms=5_000):
+    """a start row whose own restart row (down 60 s before the start) comes lag_ms after it; prev_last_ms is the quiet host's last row 1 s after the entry"""
+    land = o["decision_ms"] + 3_000
+    st = land + after_sell_ms
+    return live + [{"kind": "start", "t_ms": st, "start_kind": "start", "prev_last_ms": o["decision_ms"] + 1_000},
+                   {"kind": "restart", "t_ms": st + lag_ms, "failed": failed, "down_from_ms": st - 60_000, "down_to_ms": st, "shadow_complete": True}]
+
+
+def test_nonrule_planned_restart_hours_after_the_sell_with_its_own_restart_row_is_not_coded(tmp_path):
+    specs, live = _nr_world(starts=False)
+    live = _planned_restart(live, live[0])
+    _, out = recon(tmp_path, specs, live)
+    h3 = load(out)["h3"]
+    assert h3["n_live_nonrule_exit"] == 0 and h3["n_mismatch_uncoded"] == 1 and h3["status"] == "FAIL"
+
+
+def test_nonrule_restart_row_that_belongs_to_a_start_wins_over_the_start_gap_and_failed_gives_no_span(tmp_path):
+    specs, live = _nr_world(starts=False)
+    o = live[0]
+    land = o["decision_ms"] + 3_000
+    # the restart row's own down_from is 10 s after the sell: coded by that span, though prev_last_ms is far earlier
+    ok = live + [{"kind": "start", "t_ms": land + 3 * H, "start_kind": "start", "prev_last_ms": o["decision_ms"]},
+                 {"kind": "restart", "t_ms": land + 3 * H + 1_000, "failed": False, "down_from_ms": land + 10_000, "down_to_ms": land + 3 * H, "shadow_complete": True}]
+    _, out = recon(_sub(tmp_path, "ok"), specs, ok)
+    assert load(out)["h3"]["n_live_nonrule_exit"] == 1
+    bad = live + [{"kind": "start", "t_ms": land + 3 * H, "start_kind": "start", "prev_last_ms": o["decision_ms"]},
+                  {"kind": "restart", "t_ms": land + 3 * H + 1_000, "failed": True, "down_from_ms": land + 10_000, "down_to_ms": land + 3 * H}]
+    _, out = recon(_sub(tmp_path, "bad"), specs, bad)
+    assert load(out)["h3"]["n_live_nonrule_exit"] == 0 and load(out)["h3"]["status"] == "FAIL"  # a failed row belongs too: no span at all
+
+
+def test_down_spans_belongs_rule_bounds():
+    S = 1_000_000_000
+    st = [{"kind": "start", "t_ms": S, "prev_last_ms": S - 500_000}]
+    rs = lambda t: {"kind": "restart", "t_ms": t, "failed": False, "down_from_ms": 1, "down_to_ms": 2}
+    crash = [(S - 500_000, S)]
+    assert R.down_spans(st + [rs(S)], True) == [(1, 2)]  # at the start instant: belongs
+    assert R.down_spans(st + [rs(S + R.RESTART_BELONGS_MS - 1)], True)[-1:] == [(1, 2)] and (S - 500_000, S) not in R.down_spans(st + [rs(S + R.RESTART_BELONGS_MS - 1)], True)
+    assert R.down_spans(st + [rs(S + R.RESTART_BELONGS_MS)], True) == [(1, 2)] + crash  # at the bound: does not belong
+    assert R.down_spans(st + [rs(S - 1)], True) == [(1, 2)] + crash  # before the start: does not belong
+    nxt = st + [{"kind": "start", "t_ms": S + 1_000, "prev_last_ms": S + 500}]
+    assert (S - 500_000, S) in R.down_spans(nxt + [rs(S + 1_000)], True)  # a restart row at the NEXT start belongs to the next one
+    assert R.down_spans(st + [rs(S)], False) == [(1, 2)]
+
+
+def test_h2_c_feed_gap_row_without_blocked_until_covers_only_24h(tmp_path):
+    t = entry_ms(0) - 800
+    blocked = _ref("a", 0, "pool_blocked_after_gap")
+    old = lambda age: _ref("a", 5, "feed_gap", "data_loss", trig_ms=t - age)
+    reasons, _ = _h2_reason(_sub(tmp_path, "in"), [blocked, old(R.FEED_GAP_LOCK_MS)])
+    assert reasons == ["feed_gap_mismatch"]
+    reasons, _ = _h2_reason(_sub(tmp_path, "out"), [blocked, old(R.FEED_GAP_LOCK_MS + 1)])
+    assert reasons == ["unexplained"]
+    reasons, _ = _h2_reason(_sub(tmp_path, "explicit"), [blocked, dict(old(R.FEED_GAP_LOCK_MS + 5 * H), blocked_until_ms=t + 1)])
+    assert reasons == ["feed_gap_mismatch"]  # an explicit blocked_until_ms is used as is
