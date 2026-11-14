@@ -525,10 +525,12 @@ def time_now():
 
 
 def test_real_snapshot_root_is_refused_under_pytest(monkeypatch):
+    before = os.stat(B.REAL_SNAP_ROOT).st_mtime_ns if os.path.exists(B.REAL_SNAP_ROOT) else None  # the live board job creates this dir on the real host: only "not created or touched by this test" is asserted
     monkeypatch.setattr(B, "SNAP_ROOT", B.REAL_SNAP_ROOT)
     with pytest.raises(RuntimeError):
         B.snap_root()
-    assert not os.path.exists(B.REAL_SNAP_ROOT)
+    after = os.stat(B.REAL_SNAP_ROOT).st_mtime_ns if os.path.exists(B.REAL_SNAP_ROOT) else None
+    assert after == before
 
 
 # ------------------------------------------------------------------------------------------------------------------------------ recon wiring (PR-3)
