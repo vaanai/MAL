@@ -29,9 +29,9 @@ def world(tmp_path):
             rows.append(trow(t, pool, "buy" if j % 2 else "sell", q=10 * 10**9 + (j % 11) * 10**8, n=5000 + j))
     return make_world(tmp_path, shifted_rows(tmp_path, sorted(rows, key=lambda r: (r["t_recv_ms"], r.get("pool", "")))))
 
-# md5 of the strict fixture run's ledger projection (osb_follow.tree_md5: no per-process fields) computed on origin/main ade20cd8 with this file's run_np (no option), before floor_nov_paper.py was edited:
-#   git stash-free recipe: check out ade20cd8, run `MAL_ARENA_TEST=1 /data/mal/venv/bin/python -c "..."` calling run_np(tmp, 'strict') of this file and print O.tree_md5(root / 'ledger').
-FROZEN_STRICT_LEDGER_MD5 = "b8153ed22db335bda000b4625874e17c"
+# md5 of the strict fixture run's ledger projection (osb_follow.tree_md5: no per-process fields). The engine's code state is pinned in run_np (code_state_fn), so the value does not depend on the checkout's git HEAD:
+# computed on unmodified origin/main (ade20cd8) and at the PR head, with the same fixture and the same pin; the test must pass at any commit.
+FROZEN_STRICT_LEDGER_MD5 = "29e167906262cbf8475464d472e34e3e"
 FROZEN_STRICT_VARIANT_JSON = json.dumps({"variant": {}, "frozen_rule": True, "registered_frozen_sha_is_not_the_rule": False, "send": 160000}, indent=1, sort_keys=True) + "\n"  # the header of main, same bytes
 
 
@@ -47,7 +47,7 @@ def run_np(tmp, name, *extra, monkeypatch):
             r.table_mode = "first_print"  # the fixture has no create / complete rows
         return rs
     monkeypatch.setattr(NP, "load_rules_v2", rules)
-    monkeypatch.setattr(NP, "GapRangeEngine", functools.partial(G.GapRangeEngine, **EK))
+    monkeypatch.setattr(NP, "GapRangeEngine", functools.partial(G.GapRangeEngine, **EK, code_state_fn=lambda: ("0" * 40, False)))
     root = tmp / name
     argv = ["floor_nov_paper.py", "--root", str(root), "--tape-dir", str(tape), "--from-ms", str(T0), "--to-ms", str(T0 + N_HOURS * HOUR), *extra]
     monkeypatch.setattr(sys, "argv", argv)
