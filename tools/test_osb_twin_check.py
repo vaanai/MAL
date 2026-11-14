@@ -25,6 +25,8 @@ GOOD = {h: ("L" + h, "D" + h) for h in HOURS}
 @pytest.fixture(autouse=True)
 def _arena_env(monkeypatch):
     monkeypatch.setenv("MAL_ARENA_TEST", "1")
+    monkeypatch.setenv(T.TEST_FLAG, "1")
+    monkeypatch.delenv("MISCUSI_JOB_ID", raising=False)
 
 
 def trade(pid, stake, **kw):
@@ -37,11 +39,13 @@ def excl(pid, stake, why):
     return {"kind": "excluded", "position_id": pid, "stake_sol": stake, "exclusion_reason": why, "written_ms": 6, "decision_ms": {"entry": ENTRY_MS}}
 
 
-def make_run(tmp, name, manifest_dict, rows, hours=HOURS, md5s=None, dmd5="d" * 32, code="code1", last=None):
+def make_run(tmp, name, manifest_dict, rows, hours=HOURS, md5s=None, dmd5="d" * 32, code="code1", last=None, head="h-new", dirty=False):
     out = tmp / name
     led = out / "runs" / "0001" / "ledger" / "botA"
     led.mkdir(parents=True)
-    (led / "rows.jsonl").write_text("".join(json.dumps(r) + "\n" for r in rows))
+    ident = [{"kind": "start", "pid": 77, "engine_id": head + "-eng", "code_head": head, "code_dirty": dirty, "written_ms": 1},
+             {"kind": "open", "position_id": "p0", "engine_id": head + "-eng", "code_head": head, "code_dirty": dirty, "written_ms": len(head), "decision_ms": {"entry": ENTRY_MS}}] if head else []
+    (led / "rows.jsonl").write_text("".join(json.dumps(r) + "\n" for r in ident + list(rows)))
     (out / "book").symlink_to("runs/0001")
     md5s = md5s or {h: ("L" + h, "D" + h) for h in hours}
     (out / "md5-by-hour.jsonl").write_text("".join(json.dumps({"hour": h, "end_ms": 0, "ledger_md5": md5s[h][0], "decision_md5": md5s[h][1]}) + "\n" for h in hours))
@@ -71,15 +75,15 @@ LAT_STRICT = [trade("p1", 0.1), trade("p1", 0.25), trade("p2", 0.1), trade("p2",
 LAT_TWIN = [trade("p1", 0.1), trade("p1", 0.25), excl("p2", 0.1, "exit_before_entry_landing"), excl("p2", 0.25, "exit_before_entry_landing"), excl("p3", 0.1, "feed_gap"), excl("p3", 0.25, "feed_gap")]
 
 
-def setup(tmp, kind, srows=None, trows=None, with_oncopy=True, twin_kw=None, strict_kw=None, oc_kw=None):
+def setup(tmp, kind, srows=None, trows=None, with_oncopy=True, twin_kw=None, strict_kw=None, oc_kw=None, oc_rows=None):
     sm, tm = mans(kind)
     srows = srows if srows is not None else (GAP_STRICT if kind == "gap-hold" else LAT_STRICT)
     trows = trows if trows is not None else (GAP_TWIN if kind == "gap-hold" else LAT_TWIN)
-    s, smp = make_run(tmp, "strict", sm, srows, **(strict_kw or {}))
+    s, smp = make_run(tmp, "strict", sm, srows, **dict({"code": "code0", "head": "h-old"}, **(strict_kw or {})))
     t, tmp_ = make_run(tmp, "twin", tm, trows, **(twin_kw or {}))
     args = ["--kind", kind, "--strict-run", str(s), "--twin-run", str(t), "--strict-manifest", str(smp), "--twin-manifest", str(tmp_), "--out", str(tmp / "out.json")]
     if with_oncopy:
-        oc, _ = make_run(tmp, "oncopy", sm, srows, **dict({"md5s": GOOD}, **(oc_kw or {})))
+        oc, _ = make_run(tmp, "oncopy", sm, srows if oc_rows is None else oc_rows, **dict({"md5s": GOOD}, **(oc_kw or {})))
         args += ["--on-copy-run", str(oc)]
     return args
 
@@ -97,15 +101,18 @@ def run(args, capsys):
 
 
 KINDS = ("gap-hold", "latency")
-NAMES = {"gap-hold": ("C2", "C3", "C4", "C5"), "latency": ("L2", "L3", "L4", "L5")}
+NAMES = {"gap-hold": ("C2r", "C3", "C4", "C5"), "latency": ("L2r", "L3", "L4", "L5")}
+OLD = {"gap-hold": "C2", "latency": "L2"}
 
 
 @pytest.mark.parametrize("kind", KINDS)
 def test_correct_twin_passes_every_condition(tmp_path, capsys, kind):
     code, res, err = run(setup(tmp_path, kind), capsys)
-    assert code == 0 and res["overall"] == "PASS" and set(res["conditions"]) == set(NAMES[kind]) and all(c["status"] == "PASS" for c in res["conditions"].values())
+    assert code == 0 and res["overall"] == "PASS" and set(res["conditions"]) == set(NAMES[kind]) | {OLD[kind]} and all(c["status"] == "PASS" for k, c in res["conditions"].items() if k != OLD[kind])
+    assert res["conditions"][OLD[kind]]["status"] == "NOT_COMPARABLE_ACROSS_COMMITS"  # strict is at another commit: a per-hour ledger_md5 cannot be equal
     c2 = res["conditions"][NAMES[kind][0]]
-    assert c2["window"] == {"first_hour": HOURS[0], "last_hour": HOURS[-1], "n_hours": 6} and c2["n_hours_compared"] == 6 and c2["n_mismatching_hours"] == 0
+    assert c2["window"] == {"first_hour": HOURS[0], "last_hour": HOURS[-1], "n_hours": 6} and c2["per_hour_decision_md5"]["n_hours_compared"] == 6 and c2["differing_key_names"] == []
+    assert c2["projection_md5"]["on_copy"] == c2["projection_md5"]["strict"] and c2["projection_multiset_md5"]["on_copy"] == c2["projection_multiset_md5"]["strict"] and "open" in c2["row_counts_by_kind"]["strict"]
     assert json.loads((tmp_path / "out.json").read_text()) == res
     txt = json.dumps(res)
     assert "p1" not in txt and "p4" not in txt  # no position ids anywhere
@@ -119,13 +126,76 @@ def test_without_on_copy_the_required_c2_l2_is_not_run_and_the_result_is_not_pas
 
 
 @pytest.mark.parametrize("kind", KINDS)
-@pytest.mark.parametrize("fld", [0, 1])
-def test_identity_fails_on_one_tampered_hour_md5(tmp_path, capsys, kind, fld):
+def test_c2r_fails_on_one_tampered_hour_decision_md5_and_ignores_ledger_md5_across_commits(tmp_path, capsys, kind):
     md5s = dict(GOOD)
-    md5s[HOURS[3]] = tuple("X" if i == fld else v for i, v in enumerate(GOOD[HOURS[3]]))
+    md5s[HOURS[3]] = (GOOD[HOURS[3]][0], "X")
     code, res, _ = run(setup(tmp_path, kind, oc_kw={"md5s": md5s}), capsys)
     c = res["conditions"][NAMES[kind][0]]
-    assert code == 3 and c["status"] == "FAIL" and c["n_mismatching_hours"] == 1 and c["first_mismatching_hour"] == HOURS[3] and res["overall"] == "NOT_MET"
+    assert code == 3 and c["status"] == "FAIL" and c["per_hour_decision_md5"]["n_mismatching_hours"] == 1 and c["reason"] == "per-hour decision_md5 differs" and res["overall"] == "NOT_MET"
+    md5s = dict(GOOD)
+    md5s[HOURS[3]] = ("X", GOOD[HOURS[3]][1])  # only a per-hour ledger_md5 differs, across commits: the old condition is informational, C2r PASSes, the overall result stands
+    code, res, _ = run(setup(sub(tmp_path, "b"), kind, oc_kw={"md5s": md5s}), capsys)
+    assert code == 0 and res["conditions"][NAMES[kind][0]]["status"] == "PASS" and res["conditions"][OLD[kind]]["status"] == "NOT_COMPARABLE_ACROSS_COMMITS" and res["conditions"][OLD[kind]]["n_mismatching_hours"] == 1
+
+
+@pytest.mark.parametrize("kind", KINDS)
+def test_old_c2_is_compared_and_counted_at_the_same_commit(tmp_path, capsys, kind):
+    same = {"code": "code1", "head": "h-new"}
+    code, res, _ = run(setup(tmp_path, kind, strict_kw=same), capsys)
+    assert code == 0 and res["conditions"][OLD[kind]]["status"] == "PASS" and res["conditions"][OLD[kind]]["n_hours_compared"] == 6
+    md5s = dict(GOOD)
+    md5s[HOURS[3]] = ("X", GOOD[HOURS[3]][1])
+    code, res, _ = run(setup(sub(tmp_path, "b"), kind, strict_kw=same, oc_kw={"md5s": md5s}), capsys)
+    assert code == 3 and res["conditions"][OLD[kind]]["status"] == "FAIL" and res["conditions"][OLD[kind]]["first_mismatching_hour"] == HOURS[3] and res["conditions"][NAMES[kind][0]]["status"] == "PASS"
+    code, res, _ = run(setup(sub(tmp_path, "c"), kind, strict_kw={"code": "code1", "head": "h-old"}), capsys)  # same code.sha256 but another code_head: still another commit
+    assert res["conditions"][OLD[kind]]["status"] == "NOT_COMPARABLE_ACROSS_COMMITS"
+
+
+@pytest.mark.parametrize("kind", KINDS)
+def test_c2r_fails_when_one_priced_field_differs_and_prints_key_names_only(tmp_path, capsys, kind):
+    base = GAP_STRICT if kind == "gap-hold" else LAT_STRICT
+    rows = copy.deepcopy(base)
+    rows[0]["exit_reason"] = "SECRET-VALUE"
+    code, res, _ = run(setup(tmp_path, kind, srows=base, oc_rows=rows, trows=GAP_TWIN if kind == "gap-hold" else LAT_TWIN), capsys)
+    c = res["conditions"][NAMES[kind][0]]
+    assert code == 3 and c["status"] == "FAIL" and c["reason"] == "ledger projection differs" and c["differing_key_names"] == ["exit_reason"] and "SECRET-VALUE" not in json.dumps(res)
+    assert c["projection_md5"]["on_copy"] != c["projection_md5"]["strict"]
+
+
+@pytest.mark.parametrize("kind", KINDS)
+def test_c2r_order_only_is_a_fail(tmp_path, capsys, kind):
+    base = GAP_STRICT if kind == "gap-hold" else LAT_STRICT
+    rows = copy.deepcopy(base)
+    rows[0], rows[1] = rows[1], rows[0]
+    code, res, _ = run(setup(tmp_path, kind, srows=base, oc_rows=rows, trows=GAP_TWIN if kind == "gap-hold" else LAT_TWIN), capsys)
+    c = res["conditions"][NAMES[kind][0]]
+    assert code == 3 and c["status"] == "FAIL" and c["reason"] == "order only" and c["projection_multiset_md5"]["on_copy"] == c["projection_multiset_md5"]["strict"]
+
+
+@pytest.mark.parametrize("which", ["on_copy", "strict"])
+@pytest.mark.parametrize("dirty", [True, "missing"])
+@pytest.mark.parametrize("kind", KINDS)
+def test_c2r_code_dirty_true_or_missing_fails(tmp_path, capsys, kind, dirty, which):
+    kw = {"dirty": dirty is True}
+    a = setup(tmp_path, kind, **({"oc_kw": kw} if which == "on_copy" else {"strict_kw": kw}))
+    if dirty == "missing":
+        f = tmp_path / ("oncopy" if which == "on_copy" else "strict") / "runs" / "0001" / "ledger" / "botA" / "rows.jsonl"
+        f.write_text("".join(json.dumps({k: v for k, v in json.loads(ln).items() if k != "code_dirty"}) + "\n" for ln in f.read_text().splitlines()))
+    code, res, _ = run(a, capsys)
+    c = res["conditions"][NAMES[kind][0]]
+    assert code == 3 and c["status"] == "FAIL" and "code_dirty" in c["reason"] and c["code_dirty"][which]["all_false"] is False
+
+
+@pytest.mark.parametrize("kind", KINDS)
+def test_c2r_compares_every_row_kind(tmp_path, capsys, kind):
+    base = (GAP_STRICT if kind == "gap-hold" else LAT_STRICT) + [{"kind": "late_print", "position_id": "p1", "written_ms": 3, "n": 1}]
+    code, res, _ = run(setup(tmp_path, kind, srows=base, trows=GAP_TWIN if kind == "gap-hold" else LAT_TWIN), capsys)
+    c = res["conditions"][NAMES[kind][0]]
+    assert code == 0 and c["row_counts_by_kind"]["strict"]["late_print"] == 1 and c["row_counts_by_kind"]["on_copy"]["late_print"] == 1 and "start" not in c["row_counts_by_kind"]["strict"]
+    rows = copy.deepcopy(base)
+    rows[-1]["n"] = 2  # a difference in an otherwise uncompared kind
+    code, res, _ = run(setup(sub(tmp_path, "b"), kind, srows=base, oc_rows=rows, trows=GAP_TWIN if kind == "gap-hold" else LAT_TWIN), capsys)
+    assert code == 3 and res["conditions"][NAMES[kind][0]]["status"] == "FAIL" and res["conditions"][NAMES[kind][0]]["differing_key_names"] == ["n"]
 
 
 @pytest.mark.parametrize("kind", KINDS)
@@ -188,7 +258,7 @@ def test_a_third_differing_key_is_refused_with_tape_dir_free(tmp_path, capsys, k
 
 
 def test_differing_tape_dir_outside_the_scratch_root_is_refused(tmp_path, capsys, monkeypatch):
-    monkeypatch.delenv("MAL_ARENA_TEST")
+    monkeypatch.delenv(T.TEST_FLAG)  # MAL_ARENA_TEST alone does not lift the scratch-root guard
     sm, tm = mans("latency")
     tm.update(tape_dir="/elsewhere/tape")
     s, smp = make_run(tmp_path, "strict", sm, LAT_STRICT)
@@ -196,6 +266,11 @@ def test_differing_tape_dir_outside_the_scratch_root_is_refused(tmp_path, capsys
     a = ["--kind", "latency", "--strict-run", str(s), "--twin-run", str(t), "--strict-manifest", str(smp), "--twin-manifest", str(tmp_), "--out", str(tmp_path / "o.json")]
     code, res, err = run(a, capsys)
     assert code == 2 and "not under /data2/mal/scratch/floor-open-sim" in err
+    monkeypatch.setenv(T.TEST_FLAG, "1")
+    monkeypatch.setenv("MISCUSI_JOB_ID", "1")  # the test flag is refused inside a MiScusi job
+    (tmp_path / "o.json").unlink(missing_ok=True)
+    code, res, err = run(a, capsys)
+    assert code == 2 and "refuses to run inside a MiScusi job" in err
 
 
 def test_no_row_in_common_is_no_data_not_fail_and_not_pass(tmp_path, capsys):
@@ -383,7 +458,7 @@ def test_real_follow_pair_layout_is_read(world, capsys):
                           "--twin-manifest", str(mp_t), "--out", str(tmp / "check.json")], capsys)
     assert err == "", err
     cs = res["conditions"]
-    assert cs["L2"]["status"] == "PASS" and cs["L2"]["n_hours_compared"] > 0 and cs["L3"]["status"] == "PASS" and cs["L3"]["per_hour_decision_md5"]["n_hours_compared"] > 0, res
+    assert cs["L2"]["status"] == "PASS" and cs["L2"]["n_hours_compared"] > 0 and cs["L2r"]["per_hour_decision_md5"]["n_hours_compared"] > 0 and cs["L2r"]["projection_md5"]["on_copy"] == cs["L2r"]["projection_md5"]["strict"] and cs["L3"]["status"] == "PASS" and cs["L3"]["per_hour_decision_md5"]["n_hours_compared"] > 0, res
     # the fixture world closes no position inside its window: nothing to compare is NO_DATA, never a PASS
     assert cs["L4"]["n_rows_priced_in_both"] == 0 and cs["L4"]["status"] == "NO_DATA" and cs["L5"]["n_positions_closed_in_both"] == 0 and cs["L5"]["status"] == "NO_DATA" and code == 3
 
