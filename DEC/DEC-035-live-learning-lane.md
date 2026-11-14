@@ -807,6 +807,51 @@ In force from its merge; no latency twin runs before L1 to L7 below are met. Wri
 
 **What it does not change.** The strict books (changing their latency or d is a new simulator version, so new books, Am.9 §1; shown first in twins), Erratum 1's gap twins, any limit, threshold, window, pin or clock, and the promotion gate. No book has cleared the promotion gate.
 
+## Amendment 9, Erratum 3 (2026-11-14): C2r / L2r replace C2 and L2 (ledger md5 is not comparable across commits)
+In force from its merge. Written 2026-11-14T14:30Z (`date -u`) for manager23, at main ef5545ad. Records only; changes no threshold, window, pin or clock. Source: the QP ruling addendum `/data/mal/hunt-1008/ops/QP-RULING-1114-board-gap-in-hold-ADD1.md` (sha256 prefix 9736edc9). As with Amendment 7 Erratum 1 and Amendment 9 Erratum 2, Erratum 1 and Erratum 2 are not edited in place; this block follows them and controls where they differ. It replaces C2 of Erratum 1 and L2 of Erratum 2, and the "Limits" sentence of Erratum 1 quoted below. Nothing else in Amendment 9 or its errata changes.
+
+**Finding.** Condition C2 of Erratum 1 and L2 of Erratum 2 compare a per-hour `ledger_md5` across two commits. `ArenaEngine.buy` writes `code_head` (with `code_dirty`) into every `open` row (`tools/arena_paper.py` lines 1131 to 1133 at main ef5545ad: `head, dirty = self.code_state()` and the `open` row append carrying `"code_head": head, "code_dirty": dirty`), so the equality cannot hold between two commits, by construction. It was first seen on the first real run: the twin proof job #2669 PASSed, and the twin check job #2729 had C3, C4 and C5 PASS and C2 FAIL on 36 of 62 hours, from the first entry hour 2026-11-12T14, with the decision md5 equal in every hour (timings and md5 verdicts as given by the manager; not re-run by the drafter). The per-hour `ledger_md5` is `osb_follow.tree_md5`, which already drops `engine_id` and `start` rows (QP code reading); what still differs is the code identity.
+
+**Replacement condition (QP, verbatim; C2r for gap twins, L2r for latency twins, same text).**
+> C2r / L2r: over the identical window, (i) every hour's decision_md5 of the on-copy run equals the strict run's, and (ii) the md5 of the ledger projection of the on-copy run's final ledger equals the strict run's. The projection is osb_follow.ledger_rows (start rows dropped, as stated) with `engine_id`, `code_head` and `written_ms` removed, in ledger file order. `code_dirty` stays in and must be false in both runs. The tool also prints the multiset md5 of the same projection, the row counts by kind (open, trade, excluded and any other kind) and the set of keys that differ between paired rows (must be empty).
+
+- Use the ordered projection (stronger than the multiset). If the ordered md5 differs but the multiset md5 is equal, report it as FAIL with "order only". QP rules on that case if it ever happens.
+- Every row kind except `start` is compared, including `late_print` or any other kind present, not only open/trade/excluded.
+- **Code-identity fields: complete list.** The engine has no list. These are all of them, found by the writers of process or code state in tools/arena_paper.py:
+  - `engine_id` (uuid at init, :854);
+  - `code_head` and `code_dirty` (`code_state()`, on `open` rows :1131-1133 and on `start` rows :1026-1028);
+  - `pid`, `decision_ms` and `trade_id` of `start` rows (:1026-1028);
+  - `written_ms` (`now_fn`, every row; the engine's own `identity()` already excludes it).
+
+  To re-verify on any later commit, grep tools/arena_paper.py and scripts/research/floor_gap_range_engine.py for `engine_id`, `code_state(`, `getpid` and `now_fn(` at row writers. The "differing keys" print in C2r is the runtime catch-all.
+- **L2r** (latency twins), the ruling's text: "L2r: the C2r text above with "latency" for "gap": on-copy at ML vs the strict run over the identical window; per-hour decision_md5 equal; ledger projection (without engine_id, code_head, written_ms; start rows dropped) equal; code_dirty false in both."
+- The tool prints the old C2 and L2 as "not comparable across commits", never PASS or FAIL.
+
+**Limits sentence replaced.** Erratum 1, "Limits" (line 765 of this file before this erratum), says: "A strict book moves to a later commit only as a new book, or after a full-history md5 check (a restart at the new commit re-derives every stored hour and finds every stored decision_md5 and ledger_md5 equal) under a further erratum." It is replaced by (QP, verbatim):
+> a strict book may move to a later commit and keep its id and start instant only if a restart at that commit re-derives every stored hour with every stored decision_md5 equal and its final ledger projection (ledger_rows without engine_id, code_head and written_ms) equal to the book's current one; any mismatch makes the move a new book.
+
+The other sentences of that paragraph (strict books stay at commit 457795f4; neither set is decision-grade while the reconciliation says NOT COMPARABLE; no stake, budget or live step rests on either; paper only) stand.
+
+**Order of work (QP; the DEC text controls, an addendum cannot replace it).**
+- Gap twin A-gh may START now as a paper run in scratch. Erratum 1's conditions apply "Before any twin output reaches the board". Its output must not reach the board, and it may not claim the strict book's start instant, until three things are done:
+  - (a) this erratum (Am.9 Erratum 3) is merged, replacing C2 in Erratum 1 and L2 in Erratum 2 with the C2r/L2r text above, and correcting Erratum 1's "Limits" sentence;
+  - (b) the osb_twin_check change (conditions C2r/L2r; old C2/L2 reported as "not comparable across commits", never PASS or FAIL) is merged with QP OK (the osb_twin_check change, PR number filled by the manager at merge);
+  - (c) C2r has run and PASSed on the same three runs (#2662 M0/L1, #2669 M0/L1, #2669 M1/L1), with the PASS recorded in A-gh's notebook entry.
+- Latency twins: Erratum 2 says "no latency twin runs before L1 to L7", so none runs before (a), (b) and an L2r PASS.
+
+**Thin row evidence (QP; C4: 1 position / 4 rows; C5: 1 gap position per stake).**
+- These are exact identity checks of deterministic code, not estimates. A PASS on few rows is valid but covers few code paths.
+- No longer proof window is owed before board output. Instead, while the pair runs, the manager re-runs C3/C4/C5 on the live strict book and its twin at a common last hour once a day. This continues until both of these hold:
+  - at least 20 positions are priced in both books;
+  - at least 5 `gap_in_hold` rows exist, or 7 days have passed.
+- Record the counts each day. Any FAIL shows the twin as a separate book at once.
+- Until `feed_gap_entry`, `feed_gap_exit` and `exit_invalid_across_gap` have each occurred on real tape, the pair view adds:
+  > identity checked on real tape for n positions (gap paths not yet seen on real tape: <list>; synthetic tests cover them)
+
+**The proof tool's own PASS is unaffected (QP).** osb_proof compares legs at ONE commit (same `code_head`), using `tree_md5`, which drops `engine_id` and start rows. Its PASS on #2669 (and #2662, #2723) stands. A26a0766 vs a470b34d is the expected difference between A and A-gh: the one gap position priced. The driver's restart check (stored ledger_md5) is same-commit by its code pin, so it is also unaffected.
+
+**What it does not change.** Every other condition of Erratum 1 (C1, C3, C4, C5, C7) and of Erratum 2 (L1, L3 to L7), the declared latency values, the board rules, Amendment 6 and the promotion gate. Neither set is decision-grade while the reconciliation says NOT COMPARABLE, and no stake, limit or live step rests on a twin. A twin's identity check says the pricing code agrees with the strict code on those rows; it is not evidence that any book makes money. No book has cleared the promotion gate.
+
 ## Amendment 10 (2026-11-14): floor-lane-1 executor key `rpc_rps` 4.0
 **Status: DRAFT until merge. NOT installed. It authorises nothing until the owner's own word and a Helm install.** Written 2026-11-14T10:15Z (`date -u`) for manager23, at main e5fd255b. Amendment 10 was the next free number (Amendment 9 and its Erratum 1 are the last). Records only: no code, host or live file is touched. Nothing here says FLOOR or any variant makes money, and no promotion-gate threshold changes.
 
