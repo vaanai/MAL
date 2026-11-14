@@ -130,8 +130,11 @@ def parse_rpc_rps(raw: Mapping[str, Any]) -> float:
     if "rpc_rps" not in raw:
         return RPC_RPS_DEFAULT
     v = raw["rpc_rps"]
-    if isinstance(v, bool) or not isinstance(v, (int, float)) or not math.isfinite(v) or v < RPC_RPS_DEFAULT or v > RPC_RPS_MAX:
-        raise ValueError(f"config rpc_rps must be a number in [{RPC_RPS_DEFAULT}, {RPC_RPS_MAX}] (got {v!r})")
+    # an int is compared exactly (no float conversion: a huge JSON integer must be a refusal, not an OverflowError)
+    ok = not isinstance(v, bool) and isinstance(v, (int, float)) and (isinstance(v, int) or math.isfinite(v)) and RPC_RPS_DEFAULT <= v <= RPC_RPS_MAX
+    if not ok:
+        shown = f"a {type(v).__name__} out of range" if isinstance(v, int) and not isinstance(v, bool) and abs(v) > 10**6 else repr(v)
+        raise ValueError(f"config rpc_rps must be a number in [{RPC_RPS_DEFAULT}, {RPC_RPS_MAX}] (got {shown})")
     return float(v)
 
 
