@@ -21,7 +21,8 @@ Checks, for every hour of the INCLUSIVE range [--from-hour, --to-hour]:
 The keeper dir must be a real directory: a symlinked keeper dir is refused. A malformed complete line of `.keeper-hours.jsonl` (bad JSON, a missing field, a wrong type,
 a bool for an int, a sha that is not 64 lower-case hex) that names an in-range hour is a refusal. "Names" errs toward refusal: case-insensitively, an in-range hour token `YYYY-MM-DDTHH` appears in any decoded JSON string
 value or key at any depth (line parses as JSON), or in the raw text de-escaped of `\\uXXXX` and backslash escapes (applied to every malformed line, parsed or not).
-A row whose `name` is not `tape-<h>.jsonl.zst` for its own `h` is malformed. Any other
+An hour token counts only when it is NOT immediately followed by `:` (so `2026-11-20T05` in `tape-2026-11-20T05.jsonl.zst` or as an
+`h` value matches, while a `linked_utc` such as `2026-11-20T05:13:22Z` does not), in both scans. A row whose `name` is not `tape-<h>.jsonl.zst` for its own `h` is malformed. Any other
 malformed complete line is counted and printed as `malformed lines outside range <n>` and does not change the exit code (QP verdict on PR #1387 at edf4bf59: the file
 is append-only, so a line about an hour never read must not end a read). A torn last line (no trailing newline) is ignored. All refusals are checked
 before any mismatch, so a refusal (2) wins over a mismatch (3). Options are exact (no abbreviations); a help request is not a pass: it prints usage and exits 2.
@@ -118,8 +119,10 @@ def _names_in_range(line: bytes, parsed, tokens: Sequence[str]) -> bool:
     texts = [_deescape(line)]
     if parsed is not None:
         texts.extend(_strings(parsed))
-    folded = [t.casefold() for t in texts]
-    return any(tok in t for tok in tokens for t in folded)
+    if not tokens:
+        return False
+    pat = re.compile("(?:" + "|".join(re.escape(t) for t in tokens) + ")(?!:)")  # tokens are case-folded; a token followed by ':' is a timestamp, not an hour
+    return any(pat.search(t.casefold()) for t in texts)
 
 
 def load_rows(keeper: Path, in_range_hours: Sequence[str] = ()) -> tuple[dict[str, list[dict]], int, int]:
