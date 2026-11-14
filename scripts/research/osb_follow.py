@@ -287,19 +287,13 @@ def decision_rows(ledger_dir):
                 yield r
 
 
-def decisions_md5_from_rows(rows, cut_ms=None):
+def decisions_md5_from_rows(rows):
     """md5 of the ordered (position_id, entry decision_ms, exit decision_ms) rows (open, trade and excluded rows; one row per position: the per-stake rows collapse, the exit comes from the
-    trade / excluded row). Strict and twin books on the same decisions give the same value (QP ruling 2026-11-14 Q1, the Am.9 erratum text). THE one definition: the board and the recon import it.
-    cut_ms (default None = no cut, byte-identical to before): only decisions before that instant count; a row whose entry decision is at or after cut_ms is dropped, an exit decision at or after it is treated as not yet decided."""
+    trade / excluded row). Strict and twin books on the same decisions give the same value (QP ruling 2026-11-14 Q1, the Am.9 erratum text). THE one definition: the board and the recon import it."""
     seen = {}
     for r in rows:
         if r.get("kind") in ("open", "trade", "excluded") and isinstance(r.get("position_id"), str):
             dm = r.get("decision_ms") or {}
-            if cut_ms is not None:
-                if dm.get("entry") is not None and dm["entry"] >= cut_ms:
-                    continue
-                if dm.get("exit") is not None and dm["exit"] >= cut_ms:
-                    dm = {**dm, "exit": None}
             old = seen.get(r["position_id"])
             seen[r["position_id"]] = (r["position_id"], dm.get("entry"), dm.get("exit") if dm.get("exit") is not None else (old[2] if old else None))
     out = sorted(seen.values(), key=lambda t: (t[1] if t[1] is not None else -1, t[0]))
