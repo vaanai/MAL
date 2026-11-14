@@ -528,3 +528,64 @@ def test_real_snapshot_root_is_refused_under_pytest(monkeypatch):
     with pytest.raises(RuntimeError):
         B.snap_root()
     assert not os.path.exists(B.REAL_SNAP_ROOT)
+
+
+# ------------------------------------------------------------------------------------------------------------------------------ recon wiring (PR-3)
+def recon_file(tmp, status="PASS", generated_ms=None, **over):
+    r = {"schema": "osb_recon.v1", "status": status, "generated_ms": END + 30_000 if generated_ms is None else generated_ms, "generated_utc": "2026-11-16T06:00:30Z",
+         "window": {"from_utc": "2026-11-14T12:00:00Z", "to_utc": "2026-11-16T06:00:00Z"}, "counts": {"matched": 12, "live_only": 0 if status != "FAIL" else 1, "sim_only": 3},
+         "counts_by_reason": {"sim_only:restart_lockout": 2, "sim_only:executor:lane_full": 1}, **{k: {"status": status} for k in ("h1", "h2", "h3", "s1", "s2", "s3", "s4")}}
+    r.update(over)
+    p = tmp / "recon.json"
+    p.write_text(json.dumps(r))
+    return p
+
+
+def board_with(tmp, live):
+    ca, _ = make_book(tmp, "A", CONTROL_ROWS)
+    rc, out = run(tmp, books_file(tmp, [(ca, "control")], live=live))
+    assert rc == 0
+    return load(out), (out / "board.md").read_text()
+
+
+def test_recon_pass_shows_status_line_and_counts(tmp_path):
+    res, md = board_with(tmp_path, {"recon": str(recon_file(tmp_path, "PASS")), "bot_id": "floor-lane-1"})
+    assert res["recon"]["status"] == "PASS" and res["recon"]["counts"] == {"matched": 12, "live_only": 0, "sim_only": 3}
+    assert res["recon"]["counts_by_reason"]["sim_only:restart_lockout"] == 2 and res["recon_line"].startswith("PASS (book A against the live bot, 2026-11-14T12:00:00Z to 2026-11-16T06:00:00Z)")
+    assert "NOT COMPARABLE" not in res["recon_line"] and "sim_off" not in res and res["decision_grade"] is False
+    assert res["live"] == {"bot_id": "floor-lane-1"} and "recon.json" not in json.dumps(res)  # the path is not echoed
+    assert "Recon: PASS (book A" in md and "SIM OFF" not in md
+
+
+def test_recon_fail_marks_every_book_sim_off(tmp_path):
+    res, md = board_with(tmp_path, {"recon": str(recon_file(tmp_path, "FAIL"))})
+    assert res["recon"]["status"] == "FAIL" and res["sim_off"] == "SIM OFF: not decision-grade" and res["live"] is None
+    assert all(bk["sim_off"] == "SIM OFF: not decision-grade" for bk in res["books"]) and "SIM OFF: not decision-grade" in res["recon_line"]
+    assert "every figure below is greyed" in md and "SIM OFF: not decision-grade: " in md
+
+
+@pytest.mark.parametrize("how", ["insufficient", "missing", "garbage", "bad_schema", "stale", "bad_counts", "future", "no_path"])
+def test_recon_unusable_keeps_not_comparable(tmp_path, how):
+    p = tmp_path / "recon.json"
+    if how == "insufficient":
+        p = recon_file(tmp_path, "INSUFFICIENT")
+    elif how == "garbage":
+        p.write_text("{nope")
+    elif how == "bad_schema":
+        p = recon_file(tmp_path, "PASS", schema="other")
+    elif how == "stale":
+        p = recon_file(tmp_path, "PASS", generated_ms=END + 60_000 - 3 * 3_600_000 - 1)
+    elif how == "bad_counts":
+        p = recon_file(tmp_path, "PASS", counts={"matched": "x"})
+    elif how == "future":
+        p = recon_file(tmp_path, "PASS", generated_ms=END + 10 * 3_600_000)
+    live = {"recon": 5} if how == "no_path" else {"recon": str(p)}
+    res, md = board_with(tmp_path, live)
+    assert res["recon"] == {"status": "NOT COMPARABLE: not decision-grade"} and res["recon_line"] == "NOT COMPARABLE: not decision-grade" and "sim_off" not in res and "NOT COMPARABLE: not decision-grade" in md
+
+
+def test_recon_fresh_boundary_and_forbidden_word_in_recon_is_ignored(tmp_path):
+    res, _ = board_with(tmp_path, {"recon": str(recon_file(tmp_path, "PASS", generated_ms=END + 60_000 - 3 * 3_600_000))})
+    assert res["recon"]["status"] == "PASS"  # exactly 3 h old is still fresh
+    res2, _ = board_with(tmp_path, {"recon": str(recon_file(tmp_path, "PASS", counts_by_reason={"sim_only:pool_x": 1}))})
+    assert res2["recon"] == {"status": "NOT COMPARABLE: not decision-grade"}  # a forbidden word never reaches the board

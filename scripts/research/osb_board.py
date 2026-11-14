@@ -3,7 +3,7 @@
 (DEC-035 Amendment 9). Nothing here says any book makes money.
 
 Usage: osb_board.py BOOKS.json --out-dir DIR [--now-ms N] [--follow] [--poll-s 60]
-BOOKS.json: {"books": [{"manifest": PATH, "role": "control"|"variant", "start_instant_utc": "YYYY-MM-DDTHH:MM:SSZ"}], "live": null | {...passed through verbatim...}}; zero or one control.
+BOOKS.json: {"books": [{"manifest": PATH, "role": "control"|"variant", "start_instant_utc": "YYYY-MM-DDTHH:MM:SSZ"}], "live": null | {...passed through verbatim...} | {"recon": "<path to recon.json of osb_recon.py>", ...rest passed through}}; zero or one control. A valid recon.json (schema osb_recon.v1, at most 3 h old) with status PASS or FAIL replaces the NOT COMPARABLE line (FAIL marks every book SIM OFF); INSUFFICIENT, missing, invalid or stale keeps it.
 Per book the manifest is loaded with osb_follow.load_manifest and its sha256 must equal <out_root>/manifest.sha256 (else exit 2). The ledger is <out_root>/book/ledger, priced in-process
 with floor_nov_pnl (rule total, latency 1p9, --send-lamports = the manifest's send, --ledger-send = the same value: the follow driver already prices at that send, so no rent restatement),
 --to-ms = the end of the newest hour in <out_root>/status.json. Nothing is changed in floor_nov_pnl / floor_forward_ab.
@@ -30,7 +30,9 @@ SCHEMA = "open_sim_board.v1"
 BANNER = AB.BANNER
 RECON = {"status": "NOT COMPARABLE: not decision-grade"}
 RECON_LINE = "NOT COMPARABLE: not decision-grade"
-DECISION_GRADE = False  # true only when a reconciliation tool reports PASS (none exists yet)
+DECISION_GRADE = False  # stays False: a recon PASS is shown (recon block, recon_line) but never turns a board figure decision-grade by itself
+RECON_SCHEMA = "osb_recon.v1"
+SIM_OFF = "SIM OFF: not decision-grade"
 REFRESH_MS = 15 * 60_000  # the board is rebuilt at least this often even when no status changes, so STALE can appear
 UNPRICED_HEAD = " | unpriced | "
 UNPRICED_SENTENCE = "unpriced = entries in the ledger with no priced exit (engine-excluded, or closed with no exit instant)."
@@ -405,6 +407,35 @@ def withheld(idx, b, why):
             "last_hour": None, "last_hour_end_utc": None, "gap_guard_note": None, "start_instant_utc": None, "code_sha256": None, "manifest_sha256": None, "stakes_sol": None, "today_day": None}
 
 
+def recon_state(live, now_ms):
+    """-> (recon block, recon_line, live without the recon path, sim_off). `live` may carry {"recon": "<path to recon.json>"} (osb_recon.py). Only a valid, fresh (at most STALE_MS old) PASS or FAIL
+    changes the default; INSUFFICIENT, a missing, unreadable, invalid or stale file keeps the NOT COMPARABLE wording. FAIL: every book is marked SIM OFF."""
+    default = (dict(RECON), RECON_LINE, live, False)
+    if not isinstance(live, dict) or "recon" not in live:
+        return default
+    rest = {k: v for k, v in live.items() if k != "recon"} or None
+    default = (dict(RECON), RECON_LINE, rest, False)
+    r = read_json(live["recon"]) if isinstance(live["recon"], str) else None
+    try:
+        ok = (isinstance(r, dict) and r.get("schema") == RECON_SCHEMA and r.get("status") in ("PASS", "FAIL", "INSUFFICIENT") and isinstance(r.get("generated_ms"), int) and not isinstance(r.get("generated_ms"), bool)
+              and 0 <= now_ms - r["generated_ms"] <= STALE_MS and isinstance(r.get("window"), dict) and isinstance(r.get("counts"), dict) and isinstance(r.get("counts_by_reason"), dict))
+        if not ok or r["status"] == "INSUFFICIENT":
+            return default
+        c = r["counts"]
+        block = {"status": r["status"], "window": {"from_utc": str(r["window"].get("from_utc")), "to_utc": str(r["window"].get("to_utc"))}, "generated_utc": str(r.get("generated_utc")),
+                 "counts": {k: int(c[k]) for k in ("matched", "live_only", "sim_only")},
+                 "counts_by_reason": {str(k): int(v) for k, v in sorted(r["counts_by_reason"].items())},
+                 "bands": {k: str((r.get(k) or {}).get("status")) for k in ("h1", "h2", "h3", "s1", "s2", "s3", "s4")}}
+        check_forbidden(block, "")
+    except (KeyError, TypeError, ValueError, Refusal):
+        return default
+    line = "%s (book A against the live bot, %s to %s): matched %d, live-only %d, sim-only %d; by reason %s" % (
+        r["status"], block["window"]["from_utc"], block["window"]["to_utc"], block["counts"]["matched"], block["counts"]["live_only"], block["counts"]["sim_only"], json.dumps(block["counts_by_reason"], sort_keys=True))
+    if r["status"] == "FAIL":
+        line += ". " + SIM_OFF
+    return block, line, rest, r["status"] == "FAIL"
+
+
 def build(books, live, now_ms, roots=None):
     """one failing book is shown with state ERROR (exception class only) and never stops the others"""
     n_watched = sum(len(b["m"]["stakes_sol"]) for b in books)
@@ -431,6 +462,7 @@ def build(books, live, now_ms, roots=None):
     ends = [i["end"] for _, i, srs in infos if srs is not None and i["end"] is not None]
     here = os.path.dirname(os.path.abspath(__file__))
     ver = " ".join("%s=%s" % (n, AB._blob_id(os.path.join(here, n))) for n in ("osb_board.py", "floor_nov_pnl.py", "floor_forward_ab.py", "osb_follow.py"))
+    recon, recon_line, live, sim_off = recon_state(live, now_ms)
     try:
         check_forbidden(live, "")
     except Refusal:
@@ -438,7 +470,11 @@ def build(books, live, now_ms, roots=None):
     res = {"schema": SCHEMA, "banner": BANNER, "generated_utc": utc(now_ms), "tape_through_utc": utc(min(ends)) if ends else None, "board_version": ver, "n_books_watched": n_watched,
            "caveat": "%s (every book x stake row counts, also rows of books still starting). Book start instants and parameters are fixed; a change is a new book. Entries before a book's start instant are in-sample, also when they close later." % (WATCH_SENTENCE % n_watched),
            "booking": "net SOL is booked on the exit (close) UTC day; the complete-day windows (today, d7, forward_all, incl_backfill) count only UTC days with the tape at least 90 min past the day's end; day_in_progress is a partial day",
-           "recon": dict(RECON), "recon_line": RECON_LINE, "decision_grade": DECISION_GRADE, "limit_layer": "not applied", "live": live, "books": out_books}
+           "recon": recon, "recon_line": recon_line, "decision_grade": DECISION_GRADE, "limit_layer": "not applied", "live": live, "books": out_books}
+    if sim_off:
+        res["sim_off"] = SIM_OFF
+        for bk in out_books:
+            bk["sim_off"] = SIM_OFF
     if any(r["stake_sol"] > 0.25 for bk in out_books for r in bk["rows"]):
         res["extrapolation_note"] = EXTRAPOLATION_NOTE
     return res
@@ -453,14 +489,14 @@ def cell(w):
     return "%s / %s (%d)" % (f4(w["net_sol_flat"]), f4(w["net_sol_press"]), w["n_closed"])
 
 
-def floor_word(v, grade=False):
-    return "n/a" if v is None else (("holds" if grade else FLOOR_NOT_GRADE) if v else "does not hold")
+def floor_word(v, grade=False, recon_word="NOT COMPARABLE"):
+    return "n/a" if v is None else (("holds" if grade else FLOOR_NOT_GRADE.replace("NOT COMPARABLE", recon_word)) if v else "does not hold")
 
 
 def board_md(res):
     md = ["# Open sim board (FLOOR open simulation books, paper)", "", "> " + res["banner"], "",
           "- Generated %s; tape through %s (the slowest book with data); board_version %s." % (res["generated_utc"], res["tape_through_utc"] or "n/a (no book has a completed hour)", res["board_version"]),
-          "- Recon: %s." % res["recon_line"],
+          "- Recon: %s." % res["recon_line"]] + (["- " + SIM_OFF + ": the live bot and book A disagree outside the bands; every figure below is greyed and no live step rests on it."] if res.get("sim_off") else []) + [
           "- Net SOL is flat 15%% fail leg / pressure leg, booked on the EXIT (close) UTC day. Complete UTC days only (tape at least 90 min past the day's end) in today, 7-day, forward and all; "
           "day in progress is a PARTIAL day (trades closed after the newest complete day), shown so trades are visible as they happen.",
           "- Forward = entry instant at or after the book's start instant; earlier entries are in-sample (IS), also when they close later. Forward days = complete UTC days from the day holding the start instant.",
@@ -476,7 +512,7 @@ def board_md(res):
             md.append("| %s | %s | - | state: %s | - | - | - | - | - | - | n/a | - |" % (bk["id"], bk["role"], bk["state"]))
         for r in bk["rows"]:
             w = r["windows"]
-            md.append("| %s | %s | %.2f | %s | %s | %s | %s | %s | %d | %d | %s | %s |" % (bk["id"], bk["role"] + ("" if bk["state"] == "running" else " " + bk["state"]), r["stake_sol"], r["impact_label"], ("" if bk["state"] == "running" or not bk["today_day"] else "(%s) " % bk["today_day"][5:]) + cell(w["today"]), cell(w["d7"]),
+            md.append("| %s | %s | %.2f | %s | %s | %s | %s | %s | %d | %d | %s | %s |" % (bk["id"], bk["role"] + ("" if bk["state"] == "running" else " " + bk["state"]), r["stake_sol"], (SIM_OFF + ": " if res.get("sim_off") else "") + r["impact_label"], ("" if bk["state"] == "running" or not bk["today_day"] else "(%s) " % bk["today_day"][5:]) + cell(w["today"]), cell(w["d7"]),
                                                                                     cell(w["forward_all"]), cell(w["incl_backfill"]), len(r["open"]), r["unpriced_entries"], floor_word(r["disclosure"]["floor_holds"], r["disclosure"]["decision_grade"]), cell(w["day_in_progress"])))
     md += ["", "## Books"]
     for bk in res["books"]:
@@ -489,7 +525,7 @@ def board_md(res):
             if r["stake_sol"] != 0.25:
                 continue
             d = r["disclosure"]
-            md += ["", "## %s, stake 0.25: forward disclosure (QP floor: %s)" % (bk["id"], floor_word(d["floor_holds"], d["decision_grade"])), "",
+            md += ["", "## %s, stake 0.25: forward disclosure (QP floor: %s)" % (bk["id"], floor_word(d["floor_holds"], d["decision_grade"], res["recon"]["status"].split(":")[0])), "",
                    "- window: %s. forward n closed %d over %d complete forward days (the first, %s, counts only entries from %s); days positive flat %d / press %d of %d; forward net flat %s / press %s; ex-top-3 flat %s / press %s." % (
                        d["window_basis"], d["forward_n_closed"], d["n_complete_forward_days"], d["first_forward_day"], d["first_forward_day_from_utc"], d["days_positive_flat"], d["days_positive_press"], d["days"], f4(d["forward_net_sol_flat"]), f4(d["forward_net_sol_press"]),
                        f4(d["forward_ex_top3_sol_flat"]), f4(d["forward_ex_top3_sol_press"])),
