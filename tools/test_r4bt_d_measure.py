@@ -49,7 +49,7 @@ def test_formula_equals_ceil_p90_over_slot_s_by_the_adapter_percentile():
 
 def test_output_has_only_the_pinned_fields_and_the_blobs():
     rec = M.measure([("a.jsonl", lines(day()))], FROM, TO)
-    assert set(rec) == {"window", "inputs", "n_kept", "n_dropped", "max_gap_s", "p50_ms", "p90_ms", "slot_s", "d", "tool_blob", "adapter_blob", "commit"}
+    assert set(rec) == {"window", "inputs", "n_kept", "n_dropped", "n_duplicate_t", "max_gap_s", "p50_ms", "p90_ms", "slot_s", "d", "tool_blob", "adapter_blob", "commit"}
     assert rec["inputs"][0]["name"] == "a.jsonl" and len(rec["inputs"][0]["sha256"]) == 64
     assert len(rec["tool_blob"]) == 40 and len(rec["adapter_blob"]) == 40 and len(rec["commit"]) == 40
 
@@ -87,8 +87,53 @@ def refused(files, match):
 
 
 def test_refuses_fewer_than_1296_kept():
-    refused([("a", lines(day(1295)))], "1296")
-    assert M.measure([("a", lines(day(1296)))], FROM, TO)["n_kept"] == 1296
+    sparse = lambda n: [row(F_S + 66 * i) for i in range(n)]  # 66 s spacing: edges within 1,800 s of the window
+    refused([("a", lines(sparse(1295)))], "1296")
+    assert M.measure([("a", lines(sparse(1296)))], FROM, TO)["n_kept"] == 1296
+
+
+def test_edge_gaps_first_within_1800_of_from_and_last_within_1800_of_to():
+    start = lambda off: [row(F_S + off + 60 * i) for i in range(1400) if F_S + off + 60 * i < T_S]
+    assert M.measure([("a", lines(start(1800)))], FROM, TO)["n_kept"] >= 1296
+    refused([("a", lines(start(1801)))], "window edge")
+    end = lambda n: [row(F_S + 60 * i) for i in range(n)]
+    assert M.measure([("a", lines(end(1411)))], FROM, TO)["n_kept"] == 1411  # last t = to - 1800
+    refused([("a", lines(end(1410)))], "window edge")
+
+
+def test_720_distinct_samples_passed_twice_are_refused_for_coverage():
+    half = [row(F_S + 120 * i) for i in range(720)]
+    refused([("a", lines(half))], "1296")
+    refused([("a", lines(half)), ("b", lines(half))], "1296")
+
+
+def test_identical_duplicates_count_once_in_any_order_and_are_reported():
+    rows = day()
+    r1 = M.measure([("a", lines(rows)), ("b", lines(rows[300:900]))], FROM, TO)
+    r2 = M.measure([("b", lines(rows[300:900])), ("a", lines(rows))], FROM, TO)
+    assert r1["n_kept"] == 1440 and r1["n_duplicate_t"] == 600
+    for k in ("n_kept", "n_duplicate_t", "p50_ms", "p90_ms", "slot_s", "d", "max_gap_s"):
+        assert r1[k] == r2[k]
+    assert M.measure([("a", lines(rows + rows[:5]))], FROM, TO)["n_duplicate_t"] == 5
+
+
+def test_conflicting_duplicates_refuse_in_both_orders():
+    rows = day()
+    alt = [dict(rows[700], s_last_done_slot=rows[700]["s_last_done_slot"] + 1)]
+    refused([("a", lines(rows)), ("b", lines(alt))], "same t")
+    refused([("b", lines(alt)), ("a", lines(rows))], "same t")
+    lag = [dict(rows[10], s_block_lag_ms_p90=1)]
+    refused([("a", lines(rows)), ("b", lines(lag))], "same t")
+    refused([("b", lines(lag)), ("a", lines(rows))], "same t")
+
+
+def test_a_huge_integer_is_a_counted_drop_and_a_non_integral_t_is_dropped():
+    big = b'{"t": %d, "s_block_lag_ms_p90": 1%s, "s_last_done_slot": 5}\n' % (F_S + 5, b"0" * 400)
+    frac = lines([row(F_S + 7.5)])
+    rec = M.measure([("a", lines(day()) + big + frac)], FROM, TO)
+    assert rec["n_dropped"] == 2 and rec["n_kept"] == 1440
+    ok = M.parse_samples(lines([row(float(F_S + 3))]), F_S, T_S)[0]
+    assert ok[0][0] == F_S + 3
 
 
 def test_refuses_fewer_than_100_samples():
@@ -123,10 +168,10 @@ def test_refuses_bad_window():
 
 
 def test_cli_writes_once_and_refuses_an_existing_out(tmp_path, capsys):
-    f = tmp_path / "s.jsonl"
+    f = tmp_path / "tip-health-x.jsonl"
     f.write_bytes(lines(day()))
     out = tmp_path / "d.json"
-    args = ["--sample-file", str(f), "--from", FROM, "--to", TO, "--out", str(out)]
+    args = ["--sample-file", str(f), "--from", FROM, "--to", TO, "--out", str(out), "--allow-test-path"]
     assert M.main(args) == 0
     printed = json.loads(capsys.readouterr().out)
     assert json.loads(out.read_text()) == printed
@@ -144,26 +189,90 @@ def test_write_once_is_o_excl(tmp_path):
 
 
 def test_cli_refuses_a_failed_coverage_with_exit_2_and_writes_nothing(tmp_path, capsys):
-    f = tmp_path / "s.jsonl"
+    f = tmp_path / "tip-health-x.jsonl"
     f.write_bytes(lines(day(500)))
     out = tmp_path / "d.json"
-    assert M.main(["--sample-file", str(f), "--from", FROM, "--to", TO, "--out", str(out)]) == 2
+    assert M.main(["--sample-file", str(f), "--from", FROM, "--to", TO, "--out", str(out), "--allow-test-path"]) == 2
     assert not out.exists()
 
 
-@pytest.mark.parametrize("root", ["/data/mal/r4b", "/var/lib/mal/sealed", "/data/mal/meta-capture", "/data/mal/blocks", "/data/mal/arena"])
-def test_path_refusals_for_input_and_out(root, tmp_path, capsys):
-    good = tmp_path / "s.jsonl"
+CLOSED_PATHS = ["/data/mal/r4b", "/var/lib/mal/sealed", "/data/mal/meta-capture", "/data/mal/blocks", "/data/mal/arena",
+                "/data2/mal/r4b-preview/declog-copy", "/data2/mal/r4b-preview/work", "/data2/mal/scratch/r4b-price-keep", "/data2/mal/arena-tip-feed",
+                "/home/u/mal-data/r4b-dry", "/home/u/mal-data/arena-tipfeed", "/home/u/mal-data/arena-mirror", "/data2/mal/fast0-offload-111x", "/data2/mal/fast0-offload-222y/x"]
+
+
+@pytest.mark.parametrize("root", CLOSED_PATHS)
+def test_path_refusals_for_input_and_out_strings_only(root, tmp_path, capsys):
+    good = tmp_path / "tip-health-x.jsonl"
     good.write_bytes(lines(day()))
-    assert M.main(["--sample-file", root + "/s.jsonl", "--from", FROM, "--to", TO, "--out", str(tmp_path / "o")]) == 2
-    assert M.main(["--sample-file", str(good), "--from", FROM, "--to", TO, "--out", root + "/o.json"]) == 2
+    base = ["--from", FROM, "--to", TO, "--allow-test-path"]
+    assert M.main(["--sample-file", root + "/tip-health-x.jsonl", *base, "--out", str(tmp_path / "o")]) == 2
+    assert M.main(["--sample-file", str(good), *base, "--out", root + "/o.json"]) == 2
     assert not (tmp_path / "o").exists()
+    with pytest.raises(G.Refused):
+        M.check_closed(root + "/f", "x")
+
+
+@pytest.mark.parametrize("p", ["/etc/hostname", "/data2/mal/tip-health/fast-inputs/counts.jsonl", "/data2/mal/tip-health/fast-inputs/sub/tip-health-a.jsonl",
+                               "/data2/mal/tip-health/other/tip-health-a.jsonl", "/home/x/tip-health-a.jsonl", "/data2/mal/tip-health/fast-inputs/tip-health-a.json"])
+def test_only_sampler_files_in_the_staged_dir_are_allowed_without_the_test_flag(p):
+    with pytest.raises(G.Refused):
+        M.check_sample_path(p)
+    with pytest.raises(G.Refused):
+        M.check_sample_path(p, True)  # not under the temp dir either
+
+
+def test_the_staged_dir_is_the_trainserve_counts_dir_and_a_staged_name_passes_the_path_check():
+    from tools import r4bt_trainserve_counts as TC
+    assert M.STAGED_DIR == os.path.dirname(TC.ALLOWED_COUNTS)
+    assert str(M.check_sample_path(M.STAGED_DIR + "/tip-health-1101.jsonl")) == M.STAGED_DIR + "/tip-health-1101.jsonl"
+
+
+def test_the_test_flag_is_refused_inside_a_miscusi_job(tmp_path, monkeypatch):
+    monkeypatch.setenv("MISCUSI_JOB_ID", "1")
+    with pytest.raises(G.Refused):
+        M.check_sample_path(tmp_path / "tip-health-x.jsonl", True)
+
+
+def test_a_file_whose_first_line_has_no_sampler_key_is_refused_without_any_count(tmp_path, capsys):
+    f = tmp_path / "tip-health-x.jsonl"
+    f.write_bytes(b'{"kind": "entry", "ms": 1}\n' * 2000)
+    out = tmp_path / "o.json"
+    assert M.main(["--sample-file", str(f), "--from", FROM, "--to", TO, "--out", str(out), "--allow-test-path"]) == 2
+    cap = capsys.readouterr()
+    assert not any(c.isdigit() for c in cap.err.replace("r4bt_d_measure", "")) and cap.out == "" and not out.exists()
+    for body in (b"no newline at all", b"", b"[1]\n", b"not json\n"):
+        f.write_bytes(body)
+        assert M.main(["--sample-file", str(f), "--from", FROM, "--to", TO, "--out", str(out), "--allow-test-path"]) == 2
+    assert not any(c.isdigit() for c in capsys.readouterr().err.replace("r4bt_d_measure", ""))
+
+
+def test_coverage_refusal_messages_carry_no_number_from_the_file(tmp_path, capsys):
+    f = tmp_path / "tip-health-x.jsonl"
+    f.write_bytes(lines(day(500)))
+    assert M.main(["--sample-file", str(f), "--from", FROM, "--to", TO, "--out", str(tmp_path / "o.json"), "--allow-test-path"]) == 2
+    err = capsys.readouterr().err.replace("r4bt_d_measure", "").replace("1296", "").replace("1800", "")
+    assert not any(c.isdigit() for c in err)
+
+
+def test_a_symlink_or_a_fifo_is_not_read(tmp_path):
+    real = tmp_path / "tip-health-real.jsonl"
+    real.write_bytes(lines(day()))
+    link = tmp_path / "tip-health-link.jsonl"
+    link.symlink_to(real)
+    assert M.read_regular(real.resolve())  # a regular file
+    with pytest.raises(OSError):
+        M.read_regular(link)  # O_NOFOLLOW on an unresolved link
+    fifo = tmp_path / "tip-health-fifo.jsonl"
+    os.mkfifo(fifo)
+    with pytest.raises(G.Refused):
+        M.read_regular(fifo)
 
 
 def test_tip_tape_archive_mark_refused(tmp_path):
     d = tmp_path / "tip-tape-archive"
     d.mkdir()
-    assert M.main(["--sample-file", str(d / "s.jsonl"), "--from", FROM, "--to", TO, "--out", str(tmp_path / "o")]) == 2
+    assert M.main(["--sample-file", str(d / "tip-health-s.jsonl"), "--from", FROM, "--to", TO, "--out", str(tmp_path / "o"), "--allow-test-path"]) == 2
 
 
 def test_the_keys_it_reads_are_the_samplers_names():
