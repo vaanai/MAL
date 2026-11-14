@@ -118,39 +118,50 @@ def near_dir():
     return os.path.join(invoking_home(), *NEAR_SUBDIR)
 
 
-def read_nofollow(path):
-    """bytes, or None when missing. Opened O_RDONLY | O_NOFOLLOW; no lock."""
+MAX_SOURCE_BYTES = 4 << 30  # a hard size refusal: the live files only grow; beyond this the job refuses instead of eating memory
+
+
+def open_nofollow(path):
+    """a binary file object, or None when missing. O_RDONLY | O_NOFOLLOW; no lock. A source above MAX_SOURCE_BYTES is refused."""
     try:
         fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW)
     except FileNotFoundError:
         return None
     except OSError:
         refuse("cannot open a source file (symlink?): %s" % os.path.basename(path))
-    with os.fdopen(fd, "rb") as f:
+    if os.fstat(fd).st_size > MAX_SOURCE_BYTES:
+        os.close(fd)
+        refuse("a source file is above the size limit: %s" % os.path.basename(path))
+    return os.fdopen(fd, "rb")
+
+
+def read_nofollow(path):
+    f = open_nofollow(path)
+    if f is None:
+        return None
+    with f:
         return f.read()
 
 
-def scan(data, kinds, stats, label):
-    """rows whose line contains one of `kinds` as a quoted byte string and whose parsed `kind` is one of them. A torn LAST line is counted; any other bad line is counted (bad_lines)."""
-    out = []
-    if not data:
-        return out
-    lines = data.split(b"\n")
-    last = max((i for i, ln in enumerate(lines) if ln.strip()), default=-1)
-    needles = [('"%s"' % k).encode() for k in kinds]
-    for i, ln in enumerate(lines):
-        if not ln.strip() or not any(n in ln for n in needles):
-            continue
-        try:
-            r = json.loads(ln)
-        except ValueError:
-            stats["torn_tail"] += 1 if i == last else 0
-            stats["bad_lines"] += 0 if i == last else 1
-            continue
-        if isinstance(r, dict) and r.get("kind") in kinds:
-            out.append(r)
-    stats["rows_" + label] = len(out)
-    return out
+def iter_rows(path, stats, label, needles=None, kinds=None):
+    """Stream a jsonl file line by line (bounded memory). A line is parsed only if it holds one of `needles` as bytes (when given). A line that does not parse is counted:
+    a last line with no newline is a torn write by the live writer (torn_tail), any other is bad_lines; both per source `label`. Yields dict rows (of `kinds`, when given)."""
+    f = open_nofollow(path)
+    if f is None:
+        return
+    with f:
+        for ln in f:
+            if not ln.strip() or (needles and not any(n in ln for n in needles)):
+                continue
+            try:
+                r = json.loads(ln)
+            except ValueError:
+                key = "torn_tail" if not ln.endswith(b"\n") else "bad_lines"
+                stats[key] = stats.get(key, 0) + 1
+                stats["%s_%s" % (key, label)] = stats.get("%s_%s" % (key, label), 0) + 1
+                continue
+            if isinstance(r, dict) and (kinds is None or r.get("kind") in kinds):
+                yield r
 
 
 def days_between(from_ms, to_ms):
@@ -163,59 +174,45 @@ def days_between(from_ms, to_ms):
     return out
 
 
-def jsonl_all(data):
-    rows = []
-    for ln in (data or b"").split(b"\n"):
-        if ln.strip():
-            try:
-                r = json.loads(ln)
-            except ValueError:
-                continue
-            if isinstance(r, dict):
-                rows.append(r)
-    return rows
-
-
 def gather(decision_root, bridge_log, ledger_root, fills_log, since_ms, as_of_ms):
-    """-> (rows, stats, sizes). Pure reading; `rows` are the extract rows (no header)."""
+    """-> (rows, stats, sizes). Pure reading, streamed line by line. A missing bridge log, fills log or ledger, or no decision day file at all, is a refusal: no extract with a silent hole."""
     stats = {"torn_tail": 0, "bad_lines": 0, "day_files_missing": 0, "day_files_read": 0}
     sizes = {}
     host = []
+    kind_needles = [('"%s"' % k).encode() for k in HOST_KINDS]
+    for sub in (os.path.join(decision_root, "decisions"), os.path.join(decision_root, "decisions", BOT_ID)):
+        if os.path.islink(sub):
+            refuse("a symlink under the decision root is refused")
     for day in days_between(since_ms, as_of_ms):
         p = os.path.join(decision_root, "decisions", BOT_ID, day + ".jsonl")
-        for sub in (os.path.join(decision_root, "decisions"), os.path.join(decision_root, "decisions", BOT_ID)):
-            if os.path.islink(sub):
-                refuse("a symlink under the decision root is refused")
-        data = read_nofollow(p)
-        if data is None:
+        if not os.path.lexists(p):
             stats["day_files_missing"] += 1
             continue
         stats["day_files_read"] += 1
-        sizes["decision_day_" + day] = len(data)
-        host += scan(data, HOST_KINDS, stats, "host_%s" % day)
-    host = [r for r in host if is_int(r.get("ms")) and since_ms <= r["ms"] < as_of_ms]
-    bdata = read_nofollow(bridge_log)
-    sizes["bridge_log"] = -1 if bdata is None else len(bdata)
-    bridge = [r for r in scan(bdata, BRIDGE_KINDS, stats, "bridge") if r.get("mode", "live") == "live" and is_int(r.get("ts_ms")) and since_ms <= r["ts_ms"] < as_of_ms]
-    ldata = read_nofollow(os.path.join(ledger_root, LEDGER_NAME))
-    sizes["lane_ledger"] = -1 if ldata is None else len(ldata)
-    lrows = jsonl_all(ldata)
+        sizes["decision_day_" + day] = os.lstat(p).st_size
+        host += [r for r in iter_rows(p, stats, "host", kind_needles, HOST_KINDS) if is_int(r.get("ms")) and since_ms <= r["ms"] < as_of_ms]
+    if stats["day_files_read"] == 0:
+        refuse("no decision day file was read")
+    for name, p in (("bridge_log", bridge_log), ("lane_ledger", os.path.join(ledger_root, LEDGER_NAME)), ("fills_log", fills_log)):
+        if not os.path.lexists(p):
+            refuse("a required source is missing: %s" % name)
+        sizes[name] = os.lstat(p).st_size
+    bridge = [r for r in iter_rows(bridge_log, stats, "bridge", [('"%s"' % k).encode() for k in BRIDGE_KINDS], BRIDGE_KINDS)
+              if r.get("mode", "live") == "live" and is_int(r.get("ts_ms")) and since_ms <= r["ts_ms"] < as_of_ms]
+    lrows = [r for r in iter_rows(os.path.join(ledger_root, LEDGER_NAME), stats, "ledger", [LANE_BOT.encode()]) if r.get("bot_id") == LANE_BOT]
     backlog_nonempty = 0
-    if os.path.isdir(ledger_root):
-        for n in sorted(os.listdir(ledger_root)):
-            if n.startswith(LEDGER_NAME + ".backlog."):
-                b = read_nofollow(os.path.join(ledger_root, n))
-                if b:
-                    backlog_nonempty += 1
-                    lrows += jsonl_all(b)
+    for n in sorted(os.listdir(ledger_root)):
+        if n.startswith(LEDGER_NAME + ".backlog."):
+            part = [r for r in iter_rows(os.path.join(ledger_root, n), stats, "backlog", [LANE_BOT.encode()]) if r.get("bot_id") == LANE_BOT]
+            backlog_nonempty += 1 if part else 0
+            lrows += part
     stats["ledger_backlog_nonempty"] = backlog_nonempty
-    fdata = read_nofollow(fills_log)
-    sizes["fills_log"] = -1 if fdata is None else len(fdata)
-    fills = jsonl_all(fdata)
-    return build_rows(host, bridge, lrows, fills, since_ms), stats, sizes
+    fills = [r for r in iter_rows(fills_log, stats, "fills", [b'"buy"']) if r.get("kind") == "buy"]
+    return build_rows(host, bridge, lrows, fills, since_ms, stats), stats, sizes
 
 
-def build_rows(host, bridge, lrows, fills, since_ms):
+
+def build_rows(host, bridge, lrows, fills, since_ms, stats=None):
     fold = FV.fold_trades(lrows, LANE_BOT)
     groups = {g["order_id"]: g for g in fold["closed"] + fold["open"] if g.get("order_id")}
     entries, exits = {}, {}
@@ -257,7 +254,9 @@ def build_rows(host, bridge, lrows, fills, since_ms):
         e = entries.get(oid)
         b = by_order.get(oid, {})
         g = groups.get(oid)
-        if e is None and g is None and not b:
+        if e is None and g is None:
+            if b and stats is not None:
+                stats["dropped_bridge_only"] = stats.get("dropped_bridge_only", 0) + 1  # an order of no floor-lane-1 host entry or ledger group (a shared bridge log): not ours
             continue
         meta = e.get("meta") if e and isinstance(e.get("meta"), dict) else {}
         sent = (b.get("buy_sent") or [None])[-1]
@@ -276,13 +275,13 @@ def build_rows(host, bridge, lrows, fills, since_ms):
                "stake_lamports": (sent or {}).get("stake_lamports") if sent else (g or {}).get("stake_lamports"),
                "refused_why": pick(refused, ("why", "label")) if refused else None, "refused_kind": refused.get("kind") if refused else None,
                "landed_ms": landed.get("ts_ms") if landed else None, "landed_slot": landed.get("landed_slot") if landed else None, "decision_slot": (sent or landed or {}).get("decision_slot") if (sent or landed) else None,
-               "buy_failed": bool(b.get("buy_failed")),
+               "buy_failed": bool(b.get("buy_failed")), "sell_failed": bool(b.get("sell_failed")),
                "exit_reason": hx.get("reason") if hx else None, "exit_ms": hx.get("ms") if hx else None, "has_host_exit": hx is not None,
                "sell_send_ms": sell_sent.get("send_ms") if sell_sent else None, "sell_reason_bridge": sell_sent.get("reason") if sell_sent else None,
                "sell_landed_ms": sell_landed.get("ts_ms") if sell_landed else None,
                "led_intent_ms": g["intent_ms"] if g else None, "led_net_lamports": g["net"] if g else None, "led_fees_lamports": g["fees"] if g else None,
                "led_rent_unreclaimed_lamports": g["rent_unreclaimed"] if g else None, "led_close_ev": g["close_ev"] if g else None, "led_close_reason": g["close_reason"] if g else None,
-               "led_close_ms": g["close_ms"] if g else None, "led_ok_buy": bool(g and g["ok_buy"]), "led_estimated_rows": g["estimated_rows"] if g else None,
+               "led_close_ms": g["close_ms"] if g else None, "led_writeoff": g["close_reason"] if g and g["close_ev"] == "writeoff" else None, "led_ok_buy": bool(g and g["ok_buy"]), "led_estimated_rows": g["estimated_rows"] if g else None,
                "led_stake_lamports": g["stake_lamports"] if g else None,
                "fill_spend_lamports": pick(fl, ALIASES["spend_lamports"]), "fill_tokens_received": pick(fl, ALIASES["tokens_received"]),
                "fill_price_vs_quote_bps": pick(fl, ALIASES["price_vs_quote_bps"]), "fill_tokens_source": pick(fl, ALIASES["tokens_source"]), "fill_estimated": fl.get("estimated") is True}
@@ -310,7 +309,7 @@ def chown_to_sudo_user(*paths):
     if su and os.geteuid() == 0:
         for p in paths:
             try:
-                os.chown(p, int(su), int(os.environ.get("SUDO_GID", su)))
+                os.chown(p, int(su), int(os.environ.get("SUDO_GID", su)), follow_symlinks=False)
             except OSError:
                 pass
 
@@ -328,9 +327,11 @@ def do_extract(a, test_mode):
     meta = {"schema": SCHEMA, "as_of_ms": as_of, "since_ms": since_ms, "counts_by_kind": dict(sorted(counts.items())), "extract_sha256": sha, "extract_bytes": len(body),
             "source_sizes": dict(sorted(sizes.items())), "stats": stats,
             "n_orders_sent": sum(1 for r in rows if r["kind"] == "order" and r["sent"]), "tool_sha256": hashlib.sha256(Path(__file__).read_bytes()).hexdigest()}
-    base = a.out_dir or near_dir()
+    base = plain(a.out_dir or near_dir())  # no symlink anywhere in the path
+    if os.path.lexists(base) and (os.path.islink(base) or not os.path.isdir(base)):
+        refuse("the near directory is a symlink or not a directory")
     os.makedirs(base, mode=0o700, exist_ok=True)
-    os.chmod(base, 0o700)
+    os.chmod(base, 0o700, follow_symlinks=False)
     write_atomic(os.path.join(base, EXTRACT_NAME), body)
     write_atomic(os.path.join(base, META_NAME), (json.dumps(meta, sort_keys=True, indent=1) + "\n").encode())
     chown_to_sudo_user(base, os.path.join(base, EXTRACT_NAME), os.path.join(base, META_NAME))
@@ -348,9 +349,8 @@ def structure_check(a):
     print("osb_live_extract structure check (field-name presence counts only; nothing written)")
     host = []
     for day in days_between(since_ms, as_of):
-        d = read_nofollow(os.path.join(a.decision_root, "decisions", BOT_ID, day + ".jsonl"))
-        host += scan(d, HOST_KINDS, stats, "x")
-    bridge = scan(read_nofollow(a.bridge_log), BRIDGE_KINDS, stats, "x")
+        host += list(iter_rows(os.path.join(a.decision_root, "decisions", BOT_ID, day + ".jsonl"), stats, "x", None, HOST_KINDS))
+    bridge = list(iter_rows(a.bridge_log, stats, "x", None, BRIDGE_KINDS))
     want = {
         ("host", "entry"): ("order_id", "pool", "ms", "stake_sol", "decision_slot", "meta", "meta.signal_slot", "meta.signal_t_recv_ms", "meta.mark0"),
         ("host", "exit"): ("order_id", "ms", "reason"),
@@ -382,13 +382,12 @@ def structure_check(a):
         print("%s %s rows=%d" % (src, kind, len(rs)))
         for f in fields:
             print("  %s present %d/%d" % (f, sum(1 for r in rs if has(r, f)), len(rs)))
-    led = jsonl_all(read_nofollow(os.path.join(a.ledger_root, LEDGER_NAME)))
-    mine = [r for r in led if r.get("bot_id") == LANE_BOT]
+    mine = [r for r in iter_rows(os.path.join(a.ledger_root, LEDGER_NAME), stats, "x") if r.get("bot_id") == LANE_BOT]
     print("ledger floor-lane-1 rows=%d" % len(mine))
     for f in ("ev", "mint", "ts_ms", "signature", "stake_lamports", "sol_in_lamports", "sol_out_lamports", "fee_network_lamports", "fee_priority_lamports", "fee_tip_lamports",
               "rent_unreclaimed_lamports", "reason", "ok", "row_id", "estimated"):
         print("  %s present %d/%d" % (f, sum(1 for r in mine if r.get(f) is not None), len(mine)))
-    fills = [r for r in jsonl_all(read_nofollow(a.fills_log)) if r.get("kind") == "buy"]
+    fills = [r for r in iter_rows(a.fills_log, stats, "x") if r.get("kind") == "buy"]
     print("fills buy rows=%d" % len(fills))
     for alias_name in ("spend_lamports", "tokens_received", "price_vs_quote_bps", "tokens_source"):
         for n in ALIASES[alias_name]:
@@ -409,9 +408,9 @@ def remote_script(name, n, sha):
     t = "%s/.%s.tmp.$$" % (d, name)
     qd, qf = shlex.quote(d), shlex.quote(final)
     qt = shlex.quote("%s/.%s.tmp." % (d, name)) + "$$"
-    return ("umask 077; mkdir -p %s && { command -v setfacl >/dev/null 2>&1 && setfacl -b -k %s || true; } && chmod 700 %s && ( umask 077; : > %s ) && chmod 600 %s && cat >> %s"
+    return ("umask 077; mkdir -p %s && command -v setfacl >/dev/null 2>&1 && command -v getfacl >/dev/null 2>&1 && setfacl -b -k %s && chmod 700 %s && [ -z \"$(getfacl -c --skip-base %s 2>/dev/null)\" ] && ( umask 077; : > %s ) && chmod 600 %s && cat >> %s"
             " && [ \"$(wc -c < %s | tr -d ' ')\" = %d ] && [ \"$(sha256sum < %s | cut -d' ' -f1)\" = %s ] && chmod 600 %s && mv %s %s || { rm -f %s; exit 1; }; "
-            "[ \"$(stat -c %%a %s)\" = 600 ] && [ \"$(stat -c %%a %s)\" = 700 ] || exit 3" % (qd, qd, qd, qt, qt, qt, qt, n, qt, sha, qt, qt, qf, qt, qf, qd))
+            "[ \"$(stat -c %%a %s)\" = 600 ] && [ \"$(stat -c %%a %s)\" = 700 ] || exit 3" % (qd, qd, qd, qd, qt, qt, qt, qt, n, qt, sha, qt, qt, qf, qt, qf, qd))
 
 
 def ssh_send(name, data, sha, run=subprocess.run):

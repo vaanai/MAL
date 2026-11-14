@@ -250,3 +250,83 @@ def test_structure_check_prints_names_and_counts_only(world, capsys):
     for needle in (POOL, MINT, SIG):
         assert needle not in txt
     assert not out.exists()  # nothing written
+
+
+# ------------------------------------------------------------------------------------------------------------------------------ review round 2
+def test_missing_sources_refuse(world):
+    tmp, argv, out = world
+    for victim in ("bridge.jsonl", "fills.jsonl"):
+        os.rename(tmp / victim, tmp / (victim + ".gone"))
+        with pytest.raises(SystemExit):
+            X.main(argv)
+        os.rename(tmp / (victim + ".gone"), tmp / victim)
+    os.rename(tmp / "ledger" / "lane-ledger.jsonl", tmp / "ledger" / "x")
+    with pytest.raises(SystemExit):
+        X.main(argv)
+    os.rename(tmp / "ledger" / "x", tmp / "ledger" / "lane-ledger.jsonl")
+    os.remove(tmp / "root" / "decisions" / "l1-floor-v2" / (DAY + ".jsonl"))
+    with pytest.raises(SystemExit):
+        X.main(argv)  # no decision day file read
+    assert not out.exists()
+
+
+def test_torn_and_bad_lines_counted_per_source(world):
+    tmp, argv, out = world
+    with open(tmp / "ledger" / "lane-ledger.jsonl", "a") as f:
+        f.write('{"ev":"x","bot_id":"floor-lane-1"\n')  # a bad line with a newline
+        f.write('{"ev":"exit","bot_id":"floor-lane-1","ts_')  # a torn last line
+    X.main(argv)
+    _, meta = load(out)
+    st = meta["stats"]
+    assert st["bad_lines_ledger"] == 1 and st["torn_tail_ledger"] == 1
+
+
+def test_bridge_only_orders_are_dropped_and_counted(world):
+    tmp, argv, out = world
+    with open(tmp / "bridge.jsonl", "a") as f:
+        f.write(json.dumps({"kind": "buy_sent", "ts_ms": S_MS + 100_000, "mode": "live", "order_id": "foreign", "stake_lamports": 1}) + "\n")
+    X.main(argv)
+    rows, meta = load(out)
+    assert "foreign" not in {r.get("order_id") for r in rows} and meta["stats"]["dropped_bridge_only"] == 1
+
+
+def test_writeoff_kind_and_sell_failed_carried(world):
+    tmp, argv, out = world
+    with open(tmp / "bridge.jsonl", "a") as f:
+        f.write(json.dumps({"kind": "sell_failed", "ts_ms": S_MS + 61_000 + 7_300_000, "mode": "live", "order_id": "o1", "label": "x"}) + "\n")
+    X.main(argv)
+    rows, _ = load(out)
+    orders = {r["order_id"]: r for r in rows if r["kind"] == "order"}
+    assert orders["o3"]["led_writeoff"] == "buy_expired" and orders["o1"]["led_writeoff"] is None and orders["o1"]["sell_failed"] is True
+
+
+def test_symlinked_near_dir_refused(world):
+    tmp, argv, out = world
+    target = tmp / "victim"
+    target.mkdir(mode=0o755)
+    os.symlink(target, out)
+    with pytest.raises(SystemExit):
+        X.main(argv)
+    assert stat.S_IMODE(os.stat(target).st_mode) == 0o755  # the target of the link was not chmod-ed
+
+
+def test_remote_script_runs_and_fails_closed(tmp_path, monkeypatch):
+    import shutil
+    import subprocess
+    if not (shutil.which("setfacl") and shutil.which("getfacl")):
+        pytest.skip("acl tools missing")
+    far = tmp_path / "parent" / "live-extract"
+    monkeypatch.setattr(X, "FAR_DIR", str(far))
+    (tmp_path / "parent").mkdir()
+    data = b"hello\n" * 100
+    sha = hashlib.sha256(data).hexdigest()
+    script = X.remote_script("f.jsonl", len(data), sha)
+    r = subprocess.run(["sh", "-c", script], input=data, capture_output=True)
+    assert r.returncode == 0
+    assert stat.S_IMODE(os.stat(far).st_mode) == 0o700 and stat.S_IMODE(os.stat(far / "f.jsonl").st_mode) == 0o600 and (far / "f.jsonl").read_bytes() == data
+    # a truncated stream: rc 1, no new final file, no tmp left
+    r2 = subprocess.run(["sh", "-c", X.remote_script("g.jsonl", len(data), sha)], input=data[:10], capture_output=True)
+    assert r2.returncode == 1 and not (far / "g.jsonl").exists() and not [p for p in os.listdir(far) if ".tmp" in p]
+    # setfacl missing: fail closed (no final file)
+    r3 = subprocess.run(["/bin/sh", "-c", X.remote_script("h.jsonl", len(data), sha)], input=data, capture_output=True, env={"PATH": "/nonexistent"})
+    assert r3.returncode != 0 and not (far / "h.jsonl").exists()
