@@ -18,6 +18,7 @@ from tools.test_osb_follow import EK, FAST, _env, link, manifest, run_once, worl
 HOURS = ["2026-11-05T%02d" % h for h in range(6)]
 BASE = {"book_id": "strict-1", "title": "t", "host": "lane", "rule_overrides": {}, "stakes_sol": [0.10, 0.25], "send_lamports": 160000, "start_hour": "2026-11-05T00", "seed_from_hour": "2026-10-20T00",
         "tape_dir": "/x/tape", "out_root": "/x/out"}
+ENTRY_MS = 1793844000000  # 2026-11-05T02Z, inside the fixture window
 GOOD = {h: ("L" + h, "D" + h) for h in HOURS}
 
 
@@ -27,13 +28,13 @@ def _arena_env(monkeypatch):
 
 
 def trade(pid, stake, **kw):
-    r = {"kind": "trade", "position_id": pid, "stake_sol": stake, "legs": {"total": {"flat_1p3": "f", "press_1p3": "p", "flat_1p9": 1.0}}, "calc": {"1p3": "c"}, "written_ms": 5, "exit_reason": "x"}
+    r = {"kind": "trade", "position_id": pid, "stake_sol": stake, "legs": {"total": {"flat_1p3": "f", "press_1p3": "p", "flat_1p9": 1.0}}, "calc": {"1p3": "c"}, "written_ms": 5, "exit_reason": "x", "decision_ms": {"entry": ENTRY_MS}}
     r.update(kw)
     return r
 
 
 def excl(pid, stake, why):
-    return {"kind": "excluded", "position_id": pid, "stake_sol": stake, "exclusion_reason": why, "written_ms": 6}
+    return {"kind": "excluded", "position_id": pid, "stake_sol": stake, "exclusion_reason": why, "written_ms": 6, "decision_ms": {"entry": ENTRY_MS}}
 
 
 def make_run(tmp, name, manifest_dict, rows, hours=HOURS, md5s=None, dmd5="d" * 32, code="code1", last=None):
@@ -111,9 +112,10 @@ def test_correct_twin_passes_every_condition(tmp_path, capsys, kind):
 
 
 @pytest.mark.parametrize("kind", KINDS)
-def test_without_on_copy_c2_is_not_requested(tmp_path, capsys, kind):
+def test_without_on_copy_the_required_c2_l2_is_not_run_and_the_result_is_not_pass(tmp_path, capsys, kind):
     code, res, _ = run(setup(tmp_path, kind, with_oncopy=False), capsys)
-    assert code == 0 and NAMES[kind][0] not in res["conditions"] and res["not_requested"] == [NAMES[kind][0]]
+    assert code == 3 and res["overall"] == "NOT_MET" and res["conditions"][NAMES[kind][0]]["status"] == "NOT_RUN"
+    assert all(c["status"] == "PASS" for k, c in res["conditions"].items() if k != NAMES[kind][0])
 
 
 @pytest.mark.parametrize("kind", KINDS)
@@ -140,19 +142,67 @@ def test_decisions_md5_mismatch_at_the_same_last_hour_fails(tmp_path, capsys, ki
     code, res, _ = run(setup(tmp_path, kind, twin_kw={"dmd5": "e" * 32}), capsys)
     c = res["conditions"][NAMES[kind][1]]
     assert code == 3 and c["status"] == "FAIL" and c["decisions_md5"]["status"] == "FAIL" and c["per_hour_decision_md5"]["status"] == "PASS"
+@pytest.mark.parametrize("kind", KINDS)
+@pytest.mark.parametrize("strict_longer", [True, False])
+def test_unequal_windows_are_refused_not_failed_in_both_directions(tmp_path, capsys, kind, strict_longer):
+    more = HOURS + ["2026-11-05T06", "2026-11-05T07"]
+    md5s = dict(GOOD, **{h: ("L" + h, "D" + h) for h in more[6:]})
+    kw = {"hours": more, "md5s": md5s}
+    code, res, err = run(setup(tmp_path, kind, with_oncopy=False, **({"strict_kw": kw} if strict_longer else {"twin_kw": kw})), capsys)
+    assert code == 2 and res is None and "row conditions need identical windows" in err and "2026-11-05T00..2026-11-05T05 (6 h)" in err and "2026-11-05T00..2026-11-05T07 (8 h)" in err
+    assert not (tmp_path / "out.json").exists()
+
+
+def test_pending_when_last_hours_differ_is_never_a_comparison():
+    """C3/L3 on its own (the CLI refuses unequal windows first): different last hours -> PENDING, the decisions md5 not compared"""
+    mk = lambda last, d: {"hours": {h: ("L", "D") for h in HOURS}, "last": last, "decisions_md5": d}  # noqa: E731
+    c = T.cond_decisions("C3", mk("2026-11-05T05", "a" * 32), mk("2026-11-05T07", "b" * 32))
+    assert c["status"] == "PENDING" and c["decisions_md5"]["status"] == "PENDING" and c["per_hour_decision_md5"]["status"] == "PASS"
+
+
 
 
 @pytest.mark.parametrize("kind", KINDS)
-def test_different_last_hours_are_pending_never_compared(tmp_path, capsys, kind):
-    """the strict book runs longer than the twin: the common window is compared per hour, the decisions md5 is not compared across hours, the condition is PENDING and the exit is 3"""
-    more = HOURS + ["2026-11-05T06", "2026-11-05T07"]
-    md5s = dict(GOOD, **{h: ("L" + h, "D" + h) for h in more[6:]})
-    code, res, err = run(setup(tmp_path, kind, strict_kw={"hours": more, "md5s": md5s, "dmd5": "a" * 32}), capsys)
-    assert res, err
-    c = res["conditions"][NAMES[kind][1]]
-    assert code == 3 and c["status"] == "PENDING" and c["decisions_md5"]["status"] == "PENDING" and c["per_hour_decision_md5"]["status"] == "PASS" and c["window"]["n_hours"] == 6
-    assert c["decisions_md5"]["strict_last_hour"] == "2026-11-05T07" and res["overall"] == "NOT_MET"
+def test_derived_proof_legs_differing_in_tape_dir_and_out_root_pass(tmp_path, capsys, kind):
+    sm, tm = mans(kind)
+    sm.update(tape_dir="/data2/mal/scratch/floor-open-sim/proof-x/M1/tape", out_root="/data2/mal/scratch/floor-open-sim/proof-x/M1/out")
+    tm.update(tape_dir="/data2/mal/scratch/floor-open-sim/proof-x/M2/tape", out_root="/data2/mal/scratch/floor-open-sim/proof-x/M2/out")
+    s, smp = make_run(tmp_path, "strict", sm, GAP_STRICT if kind == "gap-hold" else LAT_STRICT)
+    t, tmp_ = make_run(tmp_path, "twin", tm, GAP_TWIN if kind == "gap-hold" else LAT_TWIN)
+    oc, _ = make_run(tmp_path, "oncopy", sm, GAP_STRICT if kind == "gap-hold" else LAT_STRICT, md5s=GOOD)
+    a = ["--kind", kind, "--strict-run", str(s), "--twin-run", str(t), "--strict-manifest", str(smp), "--twin-manifest", str(tmp_), "--out", str(tmp_path / "o.json"), "--on-copy-run", str(oc)]
+    code, res, err = run(a, capsys)
+    assert code == 0 and res["tape_dir_differs"] is True and res["overall"] == "PASS", err
 
+
+@pytest.mark.parametrize("kind", KINDS)
+def test_a_third_differing_key_is_refused_with_tape_dir_free(tmp_path, capsys, kind):
+    sm, tm = mans(kind)
+    sm.update(tape_dir="/data2/mal/scratch/floor-open-sim/proof-x/M1/tape")
+    tm.update(tape_dir="/data2/mal/scratch/floor-open-sim/proof-x/M2/tape", send_lamports=1)
+    s, smp = make_run(tmp_path, "strict", sm, GAP_STRICT)
+    t, tmp_ = make_run(tmp_path, "twin", tm, GAP_TWIN)
+    a = ["--kind", kind, "--strict-run", str(s), "--twin-run", str(t), "--strict-manifest", str(smp), "--twin-manifest", str(tmp_), "--out", str(tmp_path / "o.json")]
+    code, res, err = run(a, capsys)
+    assert code == 2 and "send_lamports" in err
+
+
+def test_differing_tape_dir_outside_the_scratch_root_is_refused(tmp_path, capsys, monkeypatch):
+    monkeypatch.delenv("MAL_ARENA_TEST")
+    sm, tm = mans("latency")
+    tm.update(tape_dir="/elsewhere/tape")
+    s, smp = make_run(tmp_path, "strict", sm, LAT_STRICT)
+    t, tmp_ = make_run(tmp_path, "twin", tm, LAT_TWIN)
+    a = ["--kind", "latency", "--strict-run", str(s), "--twin-run", str(t), "--strict-manifest", str(smp), "--twin-manifest", str(tmp_), "--out", str(tmp_path / "o.json")]
+    code, res, err = run(a, capsys)
+    assert code == 2 and "not under /data2/mal/scratch/floor-open-sim" in err
+
+
+def test_no_row_in_common_is_no_data_not_fail_and_not_pass(tmp_path, capsys):
+    code, res, _ = run(setup(tmp_path, "latency", srows=[], trows=[]), capsys)
+    assert code == 3 and res["overall"] == "NOT_MET" and res["conditions"]["L4"]["status"] == "NO_DATA" and res["conditions"]["L5"]["status"] == "NO_DATA" and "never a waiver" in res["remedy_for_NO_DATA"]
+    code, res, _ = run(setup(sub(tmp_path, "g"), "gap-hold", srows=[], trows=[]), capsys)
+    assert code == 3 and {res["conditions"][c]["status"] for c in ("C4", "C5")} == {"NO_DATA"}
 
 def test_c4_fails_on_one_tampered_unflagged_row_and_ignores_written_ms(tmp_path, capsys):
     rows = copy.deepcopy(GAP_TWIN)
@@ -249,9 +299,9 @@ def test_refusal_missing_files_and_dirs(tmp_path, capsys, kind):
 
 @pytest.mark.parametrize("kind", KINDS)
 def test_refusal_different_windows_and_gaps_in_hours(tmp_path, capsys, kind):
-    refused(setup(tmp_path, kind, with_oncopy=False, twin_kw={"hours": [h for h in HOURS if h != HOURS[2]]}), capsys, "one to one")  # a missing hour inside the common window
+    refused(setup(tmp_path, kind, with_oncopy=False, twin_kw={"hours": [h for h in HOURS if h != HOURS[2]]}), capsys, "identical windows")  # a missing hour inside the window
     new = ["2026-11-09T00", "2026-11-09T01"]
-    refused(setup(sub(tmp_path, "d"), kind, with_oncopy=False, twin_kw={"hours": new, "md5s": {h: ("l", "d") for h in new}}), capsys, "disjoint")
+    refused(setup(sub(tmp_path, "d"), kind, with_oncopy=False, twin_kw={"hours": new, "md5s": {h: ("l", "d") for h in new}}), capsys, "identical windows")
     refused(setup(sub(tmp_path, "e"), kind, oc_kw={"hours": HOURS[:4]}), capsys, "same hours")  # on-copy over another window than the twin
 
 
@@ -262,7 +312,7 @@ def test_refusal_inconsistent_status_torn_line_and_duplicate_hour(tmp_path, caps
     a = setup(d, kind)
     p = d / "twin" / "md5-by-hour.jsonl"
     p.write_text(p.read_text() + '{"hour": "2026')
-    refused(a, capsys, "unreadable")
+    refused(a, capsys, "torn last line")
     e = sub(tmp_path, "e")
     a = setup(e, kind)
     p = e / "twin" / "md5-by-hour.jsonl"
@@ -334,8 +384,8 @@ def test_real_follow_pair_layout_is_read(world, capsys):
     assert err == "", err
     cs = res["conditions"]
     assert cs["L2"]["status"] == "PASS" and cs["L2"]["n_hours_compared"] > 0 and cs["L3"]["status"] == "PASS" and cs["L3"]["per_hour_decision_md5"]["n_hours_compared"] > 0, res
-    # the fixture world closes no position inside its window: nothing to compare is a FAIL (vacuous), never a PASS
-    assert cs["L4"]["n_rows_priced_in_both"] == 0 and cs["L4"]["status"] == "FAIL" and cs["L5"]["n_positions_closed_in_both"] == 0 and cs["L5"]["status"] == "FAIL" and code == 3
+    # the fixture world closes no position inside its window: nothing to compare is NO_DATA, never a PASS
+    assert cs["L4"]["n_rows_priced_in_both"] == 0 and cs["L4"]["status"] == "NO_DATA" and cs["L5"]["n_positions_closed_in_both"] == 0 and cs["L5"]["status"] == "NO_DATA" and code == 3
 
 
 def test_cli_under_python_dash_O_refuses_the_same_way(tmp_path):
@@ -343,3 +393,76 @@ def test_cli_under_python_dash_O_refuses_the_same_way(tmp_path):
                         "--strict-manifest", str(tmp_path / "c"), "--twin-manifest", str(tmp_path / "d"), "--out", str(tmp_path / "o.json")], capture_output=True, text=True,
                        env={"MAL_ARENA_TEST": "1", "PATH": "/usr/bin"}, cwd=str(REPO))
     assert r.returncode == 2 and "refused" in r.stderr and not (tmp_path / "o.json").exists()
+
+
+# ------------------------------------------------------------------------------------------------------------------------------ reviewer round: half-written runs, window guard
+def test_fixture_entry_ms_is_inside_the_window():
+    assert O.hour_key(ENTRY_MS) in HOURS
+
+
+def test_c4_with_no_unflagged_twin_row_is_no_data(tmp_path, capsys):
+    rows = [trade("p4", 0.1, gap_in_hold=True, blind_s=0.8, gap_count=1), excl("p3", 0.1, "feed_gap_entry")]
+    code, res, _ = run(setup(tmp_path, "gap-hold", trows=rows), capsys)
+    c4 = res["conditions"]["C4"]
+    assert code == 3 and c4["status"] == "NO_DATA" and c4["n_twin_unflagged_rows"] == 0
+
+
+@pytest.mark.parametrize("who", ["twin", "strict", "oncopy"])
+def test_a_held_lock_is_refused(tmp_path, capsys, who):
+    import fcntl
+    a = setup(tmp_path, "latency")
+    fh = open(tmp_path / who / ".osb.lock", "a")
+    fcntl.flock(fh, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    try:
+        refused(a, capsys, "still being written")
+    finally:
+        fh.close()
+    assert run(a, capsys)[0] == 0  # the lock file left behind with no holder: fine
+
+
+@pytest.mark.parametrize("who", ["twin", "strict"])
+def test_a_torn_ledger_line_and_an_unparseable_line_are_refused(tmp_path, capsys, who):
+    a = setup(tmp_path, "gap-hold")
+    f = tmp_path / who / "runs" / "0001" / "ledger" / "botA" / "rows.jsonl"
+    good = f.read_text()
+    f.write_text(good + '{"kind": "trade", "position_id": "p')
+    refused(a, capsys, "torn last line")
+    f.write_text("not json\n" + good)
+    refused(a, capsys, "unparseable")
+
+
+def test_a_torn_md5_by_hour_line_is_refused_as_torn(tmp_path, capsys):
+    a = setup(tmp_path, "latency")
+    p = tmp_path / "twin" / "md5-by-hour.jsonl"
+    p.write_text(p.read_text().rstrip("\n"))
+    refused(a, capsys, "torn last line")
+
+
+def test_rows_outside_the_window_are_not_read_and_a_row_without_entry_ms_is_refused(tmp_path, capsys):
+    late = ENTRY_MS + 3_600_000 * 40
+    rows = LAT_TWIN + [dict(trade("p7", 0.1), decision_ms={"entry": late}), dict(trade("p7", 0.25), decision_ms={"entry": late})]
+    code, res, _ = run(setup(tmp_path, "latency", trows=rows), capsys)
+    assert code == 0 and res["n_rows_outside_window_not_read"] == {"twin": 2, "strict": 0} and res["conditions"]["L5"]["n_positions_closed_only_in_twin"] == 0
+    bad = copy.deepcopy(LAT_TWIN)
+    del bad[0]["decision_ms"]
+    refused(setup(sub(tmp_path, "b"), "latency", trows=bad), capsys, "entry decision_ms")
+
+
+def test_must_cover_window(tmp_path, capsys):
+    a = setup(tmp_path, "latency")
+    code, res, _ = run(a + ["--must-cover-from", "2026-11-05T01", "--must-cover-hours", "4"], capsys)
+    assert code == 0 and res["compared_window"] == {"first_hour": HOURS[0], "last_hour": HOURS[-1], "n_hours": 6}
+    for extra in (["--must-cover-from", "2026-11-05T03", "--must-cover-hours", "6"], ["--must-cover-from", "bad", "--must-cover-hours", "6"], ["--must-cover-from", "2026-11-05T03"]):
+        (tmp_path / "out.json").unlink(missing_ok=True)
+        code, res, err = run(a + extra, capsys)
+        assert code == 2 and res is None and "refused" in err
+
+
+def test_a_symlinked_plain_file_is_refused(tmp_path, capsys):
+    a = setup(tmp_path, "latency")
+    p = tmp_path / "twin" / "status.json"
+    real = tmp_path / "status.real"
+    real.write_text(p.read_text())
+    p.unlink()
+    p.symlink_to(real)
+    refused(a, capsys, "unreadable")
