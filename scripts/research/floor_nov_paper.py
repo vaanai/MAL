@@ -2,7 +2,10 @@
 """floor_nov_paper: paper replay of l1-floor-v2 (HostV2, tools/arena_rules_v2) over a closed tip-tape slice, priced at stakes 0.10 and 0.25 (default; --stakes adds more, e.g. 0.5, 1.0) with the kit's fee stack
 (arena_stack_v2 fields) and send = 160,000 lamports per send by default (p155 + base; the earlier 1,673,840 included 1,513,840 of refundable token-ATA rent and over-charged). PAPER only; scratch registry and ledger under --root (outside /data/mal/arena).
 No table seed: the pool table is built from the slice itself (pools that graduated before the slice start are missing, disclosed in the report).
-Usage: floor_nov_paper.py --root R --tape-dir T --from-ms A --to-ms B [--send 160000] [--stakes 0.10,0.25]
+Usage: floor_nov_paper.py --root R --tape-dir T --from-ms A --to-ms B [--send 160000] [--stakes 0.10,0.25] [--pricing-lat-entry-s {3.010,4.085,5.590}]
+--pricing-lat-entry-s (QP ruling 2026-11-14 osb replay screen, section 2; the engine option of PR #1390): prices the deciding entry leg at the declared TOTAL decision-to-landing time. Pricing only: the host's decisions are the strict run's.
+Absent = byte-identical output to before. The value is recorded in variant.json and in the stack block of every row; a run refuses a --root that already holds a run with another value (or a strict run, and the reverse).
+Label for any output: replay screen, paper, in-sample on 2026-11-02..11-11 (variants chosen there); not a gate read, not forward evidence; latency columns are model pricing of the same decisions at the declared live latencies (job #2702).
 """
 import argparse, dataclasses, json, sys
 from pathlib import Path
@@ -37,6 +40,22 @@ def parse_stakes(text):
     return v
 
 
+LAT_CHOICES = (3.010, 4.085, 5.590)  # the three values declared before any output (QP ruling 2026-11-14 osb latency twin, section 3); no other value is accepted
+
+
+def refuse_mixed_root(root, lat):
+    """a run dir holds one pricing: refuse when its variant.json (written by an earlier run) names another pricing_lat_entry_s than this run's (absent = strict)"""
+    vp = Path(root) / "variant.json"
+    if not vp.exists():
+        return
+    try:
+        old = json.loads(vp.read_text()).get("pricing_lat_entry_s")
+    except ValueError:
+        raise SystemExit("refusing --root %s: its variant.json is not readable" % root)
+    if old != lat:
+        raise SystemExit("refusing --root %s: it holds a run with pricing_lat_entry_s=%r, this run has %r (None = strict); use a separate --root" % (root, old, lat))
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--root", required=True); ap.add_argument("--tape-dir", required=True)
@@ -46,7 +65,9 @@ def main():
     ap.add_argument("--set", nargs="*", default=[], help="variant overrides on tools.arena_rule_l1 module constants, NAME=value (e.g. Q_STAR=0.75e9 AGE_LO=43200); the file is not edited")
     ap.add_argument("--gap-exclusion", choices=("on", "off"), default="on", help="research only. on (default) = engine behaviour, positions whose hold overlaps a data_loss gap are excluded (feed_gap). off = price them through the holes; rows carry gap_overlap/gap_holes either way")
     ap.add_argument("--ts-variant", action="store_true", help="research only: also price a 24 h time-stop shadow (ledger/<bot>-ts) for every gap-overlap position that exited by take-profit")
+    ap.add_argument("--pricing-lat-entry-s", type=float, choices=LAT_CHOICES, default=None, help="research only: price the deciding entry leg at this total decision-to-landing time in seconds (3.010, 4.085 or 5.590); decisions unchanged; absent = strict pricing")
     a = ap.parse_args()
+    lat = a.pricing_lat_entry_s
     stakes = parse_stakes(a.stakes)
     require_files_ok(a.tape_dir)
     from tools import arena_rule_l1 as _L
@@ -60,16 +81,19 @@ def main():
         print("override", k, getattr(_L, k), flush=True)
     if R._inside(a.root, R.ARENA_OUTPUT_ROOT):
         raise SystemExit("refusing to write inside the arena output root")
+    refuse_mixed_root(a.root, lat)
     root = Path(a.root); root.mkdir(parents=True, exist_ok=True)
     # the ledger is registered under the pinned FROZEN_SHA; a variant must not pass for the frozen rule, so the header says so (the reader prints it)
     hdr = {"variant": overrides, "frozen_rule": not overrides, "registered_frozen_sha_is_not_the_rule": bool(overrides), "send": a.send}
+    if lat is not None:
+        hdr["pricing_lat_entry_s"] = lat
     (root / "variant.json").write_text(json.dumps(hdr, indent=1, sort_keys=True) + "\n")  # in --root, not in ledger/ (the engine owns that dir)
     ledger, registry = str(root / "ledger"), str(root / "bots.json")
     rules = load_rules_v2([H.BOT_ID])
     scratch_register(registry, a.from_ms)
     cfg = dataclasses.replace(stack_config_for(2, R.DEFAULT_FEED_DELAY_SLOTS), send=a.send, stakes_sol=stakes)
     state = ArenaState(a.tape_dir, start_ms=a.from_ms, warm_min=WARM_MIN_DEFAULT)
-    engine = GapRangeEngine(ledger, registry, cfg=cfg, gap_exclusion=(a.gap_exclusion == "on"), ts_variant=a.ts_variant)
+    engine = GapRangeEngine(ledger, registry, cfg=cfg, gap_exclusion=(a.gap_exclusion == "on"), ts_variant=a.ts_variant, **({} if lat is None else {"pricing_lat_entry_s": lat}))
     hc = R.HostConfig(root=str(root), registry=registry, frozen_sha=H.FROZEN_SHA, clock_start_ms=a.from_ms, live=False, verbose=True)
     host = HostV2(hc, rules, state, engine)
     print(canon({"resumed": host.resume(), "send": cfg.send, "stakes": cfg.stakes_sol}), flush=True)
