@@ -43,17 +43,28 @@ def parse_stakes(text):
 LAT_CHOICES = (3.010, 4.085, 5.590)  # the three values declared before any output (QP ruling 2026-11-14 osb latency twin, section 3); no other value is accepted
 
 
+def _refuse(msg):
+    print(msg, file=sys.stderr)
+    raise SystemExit(2)
+
+
 def refuse_mixed_root(root, lat):
-    """a run dir holds one pricing: refuse when its variant.json (written by an earlier run) names another pricing_lat_entry_s than this run's (absent = strict)"""
+    """a run dir holds one pricing: refuse when its variant.json (written by an earlier run) names another pricing_lat_entry_s than this run's (absent = strict).
+    A variant.json that is not a JSON object is refused. A root that already holds a ledger but no variant.json is refused for a latency run (its pricing is unknown); a strict run resumes there as before."""
     vp = Path(root) / "variant.json"
     if not vp.exists():
+        if lat is not None and (Path(root) / "ledger").exists():
+            _refuse("refusing --root %s: it holds a ledger but no variant.json (its pricing is unknown); a latency run needs a fresh --root" % root)
         return
     try:
-        old = json.loads(vp.read_text()).get("pricing_lat_entry_s")
+        v = json.loads(vp.read_text())
     except ValueError:
-        raise SystemExit("refusing --root %s: its variant.json is not readable" % root)
+        _refuse("refusing --root %s: its variant.json is not readable" % root)
+    if not isinstance(v, dict):
+        _refuse("refusing --root %s: its variant.json is not a JSON object" % root)
+    old = v.get("pricing_lat_entry_s")
     if old != lat:
-        raise SystemExit("refusing --root %s: it holds a run with pricing_lat_entry_s=%r, this run has %r (None = strict); use a separate --root" % (root, old, lat))
+        _refuse("refusing --root %s: it holds a run with pricing_lat_entry_s=%r, this run has %r (None = strict); use a separate --root" % (root, old, lat))
 
 
 def main():

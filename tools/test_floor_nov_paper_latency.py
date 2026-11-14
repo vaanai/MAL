@@ -125,16 +125,34 @@ def test_declared_values_are_exactly_the_three():
     assert NP.LAT_CHOICES == (3.010, 4.085, 5.590)
 
 
-def test_a_latency_run_refuses_a_strict_root_and_the_reverse_and_another_value(world, monkeypatch):
+def test_a_latency_run_refuses_a_strict_root_and_the_reverse_and_another_value(world, monkeypatch, capsys):
     tmp = world[0]
     run_np(tmp, "strict", monkeypatch=monkeypatch)
     before = (tmp / "strict" / "variant.json").read_text()
     with pytest.raises(SystemExit) as e:
         run_np(tmp, "strict", "--pricing-lat-entry-s", "4.085", monkeypatch=monkeypatch)
-    assert "refusing --root" in str(e.value) and (tmp / "strict" / "variant.json").read_text() == before
+    assert e.value.code == 2 and "refusing --root" in capsys.readouterr().err and (tmp / "strict" / "variant.json").read_text() == before
     run_np(tmp, "lat", "--pricing-lat-entry-s", "4.085", monkeypatch=monkeypatch)
     for extra in ((), ("--pricing-lat-entry-s", "5.590")):
         with pytest.raises(SystemExit) as e:
             run_np(tmp, "lat", *extra, monkeypatch=monkeypatch)
-        assert "refusing --root" in str(e.value)
+        assert e.value.code == 2 and "refusing --root" in capsys.readouterr().err
     assert json.loads((tmp / "lat" / "variant.json").read_text())["pricing_lat_entry_s"] == 4.085
+
+
+def test_odd_roots_are_refused_cleanly(world, monkeypatch, capsys):
+    """reviewer minors: a variant.json that is valid JSON but not an object, and a ledger without variant.json, are refused with exit 2 (the latter only for a latency run)"""
+    tmp = world[0]
+    (tmp / "odd").mkdir()
+    (tmp / "odd" / "variant.json").write_text("[1]")
+    for extra in ((), ("--pricing-lat-entry-s", "4.085")):
+        with pytest.raises(SystemExit) as e:
+            run_np(tmp, "odd", *extra, monkeypatch=monkeypatch)
+        assert e.value.code == 2 and "not a JSON object" in capsys.readouterr().err
+    run_np(tmp, "nov", monkeypatch=monkeypatch)
+    (tmp / "nov" / "variant.json").unlink()
+    with pytest.raises(SystemExit) as e:
+        run_np(tmp, "nov", "--pricing-lat-entry-s", "4.085", monkeypatch=monkeypatch)
+    assert e.value.code == 2 and "no variant.json" in capsys.readouterr().err
+    run_np(tmp, "nov", monkeypatch=monkeypatch)  # a strict run into a strict root without the field still works, as before this PR
+    assert "pricing_lat_entry_s" not in (tmp / "nov" / "variant.json").read_text()
