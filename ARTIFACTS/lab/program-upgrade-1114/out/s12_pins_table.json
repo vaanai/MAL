@@ -1,0 +1,622 @@
+{
+ "table": [
+  {
+   "event": "pump.CloseUserVolumeAccumulatorEvent",
+   "disc": "929fbdac925838f4",
+   "trailing_pin": [
+    0
+   ],
+   "disc_len_pin": {
+    "min_len": 80,
+    "max_len": 80
+   },
+   "post": {
+    "n": 82,
+    "n_trailing8": 0,
+    "len_min": 80,
+    "len_max": 80
+   },
+   "pre": {
+    "n": 67,
+    "n_trailing8": 0,
+    "len_min": 80,
+    "len_max": 80
+   }
+  },
+  {
+   "event": "pump.CollectCreatorFeeEvent",
+   "disc": "7a027f010ebf0caf",
+   "trailing_pin": [
+    0
+   ],
+   "disc_len_pin": {
+    "min_len": 88,
+    "max_len": 88
+   },
+   "post": {
+    "n": 28,
+    "n_trailing8": 0,
+    "len_min": 88,
+    "len_max": 88
+   },
+   "pre": {
+    "n": 19,
+    "n_trailing8": 0,
+    "len_min": 88,
+    "len_max": 88
+   }
+  },
+  {
+   "event": "pump.CompleteEvent",
+   "disc": "5f72619cd42e9808",
+   "trailing_pin": null,
+   "disc_len_pin": null,
+   "post": {
+    "n": 1,
+    "n_trailing8": 0,
+    "len_min": 144,
+    "len_max": 144
+   },
+   "pre": {
+    "n": 1,
+    "n_trailing8": 0,
+    "len_min": 144,
+    "len_max": 144
+   }
+  },
+  {
+   "event": "pump.CompletePumpAmmMigrationEvent",
+   "disc": "bde95db95c94ea94",
+   "trailing_pin": [
+    0
+   ],
+   "disc_len_pin": {
+    "min_len": 200,
+    "max_len": 200
+   },
+   "post": {
+    "n": 41,
+    "n_trailing8": 0,
+    "len_min": 200,
+    "len_max": 200
+   },
+   "pre": {
+    "n": 41,
+    "n_trailing8": 0,
+    "len_min": 200,
+    "len_max": 200
+   }
+  },
+  {
+   "event": "pump.CreateEvent",
+   "disc": "1b72a94ddeeb6376",
+   "trailing_pin": [
+    0
+   ],
+   "disc_len_pin": {
+    "min_len": 333,
+    "max_len": 333
+   },
+   "post": {
+    "n": 25,
+    "n_trailing8": 0,
+    "len_min": 344,
+    "len_max": 376
+   },
+   "pre": {
+    "n": 24,
+    "n_trailing8": 0,
+    "len_min": 338,
+    "len_max": 372
+   }
+  },
+  {
+   "event": "pump.DistributeCreatorFeesEvent",
+   "disc": "a537817004b3ca28",
+   "trailing_pin": null,
+   "disc_len_pin": null,
+   "post": {
+    "n": 15,
+    "n_trailing8": 0,
+    "len_min": 222,
+    "len_max": 256
+   },
+   "pre": {
+    "n": 18,
+    "n_trailing8": 0,
+    "len_min": 222,
+    "len_max": 324
+   }
+  },
+  {
+   "event": "pump.DistributeFeeToHoldersEvent",
+   "disc": "e3bed7ceb0b4a584",
+   "trailing_pin": null,
+   "disc_len_pin": null,
+   "post": {
+    "n": 250,
+    "n_trailing8": 0,
+    "len_min": 96,
+    "len_max": 96
+   },
+   "pre": {
+    "n": 274,
+    "n_trailing8": 0,
+    "len_min": 96,
+    "len_max": 96
+   }
+  },
+  {
+   "event": "pump.InitUserVolumeAccumulatorEvent",
+   "disc": "86240d48e86582d8",
+   "trailing_pin": [
+    0
+   ],
+   "disc_len_pin": {
+    "min_len": 80,
+    "max_len": 80
+   },
+   "post": {
+    "n": 31,
+    "n_trailing8": 0,
+    "len_min": 80,
+    "len_max": 80
+   },
+   "pre": {
+    "n": 24,
+    "n_trailing8": 0,
+    "len_min": 80,
+    "len_max": 80
+   }
+  },
+  {
+   "event": "pump.MigrateBondingCurveCreatorEvent",
+   "disc": "9ba768dcd56cf303",
+   "trailing_pin": null,
+   "disc_len_pin": null,
+   "post": {
+    "n": 3,
+    "n_trailing8": 0,
+    "len_min": 176,
+    "len_max": 176
+   },
+   "pre": {
+    "n": 2,
+    "n_trailing8": 0,
+    "len_min": 176,
+    "len_max": 176
+   }
+  },
+  {
+   "event": "pump.PostCompleteBuyEvent",
+   "disc": "6fb06d8b316cd5fb",
+   "trailing_pin": null,
+   "disc_len_pin": null,
+   "post": {
+    "n": 1,
+    "n_trailing8": 0,
+    "len_min": 232,
+    "len_max": 232
+   },
+   "pre": {
+    "n": 1,
+    "n_trailing8": 0,
+    "len_min": 232,
+    "len_max": 232
+   }
+  },
+  {
+   "event": "pump.SweepBondingCurveFeeEvent",
+   "disc": "742b4dbd117a482b",
+   "trailing_pin": [
+    0
+   ],
+   "disc_len_pin": {
+    "min_len": 153,
+    "max_len": 153
+   },
+   "post": {
+    "n": 27,
+    "n_trailing8": 0,
+    "len_min": 153,
+    "len_max": 153
+   },
+   "pre": {
+    "n": 20,
+    "n_trailing8": 0,
+    "len_min": 153,
+    "len_max": 153
+   }
+  },
+  {
+   "event": "pump.TradeEvent",
+   "disc": "bddb7fd34ee661ee",
+   "trailing_pin": [
+    8
+   ],
+   "disc_len_pin": {
+    "min_len": 366,
+    "max_len": 429
+   },
+   "post": {
+    "n": 2712,
+    "n_trailing8": 2712,
+    "len_min": 390,
+    "len_max": 473
+   },
+   "pre": {
+    "n": 2891,
+    "n_trailing8": 2891,
+    "len_min": 390,
+    "len_max": 473
+   }
+  },
+  {
+   "event": "pump_amm.BoostBuyAndBurnEvent",
+   "disc": "3f451c16305cc2b9",
+   "trailing_pin": null,
+   "disc_len_pin": null,
+   "post": {
+    "n": 10,
+    "n_trailing8": 0,
+    "len_min": 208,
+    "len_max": 208
+   },
+   "pre": {
+    "n": 9,
+    "n_trailing8": 0,
+    "len_min": 208,
+    "len_max": 208
+   }
+  },
+  {
+   "event": "pump_amm.BuyEvent",
+   "disc": "67f4521f2cf57777",
+   "trailing_pin": [
+    8
+   ],
+   "disc_len_pin": {
+    "min_len": 473,
+    "max_len": 539
+   },
+   "post": {
+    "n": 4485,
+    "n_trailing8": 4485,
+    "len_min": 497,
+    "len_max": 515
+   },
+   "pre": {
+    "n": 4370,
+    "n_trailing8": 4370,
+    "len_min": 497,
+    "len_max": 515
+   }
+  },
+  {
+   "event": "pump_amm.ClaimCashbackEvent",
+   "disc": "e2d6f62107f293e5",
+   "trailing_pin": null,
+   "disc_len_pin": null,
+   "post": {
+    "n": 3,
+    "n_trailing8": 0,
+    "len_min": 72,
+    "len_max": 72
+   },
+   "pre": {
+    "n": 5,
+    "n_trailing8": 0,
+    "len_min": 72,
+    "len_max": 72
+   }
+  },
+  {
+   "event": "pump_amm.CloseUserVolumeAccumulatorEvent",
+   "disc": "929fbdac925838f4",
+   "trailing_pin": [
+    0
+   ],
+   "disc_len_pin": {
+    "min_len": 80,
+    "max_len": 80
+   },
+   "post": {
+    "n": 279,
+    "n_trailing8": 0,
+    "len_min": 80,
+    "len_max": 80
+   },
+   "pre": {
+    "n": 290,
+    "n_trailing8": 0,
+    "len_min": 80,
+    "len_max": 80
+   }
+  },
+  {
+   "event": "pump_amm.CollectCoinCreatorFeeEvent",
+   "disc": "e8f5c2eeeada3a59",
+   "trailing_pin": null,
+   "disc_len_pin": null,
+   "post": {
+    "n": 6,
+    "n_trailing8": 0,
+    "len_min": 120,
+    "len_max": 120
+   },
+   "pre": {
+    "n": 6,
+    "n_trailing8": 0,
+    "len_min": 120,
+    "len_max": 120
+   }
+  },
+  {
+   "event": "pump_amm.CreatePoolEvent",
+   "disc": "b1310cd2a076a774",
+   "trailing_pin": [
+    0
+   ],
+   "disc_len_pin": {
+    "min_len": 344,
+    "max_len": 344
+   },
+   "post": {
+    "n": 43,
+    "n_trailing8": 0,
+    "len_min": 344,
+    "len_max": 344
+   },
+   "pre": {
+    "n": 43,
+    "n_trailing8": 0,
+    "len_min": 344,
+    "len_max": 344
+   }
+  },
+  {
+   "event": "pump_amm.DepositEvent",
+   "disc": "78f83d531f8e6b90",
+   "trailing_pin": null,
+   "disc_len_pin": null,
+   "post": {
+    "n": 1,
+    "n_trailing8": 1,
+    "len_min": 264,
+    "len_max": 264
+   }
+  },
+  {
+   "event": "pump_amm.ExtendAccountEvent",
+   "disc": "6161d7905d92167c",
+   "trailing_pin": [
+    0
+   ],
+   "disc_len_pin": {
+    "min_len": 96,
+    "max_len": 96
+   },
+   "post": {
+    "n": 3,
+    "n_trailing8": 0,
+    "len_min": 96,
+    "len_max": 96
+   },
+   "pre": {
+    "n": 2,
+    "n_trailing8": 0,
+    "len_min": 96,
+    "len_max": 96
+   }
+  },
+  {
+   "event": "pump_amm.InitBoostEvent",
+   "disc": "ae7c4af90451f611",
+   "trailing_pin": [
+    0
+   ],
+   "disc_len_pin": {
+    "min_len": 136,
+    "max_len": 136
+   },
+   "post": {
+    "n": 32,
+    "n_trailing8": 0,
+    "len_min": 136,
+    "len_max": 136
+   },
+   "pre": {
+    "n": 30,
+    "n_trailing8": 0,
+    "len_min": 136,
+    "len_max": 136
+   }
+  },
+  {
+   "event": "pump_amm.InitUserVolumeAccumulatorEvent",
+   "disc": "86240d48e86582d8",
+   "trailing_pin": [
+    0
+   ],
+   "disc_len_pin": {
+    "min_len": 80,
+    "max_len": 80
+   },
+   "post": {
+    "n": 106,
+    "n_trailing8": 0,
+    "len_min": 80,
+    "len_max": 80
+   },
+   "pre": {
+    "n": 104,
+    "n_trailing8": 0,
+    "len_min": 80,
+    "len_max": 80
+   }
+  },
+  {
+   "event": "pump_amm.SellEvent",
+   "disc": "3e2f370aa503dc2a",
+   "trailing_pin": [
+    8
+   ],
+   "disc_len_pin": {
+    "min_len": 449,
+    "max_len": 449
+   },
+   "post": {
+    "n": 5386,
+    "n_trailing8": 5386,
+    "len_min": 449,
+    "len_max": 449
+   },
+   "pre": {
+    "n": 4853,
+    "n_trailing8": 4853,
+    "len_min": 449,
+    "len_max": 449
+   }
+  },
+  {
+   "event": "pump_amm.SweepPoolFeeEvent",
+   "disc": "82a42461e48287a5",
+   "trailing_pin": null,
+   "disc_len_pin": null,
+   "post": {
+    "n": 328,
+    "n_trailing8": 0,
+    "len_min": 185,
+    "len_max": 185
+   },
+   "pre": {
+    "n": 1,
+    "n_trailing8": 0,
+    "len_min": 185,
+    "len_max": 185
+   }
+  },
+  {
+   "event": "pump_amm.WithdrawEvent",
+   "disc": "1609851aa02c47c0",
+   "trailing_pin": [
+    8
+   ],
+   "disc_len_pin": null,
+   "post": {
+    "n": 3,
+    "n_trailing8": 3,
+    "len_min": 264,
+    "len_max": 264
+   },
+   "pre": {
+    "n": 4,
+    "n_trailing8": 4,
+    "len_min": 264,
+    "len_max": 264
+   }
+  },
+  {
+   "event": "pump_fees.CreateFeeSharingConfigEvent",
+   "disc": "8569aac8b874fb58",
+   "trailing_pin": null,
+   "disc_len_pin": null,
+   "post": {
+    "n": 3,
+    "n_trailing8": 0,
+    "len_min": 184,
+    "len_max": 184
+   },
+   "pre": {
+    "n": 2,
+    "n_trailing8": 0,
+    "len_min": 184,
+    "len_max": 184
+   }
+  },
+  {
+   "event": "pump_fees.DonationFeePdaCranked",
+   "disc": "1ed06b5db100df4e",
+   "trailing_pin": null,
+   "disc_len_pin": null,
+   "post": {
+    "n": 1,
+    "n_trailing8": 0,
+    "len_min": 216,
+    "len_max": 216
+   }
+  },
+  {
+   "event": "pump_fees.DonationFeePdaCreated",
+   "disc": "5e1489ef234de1eb",
+   "trailing_pin": null,
+   "disc_len_pin": null,
+   "post": {
+    "n": 3,
+    "n_trailing8": 0,
+    "len_min": 208,
+    "len_max": 208
+   }
+  },
+  {
+   "event": "pump_fees.SweepBuybackEvent",
+   "disc": "2b382ad69939a689",
+   "trailing_pin": null,
+   "disc_len_pin": null,
+   "post": {
+    "n": 8,
+    "n_trailing8": 0,
+    "len_min": 121,
+    "len_max": 121
+   },
+   "pre": {
+    "n": 1,
+    "n_trailing8": 0,
+    "len_min": 121,
+    "len_max": 121
+   }
+  },
+  {
+   "event": "pump_fees.UpdateFeeSharesEvent",
+   "disc": "15bac4b85be4e1cb",
+   "trailing_pin": null,
+   "disc_len_pin": null,
+   "post": {
+    "n": 3,
+    "n_trailing8": 0,
+    "len_min": 151,
+    "len_max": 151
+   },
+   "pre": {
+    "n": 2,
+    "n_trailing8": 0,
+    "len_min": 151,
+    "len_max": 151
+   }
+  },
+  {
+   "event": "pump_fees.WithdrawEvent",
+   "disc": "1609851aa02c47c0",
+   "trailing_pin": null,
+   "disc_len_pin": null,
+   "post": {
+    "n": 3,
+    "n_trailing8": 0,
+    "len_min": 88,
+    "len_max": 88
+   },
+   "pre": {
+    "n": 1,
+    "n_trailing8": 0,
+    "len_min": 88,
+    "len_max": 88
+   }
+  }
+ ],
+ "deviations": [
+  "post pump.CreateEvent: lens 344..376 outside disc_len pin {'min_len': 333, 'max_len': 333}",
+  "pre pump.CreateEvent: lens 338..372 outside disc_len pin {'min_len': 333, 'max_len': 333}",
+  "post pump.TradeEvent: lens 390..473 outside disc_len pin {'min_len': 366, 'max_len': 429}",
+  "pre pump.TradeEvent: lens 390..473 outside disc_len pin {'min_len': 366, 'max_len': 429}"
+ ]
+}

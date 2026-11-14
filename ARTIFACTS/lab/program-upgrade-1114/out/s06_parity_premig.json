@@ -1,0 +1,218 @@
+{
+ "blob_sha": {
+  "observe/trade_decode.py": {
+   "at_1f7a89c": "238942a6b3c5425389eddfde4d11268c300acbec",
+   "equal": true,
+   "here": "238942a6b3c5425389eddfde4d11268c300acbec"
+  },
+  "tools/h5_shadow.py": {
+   "at_1f7a89c": "23b9ccc2562f4cb83113a8b9faa4cb8d9e86907f",
+   "equal": false,
+   "here": "f23cf492211fd79287fa6ac82fd382f1f3e39a3d"
+  },
+  "tools/pump_history_backfill.py": {
+   "at_1f7a89c": "9a8bebb32adcf86de060b55f5a08110d11c0a550",
+   "equal": true,
+   "here": "9a8bebb32adcf86de060b55f5a08110d11c0a550"
+  }
+ },
+ "c_sample": [],
+ "compared_fields_ok_or_not": {},
+ "cpi_only": {
+  "pump.CompletePumpAmmMigrationEvent": 40,
+  "pump_amm.BuyEvent": 9,
+  "pump_amm.InitBoostEvent": 29
+ },
+ "empty_tag_cpi": 0,
+ "events": {
+  "pump.CompletePumpAmmMigrationEvent": 40,
+  "pump_amm.BuyEvent": 9,
+  "pump_amm.CreatePoolEvent": 40,
+  "pump_amm.InitBoostEvent": 29
+ },
+ "failed_txs": 0,
+ "frozen_rows_records_from_logs": 0,
+ "idl_sha256": {
+  "pump": "7616681ea557975f9f623ac211080f22a93060781eaf4765b0a488d980997207",
+  "pump_amm": "b7d8c57a4d9c4dd0109a9ab893052352333252d4eedced10ac091d4d66cab89b",
+  "pump_fees": "6b9fa3eccc6e06273076a47b581f9fcb9e531bb7c3c88acbcd44db55a4002b29"
+ },
+ "indep_log_trade_events": 0,
+ "ix": {
+  "pump.migrate": 3,
+  "pump.migrate_v2": 37,
+  "pump_amm.buy_exact_quote_in_v2": 6,
+  "pump_amm.buy_v2": 3,
+  "pump_amm.create_pool": 40,
+  "pump_amm.init_boost": 29
+ },
+ "layout_len": {
+  "pump.CompletePumpAmmMigrationEvent": {
+   "200": 40
+  },
+  "pump_amm.BuyEvent": {
+   "500": 3,
+   "515": 6
+  },
+  "pump_amm.CreatePoolEvent": {
+   "344": 40
+  },
+  "pump_amm.InitBoostEvent": {
+   "136": 29
+  }
+ },
+ "log_truncated_txs": 40,
+ "multihop_txs": 0,
+ "n_A_txs_success_touching": 19214,
+ "n_blocks_A": 0,
+ "nondecode": [
+  {
+   "cat": "N1",
+   "event": "BuyEvent",
+   "program": "pump_amm",
+   "sig": "3JHgL98uTg5sPUjKxNfpzdESLAz3YH4Up8Gywf6SmcXVvSnqHwbEuPYzDNNmorpBFbHeZxXDYBx3hLcbPAXCaZy6",
+   "slot": 469053685,
+   "src": "M",
+   "truncated": true,
+   "why": "CPI-only (not in logs): invisible to records_from_logs"
+  },
+  {
+   "cat": "N1",
+   "event": "BuyEvent",
+   "program": "pump_amm",
+   "sig": "2Qkis9dCh8iBdqFCdvSouJevo3Y6MuoGLj2s4s9TAsLrUVe8HtYyGm6C1xv68FNH6d5HywUirkA4qpiKoSj4kQnq",
+   "slot": 469051416,
+   "src": "M",
+   "truncated": true,
+   "why": "CPI-only (not in logs): invisible to records_from_logs"
+  },
+  {
+   "cat": "N1",
+   "event": "BuyEvent",
+   "program": "pump_amm",
+   "sig": "3dcsuMh6qSUbi82vKLWTV7a6Ku6eAiuUSbEKnJZQf7dnUv82ffPTM6ZynvuhGoLoxFZdFTZ7LViY4T1gVgmBTpVh",
+   "slot": 469050318,
+   "src": "M",
+   "truncated": true,
+   "why": "CPI-only (not in logs): invisible to records_from_logs"
+  },
+  {
+   "cat": "N1",
+   "event": "BuyEvent",
+   "program": "pump_amm",
+   "sig": "3dTod8ZSZaMkbTpvWcKMQW2KU5baq2wDdbkbMoAz4sNvPsGKuxLCqycsQEfefN3PSj27QdVDAzuX6kmVtqwMNNZB",
+   "slot": 469049466,
+   "src": "M",
+   "truncated": true,
+   "why": "CPI-only (not in logs): invisible to records_from_logs"
+  },
+  {
+   "cat": "N1",
+   "event": "BuyEvent",
+   "program": "pump_amm",
+   "sig": "3AEMVfzsj1RGu2mJnWQwoUT5J3idGPCsMXeUTmuz7njwKPuiNuAgTwVnQDpZv6ocDkuPFBGYxS3jGZc5SypWoqVN",
+   "slot": 469046997,
+   "src": "M",
+   "truncated": true,
+   "why": "CPI-only (not in logs): invisible to records_from_logs"
+  },
+  {
+   "cat": "N1",
+   "event": "BuyEvent",
+   "program": "pump_amm",
+   "sig": "3SKTSAM7ivAcVTfjtUa8Y1aKrCNgrhtDFXfDbyRST7UkQNeZEuewNULTWkPYshSxXofKABEVi3MqrqXbR78ubQ6v",
+   "slot": 469046302,
+   "src": "M",
+   "truncated": true,
+   "why": "CPI-only (not in logs): invisible to records_from_logs"
+  },
+  {
+   "cat": "N1",
+   "event": "BuyEvent",
+   "program": "pump_amm",
+   "sig": "3qdBkpoWAkJueCEy65nSt3hTMmiQhUpJaoH7EGByFKytgG9EcizGLsq84mh3aRqsHgydbppkxwtzUFer443ZFXPZ",
+   "slot": 469043409,
+   "src": "M",
+   "truncated": true,
+   "why": "CPI-only (not in logs): invisible to records_from_logs"
+  },
+  {
+   "cat": "N1",
+   "event": "BuyEvent",
+   "program": "pump_amm",
+   "sig": "97wuUkPnfeyKM1VvF6Dov8VBaHWi65B2cyPXZEMiAN1cpABSDPP4hZJ2CkyhwXrChQyfrMWajDXp7vK5ognMFUY",
+   "slot": 469041469,
+   "src": "M",
+   "truncated": true,
+   "why": "CPI-only (not in logs): invisible to records_from_logs"
+  },
+  {
+   "cat": "N1",
+   "event": "BuyEvent",
+   "program": "pump_amm",
+   "sig": "2jN9GDSDKtqcqsqwzt9tHC9HYKHWzUKts5ph7iNWs2pP7cEJiHXU1LK83zS5ek64B4HZFgnnPHSFrdiAA5SpjMjR",
+   "slot": 469041001,
+   "src": "M",
+   "truncated": true,
+   "why": "CPI-only (not in logs): invisible to records_from_logs"
+  }
+ ],
+ "nondecode_by_cat": {
+  "N1": 9
+ },
+ "nontrade": {
+  "pump.CompletePumpAmmMigrationEvent|cpi_only": {
+   "equal": 40,
+   "frozen_none": 0,
+   "in_migrate_tx": 40,
+   "total": 40,
+   "value_unmatched": 0
+  },
+  "pump_amm.CreatePoolEvent|log": {
+   "equal": 40,
+   "frozen_none": 0,
+   "in_migrate_tx": 40,
+   "total": 40,
+   "value_unmatched": 0
+  },
+  "pump_amm.InitBoostEvent|cpi_only": {
+   "equal": 29,
+   "frozen_none": 0,
+   "in_migrate_tx": 29,
+   "total": 29,
+   "value_unmatched": 0
+  }
+ },
+ "read_events": {
+  "pump.CompletePumpAmmMigrationEvent": 40,
+  "pump_amm.BuyEvent": 9,
+  "pump_amm.CreatePoolEvent": 40,
+  "pump_amm.InitBoostEvent": 29
+ },
+ "refused": {},
+ "refused_quote": {},
+ "refused_rows": [],
+ "trade_ix_total": 9,
+ "trail8": {
+  "pump_amm.BuyEvent": 9
+ },
+ "trail8_first_last_slot": [
+  469041001,
+  469053685
+ ],
+ "trail8_nonzero": [],
+ "trail8_total": 9,
+ "trail8_values": {
+  "0": 9
+ },
+ "tx_analysed": {
+  "M": 40
+ },
+ "unknown_disc": {},
+ "unknown_ix": {},
+ "unresolved_mint_rows": 0,
+ "walker_bad_disc": {},
+ "walker_cpi_only_disc": {},
+ "walker_rows": {},
+ "walker_unknown_disc": {}
+}
