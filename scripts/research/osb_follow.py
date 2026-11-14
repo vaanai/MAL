@@ -227,17 +227,51 @@ def _atomic_text(path, text):
     os.replace(tmp, path)
 
 
-def decisions_md5(run_dir):
-    """md5 of the ordered (position_id, entry decision_ms, exit decision_ms) rows of the run's ledger (open, trade and excluded rows; one row per position: the per-stake rows collapse).
-    Strict and twin books on the same decisions give the same value (QP ruling 2026-11-14 Q1, the Am.9 erratum text)."""
+def decision_rows(ledger_dir):
+    """every complete, parseable ledger row under ledger_dir (a half-written last line or a bad line is skipped); `start` rows are not needed by the decisions digest"""
+    for f in sorted(p for p in Path(ledger_dir).rglob("*") if p.is_file()):
+        data = f.read_bytes()
+        for ln in data[: data.rfind(b"\n") + 1].splitlines():
+            try:
+                r = json.loads(ln)
+            except ValueError:
+                continue
+            if isinstance(r, dict):
+                yield r
+
+
+def decisions_md5_from_rows(rows):
+    """md5 of the ordered (position_id, entry decision_ms, exit decision_ms) rows (open, trade and excluded rows; one row per position: the per-stake rows collapse, the exit comes from the
+    trade / excluded row). Strict and twin books on the same decisions give the same value (QP ruling 2026-11-14 Q1, the Am.9 erratum text). THE one definition: the board and the recon import it."""
     seen = {}
-    for _, r in ledger_rows(Path(run_dir) / "ledger"):
-        if r.get("kind") in ("open", "trade", "excluded"):  # the open row carries the entry decision; the trade / excluded row adds the exit decision
+    for r in rows:
+        if r.get("kind") in ("open", "trade", "excluded") and isinstance(r.get("position_id"), str):
             dm = r.get("decision_ms") or {}
             old = seen.get(r["position_id"])
             seen[r["position_id"]] = (r["position_id"], dm.get("entry"), dm.get("exit") if dm.get("exit") is not None else (old[2] if old else None))
-    rows = sorted(seen.values(), key=lambda t: (t[1] if t[1] is not None else -1, t[0]))
-    return hashlib.md5(canon(rows).encode()).hexdigest()
+    out = sorted(seen.values(), key=lambda t: (t[1] if t[1] is not None else -1, t[0]))
+    return hashlib.md5(canon(out).encode()).hexdigest()
+
+
+def decisions_md5(run_dir):
+    return decisions_md5_from_rows(decision_rows(Path(run_dir) / "ledger"))
+
+
+def book_decisions_md5(out_root):
+    """a book's decisions md5 for a reader (board, recon): the out_root/decisions.md5 file when present and well formed, else computed from the rows of the active run (out_root/book/ledger).
+    The file is only a cache; this never writes. None when neither exists (no book link, no ledger row), i.e. the value cannot be read."""
+    out_root = Path(out_root)
+    try:
+        v = (out_root / "decisions.md5").read_text().strip()
+        if re.fullmatch(r"[0-9a-f]{32}", v):
+            return v
+    except OSError:
+        pass
+    led = out_root / "book" / "ledger"
+    if not led.is_dir():
+        return None
+    rows = list(decision_rows(led))
+    return decisions_md5_from_rows(rows) if any(r.get("kind") == "open" for r in rows) else None
 
 
 def count_rows(run_dir):

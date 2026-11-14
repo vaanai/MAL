@@ -13,8 +13,10 @@ What it changes, and only this:
     sd + d + max_lat k + 1] -> excluded `feed_gap_entry`; or (b) the EXIT window, from the pool's last print at or below xs + d + exit_lag (time: min(exit_ms, that print's time)) up to `need`
     (time: exit_ms + (exit_lag + 1)*sps_exit*1000; a derived_last exit extends both ends to the resolution instant, as `_span`) -> excluded `feed_gap_exit`. A gap elsewhere in the hold does not
     exclude. A priced trade row whose hold (`_span`: decision_ms .. exit window end) overlaps at least one gap carries gap_in_hold=true, blind_s (union of the overlapping gaps clipped to the hold, seconds)
-    gap_count and gap_holes ([[t_lo_ms, t_hi_ms], ..] per gap, clipped to the hold); a row with no gap in its hold carries nothing extra (byte-equal to the strict book's row). An exit_invalid trade whose hold has a gap stays priced (strand) and is counted
-    `exit_invalid_across_gap`. Take-profit: the host decides on the rows it has; nothing is added here (Q3). guard_ref_missing and missing_v are unchanged ("on"/"off" rows are byte-identical to before).
+    gap_count and gap_holes ([[t_lo_ms, t_hi_ms], ..] per gap, clipped to the hold; only gaps with a positive time overlap count, a match by slot alone or a zero-length gap shows as slot_only_gaps, see _hold_note); a row with no gap in its hold carries nothing extra (byte-equal to the strict book's row). An exit_invalid trade whose hold has a gap stays priced (strand) and is counted
+    `exit_invalid_across_gap` (engine counter; the board derives its own count from the twin's rows). Take-profit: the host decides on the rows it has; nothing is added here (Q3). guard_ref_missing and missing_v are unchanged ("on"/"off" rows are byte-identical to before).
+Exit-window time form: for a print whose order key carries no receive time (tx_index form) the print's time is estimated from the slot clock; that can narrow the time form, but every Gap also carries a slot range
+and the window's slot form [ps, need] uses the print's true slot, so a gap in that stretch matches by slot whatever the estimate (QP comment on PR #1380, m1).
 The decisions of the rule do not depend on the exclusion (the host does not read the engine's trade/excluded rows), so entries are identical with and without it.
 """
 import dataclasses
@@ -86,6 +88,9 @@ class GapRangeEngine(ArenaEngine):
             self.gaps = saved
 
     def _hold_note(self, pos, src, need):
+        """Flags of a priced trade. gap_count and gap_holes count only the matching gaps whose time interval overlaps the hold by more than zero ms; a matching gap with no such overlap (a
+        zero-length gap, or a match by slot alone) is not a hole: it is counted in `slot_only_gaps` (field present only when > 0), so a flagged row can have blind_s 0, gap_holes [] and
+        slot_only_gaps > 0 (the recon's tp_in_sim_gap needs a hole and never fires for it). The row is still flagged gap_in_hold, as the strict book leaves it out."""
         span = self._span(pos, need, src)
         gs = self._gap_matches(pos.prog, span)
         t_lo, t_hi = span[0], span[1]
@@ -100,7 +105,8 @@ class GapRangeEngine(ArenaEngine):
                 cur_hi = max(cur_hi, hi)
         if cur_hi is not None:
             blind += cur_hi - cur_lo
-        self._hold_info[pos.position_id] = {"gap_count": len(gs), "blind_s": round(blind / 1000.0, 3), "gap_holes": [[lo, hi] for lo, hi in iv]}  # [t_lo_ms, t_hi_ms] per gap, clipped to the hold; times only
+        self._hold_info[pos.position_id] = {"matched": len(gs), "gap_count": len(iv), "slot_only_gaps": len(gs) - len(iv), "blind_s": round(blind / 1000.0, 3),
+                                            "gap_holes": [[lo, hi] for lo, hi in iv]}  # [t_lo_ms, t_hi_ms] per gap, clipped to the hold; times only
 
     def _exclusion(self, pos, h, src, need):
         if self.hold and not pos.position_id.endswith("-ts"):
@@ -125,9 +131,11 @@ class GapRangeEngine(ArenaEngine):
         row = super()._base_row(pos, kind, s_sol, src)
         if not pos.position_id.endswith("-ts"):
             info = self._hold_info.get(pos.position_id) if self.hold and kind == "trade" else None
-            if info and info["gap_count"]:
+            if info and info["matched"]:
                 row["gap_in_hold"], row["blind_s"], row["gap_count"] = True, info["blind_s"], info["gap_count"]
                 row["gap_holes"] = info["gap_holes"]
+                if info["slot_only_gaps"]:
+                    row["slot_only_gaps"] = info["slot_only_gaps"]
             if not self.gap_exclusion:  # only the research replay (--gap-exclusion off) adds the fields; default rows are the plain engine's
                 holes = self._ov.get(pos.position_id, [])
                 row["gap_overlap"] = bool(holes)
@@ -138,7 +146,7 @@ class GapRangeEngine(ArenaEngine):
 
     def build_rows(self, pos, h, src):
         rows = super().build_rows(pos, h, src)
-        if self.hold and (self._hold_info.get(pos.position_id) or {}).get("gap_count") and any(
+        if self.hold and (self._hold_info.get(pos.position_id) or {}).get("matched") and any(
                 v.get("state") == "exit_invalid" for r in rows for leg in r["legs"].values() for v in leg.values()):
             self._count("exit_invalid_across_gap")
         return rows
