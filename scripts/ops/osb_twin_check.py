@@ -39,7 +39,14 @@ Choices where the wording leaves a detail open (each follows the text literally 
   * L5: over the position_ids closed (a trade or excluded row) in BOTH books; per stake, priced + excluded rows are counted for each book and must be equal; the per-reason counts are printed.
   * A row condition (C4, C5, L4, L5) with nothing to compare (no row in common) is NO_DATA (a distinct status, exit 3, never PASS and never a FAIL). The remedy is a proof over a longer window
     starting at the same S, never a waiver. L4 compares the 1.3 leg only over rows priced in both books; rows priced in only one book are counted, not compared.
-  * C2/L2 are required: without --on-copy-run they are reported NOT_RUN and the overall result is NOT_MET (exit 3), never PASS.
+  * QP ADDENDUM 1 (/data/mal/hunt-1008/ops/QP-RULING-1114-board-gap-in-hold-ADD1.md, sha256 prefix 9736edc9) REPLACES C2/L2 by C2r / L2r, because code_head is written into every open row, so a per-hour
+    ledger_md5 can never be equal across two commits. Text: "C2r / L2r: over the identical window, (i) every hour's decision_md5 of the on-copy run equals the strict run's, and (ii) the md5 of the
+    ledger projection of the on-copy run's final ledger equals the strict run's. The projection is osb_follow.ledger_rows (start rows dropped, as stated) with `engine_id`, `code_head` and `written_ms`
+    removed, in ledger file order. `code_dirty` stays in and must be false in both runs. The tool also prints the multiset md5 of the same projection, the row counts by kind (open, trade, excluded and any
+    other kind) and the set of keys that differ between paired rows (must be empty)." Ordered md5 different but multiset equal: FAIL "order only". code_dirty true or missing: FAIL. Every kind but start is
+    compared. Key NAMES only are printed. The old C2/L2 (per-hour ledger_md5) are still computed; when the on-copy and the strict run differ in code.sha256 or code_head they are reported
+    NOT_COMPARABLE_ACROSS_COMMITS (never PASS or FAIL, not part of the overall result); at the same commit they are reported and counted as before.
+  * C2r/L2r are required: without --on-copy-run they are reported NOT_RUN and the overall result is NOT_MET (exit 3), never PASS.
   * A run is refused (exit 2) if its .osb.lock is held (the driver still runs; checked with a non-blocking shared flock), if md5-by-hour.jsonl or any ledger file has a torn last line, or if a ledger
     line is unparseable. Row checks read only rows whose entry decision hour is in the compared window; rows outside are counted (n_rows_outside_window_not_read), never read into an md5 or count.
     Plain files are opened O_NOFOLLOW (decisions.md5 and the manifests are read by osb_follow's own functions). --must-cover-from H --must-cover-hours N: refuse unless the compared window contains
@@ -47,8 +54,8 @@ Choices where the wording leaves a detail open (each follows the text literally 
   * The strict, twin (and on-copy) runs must cover IDENTICAL hour sets, else refused (exit 2) with both windows printed ("row conditions need identical windows"): the row conditions C4, C5, L4, L5
     count every row, so a run covering more hours would give a false FAIL.
   * tape_dir: the proof legs' manifest.sha256 is the hash of a DERIVED manifest (osb_proof.derive changes only tape_dir and out_root; tape_dir -> the per-leg window dir). So tape_dir may differ between
-    the two manifests compared, only when both paths are under /data2/mal/scratch/floor-open-sim (or, with MAL_ARENA_TEST=1, any path, tests only) and the windows are identical; every other key must still
-    be twin-equal (a third differing key is refused). Printed as tape_dir_differs. What proves the tapes are the same is the per-hour md5 equality of C2/L2 (and C3/L3's per-hour decision_md5), not the path.
+    the two manifests compared, only when both paths are under /data2/mal/scratch/floor-open-sim (or, with the explicit test-only flag OSB_TWIN_CHECK_TEST_ANY_TAPE_DIR=1, any path; refused inside a MiScusi job; MAL_ARENA_TEST alone does not lift it) and the windows are identical; every other key must still
+    be twin-equal (a third differing key is refused). Printed as tape_dir_differs. What proves the tapes are the same is the per-hour decision_md5 equality of C2r/L2r (and C3/L3's per-hour decision_md5), not the path.
   * Use (inputs are osb_proof legs, never a live book over another window): strict = the strict book's proof leg L1 out_root and its derived manifest; on-copy = the A leg L1 of the twin's proof (run at the
     twin's commit); twin = the twin's leg L1 of the same proof; --strict-manifest / --twin-manifest = those legs' derived manifests.
   * The manifests: --strict-manifest and --twin-manifest are required; each must hash (osb_follow.manifest_sha256) to its run's manifest.sha256. For latency the twin must be a twin of the strict by
@@ -207,10 +214,13 @@ def gap_twin_manifest_diff(twin, strict):
 
 
 SCRATCH_ROOT = "/data2/mal/scratch/floor-open-sim"
+TEST_FLAG = "OSB_TWIN_CHECK_TEST_ANY_TAPE_DIR"
 
 
 def tape_dir_ok(path):
-    if os.environ.get("MAL_ARENA_TEST") == "1":  # tests only, as the other osb tools gate their test hooks
+    if os.environ.get(TEST_FLAG) == "1":  # tests only: an explicit flag, refused inside a MiScusi job (the pattern of tools/r4bt_d_measure.py); MAL_ARENA_TEST alone does not lift the root guard
+        if os.environ.get("MISCUSI_JOB_ID"):
+            raise Refused("%s refuses to run inside a MiScusi job" % TEST_FLAG)
         return True
     rp = os.path.realpath(path)
     return rp == SCRATCH_ROOT or rp.startswith(SCRATCH_ROOT + "/")
@@ -262,8 +272,67 @@ def per_hour_compare(a, b, hours, fields):
     return {"n_hours_compared": len(hours), "n_mismatching_hours": n_mis, "first_mismatching_hour": first}
 
 
+DROP_KEYS = ("engine_id", "code_head", "written_ms")  # QP addendum ADD1 section 1: the complete list of code-identity fields (engine_id is already removed by osb_follow.ledger_rows)
+
+
+def projection(run):
+    """-> (ordered [(file, row)] without DROP_KEYS, set of code_head values, [kinds of open rows' code_dirty values]). osb_follow.ledger_rows drops `start` rows and engine_id; a torn last line or an
+    unparseable line of any ledger file is a refusal first."""
+    for f in sorted(p for p in Path(run["ledger"]).rglob("*") if p.is_file()):
+        try:
+            txt = read_plain(f)
+        except (OSError, UnicodeDecodeError) as e:
+            raise Refused("a ledger file of the %s run is unreadable: %s" % (run["label"], type(e).__name__))
+        if txt and not txt.endswith("\n"):
+            raise Refused("a ledger file of the %s run has a torn last line (the run is being written)" % run["label"])
+    try:
+        rows = O.ledger_rows(run["ledger"])
+    except ValueError:
+        raise Refused("a ledger line of the %s run is unparseable" % run["label"])
+    heads = {r.get("code_head") for _, r in rows if r.get("kind") == "open"}
+    dirty = [r.get("code_dirty", "missing") for _, r in rows if r.get("kind") == "open"]
+    return [(f, {k: v for k, v in r.items() if k not in DROP_KEYS}) for f, r in rows], heads, dirty
+
+
+def same_commit(a, b, ha, hb):
+    return a["code_sha256"] == b["code_sha256"] and ha == hb
+
+
+def cond_projection(name, on_copy, strict, pa, pb):
+    """C2r / L2r (QP addendum ADD1 section 1), on-copy vs strict: (i) every hour's decision_md5 equal over the identical window; (ii) md5 of the ledger projection of the final ledger equal (ordered);
+    code_dirty false in both. Also: the multiset md5, row counts by kind (every kind but `start`), and the NAMES of the keys that differ between paired rows (must be empty)."""
+    (ra, _, da), (rb, _, db) = pa, pb
+    hours = common_window(on_copy, strict, name)
+    ph = per_hour_compare(on_copy, strict, hours, (1,))
+    ph["status"] = "PASS" if ph["n_mismatching_hours"] == 0 else "FAIL"
+    la, lb = [O.canon(x) for x in ra], [O.canon(x) for x in rb]
+    ordered_a, ordered_b = md5_lines(la), md5_lines(lb)
+    multi_a, multi_b = md5_lines(sorted(la)), md5_lines(sorted(lb))
+    kinds = lambda rows: dict(sorted(collections.Counter(str(r.get("kind")) for _, r in rows).items()))  # noqa: E731
+    differ = set()
+    for (fa, xa), (fb, xb) in zip(ra, rb):
+        if fa != fb:
+            differ.add("<ledger file name>")
+        differ.update(k for k in set(xa) | set(xb) if xa.get(k, "<absent>") != xb.get(k, "<absent>") or (k in xa) != (k in xb))
+    dirty_ok = lambda d: bool(d) and all(v is False for v in d)  # noqa: E731  (a true or missing value is not false)
+    if not ra and not rb:
+        st, why = "NO_DATA", None
+    elif not dirty_ok(da) or not dirty_ok(db):
+        st, why = "FAIL", "code_dirty is true or missing in a run"
+    elif ordered_a != ordered_b:
+        st, why = "FAIL", "order only" if multi_a == multi_b else "ledger projection differs"
+    elif ph["status"] != "PASS":
+        st, why = "FAIL", "per-hour decision_md5 differs"
+    else:
+        st, why = "PASS", None
+    return {"status": st, "reason": why, "window": window_info(hours), "per_hour_decision_md5": ph,
+            "projection_md5": {"on_copy": ordered_a, "strict": ordered_b}, "projection_multiset_md5": {"on_copy": multi_a, "strict": multi_b},
+            "row_counts_by_kind": {"on_copy": kinds(ra), "strict": kinds(rb)}, "n_rows": {"on_copy": len(ra), "strict": len(rb)}, "differing_key_names": sorted(differ),
+            "code_dirty": {"on_copy": {"all_false": dirty_ok(da), "n_open_rows": len(da)}, "strict": {"all_false": dirty_ok(db), "n_open_rows": len(db)}}}
+
+
 def cond_identity(name, on_copy, strict):
-    """C2 / L2: on-copy vs strict, every hour's ledger_md5 and decision_md5"""
+    """C2 / L2 (the old per-hour ledger_md5 comparison, kept for the record): on-copy vs strict, every hour's ledger_md5 and decision_md5"""
     hours = common_window(on_copy, strict, name)
     d = per_hour_compare(on_copy, strict, hours, (0, 1))
     d.update(window=window_info(hours), status="PASS" if d["n_mismatching_hours"] == 0 else "FAIL")
@@ -382,7 +451,14 @@ def run_check(kind, strict_dir, twin_dir, on_copy_dir, strict_manifest, twin_man
             raise Refused("the on-copy run's code.sha256 differs from the twin's: not run at the twin's commit")
         if sorted(oc["hours"]) != sorted(twin["hours"]):
             raise Refused("the on-copy run and the twin run do not cover the same hours")
-        out["conditions"][names[0]] = cond_identity(names[0], oc, strict)
+        po, ps = projection(oc), projection(strict)
+        out["conditions"][names[0] + "r"] = cond_projection(names[0] + "r", oc, strict, po, ps)
+        old = cond_identity(names[0], oc, strict)
+        if same_commit(oc, strict, po[1], ps[1]):
+            out["conditions"][names[0]] = old
+        else:
+            old.update(status="NOT_COMPARABLE_ACROSS_COMMITS", note="the on-copy and the strict run differ in code.sha256 or code_head: a per-hour ledger_md5 cannot be equal (code_head is in every open row); informational, never part of the overall result")
+            out["conditions"][names[0]] = old
     out["conditions"][names[1]] = cond_decisions(names[1], twin, strict)
     tr, t_out = rows_of(twin, set(wh))
     sr, s_out = rows_of(strict, set(wh))
@@ -392,8 +468,8 @@ def run_check(kind, strict_dir, twin_dir, on_copy_dir, strict_manifest, twin_man
     else:
         out["conditions"]["L4"], out["conditions"]["L5"] = cond_l4(tr, sr), cond_l5(tr, sr)
     if on_copy_dir is None:  # C2 / L2 are REQUIRED first-run conditions: without the on-copy run they are NOT_RUN and the result is never PASS
-        out["conditions"][names[0]] = {"status": "NOT_RUN", "note": "no --on-copy-run given; a required condition that did not run"}
-    st = [c["status"] for c in out["conditions"].values()]
+        out["conditions"][names[0] + "r"] = {"status": "NOT_RUN", "note": "no --on-copy-run given; a required condition that did not run"}
+    st = [c["status"] for c in out["conditions"].values() if c["status"] != "NOT_COMPARABLE_ACROSS_COMMITS"]
     out["overall"] = "PASS" if all(s == "PASS" for s in st) else "NOT_MET"
     out["note"] = "read-only identity checks of a pricing-only twin; not a gate read; no stake, limit or live step rests on them; nothing here says any book makes money"
     return out
