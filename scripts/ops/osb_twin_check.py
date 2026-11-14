@@ -37,6 +37,7 @@ Choices where the wording leaves a detail open (each follows the text literally 
   * L4: rows are kind trade, keyed by (position_id, stake_sol), present in both books; the tuple is (position_id, stake_sol, legs.total.flat_1p3, legs.total.press_1p3, calc["1p3"]) in canonical JSON,
     sorted, one line per row, md5 of the lines joined by LF. Counts of rows priced in only one book are printed.
   * L5: over the position_ids closed (a trade or excluded row) in BOTH books; per stake, priced + excluded rows are counted for each book and must be equal; the per-reason counts are printed.
+  * A row condition (C4, C5, L4, L5) with nothing to compare (no row in common) is a FAIL, never a vacuous PASS.
   * The manifests: --strict-manifest and --twin-manifest are required; each must hash (osb_follow.manifest_sha256) to its run's manifest.sha256. For latency the twin must be a twin of the strict by
     osb_follow.twin_manifest_diff; for gap-hold by the same key rule with gap_exclusion "hold" (gap_twin_manifest_diff). Otherwise refused.
 
