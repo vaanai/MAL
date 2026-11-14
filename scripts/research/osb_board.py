@@ -16,6 +16,10 @@ the tape end) are listed in `open`, not counted here. Entries of an incomplete d
 Twins (QP ruling 2026-11-14 Q6): a book entry may carry "twin_of": "<book_id>" (the strict book); the twin's manifest has gap_exclusion "hold". When both books' decisions.md5 files (written by osb_follow) are equal the board
 adds a pair view (board.json `pairs`, a "Pair" section in board.md): the incl.-gap-in-hold set first, the strict set beside it, never one summed figure. Differing or missing md5: the twin is shown as a separate book with a line saying so. A book
 without a twin renders exactly as before.
+Latency twins (QP ruling 2026-11-14 osb latency twin, sections 2 and 5): a book entry whose manifest carries pricing_lat_entry_s (and twin_of, gap_exclusion on) is a pricing-only latency twin of its strict book; its pair view
+("Latency pair" section, board.json `pairs` entries with kind "latency") shows the twin first and the strict book beside it, with the ruling's label and the line "exit before entry landed (<twin>): n (not counted as a trade)".
+A latency twin is compared only with the control book's latency twin of the SAME pricing_lat_entry_s (else n/a; the control's own latency twin gets no comparison), never with a strict book, a gap-in-hold twin or a twin
+of another value; rows are never summed across kinds. The manifests of a twin and its strict book are checked key by key (osb_follow.twin_manifest_diff): any other difference is refused at start (exit 2).
 Exit codes: 0 ok; 2 refused (BOOKS.json, manifest pin, path guard, output guard, forbidden word in the output). Without --follow: one build.
 """
 import argparse, collections, contextlib, hashlib, io, json, math, os, re, shutil, subprocess, sys, tempfile, time
@@ -108,12 +112,20 @@ def load_books_file(path, roots=None):
             raise Refusal("duplicate book id %s" % m["book_id"])
         ids.add(m["book_id"])
         twin_of = b.get("twin_of")
-        if "twin_of" in b and (m.get("gap_exclusion") != "hold" or not isinstance(twin_of, str) or twin_of == m["book_id"] or m.get("twin_of", twin_of) != twin_of):
-            raise Refusal("book %s: twin_of needs a manifest with gap_exclusion 'hold', another book's id, equal to the manifest's own twin_of" % m["book_id"])
+        lat_twin = "pricing_lat_entry_s" in m  # a latency twin (O.load_manifest already checked: twin_of present, gap_exclusion on, a declared value)
+        if "twin_of" in b and ((m.get("gap_exclusion") != "hold" and not lat_twin) or not isinstance(twin_of, str) or twin_of == m["book_id"] or m.get("twin_of", twin_of) != twin_of):
+            raise Refusal("book %s: twin_of needs a manifest with gap_exclusion 'hold' or pricing_lat_entry_s, another book's id, equal to the manifest's own twin_of" % m["book_id"])
+        if lat_twin and twin_of is None:
+            raise Refusal("book %s: a latency twin (pricing_lat_entry_s) needs twin_of in its BOOKS.json entry" % m["book_id"])
         books.append({"m": m, "role": b["role"], "start_ms": start_ms, "start_utc": b["start_instant_utc"], "sha": O.manifest_sha256(m), "twin_of": twin_of})
+    by_id = {b["m"]["book_id"]: b for b in books}
     for b in books:
         if b["twin_of"] is not None and b["twin_of"] not in ids:
             raise Refusal("book %s: twin_of %s is not a book in this file" % (b["m"]["book_id"], b["twin_of"]))
+        if "pricing_lat_entry_s" in b["m"]:  # key by key against the strict book (QP ruling section 2): any other difference is not a pricing-only twin
+            bad = O.twin_manifest_diff(b["m"], by_id[b["twin_of"]]["m"])
+            if bad:
+                raise Refusal("book %s: latency twin differs from its strict book %s in %s: not a pricing-only twin" % (b["m"]["book_id"], b["twin_of"], bad))
     if sum(1 for b in books if b["role"] == "control") > 1:
         raise Refusal("at most one control book")
     return books, spec.get("live")
@@ -305,10 +317,15 @@ def book_trades(pnl, stake, tape_end):
     return trades, opens, unpriced
 
 
-EXCL_KEYS = {"feed_gap_entry": "gap_at_entry", "feed_gap_exit": "gap_at_exit", "missing_v": "missing_v"}
+EXCL_KEYS = {"feed_gap_entry": "gap_at_entry", "feed_gap_exit": "gap_at_exit", "missing_v": "missing_v", "exit_before_entry_landing": "exit_before_entry_landing"}
 
 
-def excluded_counts(pnl, stake, tape_end):
+def lat_of(b):
+    """a latency twin's declared pricing_lat_entry_s (seconds), else None"""
+    return b["m"].get("pricing_lat_entry_s")
+
+
+def excluded_counts(pnl, stake, tape_end, lat=False):
     """engine-excluded entries of one stake by reason: gap_at_entry, gap_at_exit, missing_v, feed_gap (a strict book's undivided gap exclusion), other; plus, from the twin's own trade rows,
     exit_invalid_across_gap (flagged trades whose exit leg is exit_invalid, priced as a strand) and malformed_twin_rows (flag fields that did not validate)"""
     sk, c = str(float(stake)), collections.Counter()
@@ -319,7 +336,10 @@ def excluded_counts(pnl, stake, tape_end):
     for p in pnl.get("positions", []):
         if p["t0"] < tape_end and p["status"].get(sk) == "engine_excluded":
             c[EXCL_KEYS.get(str((p.get("reason") or {}).get(sk)), "feed_gap" if (p.get("reason") or {}).get(sk) == "feed_gap" else "other")] += 1
-    return {k: c.get(k, 0) for k in ("gap_at_entry", "gap_at_exit", "missing_v", "feed_gap", "other", "exit_invalid_across_gap", "malformed_twin_rows")}
+    out = {k: c.get(k, 0) for k in ("gap_at_entry", "gap_at_exit", "missing_v", "feed_gap", "other", "exit_invalid_across_gap", "malformed_twin_rows")}
+    if lat:  # latency twins only (QP ruling section 1 (a), section 5): an exit decided before the twin's entry landed, counted and shown, never priced
+        out["exit_before_entry_landing"] = c.get("exit_before_entry_landing", 0)
+    return out
 
 
 def sum_sol(lams):
@@ -361,7 +381,7 @@ def stake_rows(b, pnl, to_ms):
         fwd = [t for t in trades if t["entry_ms"] >= start_ms]
         n_open = len(opens)
         partial_days = sorted({t["close_day"] for t in trades if t["close_day"] > last})
-        out[stake] = {"excluded_counts": excluded_counts(pnl, stake, to_ms), "trades": trades, "opens": opens, "unpriced": unpriced, "last": last, "all_days": all_days, "fdays": fdays, "fwd": fwd, "partial_days": partial_days, "start_ms": start_ms,
+        out[stake] = {"excluded_counts": excluded_counts(pnl, stake, to_ms, lat_of(b) is not None), "trades": trades, "opens": opens, "unpriced": unpriced, "last": last, "all_days": all_days, "fdays": fdays, "fwd": fwd, "partial_days": partial_days, "start_ms": start_ms,
                       "windows": {"day_in_progress": dict(window(trades, partial_days, start_ms, n_open), partial_day=True, label="partial day", days_list=partial_days),
                                   "today": dict(window(trades, all_days[-1:], start_ms, n_open), day=all_days[-1] if all_days else None),
                                   "d7": window(trades, all_days[-7:], start_ms, n_open), "forward_all": window(fwd, fdays, start_ms, n_open), "incl_backfill": window(trades, all_days, start_ms, n_open)}}
@@ -443,11 +463,15 @@ def read_decisions_md5(b):
         return None
 
 
-def book_row(b, info, srs, control, n_watched, control_twin=None):
+def book_row(b, info, srs, control, n_watched, control_twin=None, control_lat=None):
     """control: the strict control (a strict book compares only with it); control_twin: the control's incl.-gap-in-hold twin (a twin compares only with it, never with a strict book; none = n/a);
-    the control's own twin has no comparison (role text 'control (incl. gap-in-hold twin)')"""
+    the control's own twin has no comparison (role text 'control (incl. gap-in-hold twin)'). control_lat: {pricing_lat_entry_s: (book, rows)} of the control's latency twins: a latency twin compares only with
+    the control's latency twin of the SAME value (QP ruling 2026-11-14 osb latency twin, section 2); none = n/a; the control's own latency twin has no comparison"""
     m, end = b["m"], info["end"]
-    if b.get("twin_of") is not None:
+    if lat_of(b) is not None:
+        ct = (control_lat or {}).get(lat_of(b))
+        control = None if (ct is None or b is ct[0]) else ct
+    elif b.get("twin_of") is not None:
         control = None if (control_twin is None or b is control_twin[0]) else control_twin
     status = info["status"]
     cf = Path(m["out_root"]) / "code.sha256"
@@ -480,6 +504,8 @@ def book_row(b, info, srs, control, n_watched, control_twin=None):
                             **({"malformed_twin_rows": sr["excluded_counts"]["malformed_twin_rows"]} if sr["excluded_counts"]["malformed_twin_rows"] and not b.get("pair") else {})})
     if b.get("pair"):
         row["pair"] = b["pair"]
+    if lat_of(b) is not None:
+        row["pricing_lat_entry_s"] = lat_of(b)
     return row
 
 
@@ -536,6 +562,8 @@ PAIR_DIFFER = "twin decisions differ: not a pricing-only twin"
 PAIR_PENDING = "twin identity not yet checked (decisions.md5 missing): shown as a separate book"
 LABEL_STRICT = "strict: trades with any feed gap in the 24 h hold left out (%d left out, all days); in Nov 2-12 the left-out trades were net negative (DEC-035 Am.6 Erratum 3), so strict can overstate"
 LABEL_HOLD = "incl. gap-in-hold: priced through feed gaps inside the hold; take-profit blind during a gap, as live is when its feed has the same gap"
+LABEL_LAT = "latency twin: entry lands %s s after the decision (chain time; live median 4.085 s on 12 buys, job #2702); exits and decisions as the strict book; take-profit mark unchanged, as live"  # QP ruling 2026-11-14 osb latency twin, section 5, verbatim
+LINE_EXIT_BEFORE = "exit before entry landed (%s): %d (not counted as a trade)"
 LABEL_NEITHER = "neither set is decision-grade (recon NOT COMPARABLE); no stake step rests on either (Am.6)"
 
 
@@ -551,8 +579,11 @@ def pair_books(books):
         st = by_id[t["twin_of"]]
         a, c = read_decisions_md5(st), read_decisions_md5(t)
         status = "pending" if a is None or c is None else "pair" if a == c else "differ"
-        out.append({"twin": t["m"]["book_id"], "strict": st["m"]["book_id"], "status": status,
-                    "line": {"pair": None, "differ": PAIR_DIFFER, "pending": PAIR_PENDING}[status]})
+        ent = {"twin": t["m"]["book_id"], "strict": st["m"]["book_id"], "status": status,
+               "line": {"pair": None, "differ": PAIR_DIFFER, "pending": PAIR_PENDING}[status]}
+        if lat_of(t) is not None:
+            ent.update(kind="latency", pricing_lat_entry_s=lat_of(t), label=LABEL_LAT % ("%.3f" % lat_of(t)))
+        out.append(ent)
         if status == "pair":
             t["pair"], st["pair"] = "twin", "strict"
     return out
@@ -572,15 +603,20 @@ def build(books, live, now_ms, roots=None):
         infos.append((b, info, srs))
     control = next(((b, srs) for b, _, srs in infos if b["role"] == "control" and srs is not None), None)
     pairs = pair_books(books)
-    control_twin = None
+    control_twin, control_lat = None, {}
     if control is not None:
-        control_twin = next(((b, srs) for b, _, srs in infos if b.get("twin_of") == control[0]["m"]["book_id"] and b.get("pair") == "twin" and srs is not None), None)
+        control_twin = next(((b, srs) for b, _, srs in infos if b.get("twin_of") == control[0]["m"]["book_id"] and b.get("pair") == "twin" and srs is not None and lat_of(b) is None), None)
+        for b, _, srs in infos:  # the control's latency twins, by declared value
+            if lat_of(b) is not None and b.get("twin_of") == control[0]["m"]["book_id"] and b.get("pair") == "twin" and srs is not None:
+                control_lat[lat_of(b)] = (b, srs)
     out_books = []
     for i, (b, info, srs) in enumerate(infos):
         try:
-            row = book_row(b, info, srs, control, n_watched, control_twin)
+            row = book_row(b, info, srs, control, n_watched, control_twin, control_lat)
             if control_twin is not None and b is control_twin[0]:
                 row["role"] = "control (incl. gap-in-hold twin)"
+            if lat_of(b) is not None and control_lat.get(lat_of(b), (None,))[0] is b:
+                row["role"] = "control (latency twin %.3f s)" % lat_of(b)
             check_forbidden(row, "")
         except Refusal:
             row = withheld(i, b, "ForbiddenWord")
@@ -635,6 +671,19 @@ def pair_md(res):
         for rt in tw["rows"]:
             rs = next((r for r in sb["rows"] if r["stake_sol"] == rt["stake_sol"]), None)
             if rs is None:
+                continue
+            if pr.get("kind") == "latency":  # the twin first, the strict book beside it, never summed (QP ruling section 2, section 5)
+                ex_t, ex_s = rt["excluded_counts"], rs["excluded_counts"]
+                out += ["", "## Latency pair, stake %.2f: %s (latency twin) beside %s (strict)" % (rt["stake_sol"], pr["twin"], pr["strict"]), "",
+                        "- %s: %s" % (pr["twin"], pr["label"]),
+                        "- %s: strict book; the entry latency of the simulator version it started with." % pr["strict"],
+                        "- " + LINE_EXIT_BEFORE % (pr["twin"], ex_t["exit_before_entry_landing"]),
+                        "- excluded (%s): gap at entry %d, gap at exit %d, missing V %d, feed gap %d, other %d; (%s): feed gap %d, missing V %d, other %d." % (
+                            pr["twin"], ex_t["gap_at_entry"], ex_t["gap_at_exit"], ex_t["missing_v"], ex_t["feed_gap"], ex_t["other"], pr["strict"], ex_s["feed_gap"], ex_s["missing_v"], ex_s["other"]),
+                        "", "| window (flat / press (n closed)) | latency twin | strict |", "|---|---|---|"]
+                for k, name in (("today", "today"), ("d7", "7-day"), ("forward_all", "forward"), ("incl_backfill", "all"), ("day_in_progress", "day in progress (partial)")):
+                    out.append("| %s | %s | %s |" % (name, cell(rt["windows"][k]), cell(rs["windows"][k])))
+                out += ["", "- " + LABEL_NEITHER + "."]
                 continue
             ex_t, ex_s = rt["excluded_counts"], rs["excluded_counts"]
             flagged = [t for t in rt["trades"] if t.get("gap_in_hold")]
