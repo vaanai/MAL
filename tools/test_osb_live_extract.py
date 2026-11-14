@@ -128,7 +128,17 @@ def test_start_row_carries_prev_last_ms(world):
     rows, _ = load(out)
     st = [r for r in rows if r["kind"] == "start"]
     assert len(st) == 1 and set(st[0]) == {"kind", "t_ms", "start_kind", "prev_last_ms"}
-    assert st[0]["prev_last_ms"] is None  # the only start is the first host row in the window
+    assert st[0]["prev_last_ms"] == S_MS - 5  # the last row of ANY kind before it: here the pre-window entry row of the day file
+
+
+def test_prev_last_ms_counts_a_row_of_any_kind(world):
+    tmp, argv, out = world
+    day = tmp / "root" / "decisions" / "l1-floor-v2" / (DAY + ".jsonl")
+    day.write_text(jl(host_rows() + [{"kind": "heartbeat", "ms": S_MS + 5_000_000}, {"kind": "start", "ms": S_MS + 5_999_000, "x": {"ms": 1}}]))
+    X.main(argv)
+    rows, _ = load(out)
+    st = sorted((r for r in rows if r["kind"] == "start"), key=lambda r: r["t_ms"])
+    assert [r["prev_last_ms"] for r in st][-1] == S_MS + 5_000_000
 
 
 def test_prev_last_ms_is_last_host_row_before_start():

@@ -176,6 +176,28 @@ def iter_rows(path, stats, label, needles=None, kinds=None):
                 yield r
 
 
+MS_FIELD = re.compile(rb'"ms"\s*:\s*(\d+)')
+
+
+def any_row_ms(path, stats):
+    """the instant of every line of a host decision day file, of ANY kind (the first top-level-looking "ms" of the line; a line with none is counted in stats['any_row_no_ms']). Used only for
+    `prev_last_ms` on start rows: the last sign of life of the host before a start. Streamed; no line is parsed or kept."""
+    out = []
+    f = open_nofollow(path)
+    if f is None:
+        return out
+    with f:
+        for ln in f:
+            if not ln.strip():
+                continue
+            m = MS_FIELD.search(ln)
+            if m:
+                out.append(int(m.group(1)))
+            else:
+                stats["any_row_no_ms"] = stats.get("any_row_no_ms", 0) + 1
+    return out
+
+
 def days_between(from_ms, to_ms):
     d0 = datetime.fromtimestamp(from_ms / 1000, tz=timezone.utc).date()
     d1 = datetime.fromtimestamp(max(to_ms - 1, from_ms) / 1000, tz=timezone.utc).date()
@@ -190,7 +212,7 @@ def gather(decision_root, bridge_log, ledger_root, fills_log, since_ms, as_of_ms
     """-> (rows, stats, sizes). Pure reading, streamed line by line. A missing bridge log, fills log or ledger, or no decision day file at all, is a refusal: no extract with a silent hole."""
     stats = {"torn_tail": 0, "bad_lines": 0, "day_files_missing": 0, "day_files_read": 0}
     sizes = {}
-    host = []
+    host, any_ms = [], []
     kind_needles = [('"%s"' % k).encode() for k in HOST_KINDS]
     for sub in (os.path.join(decision_root, "decisions"), os.path.join(decision_root, "decisions", BOT_ID)):
         if os.path.islink(sub):
@@ -202,6 +224,7 @@ def gather(decision_root, bridge_log, ledger_root, fills_log, since_ms, as_of_ms
             continue
         stats["day_files_read"] += 1
         sizes["decision_day_" + day] = os.lstat(p).st_size
+        any_ms += any_row_ms(p, stats)
         host += [r for r in iter_rows(p, stats, "host", kind_needles, HOST_KINDS) if is_int(r.get("ms")) and since_ms <= r["ms"] < as_of_ms]
     if stats["day_files_read"] == 0:
         refuse("no decision day file was read")
@@ -220,11 +243,11 @@ def gather(decision_root, bridge_log, ledger_root, fills_log, since_ms, as_of_ms
             lrows += part
     stats["ledger_backlog_nonempty"] = backlog_nonempty
     fills = [r for r in iter_rows(fills_log, stats, "fills", [b'"buy"']) if r.get("kind") == "buy"]
-    return build_rows(host, bridge, lrows, fills, since_ms, stats), stats, sizes
+    return build_rows(host, bridge, lrows, fills, since_ms, stats, any_ms), stats, sizes
 
 
 
-def build_rows(host, bridge, lrows, fills, since_ms, stats=None):
+def build_rows(host, bridge, lrows, fills, since_ms, stats=None, any_ms=None):
     fold = FV.fold_trades(lrows, LANE_BOT)
     groups = {g["order_id"]: g for g in fold["closed"] + fold["open"] if g.get("order_id")}
     entries, exits = {}, {}
@@ -245,8 +268,9 @@ def build_rows(host, bridge, lrows, fills, since_ms, stats=None):
             out.append({"kind": "restart", "t_ms": r["ms"], "failed": k.endswith("_failed"), "down_from_ms": r.get("down_from_ms"), "down_to_ms": r.get("down_to_ms"),
                         "shadow_complete": r.get("shadow_complete") is True, "fallback": r.get("fallback") if isinstance(r.get("fallback"), (str, type(None))) else None})
         elif k in ("start", "lane_start"):
-            # prev_last_ms: the instant of the last host decision-log row (of the kinds read here) before this start, None when there is none in the window. A crash leaves no restart row; this is its down-from instant.
-            prev = [h["ms"] for h in host if h["ms"] < r["ms"]]
+            # prev_last_ms: the instant of the last host decision-log row of ANY kind before this start (any_ms, every line of the day files read; else the rows read here), None when there is none.
+            # A crash leaves no restart row; this is its down-from anchor (the last sign of life).
+            prev = [m for m in (any_ms if any_ms is not None else [h["ms"] for h in host]) if m < r["ms"]]
             out.append({"kind": "start", "t_ms": r["ms"], "start_kind": k, "prev_last_ms": max(prev) if prev else None})
     by_order = {}
     for r in bridge:
