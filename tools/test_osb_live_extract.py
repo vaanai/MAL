@@ -330,3 +330,78 @@ def test_remote_script_runs_and_fails_closed(tmp_path, monkeypatch):
     # setfacl missing: fail closed (no final file)
     r3 = subprocess.run(["/bin/sh", "-c", X.remote_script("h.jsonl", len(data), sha)], input=data, capture_output=True, env={"PATH": "/nonexistent"})
     assert r3.returncode != 0 and not (far / "h.jsonl").exists()
+
+
+# ------------------------------------------------------------------------------------------------------------------------------ follow-up to #1378
+def _host_with(tmp, mutate):
+    rows = host_rows()
+    mutate(rows)
+    (tmp / "root" / "decisions" / "l1-floor-v2" / (DAY + ".jsonl")).write_text(jl(rows))
+
+
+@pytest.mark.parametrize("field,meta_add", [("trig_slot", {"trigger_slot": 495}), ("trig_ms", {"trigger_ms": 5})])
+def test_two_alias_names_on_one_row_refuse_naming_the_field_only(world, capsys, field, meta_add):
+    tmp, argv, out = world
+    _host_with(tmp, lambda rows: rows[1]["meta"].update(meta_add))
+    with pytest.raises(SystemExit) as e:
+        X.main(argv)
+    assert e.value.code == 2
+    so = capsys.readouterr()
+    text = so.out + so.err
+    assert "field " + field in text
+    for needle in (POOL, MINT, SIG, "o1"):
+        assert needle not in text
+    assert not out.exists()
+
+
+def test_alias_names_split_over_rows_of_one_kind_refuse(world, capsys):
+    tmp, argv, out = world
+
+    def mut(rows):  # o1 uses signal_slot, o2 uses trigger_slot: one field, two names in one kind
+        del rows[2]["meta"]["signal_slot"]
+        rows[2]["meta"]["trigger_slot"] = 600
+    _host_with(tmp, mut)
+    with pytest.raises(SystemExit) as e:
+        X.main(argv)
+    assert e.value.code == 2 and "field trig_slot" in capsys.readouterr().err
+
+
+def test_fill_alias_conflict_refuses(world, capsys):
+    tmp, argv, out = world
+    rows = fills_rows()
+    rows[0]["tokens"] = 1
+    (tmp / "fills.jsonl").write_text(jl(rows))
+    with pytest.raises(SystemExit) as e:
+        X.main(argv)
+    err = capsys.readouterr().err
+    assert e.value.code == 2 and "field tokens_received" in err and MINT not in err and SIG not in err
+
+
+def test_single_alias_per_field_still_extracts(world):
+    tmp, argv, out = world
+
+    def mut(rows):  # every entry on the second name: fine
+        for r in rows:
+            if r["kind"] == "entry" and "signal_slot" in r.get("meta", {}):
+                r["meta"]["trigger_slot"] = r["meta"].pop("signal_slot")
+    _host_with(tmp, mut)
+    assert X.main(argv) == 0
+
+
+def test_structure_check_counts_order_id_shapes_never_the_ids(world, capsys):
+    tmp, argv, out = world
+    rows = host_rows()
+    rows.append({"kind": "exit", "ms": S_MS + 90_000, "order_id": "BAD-ID-WITH-A-VERY-LONG-TAIL-0123456789", "reason": "x"})
+    (tmp / "root" / "decisions" / "l1-floor-v2" / (DAY + ".jsonl")).write_text(jl(rows))
+    a = [x for x in ["structure-check", "--test-mode"] + argv[2:-2] if x not in ("--out-dir", str(out))]
+    assert X.main(a) == 0
+    txt = capsys.readouterr().out
+    assert "not matching 1" in txt and "BAD-ID" not in txt
+    for needle in (POOL, MINT, SIG):
+        assert needle not in txt
+
+
+def test_oid_rule_equals_the_recons():
+    sys.path.insert(0, str(ROOT / "scripts" / "research"))
+    import osb_recon as R
+    assert X.OID_OK.pattern == R.OID_OK.pattern
