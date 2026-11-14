@@ -6,7 +6,7 @@ THE RULE, quoted (DEC/DEC-031-forward-paper-arena.md line 1602, Amendment 27 ite
     "**d** = ceil(p90 of the follower's `block_lag_ms_p90` samples / (slot_s x 1000)), from at least 24 h of the 60 s sampler before the registration, with slot_s from the same
     window's (t, `last_done`) pairs; pinned once in the registration record with its date."
 THE FORMULA (QP ruling): slot_s = (t_last - t_first) / (slot_last - slot_first) over the first and last KEPT samples; d =
-    tools.arena_tip_adapter.feed_delay_slots(samples, 1 / slot_s, ingest_lag_ms=0.0)["d"]  with samples = [{"block_lag_ms_p90": s_block_lag_ms_p90}, ...]
+    tools.arena_tip_adapter.feed_delay_slots(samples, slot_s, ingest_lag_ms=0.0)["d"]  (sps is SECONDS per slot; the ruling's 1/slot_s was a units slip; see the PR body)  with samples = [{"block_lag_ms_p90": s_block_lag_ms_p90}, ...]
 (the adapter returns a dict; its key "d" is the whole-slot value). d has one implementation in the lab: the adapter's.
 
 KEPT SAMPLES. Only `t`, `s_block_lag_ms_p90`, `s_last_done_slot` of a line are read (the key names are the sampler's, tools/r4bt_sample_keys.py), with from <= t < to. A line in
@@ -122,7 +122,7 @@ def measure(files: Sequence[tuple[str, bytes]], from_text: str, to_text: str) ->
         raise G.Refused("s_last_done_slot did not advance between the first and last kept samples")
     slot_s = (kept[-1][0] - kept[0][0]) / dslot
     try:
-        res = ADAPTER.feed_delay_slots([{"block_lag_ms_p90": r[1]} for r in kept], 1.0 / slot_s, ingest_lag_ms=0.0)
+        res = ADAPTER.feed_delay_slots([{"block_lag_ms_p90": r[1]} for r in kept], slot_s, ingest_lag_ms=0.0)
     except ValueError as e:
         raise G.Refused(f"the adapter refused: {e}") from None
     me = Path(__file__).resolve()
