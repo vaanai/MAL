@@ -741,3 +741,25 @@ Each at 0.10, 0.25, 0.5 and 1.0 SOL, labelled as QP required on #1357: 0.10 "mod
 **Outside this amendment.** r4-b (DEC-031 Amendment 31, PR #1358).
 
 **Unchanged.** §2 (every limit, the STOP files, keys), §3–§7, the Amendment 6 gate and its count, Amendments 1–8, and the promotion gate. Nothing here says FLOOR or any variant makes money; no book has cleared the promotion gate.
+
+## Amendment 9, Erratum 1 (2026-11-14): pricing-only twin books (gap-in-hold trades)
+Written 2026-11-14 for manager23, at main 3c3d1920. Records only; changes no threshold, window, pin or clock. Sources: the QP ruling `/data/mal/hunt-1008/ops/QP-RULING-1114-board-gap-in-hold.md` (sha256 prefix f6459f42) and the QP verdict on PR #1380 (`/data/mal/hunt-1008/ops/reports/2026-11-14/pr1380-qp.md`, sha256 prefix 10bd5556).
+
+**Text (QP, verbatim).**
+> Erratum (2026-11-14, QP ruling board gap-in-hold, PR #1380): a pricing-only twin of an open simulation book (same rule, parameters, host, stakes and send; only `gap_exclusion` "hold" differs; manifest key `twin_of`) keeps its strict book's start instant if, at every board build, its decisions.md5 equals the strict book's (and it passed the first-run checks recorded in its notebook entry); while they differ it is shown as a separate book with "twin decisions differ: not a pricing-only twin". A twin's figures are compared only with the control book's twin, never with a strict book. Twin trades are open-simulation trades under §1: no gate read, §6 read or registration uses them.
+
+**Why.** The strict board drops any trade whose 24 h hold touches a feed gap (DEC-031 §1.4, kept unchanged for arena books and gate reads). The dropped November trades were net negative (Amendment 6 Erratum 3: 29 positions, −0.6951137523 SOL at 0.25 flat), so the strict set can overstate. The live bot holds such trades, and its take-profit watch is blind during a gap when its own feed has the same gap; the twin prices them that way, so it is closer to what live holds (the recon's `tp_in_sim_gap` class shows where the live feed saw prints the twin did not).
+
+**Mechanism.** A twin's manifest has `gap_exclusion: "hold"` and `twin_of` (the strict book's id). Tool PRs: #1380 (merge commit 3c3d1920ab7af3a8b0b7c2070627aec3e1884e62: driver, decisions md5, board pair view), #1379 (8f5c5426771a9724f3883335c4991851e3f20965: recon against the twin), #1378 (8c7061e767544c82884f1e05bee0e1de6ae8e809: recon). Twin rows add only `gap_in_hold`, `blind_s`, `gap_count`, `gap_holes` (times only) and, when greater than 0, `slot_only_gaps`. The board shows the two sets side by side, gap-in-hold trades first, and never sums them.
+
+**First-run conditions (QP on #1380).** Before any twin output reaches the board:
+1. C1: a new 48 h osb_proof PASS at the merge commit M of #1380 (SEALS (k) procedure).
+2. C2: on-path identity on real data. For each strict manifest that gets a twin, run an "on" copy at M (a new scratch book id and out_root, never the live book) over the 48 h proof window of job #2632. Every hour's ledger_md5 and decision_md5 must equal the strict book's stored md5-by-hour.jsonl values.
+3. C3: run each twin at M over the same window. Its decisions md5 (osb_follow.book_decisions_md5) must equal its strict book's at the same last hour, and its per-hour decision_md5 must be equal for every hour.
+4. C4: the md5 of the twin's trade rows without `gap_in_hold` equals the md5 of the strict book's trade rows for the same position_ids (canonical lines sorted by position_id and stake, `written_ms` removed).
+5. C5: per stake, strict `feed_gap` = twin `feed_gap_entry` + `feed_gap_exit` + twin trade rows flagged `gap_in_hold` (including slot-only and exit_invalid ones).
+6. C7: this erratum and the SEALS (k)/(m)/(o) additions are in place before the first twin output. The C2–C5 md5s and counts are recorded in the twins' MiScusi notebook entries.
+
+(C6, blockers 1–2 fixed at a new head with QP OK, was met at 9c1e930a.)
+
+**Limits.** The strict books stay at commit 457795f4. A strict book moves to a later commit only as a new book, or after a full-history md5 check (a restart at the new commit re-derives every stored hour and finds every stored decision_md5 and ledger_md5 equal) under a further erratum. Neither set is decision-grade while the reconciliation says NOT COMPARABLE. No stake, budget or live step rests on either (Amendment 6). Paper only. No book has cleared the promotion gate.
