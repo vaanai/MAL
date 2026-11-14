@@ -1,10 +1,10 @@
-"""Offline (no RPC). (1) pump: string-set diff of the 10-13 binary (sha ba1f91ac, kept by the 10-14 review) against the 10-19 binary.
+"""Offline (no RPC). (1) pump: string-set diff of the 10-19 binary (sha 0b692730..., kept by the 10-21 review) against the 2026-11-13 binary (c849155c...).
 (2) pump and pumpswap new binaries against the docs IDL (pump-public-docs 639b87f == main): instruction names ('Instruction: <Name>'),
 error messages. Strings = printable-ASCII runs >= 8 bytes. Rust string pieces are stored back to back, so a run is a concatenation;
 the diff is on runs split at the 'Instruction: ' marker and on the IDL names, and is a reading aid, not a proof of equal behaviour."""
 import hashlib, json, re
 from pathlib import Path
-OLD = Path("/data/mal/program-upgrade-1014/raw/pump_programdata_new.bin")
+OLD = Path("/data2/mal/scratch/a3-repin-1021/pd/pump.bin")  # 1021 review binary, sha256 0b692730... (the current pin)
 NEW = {"pump": Path("/data2/mal/scratch/a3-repin-1114/pd/pump.bin"), "pumpswap": Path("/data2/mal/scratch/a3-repin-1114/pd/pumpswap.bin")}
 IDL = {k: json.load(open(f"/data2/mal/scratch/a3-repin-1114/docs/{k}.main.json")) for k in ("pump", "pump_amm", "pump_fees")}
 OUT = Path(__file__).resolve().parent / "out"
@@ -25,6 +25,8 @@ def pieces(rs):
     return out
 po, pn = pieces(ro), pieces(rn)
 res["pump_instruction_pieces"] = {"n_only_old": len(po - pn), "n_only_new": len(pn - po)}
+res["pump_pieces_only_old"] = sorted(x[:400] for x in (po - pn))[:80]
+res["pump_pieces_only_new"] = sorted(x[:400] for x in (pn - po))[:80]
 # byte-level: how many 4 KiB pages differ (both 10,485,760 bytes)
 pg = 4096
 diff_pages = sum(1 for i in range(0, len(old), pg) if old[i:i+pg] != new[i:i+pg])
@@ -46,6 +48,7 @@ def idl_check(d, idl):
             "binary_instruction_tokens_not_idl_names": extra, "n_idl_errors": len(errs), "idl_errors_missing_in_binary": [e for e in errs if e.encode() not in d]}
 res["pump_vs_idl_new"] = idl_check(new, IDL["pump"])
 res["pump_old_vs_idl_new"] = idl_check(old, IDL["pump"])
+res["pumpswap_bin_equals_1021_bin"] = hashlib.sha256(NEW["pumpswap"].read_bytes()).hexdigest() == hashlib.sha256(Path("/data2/mal/scratch/a3-repin-1021/pd/pumpswap.bin").read_bytes()).hexdigest()
 res["pumpswap_vs_idl"] = idl_check(NEW["pumpswap"].read_bytes(), IDL["pump_amm"])
 import difflib
 nn = [r for r in rn if r not in ro]; oo = [r for r in ro if r not in rn]
