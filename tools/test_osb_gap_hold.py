@@ -13,6 +13,11 @@ from tools.test_floor_gap_range import mk  # noqa: E402
 import tools.arena_paper as AP  # noqa: E402
 
 
+@pytest.fixture(autouse=True)
+def _arena_test_env(monkeypatch):
+    monkeypatch.setenv("MAL_ARENA_TEST", "1")  # the engine's test-only registry clock / sha overrides are gated on it
+
+
 def gap(slot, silent_ms=800, prog="pumpswap", kind="silence"):
     return {"type": "gap", "kind": kind, "slot": slot, "t_recv_ms": tms(slot), "silent_ms": silent_ms, "data_loss": True, "prog": prog}
 
@@ -152,3 +157,50 @@ def test_exit_invalid_across_a_gap_stays_priced_and_is_counted(tmp_path, monkeyp
     drive(n)
     assert len(rws(h, "trade")) == 3 and rws(h, "excluded") == [] and h.counters.get("exit_invalid_across_gap") == 1
     assert len(rws(n, "trade")) == 3 and "exit_invalid_across_gap" not in n.counters  # no gap in the hold: not counted
+
+
+# ------------------------------------------------------------------------------------------------------------------------------ review follow-ups
+OLD_ENGINE_SHA256 = "4e20a017d8d4f6b6aa654d11f4dac44af9ae020c6219d19877fef2ae3e29d493"  # sha256 of scripts/research/floor_gap_range_engine.py at origin/main 8c7061e7
+
+
+def _old_engine():
+    import hashlib
+    import types
+    raw = (Path(__file__).resolve().parent / "fixtures_osb" / "floor_gap_range_engine_8c7061e7.py.txt").read_bytes()
+    assert hashlib.sha256(raw).hexdigest() == OLD_ENGINE_SHA256  # the frozen copy cannot drift silently
+    mod = types.ModuleType("floor_gap_range_engine_old")
+    exec(compile(raw.decode(), "floor_gap_range_engine_8c7061e7.py", "exec"), mod.__dict__)
+    return mod.GapRangeEngine
+
+
+@pytest.mark.parametrize("flag", [True, False])
+@pytest.mark.parametrize("gaps", [(), ((120, 800),), ((120, 800), (121, 1200)), ((98, 800),), ((150, 800),)])
+def test_on_off_priced_trades_equal_the_old_engine(tmp_path, monkeypatch, flag, gaps):
+    """priced and excluded rows with and without gaps: the new engine's 'on' / 'off' ledger projection equals the 8c7061e7 engine's"""
+    import sys as _sys
+    from tools.test_arena_paper import SC, register_bot
+    Old = _old_engine()
+    out = {}
+    for tag, cls in (("new", sys.modules["floor_gap_range_engine"].GapRangeEngine), ("old", Old)):
+        d = tmp_path / tag
+        d.mkdir()
+        reg = d / "bots.json"
+        register_bot("botA", "abc1234", 0, reg, now_ms=0)
+        eng = cls(d / "ledger", reg, SC(strand_rule="total"), sps_fn=lambda: 0.4, code_state_fn=lambda: ("abc1234", False), gap_exclusion=flag)
+        eng.now_fn = lambda e=eng: e.hw_ms or 0
+        drive(eng, gaps=[(sl, gap(sl, ms_)) for sl, ms_ in gaps])
+        out[tag] = [json.dumps({k: v for k, v in r.items() if k not in ("written_ms", "engine_id")}, sort_keys=True) for r in eng.ledger.read_bot("botA") if r["kind"] != "start"]
+    assert out["new"] and out["new"] == out["old"]
+
+
+def test_zero_length_and_slot_only_gaps_are_flagged_not_holes(tmp_path):
+    h = sub(tmp_path, "h", gap_exclusion="hold")
+    drive(h, rows=[r for r in _tape() if r["slot"] <= 121], sell=120)
+    pos = next(iter(h.positions.values()))
+    h.gaps = [Gap("pumpswap", 0, 1, pos.sd + 2, pos.sd + 3, "x")]  # slots inside the hold, time far away: a slot-only match
+    h._hold_note(pos, "tape", h._needed_slot(pos))
+    info = h._hold_info[pos.position_id]
+    assert info == {"matched": 1, "gap_count": 0, "slot_only_gaps": 1, "blind_s": 0.0, "gap_holes": []}
+    h.gaps = [Gap("pumpswap", pos.decision_ms + 5000, pos.decision_ms + 5000, 0, 1, "x")]  # zero-length in time
+    h._hold_note(pos, "tape", h._needed_slot(pos))
+    assert h._hold_info[pos.position_id]["gap_holes"] == [] and h._hold_info[pos.position_id]["blind_s"] == 0.0 and h._hold_info[pos.position_id]["matched"] == 1
