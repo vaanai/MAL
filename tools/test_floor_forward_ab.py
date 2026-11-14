@@ -169,6 +169,28 @@ def test_table_refuses_pnl_without_bound():
                 assert "--to-ms" in str(e)
 
 
+def test_table_and_board_refuse_a_latency_pricing_pnl_file():
+    """QP PR #1398 m1: header.pricing_lat_entry_s (floor_nov_paper --pricing-lat-entry-s; floor_nov_pnl copies variant.json into the header) is for the paired screen only"""
+    rows = both("a", "A", ms(10, 1), 1_000_000)
+    ok = pnl_json(rows, ms(20))
+    lat = pnl_json(rows, ms(20))
+    lat["header"] = dict(lat.get("header") or {}, pricing_lat_entry_s=4.085)
+    for base, vault in ((lat, ok), (ok, lat)):
+        with tempfile.TemporaryDirectory() as d:
+            try:
+                _table(d, base, vault)
+                raise AssertionError("table accepted a latency pnl file")
+            except SystemExit as e:
+                assert "latency" in str(e) and "paired screen only" in str(e)
+            for n, o in (("b", base), ("v", vault)):
+                json.dump(o, open(f"{d}/{n}.json", "w"))
+            try:
+                AB.board(types.SimpleNamespace(base=d + "/b.json", variant=d + "/v.json", out_json=d + "/o.json", out_md=d + "/o.md", end_hour="2026-11-19T23", forward_from="2026-11-12"))
+                raise AssertionError("board accepted a latency pnl file")
+            except SystemExit as e:
+                assert "paired screen only" in str(e)
+
+
 def test_like_for_like_subtotal_excludes_one_side_priced_pairs():
     def pos(pid, pool, t, net, status="closed"):
         return {"pid": pid, "pool": pool, "t0": t, "day": "2026-11-12", "status": {"0.1": status}, "net": {"0.1:flat": net}}

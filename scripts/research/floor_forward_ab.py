@@ -238,9 +238,16 @@ def landing_section(res_bins, forward_from):
     return md
 
 
+def refuse_latency_pnl(nm, x):
+    """a pnl file of a floor_nov_paper --pricing-lat-entry-s run (header.pricing_lat_entry_s) is for the paired latency screen only (QP PR #1398, m1)"""
+    if "pricing_lat_entry_s" in (x.get("header") or {}):
+        raise SystemExit("refusing: %s pnl file is a latency-pricing run (header.pricing_lat_entry_s): latency pnl files are for the paired screen only, never the forward A/B table or board" % nm)
+
+
 def table(a):
     b, v = json.load(open(a.base)), json.load(open(a.variant))
     for nm, x in (("base", b), ("variant", v)):
+        refuse_latency_pnl(nm, x)
         if not x.get("bound_applied") or x.get("to_ms") is None:
             raise SystemExit("refusing: %s pnl file was produced without --to-ms (no 24 h tape-end completeness bound); rerun floor_nov_pnl.py with --to-ms" % nm)
     hb, hv = b.get("header") or {}, v.get("header") or {}
@@ -458,6 +465,7 @@ def board(a, now=None):
     pn = {}
     for nm, path in (("base", a.base), ("variant", a.variant)):
         x = json.load(open(path))
+        refuse_latency_pnl(nm, x)
         if not x.get("bound_applied") or x.get("to_ms") is None:
             raise SystemExit("refusing: %s pnl file was produced without --to-ms" % nm)
         pn[nm] = x

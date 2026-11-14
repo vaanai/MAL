@@ -65,7 +65,7 @@ def main():
     ap.add_argument("--set", nargs="*", default=[], help="variant overrides on tools.arena_rule_l1 module constants, NAME=value (e.g. Q_STAR=0.75e9 AGE_LO=43200); the file is not edited")
     ap.add_argument("--gap-exclusion", choices=("on", "off"), default="on", help="research only. on (default) = engine behaviour, positions whose hold overlaps a data_loss gap are excluded (feed_gap). off = price them through the holes; rows carry gap_overlap/gap_holes either way")
     ap.add_argument("--ts-variant", action="store_true", help="research only: also price a 24 h time-stop shadow (ledger/<bot>-ts) for every gap-overlap position that exited by take-profit")
-    ap.add_argument("--pricing-lat-entry-s", type=float, choices=LAT_CHOICES, default=None, help="research only: price the deciding entry leg at this total decision-to-landing time in seconds (3.010, 4.085 or 5.590); decisions unchanged; absent = strict pricing")
+    ap.add_argument("--pricing-lat-entry-s", type=float, choices=LAT_CHOICES, default=None, help="research only: price the deciding entry leg at this total decision-to-landing time in seconds (3.010, 4.085 or 5.590); decisions unchanged; positions whose exit precedes the later landing are excluded as exit_before_entry_landing; absent = strict pricing")
     a = ap.parse_args()
     lat = a.pricing_lat_entry_s
     stakes = parse_stakes(a.stakes)
