@@ -41,7 +41,7 @@
    "atUtc": "2026-11-14T07:17:23Z",
    "approx": false,
    "title": "Open simulation books started (DEC-035 Am.9): six strict books, proof #2662 PASS",
-   "detail": "Books A #2670, D1 #2672, C #2673, E1 #2674, E2 #2675, D0 #2677 from 2026-11-14T07:17:23Z to 07:19:00Z; board #2701, recon #2700, extract #2696. First recon FAIL (a tool bug and one order unwound at the 11-13 host crash); the hourly recon still reads FAIL by the non-rule cap. Strict books land an entry 16 slots (~3.44 s) after the decision; live median 19 slots (~4.09 s). Twin books: gap-in-hold twin check #2731 PASS, A-gh scratch run #2730 (not on the board); latency twins and wider-rule twins in proof (#2723 to #2727). All closed trades in the books so far are in-sample. No book has cleared the promotion gate."
+   "detail": "Books A #2670, D1 #2672, C #2673, E1 #2674, E2 #2675, D0 #2677 from 2026-11-14T07:17:23Z to 07:19:00Z; board #2744, recon #2700, extract #2696. First recon FAIL (a tool bug and one order unwound at the 11-13 host crash); the hourly recon still reads FAIL by the non-rule cap. Strict books land an entry 16 slots (~3.44 s) after the decision; live median 19 slots (~4.09 s). Twin books: gap-in-hold twin check #2731 PASS, twin A-gh restarted as book job #2743 at 2026-11-14T15:35:15Z after a title-only manifest fix (the board refused the words priced / slots; board job now #2744); latency twins and wider-rule twins in proof (#2723 to #2727). All closed trades in the books so far are in-sample. No book has cleared the promotion gate."
   },
   {
    "id": "am10-rpc-rps-1114",
