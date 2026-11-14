@@ -354,3 +354,84 @@ This is the transitive closure of `tools.*` imports, including imports inside fu
 | `tools/pump_structure_monitor.py` | `1ca0a88cecf0853d94336ea046ba1a910b79f198` |
 | `tools/pumpswap_simulate.py` | `ec5f22a8048c100500bde49ca34622d88b6e6706` |
 | `tools/pumpswap_tx.py` | `2c9f6dda26ddbed50a6231b47a85c91723a19d50` |
+
+## Read at R (2026-11-14): FAIL (procedural, Erratum 1g)
+
+Added after R. Additions only; nothing above is rewritten. Source: the read tool's two outputs, copied byte for byte to `ARTIFACTS/reads/exp029/exp029-read.md` (sha256 `5c0d25c03c05d5ae3c58e71550abe063902fb9824b0af9894bc8a3ea62c5a1a2`) and `ARTIFACTS/reads/exp029/exp029-read.json` (sha256 `cba5c884be699f749a4b8b74ed211ae90bea912ff7a0945f445ac84f9b00a5a7`). Numbers below are copied from that report.
+
+**Header.**
+- S = 2026-11-09T06:00:00.000Z; event (0.10 SOL config install, Erratum 1g) = 2026-11-12T00:46:04.584Z; C = 2026-11-13T00:00:00.000Z; R = 2026-11-14T01:00:00.000Z.
+- Run instant 2026-11-14T01:00:18.350Z, exit 0. MiScusi job #2654 on mal-fast-0, from a clean job tree at commit c5e20b88fdef2064e99eadb632ea3447ec26f9e7 (`tools/exp029_read.py` blob f0b048eba7849e40176152e634424dc56a263090, PR #1375, QP OK and REVIEWER APPROVE at c7b26ffd).
+- One look: the tool wrote the marker `/home/claude/mal-data/ops/exp029-read/ONE-LOOK.done` and refuses to run again if it exists. Before R, two `--structure-check` jobs ran (#2647 exit 1 at import; #2648 exit 0; counts only) and a path job #2646; they are in the report's disclosures.
+- Ledger: torn last lines ignored 0; rows at or after R ignored 0; rows belonging to no trade {} (0 lamports); superseded trades 0.
+
+**Result: FAIL (procedural, Erratum 1g).** The result follows from the Erratum 1g process event whatever the numbers below show. It is not a market verdict. The four tests below are descriptive numbers on the trades in [S, C), and no test is called a pass.
+
+**No earlier FAIL end.** (a) No lane STOP file is recorded at any executor restart from the live start to the event (2026-11-09T02:30Z and 14:26Z: no latches, no STOP; 2026-11-12T00:46Z and 06:56Z: "STOP and HALT absent"). (b) Under the registered formula the condition held from 2026-11-09T06:06:52Z (Erratum 1e). A (b) end needs 24 h, so it could come no earlier than 2026-11-10T06:06:52Z. The Erratum 1e install at 2026-11-09T14:26:02Z switched the formula after 8 h 19 m 10 s, and at the install the corrected formula gives -192,751,048 > -300,000,000. So the registered (b) path did not fire before the install. After the install, the only gap of 24 h or more between floor-lane-1 sends in [S, C) is 2026-11-10T09:47:08.688Z to 2026-11-12T14:06:11.527Z. In that gap the lane held at most one 0.03 SOL position, realized cash was positive (+15,081,595 lamports after the 10th close, state-manager22 2026-11-11T10:13:58Z), and no other lane bot had a cash row. The corrected (b) sum stayed near -53,000,000 at most, far above -300,000,000. Before S, the floor-lane-1 `send_intent` rows are less than 24 h apart (Erratum 1a item 1). So C is set by the Erratum 1g event, as the tool assumes. This answers item 1 of the disclosures block's NOT FOUND list (whether the registered (b) path would have fired); no ledger replay was run or is needed.
+
+**Trades in [S, C): 6** (all six closed by an exit row; none open at R; none estimated).
+
+| order | send (UTC) | day | stake lamports | P&L lamports | P&L SOL | closing row |
+| --- | --- | --- | --- | --- | --- | --- |
+| 734eddfaa55e962f | 2026-11-09T06:06:48.537Z | 2026-11-09 | 30000000 | -899843 | -0.000899843 | exit |
+| 171373de379a0b56 | 2026-11-09T14:54:37.017Z | 2026-11-09 | 30000000 | -888109 | -0.000888109 | exit |
+| e61a21124e2ac5ca | 2026-11-09T15:10:47.547Z | 2026-11-09 | 30000000 | -860959 | -0.000860959 | exit |
+| d88da9b2d5dcd5df | 2026-11-09T15:18:39.726Z | 2026-11-09 | 30000000 | -1060605 | -0.001060605 | exit |
+| ad86477b68680fd3 | 2026-11-10T09:47:08.688Z | 2026-11-10 | 30000000 | -896775 | -0.000896775 | exit |
+| e3b7cc9de20e65bd | 2026-11-12T14:06:11.527Z | 2026-11-12 | 100000000 | -4085219 | -0.004085219 | exit |
+
+Total in [S, C): -8691510 lamports (-0.008691510 SOL).
+
+**Day totals by trade day.**
+- 2026-11-09: n 4, total -3709516 lamports (-0.003709516 SOL)
+- 2026-11-10: n 1, total -896775 lamports (-0.000896775 SOL)
+- 2026-11-12: n 1, total -4085219 lamports (-0.004085219 SOL)
+
+**The four section 4 tests (descriptive), as printed.**
+
+Pooled:
+1. n >= 100: n = 6 vs 100; holds: no
+2. at least 5 distinct days and strictly more than half with a day total > 0: 3 days, 0 positive; holds: no
+3. lower 90% bound of mean per trade (1000 draws, seed 1, 5th percentile): -2486050.333333 lamports (-0.002486050333 SOL) vs 0; holds: no
+4. total after removing the 3 largest trades: -6045667 lamports (-0.006045667 SOL) vs 0; holds: no
+
+all four hold: no (does not change the result above)
+
+Stake 0.03 SOL:
+1. n >= 100: n = 5 vs 100; holds: no
+2. at least 5 distinct days and strictly more than half with a day total > 0: 2 days, 0 positive; holds: no
+3. lower 90% bound of mean per trade (1000 draws, seed 1, 5th percentile): -986176.600000 lamports (-0.000986176600 SOL) vs 0; holds: no
+4. total after removing the 3 largest trades: -1960448 lamports (-0.001960448 SOL) vs 0; holds: no
+
+Stake 0.10 SOL:
+1. n >= 100: n = 1 vs 100; holds: no
+2. at least 5 distinct days and strictly more than half with a day total > 0: 1 days, 0 positive; holds: no
+3. lower 90% bound of mean per trade (1000 draws, seed 1, 5th percentile): -4085219.000000 lamports (-0.004085219000 SOL) vs 0; holds: no
+4. total after removing the 3 largest trades: not defined for n <= 3; holds: no
+
+**Sends outside [S, C), listed apart and in no test.**
+- Before S: count 5; days 2026-11-08, 2026-11-09; total 19687886 lamports (0.019687886 SOL). Instants: 2026-11-08T14:30:47.391Z, 2026-11-08T15:08:30.058Z, 2026-11-08T17:48:13.468Z, 2026-11-09T05:23:35.176Z, 2026-11-09T05:26:59.987Z. Disclosure only; not trades of this read.
+- In [C, R): 1 send (after the event; not a trade of this read).
+
+**Section 6 names and counts.**
+- Lane bots that sent in [S, R): floor-lane-1: send_intents 7, not_sent 0, trades in [S, C) 6, total -8691510 lamports, sends in [C, R) 1; result: FAIL (procedural, Erratum 1g).
+- Decision host start rows (frozen sha / host file sha256 / row instant): 2026-11-08T09:19:01.956Z, 2026-11-13T02:19:20.412Z and 2026-11-13T06:03:34.817Z all frozen_sha 5e12f8f597571d6d5191a7ba38125c67ad723b7d, host_sha256 d805085c7a8a32522707a34531b1226172b706820953783338b0985c865a8348; 2026-11-13T14:44:05.235Z frozen_sha 5e12f8f597571d6d5191a7ba38125c67ad723b7d, host_sha256 201f3d4a19343ff5d978d24c2c981ea3e9cdb26e75549ef7d7bdd42fdd2e0e0b. Start rows 4; host decision day files 2026-11-08.jsonl to 2026-11-13.jsonl.
+- Counts: not_sent_pre_S 1; not_sent_S_C 0; not_sent_C_R 0; zero_cash_trades_S_C 0; estimated_trades_S_C 0; estimated_rows_in_S_C_trades 0; open_at_R_trades_S_C 0; lane_full 0 (all three Erratum 1a item 4 groups 0). Bridge logs read 1; torn lines ignored 0.
+- Refusal labels by window: [live_start, erratum_1c_install) buy_port_refused `limit:max_open` 1; [erratum_1c_install, S) none; [S, erratum_1e_install) entry_refused `lane_budget_presend` 19; [erratum_1e_install, event) entry_refused `wallet_floor` 2; [event, C) none; [C, R) none. Latch rows: none.
+
+**Disclosures.** The report carries the manager's required process disclosures verbatim, under the headings: 1 Erratum 1e MAJOR 1 and MAJOR 2 and QP's ruling; 2 Erratum 1b window reset; 3 Erratum 1c install of PR #1297; 4 Erratum 1d `sell_stuck` halts and bridge latches; 5 Erratum 1e install of PR #1303; 6 Erratum 1f top-up; 7 Erratum 1g event restart, Am.5 install, Rule 5 disclosure; 8 11-13 events after C, inside [C, R); 9 pauses since live start; 10 the overlap seals line (HOLDOUT_LEDGER entry of 2026-11-08); Additions required by QP's re-review at c7b26ffd; and the NOT FOUND list.
+
+**Registered disclosure items (Errata 1b-1f), from the report and the record.**
+- Erratum 1b item 7: the window reset was not done and was moot, because C came before its earliest instant 2026-11-16T06:00:00Z. `canary_expired` refusals: 0 in every window. `first_send_ms` 1794148248897 is recorded at the 2026-11-13T17:40:26Z install (HELM-REPLY-1113-7), after the 06:03:33Z restart. The field is written only when null, so that restart did not reset it.
+- Erratum 1c items 4 and 6: `limit:max_open` 1 in [live start, Erratum 1c install). `limit:max_attempts` and `limit:max_days` are 0 in every window. The install instants, pins and blob check are in disclosure item 3.
+- Erratum 1d item 1: `limit:sell_stuck` 0 and `latched:*` 0 in every window. The bridge log has no `latch` row, so latch halt time is 0. The bridge log has 12 `sell_sent` and 12 `sell_landed` rows and no other sell row kind (structure check #2648). No sell failed, so no position could become stuck. By that inference the `limit:sell_stuck` halt time is 0; it is not checked against the probe fill log or the journal, which were not opened. Rule 2 applies only if C had not come by the deadline, so it does not apply.
+- Erratum 1e item 5 and "Selection under the old check": `lane_budget_presend` 19 in [S, install) and 0 in [install, R). The trades in [S, install), that is the one trade 734eddfaa55e962f, were filtered by the old check: entries were refused while the open positions were marked down. The instants of the 19 refusals are not recorded; counts were accepted on #1304.
+- Erratum 1f items 1-3: `wallet_floor` 2, both in [2026-11-09T14:26:02Z, 2026-11-12T00:46:04.584Z); `committed_loss_stop` 0. No Erratum 1f top-up is recorded as landed. The owner said yes about 2026-11-10T16:3xZ, and the transfer was not on chain at any manager22 hourly check through 2026-11-12T06:4xZ, which is after the event. So the `wallet_floor` count before and after any landing is 2 / 0, whatever its instant. The 2026-11-12 transfers (+510,214,392 and +1,530,774,925 lamports) are DEC-035 Amendment 5 capital, not Erratum 1f.
+- Other lane bots: none sent in [S, R). The ledger's 13 `send_intent` rows are all floor-lane-1's.
+- Host start rows: the four rows carry the host's decision-clock `ms`, not the unit start instants. Helm's 2026-11-13T01:15:20Z start, stopped at 01:15:37Z, wrote no start row.
+
+**Disclosed process gap.** Left unfilled on the record, and unable to change the result: the instants of the 19 `lane_budget_presend` refusals; the pause instants of the automatic refusals beyond the disclosures; and the notebook confirmation of each pause kind that section 3 asked for before any lane P&L was quoted.
+
+**What the read ends.** Section 5 says: "A FAIL ends `floor-lane-1` at 0.03 SOL. There is no retune and no re-read of the same set. A changed rule is a new book, with a new bot_id and a new registration." Erratum 1g Rule 3, verbatim: "**No second look (§3), unchanged.** Any later registration of `floor-lane-1`, or of `l1-floor-v2` under any lane bot_id, keeps S = 2026-11-09T06:00:00Z and includes every trade since S, at 0.03 and at 0.10 SOL. The clock never restarts."
+
+**Lane status.** floor-lane-1 keeps running live in the DEC-035 live-learning lane at 0.10 SOL per entry (DEC-035 Amendment 4), with lifetime budget 1.20 SOL and daily stop 0.20 SOL (Amendment 5), outside this registration. That is not a promotion. Amendment 6 (stake ceiling 0.25 SOL) is not installed; its 20-trade check is "a precondition of this install, a descriptive read for the manager, and not a gate read". Under section 5 and Erratum 1g Rule 3, any later gate registration of floor-lane-1, or of `l1-floor-v2` under any lane bot_id, keeps S = 2026-11-09T06:00:00Z and includes every trade since S at 0.03 and at 0.10 SOL, the six above included; it is not blind to them. floor-lane-1 has not cleared the promotion gate. Nothing here says floor-lane-1 makes money.

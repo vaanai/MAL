@@ -1,0 +1,349 @@
+{
+ "constants": {
+  "C": "2026-11-13T00:00:00.000Z",
+  "R": "2026-11-14T01:00:00.000Z",
+  "S": "2026-11-09T06:00:00.000Z",
+  "event": "2026-11-12T00:46:04.584Z"
+ },
+ "day_totals": {
+  "2026-11-09": {
+   "n": 4,
+   "total_lamports": -3709516
+  },
+  "2026-11-10": {
+   "n": 1,
+   "total_lamports": -896775
+  },
+  "2026-11-12": {
+   "n": 1,
+   "total_lamports": -4085219
+  }
+ },
+ "disclosures": "EXP-029 read: manager's disclosures (manager23; compiled 2026-11-13T23:56:39Z from documents only by a records agent, completed by the manager at 2026-11-13T23:57:26Z from job logs of the two structure-check runs, before the read ran; no trade P&L was computed or looked up to write this)\n\nScope note. This file lists process facts: instants, pins, blobs, sha256 values, counts of restarts and refusals, paths, and who decided what. Item 1 quotes two paragraphs of EXP-029 Erratum 1e and the QP ruling verbatim, because QP's binding condition requires it; those quotes contain lane cash figures that are copied from the merged erratum text and were not computed or looked up for this file. Every other section leaves outcome figures out. Source shorthand: HR-<id> = `/data/mal/hunt-1008/push-1016/hunt29/p1/HELM-REPLY-<id>.md`; S21 / S22 / S23 = `/data/mal/hunt-1008/ops/manager21|22|23/state-manager21|22|23.md` (cited by state-file line number); EXP = `EXP/EXP-029-floor-lane-1-gate-read-prereg.md`; QP-1375 = `/data/mal/hunt-1008/ops/reports/2026-11-13/pr1375-qp.md`.\n\nConstants of the read: S = 2026-11-09T06:00:00Z [EXP \u00a72]. Event (Erratum 1g) = 2026-11-12T00:46:04.584Z, so C = 2026-11-13T00:00:00Z and R = C + 25 h = 2026-11-14T01:00:00Z [EXP Erratum 1g Rule 1; QP-1375 \"What is right\"; docs/HANDOFF.md deadline table, row \"11-14 01:00 (R)\"]. Live start of the executor = 2026-11-08T14:19:43Z [EXP Erratum 1; QP-1375 B3].\n\n## 1. Erratum 1e: MAJOR 1 (a FAIL path removed after S) and MAJOR 2 (mark information), and QP's ruling\n\nFacts (instants and pins):\n- Erratum 1e was written 2026-11-09T13:48:09Z, after S. It merged as 5583a9b6 (PR #1304) after QP OK and REVIEWER APPROVE at head a7454bf4. PR #1303 (head 07ef13d4, blob 556d1562) merged afterwards as f68cf56f [S21 lines 115-117; EXP Erratum 1e heading and \"Rule\" item 1].\n- The first QP verdict on #1304 at head 49d546e8 was NOT OK (MAJOR 1 and MAJOR 2). The revised head a7454bf4 added the disclosures. The ruling below is QP VERDICT a7454bf4beac5bfc1642f249000cfe50a1dcaac1 OK, dated 2026-11-09T14:08:31Z [PR #1304 comments, read with `gh pr view 1304 -R vaanai/MAL --json comments`; S21 line 116]. No report file for this verdict is in `/data/mal/hunt-1008/ops/reports/INDEX.tsv`; the PR comment is the source.\n- The Erratum 1e fix was installed at 2026-11-09T14:26:01.071139Z (unit start), journal live-mode start 14:26:02Z (item 5). That is before the earliest registered (b) end named in the ruling, 2026-11-10T06:06:52Z.\n- Refusals `lane_budget_presend` under the old check: 16 host entries from 2026-11-09T10:46:27Z to 12:33:53Z (MiScusi #2344), and 3 more between 13:30Z and 14:26Z before the install [EXP Erratum 1e \"Found\"; S21 line 118].\n- Registered (b) condition held from 2026-11-09T06:06:52Z; the formula was switched at the install, after 8 h 19 m 10 s, which is under 24 h [EXP Erratum 1e MAJOR 1 disclosure; QP-1375 re-review at c7b26ffd, \"(b) budget exhaustion\"].\n\nErratum 1e text, verbatim [EXP lines 265, 263 (last sentences) and 267]:\n\n> **Disclosure (QP MAJOR 1): this erratum removes a FAIL path that is under way.** Under the registered (b) formula, the condition has held since the fifth position filled at 2026-11-09T06:06:52Z: cash \u2212139,591,048 \u2212 (150,000,000 + 30,000,000 + 6 \u00d7 3,860,000) = \u2212342,751,048 \u2264 \u2212300,000,000. No floor-lane-1 trade has been sent since the 06:06:50Z send. The old check keeps refusing while the marks stay that low, so (b) could end the read as FAIL no earlier than 2026-11-10T06:06:52Z, unless exits before then return enough cash to break the condition (the 24 h exits of the 11-08 positions fall from about 14:30Z on 11-09). Item 4 switches the formula at install, and that stops this FAIL path. The manager's case: (b) is titled \"budget exhaustion\", and the ledger is not exhausted (a full wipe of all 5 open positions plus a new entry ends near \u2212192,751,048 lamports), so the old formula's FAIL would score a counting error, not a budget event. QP rules on this disclosure.\n\n> **Disclosure (QP MAJOR 2):** the 16 refusals themselves carry mark information. Under the old check they can only happen if the sum over the 5 open floor-lane-1 positions of min(fresh mark, stake) was at most 42,751,048 lamports at each refusal instant (cash \u2212139,591,048 \u2212 (150,000,000 + 30,000,000 + 6 \u00d7 3,860,000) + value \u2264 \u2212300,000,000), that is, the 5 positions together marked at least about 71.5% below their 150,000,000 lamports of stake, or their marks stale. The manager knew this when choosing the fix. The fix itself follows from the code and DEC-035 \u00a72 item 1's own sentence.\n\n> **Selection under the old check (QP MINOR).** In [S, install) the old check made floor-lane-1's entries depend on its open positions' marks: entries were refused while those positions were marked down. The read reports the refused host entries of that interval by count, and states that the set of trades in [S, install) was filtered this way.\n\nQP's ruling on these disclosures, verbatim [PR #1304 comment, QP VERDICT a7454bf4beac5bfc1642f249000cfe50a1dcaac1 OK, 2026-11-09T14:08:31Z]:\n\n> **Ruling on MAJOR 1: the switch at install is ACCEPTED with the disclosure as written.** Reasons:\n> 1. (b)'s registered text gives its own premise: \"When this holds, the pre-send budget check refuses any new floor-lane-1 entry\". So (b) was meant to mirror the code's refusal and catch budget exhaustion without a STOP file. The registered formula did not do that. The new formula equals the corrected code's refusal condition term for term (cash, unfilled stakes of all bots, 30,000,000 = cfg stake, fee_reserve x (all open + 1)), which I verified on #1303 at 07ef13d4. The erratum restores the registered premise; it does not invent a new one.\n> 2. Under the old code the (b) path is self-fulfilling. The double-counting check blocks the sends whose absence (b) counts, while a full wipe of all positions ends near -192,751,048, inside the budget. A FAIL there would score the counting error, not a budget event.\n> 3. The fix is the one DEC-035 \u00a72 item 1's own sentence dictates. It is not a choice among options, so the mark information disclosed under MAJOR 2 could not steer which fix was chosen.\n> 4. Nothing else moves: FAIL end (a), the budget and its STOP, S, the trade definition, C, R, the four tests, and the deadline. Item 4 keeps the registered formula before install, and a window that spans the install must hold under each formula for its own part. If the install comes after 2026-11-10T06:06:52Z with the window unbroken, the FAIL stands.\n>\n> **MAJOR 2: resolved.** The inference (sum of min(mark, stake) <= 42,751,048, about 71.5% or more down, or stale) is stated with its arithmetic. The text also says the manager knew it when choosing the fix.\n>\n> **MINORs from the previous verdict: resolved.** [text omitted here; see the PR comment]\n>\n> **MINOR (non-blocking, binding on the read report):**\n> 1. The \u00a76 read report must quote the MAJOR 1 disclosure and this ruling next to the result, not only in the errata list. If (b)'s registered path would have fired before the install instant, it must say so plainly.\n> 2. My earlier ask for the instants of the [S, install) `lane_budget_presend` refusals was answered with counts only. Counts are acceptable. Instants are better if the host log keeps them.\n\nNOT FOUND in documents: whether the registered (b) path would have fired before the install instant on ledger data (the lane-ledger state at each instant between 2026-11-09T06:06:52Z and the install at 14:26:01.071Z; the documents give the formula switch after 8 h 19 m 10 s and no completed 24 h window, QP-1375 re-review says a ledger replay of (b) is \"not in the tool\"); manager to fill from the lane ledger.\nNOT FOUND in documents: instants of the [S, install) `lane_budget_presend` refusals (only the 10:46:27Z-12:33:53Z span, 16 entries, and \"3 more 13:30-14:26Z\" are recorded); manager to fill from the host decision log and bridge log.\n\n## 2. Erratum 1b: the 14-day window reset (moot) and first_send_ms\n\n- The registered reset (Helm stops the executor, sets `first_send_ms` to null, restarts) could be done no earlier than 2026-11-16T06:00:00Z. Its only exceptions are that C has already come or a \u00a73 FAIL end has already occurred [EXP Erratum 1b item 1]. C is 2026-11-13T00:00:00Z, three days before the earliest reset instant, so the reset is moot [QP-1375, \"What the manager's disclosures file must contain\" item 2].\n- The reset was not done. HELM-ASK-1108-1 was recorded \"HELD/unapproved\" on 2026-11-09, still stood on 2026-11-12, and docs/HANDOFF.md still lists the reset window as opening 2026-11-16T06:00Z [HR-1109-1b last paragraph; HR-1112-1 \"Reset\"; docs/HANDOFF.md deadline table, row \"11-16 06:13\"]. No document records a stop of the executor for the reset, a `first_send_ms` edit, or a before/after sha256 of `floor-state-live.json` for that purpose.\n- `first_send_ms` = 1794148248897 = 2026-11-08T14:30:48.897Z, recorded unchanged at the executor restarts of 2026-11-09T02:30:20Z [HR-1109-1b \"OWNER CLOCK UNCHANGED\"], 2026-11-09T14:26:00Z [HR-1109-3 \"State at the stop and after the start\"], 2026-11-12T00:46:03Z [HR-1111-1 same section], 2026-11-12T06:56:32Z [HR-1112-1 same section] and 2026-11-13T17:40:26Z [HR-1113-7 \"Verification\"]. The value itself: [HR-1107-2f line 18].\n- The 14-day entry cutoff is 2026-11-22T14:30:48.897Z, after R, so no `canary_expired` refusal is possible in [S, R) [EXP Erratum 1b \"Found\"; arithmetic from those dates].\n- First-send record: the first lane-ledger `send_intent` of floor-lane-1 is 2026-11-08T14:30:47.391Z [docs/HOLDOUT_LEDGER.md, entry of 2026-11-08, \"First live send\"].\n- NOT FOUND in documents: `first_send_ms` after the unattended executor restart at 2026-11-13T06:03:33Z (no document prints it for that restart; the value in HR-1113-7 at 17:40:26Z, after it, is 1794148248897); manager to fill from `floor-state-live.json` or the executor journal.\n- NOT FOUND in documents: the count of `canary_expired` refusals in [S, R); manager to fill from the bridge log (QP-1375 B3; the arithmetic above says none is possible).\n\n## 3. Erratum 1c: install of PR #1297 (hidden probe-port limits)\n\n- PRs: #1297 head 99afddd8f93fca6775d05b3f039471f256ebd85b merged as 54051438; #1298 (Erratum 1c, DEC-035 Am.2) merged as e8790f93; both merged 2026-11-09T01:41Z, before any install [EXP Erratum 1d item 5; S21 line 95].\n- Install by Helm, executor only: stop requested 2026-11-09T02:30:20.865Z, inactive confirmed 02:30:20.887Z, new start 02:30:21.410142Z, pause 0.523142 s [HR-1109-1b, \"Executor ONLY\" paragraph, PST instants 06:30:20.865 PM / 06:30:20.887 PM / 06:30:21.410142 PM on Nov 8; S21 line 98]. The instants QP cites, stop 02:30:20.887Z and start 02:30:21.410Z, are the inactive-confirmed and unit-start instants.\n- Pin 3710e1af8cf434faca570046de896a7702464709 -> e8790f9342df6c59a849f2ed0897b59ad5441015; PID 3634551 -> 3963696 [HR-1109-1b].\n- Blob check: `tools/floor_lane_executor.py` 6f353716e29f72c8f92699310d44f21ce23dd0dd verified (old blob 2b0b109a6d6232e4de0feb16339ce13ccd4cd22f); only that file of the 38-file Appendix A closure changed [HR-1109-1b].\n- Config: the live-e8790f93 config is a byte-for-byte copy, sha256 24bcdeb9937bcae41492012c1e63aedf18306c5c5ff4627d5f31d1009ddb5b74 for both [HR-1109-1b].\n- State at the stop: 3 matching real positions open, probe attempts 3, bridge attempts 4 (one prior refused order), pending 0, no latches, `first_send_ms` unchanged [HR-1109-1b].\n- Refusal before the install: the first `limit:max_open` refusal at 2026-11-09T01:16:26.005Z (`send_intent` + `writeoff` `not_sent` 7 ms later, not a trade) [EXP Erratum 1c \"Found\"]. Cumulative bridge `buy_port_refused` was 1 at the 02:30Z install [HR-1109-1b, last paragraph]. At 2026-11-10T16:32:32Z the cumulative counts were `entry_refused` 21 and `buy_port_refused limit:max_open` 1 [/data/mal/hunt-1008/ops/manager21/SINCE-HANDOFF-1110.md \"Top-up\", last bullet].\n- Evidence dir on fast-0: `/var/lib/mal-live/floor-lane/upgrade-e879-20261109T0230Z/` [HR-1109-1b, last paragraph].\n- NOT FOUND in documents: the counts by label of `limit:max_open`, `limit:max_attempts`, `limit:max_days` refusals in [live start, S) and [S, install) as the bridge log holds them (the documents give only the one refusal above and the 2026-11-10T16:32:32Z cumulative); manager to fill from `bridge-log-live.jsonl` through the read tool (QP-1375 B3).\n\n## 4. Erratum 1d: `limit:sell_stuck` halts and bridge latches\n\n- Every Helm stop/start record in the documents shows no latch: 2026-11-09T02:30Z, \"no latches/would_halt\", probe `stuck/abandoned/balance_pending` 0 [HR-1109-1b]; 2026-11-09T14:26Z \"latches empty\" [HR-1109-3 \"State at the stop and after the start\"]; 2026-11-12T00:46Z \"latches empty\" [HR-1111-1]; 2026-11-12T06:56Z \"latches empty\" [HR-1112-1]. The hourly line at 2026-11-09T03:31Z also reads \"latches {}\" [S21 line 102].\n- No document records a latch row, a probe `sell_stuck` alert, a latch removal, or a state edit of any latch or probe flag between the live start and R. No document records a halt time for `limit:sell_stuck` (stuck or abandoned) or for any latch.\n- NOT FOUND in documents: `limit:sell_stuck` halt times split into stuck and abandoned, from the probe's `sell_stuck` alert to the clearing; manager to fill from the probe fill log (`probe/fills.jsonl`) and the executor journal.\n- NOT FOUND in documents: latch halt times per latch name and any latch removal instants; manager to fill from the `latch` rows of `bridge-log-live.jsonl` and the journal ALERT lines.\n- NOT FOUND in documents: the total halt time (overlaps counted once) in [S, R) under Erratum 1d Rule 2; manager to fill from the two sources above.\n- NOT FOUND in documents: counts of `limit:sell_stuck` and `latched:<name>` refusals; manager to fill from the bridge log through the read tool (QP-1375 B3).\n\n## 5. Erratum 1e: install of PR #1303 (budget pre-send)\n\n- Install by Helm, executor only: stop requested 2026-11-09T14:26:00.322Z, inactive (MainPID 0) 14:26:00.348Z; start (unit ExecMainStartTimestamp) 14:26:01.071139Z; journal live-mode line 14:26:02Z `floor_lane_executor mode=live lane_bot=floor-lane-1 book=l1-floor-v2 stake=30000000`; ledger `start` row ts_ms 1794234362103; pause about 0.72 s [HR-1109-3 \"Instants (UTC)\"; S21 line 118]. The install instant under Erratum 1e item 3 (the journal's live-mode start at the new pin) is 2026-11-09T14:26:02Z [LAB_STATE.md: \"journal live-mode start 14:26:02Z = the Erratum 1e install instant\", as quoted in QP-1375 re-review B3].\n- Pin e8790f9342df6c59a849f2ed0897b59ad5441015 -> f68cf56fcce8b1127e7159d8069506f0988eb95d; PID 3963696 -> 101816 [HR-1109-3 \"Pins and blob\"].\n- Blob `tools/floor_lane_executor.py` 556d15623459d56c8db706e2a2a5b2b2257cd577 (`git rev-parse f68c...:tools/floor_lane_executor.py`); `git diff --stat e879 f68c -- tools/` touches only that file and its test file [HR-1109-3].\n- Config: byte-identical copy, sha256 24bcdeb9937bcae41492012c1e63aedf18306c5c5ff4627d5f31d1009ddb5b74 [HR-1109-3 \"Config\"].\n- At the stop: 5 open, 0 pending, probe attempts 6, no in-flight order or sell, latches empty, seq 33, `first_send_ms` 1794148248897; after the start all 5 open objects were unchanged [HR-1109-3 \"State at the stop and after the start\"].\n- Tests before the stop: 77 passed in `tools/test_floor_lane_executor.py` [HR-1109-3 \"Tests\"].\n- Evidence dir on fast-0: `/var/lib/mal-live/floor-lane/upgrade-f68c-20261109T142600Z/` [HR-1109-3, last line].\n- Refusal counts before the install: 16 `lane_budget_presend` refusals 10:46:27Z-12:33:53Z and 3 more 13:30Z-14:26Z [EXP Erratum 1e \"Found\"; S21 line 118].\n- NOT FOUND in documents: the count of `lane_budget_presend` refusals in [install, R); manager to fill from the host decision log / bridge log through the read tool (QP-1375 B3, Erratum 1e item 5).\n\n## 6. Erratum 1f: the bounded 250,000,000-lamport top-up\n\n- The top-up was proposed 2026-11-09T16:32Z (MiScusi question q_Ehou-Xil3LPdQw). The rule says that with no owner yes by 2026-11-11T16:32:39Z there is no top-up in this read [EXP Erratum 1f \"Rule\" item 2; S21 lines 124-125, deadline 2026-11-11T16:32:39.183Z].\n- The lane figures known when it was asked for are stated in EXP Erratum 1f, \"Outcome-blindness (QP R1)\" (merged as 7234b2c6, PR #1307). They are not repeated here.\n- 2026-11-10T16:3xZ: the owner said yes and that Helm did it; q_Ehou-Xil3LPdQw was closed. The transfer was not on chain at 2026-11-10T16:32Z [/data/mal/hunt-1008/ops/manager21/SINCE-HANDOFF-1110.md \"Top-up (EXP-029 Erratum 1f item 2)\"; S21 line 157]. Erratum 1g Rule 4 says it was \"still not on chain at 17:45Z\" on 2026-11-10 [EXP Erratum 1g Rule 4].\n- The manager22 hourly lines record \"top-up NOT on chain\" at each hour from 2026-11-10T17:06Z through 2026-11-12T06:4x [S22 lines 1, 14-82 (hourly lines)]. No document records an inbound transfer of exactly 250,000,000 lamports, and none records an Erratum 1f top-up instant. QP's re-review reads the record as consistent with no Erratum 1f top-up landing [QP-1375 re-review, B3].\n- The two transfers of 2026-11-12 are NOT the Erratum 1f top-up: 2026-11-12T06:36:23Z +510,214,392 lamports and 06:37:26Z +1,530,774,925 lamports (total +2,040,989,317), the owner's capital for the 0.10 step-up under DEC-035 Amendment 5 [S22 lines 79-80; LAB_STATE.md row \"Top-up before the install\"; DEC-035 Amendment 5 (b)].\n- Documented `wallet_floor` refusals: 2026-11-09T15:35:25Z and 16:38:43Z [S21 lines 124, 126]. At 2026-11-10T16:32:32Z the cumulative counts were `entry_refused` 21 (the reason field of those rows is not set) and `buy_port_refused limit:max_open` 1 [SINCE-HANDOFF-1110.md \"Top-up\"].\n- NOT FOUND in documents: whether any 250,000,000-lamport Erratum 1f top-up ever landed, and its block-time instant (no document records one; the documents above say it had not landed by 2026-11-12T06:4x); manager to fill from the lane wallet's public transaction history.\n- NOT FOUND in documents: the lane figures at the moment of landing (no landing is recorded), and the `wallet_floor` and `committed_loss_stop` refusal counts in [S, R) and before/after any top-up; manager to fill from the bridge log through the read tool (QP-1375 B3, Erratum 1f items 1-3).\n\n## 7. Erratum 1g: the event restart, the Am.5 install, and the Rule 5 disclosure\n\nEvent restart (executor only, the 0.10 SOL config) [HR-1111-1 \"Instants\", \"Pins and blobs\", \"Config diff\"]:\n- stop requested 2026-11-12T00:46:03.589Z; inactive (MainPID 0) 00:46:03.689Z; start requested 00:46:03.780Z; journal `Started` 00:46:03.812Z; the executor's live-start journal line, which is the EXP-029 Erratum 1g event instant, 2026-11-12T00:46:04.584Z `floor_lane_executor mode=live lane_bot=floor-lane-1 book=l1-floor-v2 stake=100000000`; pause about 0.12 s.\n- pin f68cf56fcce8b1127e7159d8069506f0988eb95d -> fc6ab6b2579655be792f8d12864ab209b8434d0d; PID 101816 -> 1750592. Blobs: `tools/floor_lane_executor.py` 2e21bce064a9eb08487d9ac4841554a76a4dba45, `tools/floor_arena_executor.py` 0052d1dba0e1362c88a205f78aee38f071583dd3, `tools/arena_live_bridge.py` 7ea4fb4c2144e6dd69bd58c3b5f7d2d64153f7ef, `tools/forge/dsl_lane_executor.py` 8cbc81a5e7b92790a3dc651fce234af39d4003f7.\n- new config `/etc/mal-floor-lane/live-fc6ab6b2579655be792f8d12864ab209b8434d0d.json` sha256 ef9223589144e7860ae9e5aed78ab074a68d515d7d607030404f8d2ecc639dce. Diff against the old config: `wallet_floor_count_held_once` true added; `stake_lamports` 30000000 -> 100000000; `max_open` 8 -> 16; `budget_lamports` 300000000 -> 600000000.\n- at the stop: 0 open, 0 pending, latches empty, seq 80, probe attempts 10, `first_send_ms` 1794148248897; host untouched (PID 3484327, NRestarts 0); tests 147 passed; approval by the owner in the Helm chat, 2026-11-11 4:41 PM PST (= 2026-11-12T00:41Z).\n- The event instant sets C = 2026-11-13T00:00:00Z and R = 2026-11-14T01:00:00Z, and the result is FAIL (procedural) [EXP Erratum 1g Rule 1].\n\nAm.5 install (inside [event, C)) [HR-1112-1; LAB_STATE.md Am.5 rows; DEC-035 Amendment 5]:\n- first, a no-op executor restart: stop 2026-11-12T06:55:29.544Z, start 06:55:29.977Z, PID 1928461. The drop-in `zz-pin-320c.conf` sorted before `zz-pin-fc6a.conf`, so it came back on the fc6a tree and config; it ran about 63 s with no trade and no state change.\n- the install: stop requested 2026-11-12T06:56:32.240Z, inactive 06:56:32.277Z, start requested 06:56:32.346Z, journal `Started` 06:56:32.380Z, live-start journal line 06:56:33.144649Z; pause about 0.07 s.\n- pin fc6ab6b2 -> 320cccc5f2ec81d40d18f8991f11b15d29b52f74 (PR #1317); PID 1928461 -> 1929135; blob `tools/floor_lane_executor.py` 6db87e4899f8913c58083b1d9fe8e3e7af899dee; drop-in `zzz-pin-320c.conf`.\n- new config `/etc/mal-floor-lane/live-320cccc5f2ec81d40d18f8991f11b15d29b52f74.json` sha256 aa6c355fb84b38d61fa58797a46e9fe377e006ea010b5007978b6b8a9c91dd4f. Diff: `budget_lamports` 600000000 -> 1200000000 (1.20 SOL) and `daily_loss_lamports` 100000000 -> 200000000 (0.20 SOL); stake 100000000 and `max_open` 16 unchanged.\n- at the stop: 0 open, `first_send_ms` unchanged, seq 80; tests 272 passed; approval by the owner in the Helm chat 2026-11-11 10:51 PM PST (= 2026-11-12T06:51Z).\n- The executor then ran as PID 1929135 until the unattended restart of 2026-11-13T06:03:33Z (item 8) [HR-1113-4; LAB_STATE.md].\n\nRule 5 outcome-blindness disclosure, verbatim from Erratum 1g [EXP lines 300 onward]; the bullet list of figures is replaced as the task requires:\n\n> 5. **Outcome-blindness disclosure.** When this was written, the manager had read:\n>    - the lane report lines;\n>    - the per-trade live returns of the 9 closed floor-lane-1 trades (fills-vs-model, MiScusi #2399/#2400; 4 of them since S);\n>    - in-sample exploration results (`/data/mal/hunt-1008/push-1110/floor-study/`).\n>\n>    In MiScusi (q_rciWQWvV_i20Rg) the manager recommended A+, which keeps the read; in chat the manager offered A, which keeps it, and B, which ends it. The owner chose B. (Sentence revised 2026-11-11T10:47:07Z by `date -u`, QP MINOR 3 on #1314 at c2ad6ab1; the earlier wording read as if B kept the read.)\n>    The owner question and the chat message carried these figures:\n>    [the figures listed in Erratum 1g Rule 5 are in the EXP text]\n>\n>    The FAIL end does not depend on the outcome. The choice was the owner's, made to scale profit, not on the read's outcome.\n\n## 8. 11-13 events after C, inside [C, R)\n\nAll of these are after C = 2026-11-13T00:00:00Z. Only item (e) concerns a position that is a trade of this read.\n\n(a) Host stop, 2026-11-13T00:33:06Z: `mal-floor-lane-host.service` died with `HostFatal: LedgerWriteFailed`, free space 24.0% below the DEC-031 section 3.8 floor of 25%, exit status 2, NRestarts 0, old PID 3484327 [S23 line 41; LAB_STATE.md row \"Host stop (not a restart by us)\"]. The executor (PID 1929135) kept running. The trigger was at 00:32:49Z.\n\n(b) The `paper_refused` round trip of order 73a31cf948fba66e: the live buy was sent at 2026-11-13T00:32:53Z and landed at 00:32:56Z, the paper append was refused, and the executor sold at once (sell landed 00:32:59Z) [S23 line 41]. It is after C, so it is outside [S, C) and is not a trade of this read. (The separate Amendment 6 count treats it as trade 1 of 20 by QP-RULING-1113-am6-count; that is a different registration [LAB_STATE.md row \"Am.6 count ruling\"].)\n\n(c) Helm starts of the host:\n- 2026-11-13T01:15:20Z: Helm ran `reset-failed` and started the host (PID 2472716), after the owner approved it in the Helm chat at 5:15 PM PT. At 01:15:37Z the disk watch stopped the host again, as the ask required (free space fell to 24.92%, then 24.55%); the unit was inactive with Result=success [HR-1113-1; S23 line 47]. The instant 01:15:37Z is a stop, not a start.\n- 2026-11-13T02:19:18Z: Helm removed `--since-hour 2026-10-29T11` from ExecStart (unit backup `/root/mal-floor-lane-host.service.bak-20261113T0220Z`) and started the host (PID 2504565) on the same tree e89f1536 and config sha256 60f7a60a2b6478ec8ef1efaed657ec6ecc4194297f41a765467fb10d95bd2a71; the owner approved at 6:19 PM PT [HR-1113-2; S23 line 60; LAB_STATE.md \"Helm start 2\"]. The checkpoint gaps then included `host_down` 2026-11-13T00:32:49Z to 02:24:18Z; `lane_start` had `down_ms` 6391392, `carried_gaps` 2, `blocked_pools` 1 [S23 line 60; LAB_STATE.md].\n\n(d) The unattended restart of the host and the executor, 2026-11-13T06:03:33Z (not by us, not by Helm): `apt-daily-upgrade` ran `unattended-upgrade` at 06:03:18Z and upgraded libc6 (2.39-0ubuntu8.12; libc-bin, libc6-dev, libc-dev-bin, libc-devtools, locales); systemd re-executed at 06:03:27Z; services restarted at 06:03:32-33Z. Host PID 2504565 -> 2625988 (`lane_start` `down_ms` 14796, `since_hour` null, `blocked_pools` 3, `carried_gaps` 3); executor PID 1929135 -> 2625989, same config `live-320cccc5....json`; no unit or config change; the bridge shows only `gap host_restart` at 06:03:35Z; no send and no exit in that restart [S23 line 83; LAB_STATE.md row \"Runner restart, unattended\"; docs/HANDOFF.md line 19]. Helm wrote `/etc/needrestart/conf.d/50-mal-live.conf` (`override_rc = 0`) by 06:18Z so that later upgrades do not restart the FLOOR units [HR-1113-4].\n\n(e) The lost host take-profit watch: the open pre-C position `e3b7cc9de20e65bd` (buy_sent 2026-11-12T14:06:13Z, buy_landed 14:06:15Z; the first 0.10 SOL trade; a trade in [S, C)) was open when the host died at 00:33:06Z. The host take-profit watch for it was lost with the host; the position then exited by the executor's own 24 h clock [S22 line 100; S23 lines 41, 117; docs/HANDOFF.md line 47]. It closed on the executor's 24 h clock on 2026-11-13: sell_sent 14:06:11Z, sell_landed 14:06:13Z, reason `time_24h` [S23 line 117; docs/HANDOFF.md lines 17, 47]. QP's Am.7 list-(ii) disclosures name: host down 00:33:06-02:19:18Z, the lost host take-profit, the 06:03:33Z restart, exit 14:06:11Z vs buy landed 2026-11-12T14:06:15Z [S23 line 117]. The 06:03:33Z executor restart did not move the exit clock, which is in the persisted order [S23 line 83, \"Owed\"; S23 line 117].\n\n(f) The stage-1 host install, Helm, host only, on the owner's word in the Helm chat 2026-11-13T10:56Z: stop 2026-11-13T14:44:02.156Z (SIGTERM, Result=success, no HostFatal/HostError/LogChainError/Traceback in the old run); start 14:44:03.517Z; host `down_ms` 31,210; new host PID 2913148 (old 2625988); commit aa05923fc7d2593c4d70c7c80b2f64dee371d700 (PR #1332 merge `aa05923f`); `tools/floor_lane_host.py` blob ba7050e1, sha256 201f3d4a19343ff5d978d24c2c981ea3e9cdb26e75549ef7d7bdd42fdd2e0e0b; new config `/etc/mal-floor-lane/host-aa05923f.json` sha256 5ec10c69fb90edbab6bbb317b53544d0fd5947e72dce448aa5e28ae312a31bb4 (the old `host.json` sha256 60f7a60a... plus `\"cheap_restart\": true`); tests 76 passed; no `--since-hour`; unit backup `/root/mal-floor-lane-host.bak-20261113T1443Z/`; executor PID 2625989 untouched. `lane_start` {`prev_end` unknown, `shadow_fallback` unknown_prev_end, `blocked_pools` 3, `carried_gaps` 4}; start row seq 130 at 14:44:05.235Z with binding `host_head` aa05923f and `host_sha256` 201f3d4a...; `lane_restart_shadow` row seq 131 at 14:47:30.110Z; the host refuses every pool until about 2026-11-14T14:47:40Z [HR-1113-6 \"Stop and start\", \"After the start\"; S23 line 121; docs/HANDOFF.md lines 99 and 49].\n\n(g) The Am.8 part B executor install, Helm, on the owner's word in the Helm chat 2026-11-13T17:36Z (\"okay\"): executor stop 2026-11-13T17:40:26.786Z, inactive 17:40:26.840Z, start 17:40:26.901Z; new executor PID 3018006 (old 2625989); ledger `start` event ts_ms 1794591627818 (17:40:27.818Z); 0 open at the stop; pin 9c52f4fcfdccfb0775736eec050f8023c5e9a381; blob `tools/floor_lane_executor.py` fd7e36c1ed1d9f0f6cfd69a07af93371c9cc278d (sha256 9c8fa0b3ba2a9709e6f1a9ca9b1e57e87c78ae2c76d933deab14dec2de707dc9); new config `/etc/mal-floor-lane/live-9c52f4fcfdccfb0775736eec050f8023c5e9a381.json` sha256 40241dc6a78e63ce35610dcadb837da09feb369ed3c795b503bd255d247e56db, which is the old `live-320cccc5...` config (sha256 aa6c355f...dd4f) plus one top-level key `\"a3_floor_flag_list\": true`; stake 100000000, budget 1200000000, daily 200000000, `max_open` 16 unchanged; tests 294 passed; `first_send_ms` 1794148248897 unchanged; drop-in `zzzz-pin-9c52.conf`; backup `/root/mal-floor-lane.bak-20261113T1740Z/`; host untouched (PID 2913148) [HR-1113-7; S23 line 133]. The new code reads A3 with the FLOOR flag list on from the 19:10Z run.\n\n(h) After the Am.8 part B install: the A3 record at 2026-11-13T19:10:05Z was clean; no `a3_pause` or `a3_resume` rows (the host was refusing every pool) [S23 line 152].\n\n(i) Bridge-log continuity across executor installs: every Helm install record shows the same `state_dir`, `bot_id` and paths and only the listed config keys changed, including the 17:40:26Z install [HR-1109-1b \"Config\" (\"Same state_dir, bot_id, LIVE_OK\"); HR-1111-1 \"Config diff\" (\"paths and LIVE_OK identical\"); HR-1112-1 \"Config diff\"; HR-1113-7 \"Config diff and sha256\" (\"lane block identical\")]. HR-1109-3 and the 06:03:33Z restart record \"same config\". This answers QP's \"Not checked\" point from the install records, not from the files.\n\nNOT FOUND in documents: any `send_intent` of floor-lane-1 with a `ts_ms` in [C, R) other than order 73a31cf948fba66e, and the sends and totals of any lane bot other than floor-lane-1 in [C, R) (QP-1375 re-review: \"if any lane bot other than floor-lane-1 sent in [C, R), the disclosures file gives its total\"). The documents say the H5 lane bots are stopped [EXP \u00a73 \"Other lane bots\"] and no DSL lane bot is registered or running [EXP Erratum 1d item 7; DEC-035 Amendment 3]; manager to fill from the lane ledger via the read tool.\n\n## 9. Pauses since live start (s3): A3 pauses, gap holds, host_down spans\n\nLive start 2026-11-08T14:19:43Z to R. Pauses do not end the read [EXP \u00a73 \"Pauses\"].\n\nA3 pauses:\n- A3 records: 50 in total, first 2026-10-21T21:13:51Z, last 2026-11-13T07:10:05Z (job #2603); clean 47; flagged only on the three BOOST flags at 2026-11-03T19:10:05Z, 2026-11-07T07:10:05Z and 2026-11-13T07:10:05Z; other-flag 0; unreadable 0 [S23 line 112]. Only the 2026-11-13T07:10:05Z record is after the live start; the two earlier ones precede 2026-11-08T14:19:43Z.\n- `a3_pause` rows in the lane logs: 0 (job #2604 scanned every jsonl under the lane dir, as of 2026-11-13T12:55Z). The executor reads A3 only inside an entry check, and on 2026-11-13 the host refused every pool, so no entry check ran against the 07:10:05Z halt [S23 line 112; docs/HANDOFF.md line 205].\n- The 07:10:05Z halt: Helm's FYI is HELM-REPLY-1113-5 (08:21Z); the answer is HELM-ASK-1113-5, \"no action\"; no STOP file and no LIVE_OK change [LAB_STATE.md row \"A3 halt, record 2026-11-13T07:10:05Z\"; S23 line 90]. The 19:10:05Z record was clean, with no `a3_pause`/`a3_resume` rows [S23 line 152].\n\nGap holds (host `tip_gap_*` spans; each refuses every pool whose 6 h lookback overlaps, and blocks the refused pool 24 h):\n- 2026-11-10: 15 follower `backlog_jump` gaps of about 150 slots each: 09:56:04.317Z-09:56:35.875Z (G1), 12:04:54-12:05:26, 12:07:53-12:08:24, 12:09:16-12:09:49, 13:31:16-13:31:49, 13:35:03-13:35:36, 13:55:56-13:56:28, 14:20:47-14:21:20 (G2-G8), and 7 more between 18:18Z and 18:43Z [/data/mal/hunt-1008/ops/reports/2026-11-10/floor-gap-refusals.md \"All gap spans\"; S22 line 23]. The guard was closed from 09:56Z to about 20:21Z. The follower fix (`--backlog-slots 750`) restarted the follower at 2026-11-10T22:51:16.984Z [S22 lines 23, 41; LAB_STATE.md row 139].\n- 2026-11-11T16:48:08Z-16:48:20Z `tip_gap_status_unhealthy` (the follower exited with status 1 at 16:47:48Z, `http.client.IncompleteRead`; systemd restart 16:48:18Z); host gaps 7 -> 8 [S22 line 50].\n- 2026-11-12T16:04:39Z-16:04:40Z `tip_gap_status_unhealthy` (763 ms, missed_slots 0, follower `status.json` stale more than 30 s); entry blackout until about 22:04Z [S22 lines 103-104; S23 line 2].\n- Gap refusal counts (counts only): `gap_refusals` 10 on 2026-11-11 [S22 line 38], 11 at 2026-11-12T16:3x [S22 line 103], 12 [S22 line 104], 13 inside the blackout ending about 22:04Z [S22 line 115]; then 43 by 2026-11-13T04:31Z and 53 by 07:31Z [S23 lines 76, 90].\n- Tip follower redeploys: 2026-11-11T17:53:56.491Z and 2026-11-12T17:58:35.244Z [LAB_STATE.md follower restart rows]. The follower was also restarted by the 2026-11-13T06:03Z upgrade (PID 2254354 -> 2625920) [S23 line 84].\n\nhost_down spans:\n- No host restart from the host start 2026-11-08T08:32:01Z to the death at 2026-11-13T00:33:06Z: host PID 3484327, NRestarts 0 [HR-1112-1; floor-gap-refusals.md \"Counts\"].\n- 2026-11-13T00:32:49Z to 02:24:18Z (host died 00:33:06Z; started again 02:19:18Z) [S23 lines 41, 60].\n- 2026-11-13T06:03:33Z host restart, `down_ms` 14796; the refuse window ran to about 2026-11-14T06:03Z [S23 line 83].\n- 2026-11-13T14:44:02.156Z-14:44:03.517Z stage-1 deploy restart, `down_ms` 31210; `lane_restart_shadow` down_from 14:43:34.000Z to 14:47:40.110Z; the refuse window runs to about 2026-11-14T14:47:40Z [HR-1113-6; S23 line 121].\n- The 06:03:33Z and 14:44:03Z host starts each opened a refuse-all window of about 24 h inside [C, R): the first to about 2026-11-14T06:03Z, the second to about 2026-11-14T14:47:40Z, which is after R = 2026-11-14T01:00Z [QP-1375 item 9; docs/HANDOFF.md line 49].\n\nWallet-wide STOP/HALT and lane STOP: the lane STOP (`/var/lib/mal-live/h5-lane/STOP`), `/var/lib/mal-live/STOP` and the wallet HALT were recorded absent at each Helm stop/start check: 2026-11-12T00:46Z [HR-1111-1], 2026-11-12T06:56Z [HR-1112-1], 2026-11-13T14:44Z [HR-1113-6 preconditions via S23 line 121] and 2026-11-13T17:40Z [HR-1113-7]; \"no latches/STOP\" for 2026-11-09T02:30Z and 14:26Z [HR-1109-1b, HR-1109-3 (\"Lane and wallet STOP/HALT absent\")]. No document records a STOP or HALT written between those checks.\n\nNOT FOUND in documents: pause instants for `lane_full` (three groups), the daily stop and `wallet_floor` refusals in [S, R) beyond the instants above (EXP \u00a73, Errata 1a item 4 and 1f); manager to fill from the bridge log and the lane ledger through the read tool (QP-1375 B2, B3).\nNOT FOUND in documents: the state-file and MiScusi-notebook record of each of those pause kinds with its instants (\"recorded ... before any lane P&L is quoted\", EXP \u00a73) other than the lines cited above; manager to confirm from the notebook.\n\n## 10. The overlap seals line (s6): HOLDOUT_LEDGER entry of 2026-11-08\n\n- Entry: `docs/HOLDOUT_LEDGER.md` lines 100-110, DEC-035 \u00a77, W = 2026-11-08T03:21Z by `date -u`, records only; owner decision 2026-11-08 ~00Z (MiScusi notebook n_j0z3_wYlJOMCaw); PR #1275 (also named in EXP \u00a71 and \u00a76).\n- Book: bot_id `floor-lane-1`, book `l1-floor-v2`, rule pins sha 5e12f8f597571d6d5191a7ba38125c67ad723b7d. Input: `/home/claude/mal-data/floor-tip/tape` on mal-fast-0 (earliest hour read 2026-10-29T11). Decision-equivalence proof: MiScusi job #2265 at 20e02a2c [HOLDOUT_LEDGER lines 100-103].\n- Reads overlapped, each to be reported \"not blind: live-lane observation declared 2026-11-08T14:30:47.391Z\": Forward walk 2 forward-1016 [2026-10-16T01, 2026-11-16T01) and EXP-027 r4-b; HV4 (cancelled 2026-11-08 by the owner decision); EXP-024 Look-2 (to its end state, first 2026-11-14T00:00Z; declared rather than claimed disjoint); FLOOR G1 (never started). No overlap: D2/D3/D4, C1-NF, the Meteora DBC holdout and DBC m10 forward window, the LaunchLab holdout [HOLDOUT_LEDGER line 104].\n- Size and limits at that entry: stake 0.03 SOL, lane-wide max_open 3 (8 under DEC-035 Amendment 1), lane total -0.30 SOL and daily -0.10 SOL, STOP file `/var/lib/mal-live/h5-lane/STOP` [HOLDOUT_LEDGER line 105]. These were later changed by the installs in items 5 and 7 and the DEC-035 amendments; the entry itself authorises none of them.\n- No overlapped read's rules, stops, scoring or counts change, and no lane trade is added to any of these reads' counts (DEC-035 \u00a77) [HOLDOUT_LEDGER line 106]. No lane trade counts toward a gate read without a DEC-035 \u00a76 registration; this read is that registration (EXP-029) and its result is a procedural FAIL (Erratum 1g).\n- The first live send of floor-lane-1 is at 2026-11-08T14:30:47.391Z (bridge `buy_sent` 14:30:48.894Z; MiScusi job #2289). It is before S and is not in the gate read [HOLDOUT_LEDGER line 109].\n\n## Additions required by QP's re-review at c7b26ffd (QP-1375, \"Conditions before the real run\")\n\n- Did an earlier FAIL end set C before 2026-11-13T00:00:00Z? The records show none. No STOP file is recorded in any restart record (2026-11-09T02:30Z and 14:26Z \"no latches\"; 2026-11-12T00:46Z and 06:56Z \"STOP and HALT absent\"), so no (a) `lane_budget_stop` is recorded; and (b) was cut by the Erratum 1e install after 8 h 19 m 10 s, which is under 24 h [HR-1109-1b, HR-1109-3, HR-1111-1, HR-1112-1; item 1 above; QP-1375 re-review \"Did an earlier FAIL end set C\"]. A replay of (b) on ledger data is not in the tool.\n- Erratum 1f top-up status: see item 6 (not recorded as landed; the 2026-11-12 transfers of +510,214,392 and +1,530,774,925 lamports are DEC-035 Am.5/6 capital, not Erratum 1f).\n- Structure-check runs before R (counts and names only; no P&L; nothing written; QP ruling on PR #1375 at c7b26ffd: not a forbidden look):\n  - MiScusi job #2647, 2026-11-13T23:55:53Z, clean job tree at c5e20b88, `sudo -n /usr/bin/python3 -m tools.exp029_read --structure-check ...`: exit 1, `ModuleNotFoundError: No module named 'numpy'` at import, before any input file was opened.\n  - MiScusi job #2648, 2026-11-13T23:56:08Z, clean job tree at c5e20b88, `sudo -n /home/claude/mal-venvs/r4b/bin/python -B -s -m tools.exp029_read --structure-check --lane-ledger-root /var/lib/mal-live/h5-lane --host-decisions-root /var/lib/mal-live/floor-lane/decisions-root --bridge-log /var/lib/mal-live/floor-lane/state/bridge-log-live.jsonl`: exit 0. It printed: ledger 1 file, 54 rows, by ev {exit 12, fill 12, send_intent 13, snap 7, start 9, writeoff 1}, 2 distinct bot_ids, 0 dry rows, 0 duplicate row ids, 0 parse errors; host decisions 6 day files (2026-11-08 .. 2026-11-13), rows by kind {entry 37, entry_refused_gap 53, exit 36, lane_restart_shadow 1, order_refused 1, start 4}; bridge log 73 rows by kind {buy_landed 12, buy_port_refused 1, buy_sent 12, entry_refused 21, gap 3, sell_landed 12, sell_sent 12}; \"refusal: none; the real run would not refuse on structure\". The marker directory was empty after it.\n  - MiScusi job #2646, 2026-11-13T23:55:27Z: path discovery (path strings, file names and mtimes only): one live bridge log (`bridge-log-live.jsonl`, mtime 2026-11-13T14:44:05Z) and one dry bridge log (mtime 2026-11-08T13:19:59Z, not passed to the read); one lane ledger file shared with bot `h5-lane-2`.\n  - The manager saw these counts before R. They are row counts by kind over the whole ledger and logs since 2026-11-03 for two bots; they are not the four tests and no P&L was seen.\n- The real run: one MiScusi job on mal-fast-0 at or after R from a clean job tree at c5e20b88fdef2064e99eadb632ea3447ec26f9e7 (`tools/exp029_read.py` blob f0b048eba7849e40176152e634424dc56a263090), same interpreter and inputs as job #2648; its job id and run instant are in the report PR text (the tool prints its own run instant).\n- SEALS-BRIEF FLOOR LANE READERS line (n) for `tools/exp029_read.py` at c5e20b88 was added by the manager at 2026-11-13T23:55Z, before either mode ran.\n\n## NOT FOUND list (every such line above)\n\nManager's note on this list (written before the read ran): items 4, 5, 9, 10, the refusal counts of item 12, item 13 and the `lane_full` part of item 14 are counted by the read tool from the bridge log and the lane ledger and are printed in this same report (refusal tallies by label over the fixed windows; the lane bot_ids that sent in [S, R)). Item 16 is filled in the Additions section above. For item 7 the structure check (job #2648) shows the live bridge log has no `latch` row kind at all. Items 1, 2, 3, 6, 8, 11 and 15, and the halt-time part of items 7 and 14, were NOT filled before the read: they need the journal, the probe fill log, the state file or the wallet's chain history, none of which the manager opened for this file. They are owed in the read report PR if quant-proof requires them, and each is a process fact that cannot change the result, which is FAIL (procedural, Erratum 1g).\n\n1. Whether the registered (b) path would have fired before the install instant on ledger data (lane-ledger state between 2026-11-09T06:06:52Z and 14:26:01.071Z); from the lane ledger. [Item 1]\n2. Instants of the [S, install) `lane_budget_presend` refusals; from the host decision log and bridge log. [Item 1]\n3. `first_send_ms` after the 2026-11-13T06:03:33Z executor restart; from `floor-state-live.json` or the journal. [Item 2]\n4. Count of `canary_expired` refusals in [S, R); from the bridge log. [Item 2]\n5. Counts by label of `limit:max_open`, `limit:max_attempts`, `limit:max_days` refusals in [live start, S) and [S, install); from `bridge-log-live.jsonl`. [Item 3]\n6. `limit:sell_stuck` halt times, stuck vs abandoned; from the probe fill log and journal. [Item 4]\n7. Latch halt times per latch name and any latch removal instants; from the `latch` rows of the bridge log and journal ALERT lines. [Item 4]\n8. Total overlap-once halt time in [S, R) (Erratum 1d Rule 2); from items 6 and 7. [Item 4]\n9. Counts of `limit:sell_stuck` and `latched:<name>` refusals; from the bridge log. [Item 4]\n10. Count of `lane_budget_presend` refusals in [install, R); from the host decision log and bridge log. [Item 5]\n11. Whether any 250,000,000-lamport Erratum 1f top-up ever landed, and its block-time instant; from the lane wallet's public transaction history. [Item 6]\n12. Lane figures at the moment of landing, and `wallet_floor` / `committed_loss_stop` refusal counts before and after any top-up; from the bridge log. [Item 6]\n13. Any other floor-lane-1 `send_intent` in [C, R), and the sends and totals of any other lane bot in [C, R); from the lane ledger. [Item 8]\n14. Pause instants for `lane_full`, daily-stop and `wallet_floor` refusals in [S, R); from the bridge log and lane ledger. [Item 9]\n15. The state-file and notebook record of each pause kind with instants beyond the lines cited; manager to confirm from the notebook. [Item 9]\n16. Job id, run instant and exit code of any `--structure-check` run and of the real run; manager to fill at run time. [Additions]\n",
+ "header": "EXP-029 read at R = 2026-11-14T01:00:00Z: FAIL (procedural, Erratum 1g)",
+ "ledger": {
+  "rows_at_or_after_R_ignored": 0,
+  "superseded_trades": 0,
+  "torn_last_lines_ignored": 0,
+  "unattributed_lamports": 0,
+  "unattributed_rows_by_ev": {}
+ },
+ "names": {
+  "bridge": {
+   "bridge_logs_read": 1,
+   "lane_full_groups": {
+    "i_other_lane_bot_holds_slot": 0,
+    "ii_only_pre_S_floor_lane_1_holds_slot": 0,
+    "iii_only_in_read_floor_lane_1_positions": 0
+   },
+   "lane_full_groups_by_source": {
+    "buy_port_refused": {
+     "i_other_lane_bot_holds_slot": 0,
+     "ii_only_pre_S_floor_lane_1_holds_slot": 0,
+     "iii_only_in_read_floor_lane_1_positions": 0
+    },
+    "entry_refused": {
+     "i_other_lane_bot_holds_slot": 0,
+     "ii_only_pre_S_floor_lane_1_holds_slot": 0,
+     "iii_only_in_read_floor_lane_1_positions": 0
+    }
+   },
+   "lane_full_groups_note": "groups rest on the assumption that ledger rows are time-ordered by ts_ms (replay sorted by ts_ms, then file order)",
+   "lane_full_in_S_C": 0,
+   "lane_full_sources": {
+    "buy_port_refused_gate_lane_full": 0,
+    "entry_refused_lane_full": 0
+   },
+   "latch_rows": [],
+   "refusals_by_window": {
+    "[C, R)": {
+     "buy_port_refused": {},
+     "entry_refused": {}
+    },
+    "[S, erratum_1e_install)": {
+     "buy_port_refused": {},
+     "entry_refused": {
+      "lane_budget_presend": 19
+     }
+    },
+    "[erratum_1c_install, S)": {
+     "buy_port_refused": {},
+     "entry_refused": {}
+    },
+    "[erratum_1e_install, event)": {
+     "buy_port_refused": {},
+     "entry_refused": {
+      "wallet_floor": 2
+     }
+    },
+    "[event, C)": {
+     "buy_port_refused": {},
+     "entry_refused": {}
+    },
+    "[live_start, erratum_1c_install)": {
+     "buy_port_refused": {
+      "limit:max_open": 1
+     },
+     "entry_refused": {}
+    }
+   },
+   "torn_lines_ignored": 0,
+   "windows_edges": {
+    "C": "2026-11-13T00:00:00.000Z",
+    "R": "2026-11-14T01:00:00.000Z",
+    "S": "2026-11-09T06:00:00.000Z",
+    "erratum_1c_install": "2026-11-09T02:30:21.410Z",
+    "erratum_1e_install": "2026-11-09T14:26:02.000Z",
+    "erratum_1f_topup": "instant not in the EXP text: see disclosures",
+    "event": "2026-11-12T00:46:04.584Z",
+    "live_start": "2026-11-08T14:19:43.000Z"
+   }
+  },
+  "counts": {
+   "estimated_rows_in_S_C_trades": 0,
+   "estimated_trades_S_C": 0,
+   "lane_full": 0,
+   "not_sent_C_R": 0,
+   "not_sent_S_C": 0,
+   "not_sent_pre_S": 1,
+   "open_at_R_trades_S_C": 0,
+   "zero_cash_trades_S_C": 0
+  },
+  "host_info": {
+   "decision_day_files": [
+    "2026-11-08.jsonl",
+    "2026-11-09.jsonl",
+    "2026-11-10.jsonl",
+    "2026-11-11.jsonl",
+    "2026-11-12.jsonl",
+    "2026-11-13.jsonl"
+   ],
+   "start_rows": 4
+  },
+  "host_start_rows": [
+   {
+    "frozen_sha": "5e12f8f597571d6d5191a7ba38125c67ad723b7d",
+    "host_sha256": "d805085c7a8a32522707a34531b1226172b706820953783338b0985c865a8348",
+    "instant_utc": "2026-11-08T09:19:01.956Z"
+   },
+   {
+    "frozen_sha": "5e12f8f597571d6d5191a7ba38125c67ad723b7d",
+    "host_sha256": "d805085c7a8a32522707a34531b1226172b706820953783338b0985c865a8348",
+    "instant_utc": "2026-11-13T02:19:20.412Z"
+   },
+   {
+    "frozen_sha": "5e12f8f597571d6d5191a7ba38125c67ad723b7d",
+    "host_sha256": "d805085c7a8a32522707a34531b1226172b706820953783338b0985c865a8348",
+    "instant_utc": "2026-11-13T06:03:34.817Z"
+   },
+   {
+    "frozen_sha": "5e12f8f597571d6d5191a7ba38125c67ad723b7d",
+    "host_sha256": "201f3d4a19343ff5d978d24c2c981ea3e9cdb26e75549ef7d7bdd42fdd2e0e0b",
+    "instant_utc": "2026-11-13T14:44:05.235Z"
+   }
+  ],
+  "lane_bots": [
+   {
+    "bot_id": "floor-lane-1",
+    "not_sent_S_R": 0,
+    "result": "FAIL (procedural, Erratum 1g)",
+    "send_intents_S_R": 7,
+    "sends_C_R": 1,
+    "total_lamports_S_C": -8691510,
+    "trades_S_C": 6
+   }
+  ]
+ },
+ "post_event_sends_C_R": 1,
+ "pre_S": {
+  "count": 5,
+  "days": [
+   "2026-11-08",
+   "2026-11-09"
+  ],
+  "note": "disclosure only; not trades of this read, in no test",
+  "sends_utc": [
+   "2026-11-08T14:30:47.391Z",
+   "2026-11-08T15:08:30.058Z",
+   "2026-11-08T17:48:13.468Z",
+   "2026-11-09T05:23:35.176Z",
+   "2026-11-09T05:26:59.987Z"
+  ],
+  "total_lamports": 19687886,
+  "total_sol": "0.019687886"
+ },
+ "result": "FAIL (procedural, Erratum 1g)",
+ "run_now_utc": "2026-11-14T01:00:18.350Z",
+ "tests": {
+  "pooled": {
+   "all_four_hold": false,
+   "label": "descriptive",
+   "n": 6,
+   "t1_n": {
+    "holds": false,
+    "threshold": 100,
+    "value": 6
+   },
+   "t2_days": {
+    "day_totals_lamports": {
+     "2026-11-09": -3709516,
+     "2026-11-10": -896775,
+     "2026-11-12": -4085219
+    },
+    "days_threshold": 5,
+    "distinct_days": 3,
+    "holds": false,
+    "positive_days": 0,
+    "rule": "positive days strictly more than half"
+   },
+   "t3_bound": {
+    "draws": 1000,
+    "holds": false,
+    "lower_90_bound_mean_lamports": -2486050.3333333335,
+    "lower_90_bound_mean_sol": -0.0024860503333333337,
+    "seed": 1,
+    "threshold_lamports": 0
+   },
+   "t4_top3": {
+    "holds": false,
+    "threshold_lamports": 0,
+    "total_after_removing_top3_lamports": -6045667
+   }
+  },
+  "stake_0.03_sol": {
+   "all_four_hold": false,
+   "label": "descriptive",
+   "n": 5,
+   "t1_n": {
+    "holds": false,
+    "threshold": 100,
+    "value": 5
+   },
+   "t2_days": {
+    "day_totals_lamports": {
+     "2026-11-09": -3709516,
+     "2026-11-10": -896775
+    },
+    "days_threshold": 5,
+    "distinct_days": 2,
+    "holds": false,
+    "positive_days": 0,
+    "rule": "positive days strictly more than half"
+   },
+   "t3_bound": {
+    "draws": 1000,
+    "holds": false,
+    "lower_90_bound_mean_lamports": -986176.6,
+    "lower_90_bound_mean_sol": -0.0009861766,
+    "seed": 1,
+    "threshold_lamports": 0
+   },
+   "t4_top3": {
+    "holds": false,
+    "threshold_lamports": 0,
+    "total_after_removing_top3_lamports": -1960448
+   }
+  },
+  "stake_0.10_sol": {
+   "all_four_hold": false,
+   "label": "descriptive",
+   "n": 1,
+   "t1_n": {
+    "holds": false,
+    "threshold": 100,
+    "value": 1
+   },
+   "t2_days": {
+    "day_totals_lamports": {
+     "2026-11-12": -4085219
+    },
+    "days_threshold": 5,
+    "distinct_days": 1,
+    "holds": false,
+    "positive_days": 0,
+    "rule": "positive days strictly more than half"
+   },
+   "t3_bound": {
+    "draws": 1000,
+    "holds": false,
+    "lower_90_bound_mean_lamports": -4085219.0,
+    "lower_90_bound_mean_sol": -0.004085219,
+    "seed": 1,
+    "threshold_lamports": 0
+   },
+   "t4_top3": {
+    "holds": false,
+    "note": "not defined for n <= 3"
+   }
+  }
+ },
+ "tests_label": "descriptive",
+ "trades": [
+  {
+   "closing_row": "exit",
+   "estimated": false,
+   "open_at_R": false,
+   "order": "734eddfaa55e962f",
+   "pnl_lamports": -899843,
+   "pnl_sol": "-0.000899843",
+   "send_utc": "2026-11-09T06:06:48.537Z",
+   "stake_lamports": 30000000,
+   "trade_day": "2026-11-09"
+  },
+  {
+   "closing_row": "exit",
+   "estimated": false,
+   "open_at_R": false,
+   "order": "171373de379a0b56",
+   "pnl_lamports": -888109,
+   "pnl_sol": "-0.000888109",
+   "send_utc": "2026-11-09T14:54:37.017Z",
+   "stake_lamports": 30000000,
+   "trade_day": "2026-11-09"
+  },
+  {
+   "closing_row": "exit",
+   "estimated": false,
+   "open_at_R": false,
+   "order": "e61a21124e2ac5ca",
+   "pnl_lamports": -860959,
+   "pnl_sol": "-0.000860959",
+   "send_utc": "2026-11-09T15:10:47.547Z",
+   "stake_lamports": 30000000,
+   "trade_day": "2026-11-09"
+  },
+  {
+   "closing_row": "exit",
+   "estimated": false,
+   "open_at_R": false,
+   "order": "d88da9b2d5dcd5df",
+   "pnl_lamports": -1060605,
+   "pnl_sol": "-0.001060605",
+   "send_utc": "2026-11-09T15:18:39.726Z",
+   "stake_lamports": 30000000,
+   "trade_day": "2026-11-09"
+  },
+  {
+   "closing_row": "exit",
+   "estimated": false,
+   "open_at_R": false,
+   "order": "ad86477b68680fd3",
+   "pnl_lamports": -896775,
+   "pnl_sol": "-0.000896775",
+   "send_utc": "2026-11-10T09:47:08.688Z",
+   "stake_lamports": 30000000,
+   "trade_day": "2026-11-10"
+  },
+  {
+   "closing_row": "exit",
+   "estimated": false,
+   "open_at_R": false,
+   "order": "e3b7cc9de20e65bd",
+   "pnl_lamports": -4085219,
+   "pnl_sol": "-0.004085219",
+   "send_utc": "2026-11-12T14:06:11.527Z",
+   "stake_lamports": 100000000,
+   "trade_day": "2026-11-12"
+  }
+ ]
+}
