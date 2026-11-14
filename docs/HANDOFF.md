@@ -31,7 +31,7 @@ This replaces the manager22 handoff (written 2026-11-12T20:5xZ–21:1xZ). manage
 4. **Job #2527's result file is read-only evidence** (`/data2/mal/scratch/floor-gap-range/gap.json`; sha256 in `/data/mal/hunt-1008/ops/reports/2026-11-13/floor-gap-range-job2527.sha256`). Do not overwrite or re-run into it.
 5. **Code PRs are always T1** (separate QP and reviewer agents; DEC-013 Am.1 trigger 1).
 6. **The wallet key is root-only and Helm's.** No Claude session reads, prints or copies it. Only the manager starts a lane book. Workers never start, fund, configure or restart a lane executor.
-7. **Never `miscusi_job_status`** on any of these: #1561 #1562 #1419 #1421 #1543 #1540 #1446 #1036 #1290, #1567 #1568 #1569, #1559 #1560, #2018 #2019, #2219 #2251, or any s1t / h5v2 / A3 / score / shadow / smoke / judge job. For their limits use `miscusi-agent job list`. This includes the A3 guards **#1896 and #2708** (#1898 was cancelled). Logs of RUNNING fast-0 jobs are readable only on fast-0.
+7. **Never `miscusi_job_status`** on any of these: #1561 #1562 #1419 #1421 #1543 #1540 #1446 #1036 #1290, #1567 #1568 #1569, #1559 #1560, #2018 #2019, #2219 #2251, or any s1t / h5v2 / A3 / score / shadow / smoke / judge job. For their limits use `miscusi-agent job list`. This includes the A3 guards **#1896 and #2708** (#1898 was cancelled), the r4bt-a2 dry host **#2591**, its sidecar **#2590** and the P0 count job **#2593** (output sealed under Am.30 item 12; names and counts only; never an entry count before the J4 count job). Read rules: the declog copier **#2642** job log is read for `R4B-COPY pass <n> start|end exit <code>` lines only, and nobody reads its status file before 2026-11-19T00:10Z (SEALS R4-B DECLOG COPY); the price keeper **#2636**: `.keeper-status.json` names and counts only (`.keeper-hours.jsonl` only to check it). Logs of RUNNING fast-0 jobs are readable only on fast-0.
 8. **Never open** `/var/lib/mal/sealed/*` or any `tape-*` file.
    - Readers of `/var/lib/mal-live/**` are manager jobs only, and they print counts and order ids only.
    - Paste `/data/mal/hunt-1008/push-1016/hunt30/SEALS-BRIEF.md` verbatim into every brief that touches tape (brief sha256 prefix `c9d659ed` as of 2026-11-14T12:47Z; lines (j) to (o) cover the open-sim board, follow driver, keeper, board, EXP-029 tool and recon; R4-B PREVIEW, PRICE KEEPER, DECLOG COPY lines). Never list sizes or mtimes of declog copies or originals before 2026-11-19T00:10Z (entry-count proxy).
@@ -42,7 +42,7 @@ This replaces the manager22 handoff (written 2026-11-12T20:5xZ–21:1xZ). manage
 11. **Do not delete before the part-A install record is written:** the frozen copy `/data2/mal/scratch/floor-stage1-proof/tapecopy-1113` with its `.list` and `.sha256`, the keeper dir `tapecopy-roll` (keeper job #2566), and `p1-1113`. The open-sim keeper (#2630) reads `tapecopy-roll`.
 12. **Do not touch** the firewall, sshd, cloudflared, Cloudflare Access or `/opt/miscusi`. The Helius key and the DB password stay where they are.
 13. **research-0 `/data2/mal` has a default ACL** (group mal-ro = Helm's read-only account `lyra-ro`, r-x; Helm confirmed it is intended, HELM-REPLY-1114-2). Every new sealed dir needs explicit `chmod` and `setfacl -b -k` before the first write; umask is not enough.
-14. **One board process only** (`osb_board`, job **#2744** since 2026-11-14T15:35:23Z, worktree `/data2/mal/wt/board-6061edb7`); a BOOKS.json change means a board restart. One copier job only (#2642). Books run only from `/data2/mal/wt/osb-457795f4`; twin books from the worktree of their own commit (`osb-3c3d1920`, `osb-861952ee`).
+14. **One board process only** (`osb_board`, job **#2744** since 2026-11-14T15:35:23Z, worktree `/data2/mal/wt/board-6061edb7`); a BOOKS.json change means a board restart. One copier job only (#2642). Books run only from `/data2/mal/wt/osb-457795f4`; twin books from the worktree of their own commit (`osb-3c3d1920`, `osb-861952ee`). The hourly live extract **#2696** and the hourly recon **#2700** run from clean job trees at **c47c95fd** (SEALS (o) pins); a restart of either keeps that commit.
 
 ## 3. FLOOR floor-lane-1 (the one live bot)
 **What it does.** The host runs the frozen rule `l1-floor-v2` (`tools/arena_rule_l1.py`, frozen sha 5e12f8f5) on the fast-0 tip tape. When the host triggers, the executor buys. Exits are take-profit at 1.5x or a 24 h time stop.
@@ -113,7 +113,6 @@ Re-create the crons from `crons-manager23.json` with CronCreate.
 | **11-15 ~07:2x** | **Research-0 monitor first-run check:** `/data/mal/structure-monitor/daily.jsonl` newest line (the 07:11Z run of #2710): `pins_changed` and `program_changed` clear. Then classify C14 for r4bt-a2. |
 | **by 11-15 09:17** | **T1 A3 resume record PR** (DEC-035 section 4 resume record; DEC-031 guard-pin line naming P / #2708 / P2 / #2710; LAB_STATE lines; first-candidate evidence if available); owner notice already sent (n_e1H57fMKRD7y1g). Update `A3-SUCCESSOR-COMMANDS.md`. |
 | **11-15 12:00** | Owner question **q_9XkUow_sEaMEvw** (Am.10 install) decide-by. |
-| 11-15 12:05 | Latest r4bt-a2 dry host start (§4) |
 | **by 11-15 18:00** | **Start successors for #2055 and #2064** (they end ~11-15T23:30Z to 11-16T00:15Z). Cron **326cd178** fires 2026-11-15T17:13Z; before the hand-off confirm which sampler segment is written through 11-16T00:05Z (current staged segment tip-health-1107), the successor's SAMPLERS list holds it, exactly one staging process after. |
 | **before 11-16 00:00** | **Sampler/staging successors in place; second P0 note** disclosing the r4-b preview (cite n_YQz7bJG2Ysxolg; confirm #2593 queued). |
 | **11-16 00:05** | **d measurement** (`tools/r4bt_d_measure.py`, one measurement, clean checkout, window [11-15T00Z, 11-16T00Z); fallback [11-16T00Z, 11-17T00Z) only on a coverage refusal). Needs a staging pass finished after 00:05Z. |
@@ -124,13 +123,19 @@ Re-create the crons from `crons-manager23.json` with CronCreate.
 | 11-16, 11-17, 11-18 | r4bt-a2 P0 days |
 | **11-17 03:20** | **First r4-b preview run** (job on research-0 from the clean tree at 8d19d971; keeper pre-check chained first). |
 | **before ~11-18 21:00** | **Dead-man #1896 successor** (it ends ~11-18T21:17Z; the executor checks the A3 gate in `/var/lib/mal-hv4-c0/a3/daily.jsonl`). Command: `A3-SUCCESSOR-COMMANDS.md` (#1896 ref 136cd98d, 512 MB, 0.1 CPU, 18,720 min). Confirm `run_utc` advances. |
-| **11-19 00:05 to 00:10** | Dry host ends ~00:05Z (check job #2592); **P0 count #2593 at 00:10Z**. The (k) check (no kill-review week in LAB_STATE Now or here) repeats before the record. |
+| **11-18 03:20, 11-19 03:20** | Daily r4-b preview runs (manager jobs; keeper pre-check chained first). |
+| **11-19 00:05 to 00:10** | Dry host's own end ~00:05Z (134 h from its 2026-11-13T10:05Z start; check job #2592; QP's 20:30Z stop below is only the fallback); **P0 count #2593 at 00:10Z**. The (k) check (no kill-review week in LAB_STATE Now or here) repeats before the record. |
+| **11-19 00:10 to 19:30** | Registration item 13 manager jobs: (d) P0 and H, (g) envelope, (h) = the d of §4, (i) feed bar, (j) successors incl. the keeper plan, (m) venv hash and pool_cache, (o) decode check; the R4BT_PINS pump pin; the zst pre-check commit and blob for the record (QP-RULING-1114-r4b-preview-steps §5). |
+| **11-19 ~20:00** | Registration record target, with every disclosure (Am.30 item 15, Am.31 item 11 labels, the redeploy split, the P0 counts seen and where). |
+| **11-19 20:30** | Stop the dry host (`r4b-dry-stop.sh`) unless the start record fixed an earlier end (it did: ~00:05Z); **manifest v2 after the stop**. |
+| **11-19 21:05** | Decision host start (Am.30 item 10; the copier adds the series), conditional on registration. |
 | **11-19** | **Re-create the hourly cron** (it expires after 7 days, ~11-19). **Registration record by 2026-11-19T23:59:59Z** (§4). |
 | 11-20 | #2710 monitor reaches its end; #2711 follows. r4bt-a2 clock 11-20T00:00Z if registered. Forward A/B reaches 7 complete forward days (~11-20). |
 | 11-21 00:05 | #2353 reset check (exit 3 = not done; chase Helm) |
 | 11-21 18:13 | Successors to END 2026-11-30T07Z for #2290 daily report and #2291 health watch (both end ~11-22T13Z), **#2266 FLOOR tip link-dir** (~11-22T01:43Z), #2062 follower health (~11-21T01Z). Check #2134's consumers (~11-21T02:31Z). |
 | **~11-22 14:30** | **Executor canary end** (FLOOR executor probe-limit clock; job #2348 alert of 11-14T12:00Z was a false alarm: stale blob allow-list, the running blob fd7e36c1 carries the fix lines; any such check must test for the fix lines, not a blob list). |
 | **before ~11-27 09:17** | **A3 loop #2708 successor** at pin P `c687753b` (limit 18,720 min, ends ~11-27T09:17Z). |
+| **by 11-27 01:01** | **r4bt-a2 screen read** (conditional on registration; Am.30). |
 | **11-27 18:00** | **Price keeper #2636 successor** (ends ~11-27T20Z). |
 | weekly | Clean stale job trees on fast-0 (disk). |
 

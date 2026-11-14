@@ -12,20 +12,20 @@
    "detail": "HELM-REPLY-1114-2 (done, no rollback). Host PID 2913148 -> 3750092; config host-aa05923f-ssnl.json sha256 dc833d79d388729e1c32f34e7a12f1d7b77abb73ccd9206a995969497316c975 (differs only by status_span_no_loss true). Manager check job #2738: lane_start prev_end signal, shadow_fallback null, down_ms 30,746, resumed open 0; no new 24 h lock-out (the first cheap restart). Executor PID 3018006 untouched. Owed: the kill-line check after the first live entry; no further host restart before it passes. No book has cleared the promotion gate."
   },
   {
-   "id": "am8b-exec-installed-1113",
-   "kind": "record",
-   "atUtc": "2026-11-13T17:40:26Z",
+   "id": "r4b-smoke-1114",
+   "kind": "decision",
+   "atUtc": "2026-11-14T11:00:31Z",
    "approx": false,
-   "title": "Runner restart: FLOOR executor, Am.8 part B (a3_floor_flag_list), Helm 2026-11-13T17:40:26Z",
-   "detail": "HELM-REPLY-1113-7 (done, no rollback). Executor PID 2625989 -> 3018006; pin 9c52f4fc, config sha256 40241dc6a78e63ce35610dcadb837da09feb369ed3c795b503bd255d247e56db; 0 open at the stop. No book has cleared the promotion gate."
+   "title": "r4bt-a2 smoke judgement: (a) (b) (c) (d) all PASS",
+   "detail": "Notebook n_EP0sbIiyaLtBxA; ruling QP-RULING-1114-r4b-preview-steps; #1386, #1387, #1388 merged. Dated steps owed to 2026-11-19: second P0 note before 11-16T00:00Z, d measurement from 11-16T00:05Z, manifest v1 + declaration ~11-16T18Z, first preview run 11-17T03:20Z, P0 count #2593 11-19T00:10Z, registration record by 11-19T23:59:59Z. No book has cleared the promotion gate."
   },
   {
-   "id": "exp029-read-1114",
-   "kind": "result",
-   "atUtc": "2026-11-14T01:00:18Z",
+   "id": "am10-rpc-rps-1114",
+   "kind": "decision",
+   "atUtc": "2026-11-14T10:22:00Z",
    "approx": false,
-   "title": "EXP-029 gate read, done once: FAIL (procedural)",
-   "detail": "Job #2654, record #1376. 6 trades in [S, C) on 3 days, all six negative, total -8,691,510 lamports; n 6, 0 positive days of 3, CI lower -2,486,050 lamports, ex-top-3 -6,045,667 all fail the four tests. Listed apart: 5 pre-S sends total +19,687,886 lamports. Sum of all 12 live round trips +10,363,342 lamports (lane cost-capped pnl); mostly one take-profit of 18,778,152 lamports, without it -8,414,810 lamports. EXP-029 is closed. No book has cleared the promotion gate."
+   "title": "DEC-035 Am.10 merged: executor key rpc_rps 4.0 (not installed); owner question open",
+   "detail": "#1384 (e5fd255b), #1385 (459973b0), Erratum 1 in #1389. Live buys wait ~2.05 s decision to send (12 buys); baseline job #2715: 0 counted RPC-error refusals. Install needs the owner's word and Helm. Owner question q_9XkUow_sEaMEvw, decide by 2026-11-15T12:00Z. No book has cleared the promotion gate."
   },
   {
    "id": "a3-repin-1114",
@@ -44,20 +44,20 @@
    "detail": "Books A #2670, D1 #2672, C #2673, E1 #2674, E2 #2675, D0 #2677 from 2026-11-14T07:17:23Z to 07:19:00Z; board #2744, recon #2700, extract #2696. First recon FAIL (a tool bug and one order unwound at the 11-13 host crash); the hourly recon still reads FAIL by the non-rule cap. Strict books land an entry 16 slots (~3.44 s) after the decision; live median 19 slots (~4.09 s). Twin books: gap-in-hold twin check #2731 PASS, twin A-gh restarted as book job #2743 at 2026-11-14T15:35:15Z after a title-only manifest fix (the board refused the words priced / slots; board job now #2744); latency twins and wider-rule twins in proof (#2723 to #2727). Twin books are pricing-only, never summed with their strict book; no stake or live step rests on them. All closed trades in the books so far are in-sample. No book has cleared the promotion gate."
   },
   {
-   "id": "am10-rpc-rps-1114",
-   "kind": "decision",
-   "atUtc": "2026-11-14T10:22:00Z",
+   "id": "exp029-read-1114",
+   "kind": "result",
+   "atUtc": "2026-11-14T01:00:18Z",
    "approx": false,
-   "title": "DEC-035 Am.10 merged: executor key rpc_rps 4.0 (not installed); owner question open",
-   "detail": "#1384 (e5fd255b), #1385 (459973b0), Erratum 1 in #1389. Live buys wait ~2.05 s decision to send (12 buys); baseline job #2715: 0 counted RPC-error refusals. Install needs the owner's word and Helm. Owner question q_9XkUow_sEaMEvw, decide by 2026-11-15T12:00Z. No book has cleared the promotion gate."
+   "title": "EXP-029 gate read, done once: FAIL (procedural)",
+   "detail": "Job #2654, record #1376. 6 trades in [S, C) on 3 days, all six negative, total -8,691,510 lamports; n 6, 0 positive days of 3, CI lower -2,486,050 lamports, ex-top-3 -6,045,667 all fail the four tests. Listed apart: 5 pre-S sends total +19,687,886 lamports. Sum of all 12 live round trips +10,363,342 lamports (lane cost-capped pnl); mostly one take-profit of 18,778,152 lamports, without it -8,414,810 lamports. EXP-029 is closed. No book has cleared the promotion gate."
   },
   {
-   "id": "r4b-smoke-1114",
-   "kind": "decision",
-   "atUtc": "2026-11-14T11:00:31Z",
+   "id": "am8b-exec-installed-1113",
+   "kind": "record",
+   "atUtc": "2026-11-13T17:40:26Z",
    "approx": false,
-   "title": "r4bt-a2 smoke judgement: (a) (b) (c) (d) all PASS",
-   "detail": "Notebook n_EP0sbIiyaLtBxA; ruling QP-RULING-1114-r4b-preview-steps; #1386, #1387, #1388 merged. Dated steps owed to 2026-11-19: second P0 note before 11-16T00:00Z, d measurement from 11-16T00:05Z, manifest v1 + declaration ~11-16T18Z, first preview run 11-17T03:20Z, P0 count #2593 11-19T00:10Z, registration record by 11-19T23:59:59Z. No book has cleared the promotion gate."
+   "title": "Runner restart: FLOOR executor, Am.8 part B (a3_floor_flag_list), Helm 2026-11-13T17:40:26Z",
+   "detail": "HELM-REPLY-1113-7 (done, no rollback). Executor PID 2625989 -> 3018006; pin 9c52f4fc, config sha256 40241dc6a78e63ce35610dcadb837da09feb369ed3c795b503bd255d247e56db; 0 open at the stop. No book has cleared the promotion gate."
   },
   {
    "id": "merged-1113c-prs",
