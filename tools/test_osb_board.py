@@ -608,3 +608,17 @@ def test_recon_path_outside_the_recon_roots_is_not_read(tmp_path, monkeypatch):
     monkeypatch.setattr(B, "RECON_ROOTS", (str(tmp_path),))
     res2, _ = board_with(tmp_path, {"recon": str(other)})
     assert res2["recon"] == {"status": "NOT COMPARABLE: not decision-grade"}  # only a file named recon.json
+
+
+def test_header_has_one_percent_sign_and_tp_override_book_shows_its_own_label(tmp_path):
+    ca, _ = make_book(tmp_path, "A", CONTROL_ROWS)
+    ce, _ = make_book(tmp_path, "E1", CONTROL_ROWS, ov={"TP": 1.3})
+    rc, out = run(tmp_path, books_file(tmp_path, [(ca, "control"), (ce, "variant")]))
+    md = (out / "board.md").read_text()
+    assert "flat 15% fail leg" in md and "15%%" not in md
+    res = load(out)
+    assert [t["exit_reason"] for t in row(res, "E1", 0.25)["trades"]] == [t["exit_reason"] for t in row(res, "A", 0.25)["trades"]]  # json and ledger are not changed
+    sec = {h: md.split("## %s, stake 0.25: last" % h)[1].split("## ")[0] for h in ("A", "E1")}
+    assert "tp_1.3x" in sec["E1"] and "tp_1.5x" not in sec["E1"]
+    assert "tp_1.5x" in sec["A"] and "tp_1.3x" not in sec["A"]
+    assert B.exit_label("time_24h", {"params": {"rule_overrides": {"TP": 1.3}}}) == "time_24h"

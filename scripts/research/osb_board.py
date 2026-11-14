@@ -654,11 +654,19 @@ def pair_md(res):
     return out
 
 
+def exit_label(reason, bk):
+    """display only: the engine labels every take-profit tp_1.5x; a book whose manifest overrides TP shows tp_<its TP>x. The ledger, the json and the engine are unchanged."""
+    tp = (bk.get("params") or {}).get("rule_overrides", {}).get("TP")
+    if reason == "tp_1.5x" and isinstance(tp, (int, float)) and not isinstance(tp, bool):
+        return "tp_%gx" % tp
+    return reason
+
+
 def board_md(res):
     md = ["# Open sim board (FLOOR open simulation books, paper)", "", "> " + res["banner"], "",
           "- Generated %s; tape through %s (the slowest book with data); board_version %s." % (res["generated_utc"], res["tape_through_utc"] or "n/a (no book has a completed hour)", res["board_version"]),
           "- Recon: %s." % res["recon_line"]] + (["- " + SIM_OFF + ": the live bot and book A disagree outside the bands; every figure below is greyed and no live step rests on it."] if res.get("sim_off") else []) + [
-          "- Net SOL is flat 15%% fail leg / pressure leg, booked on the EXIT (close) UTC day. Complete UTC days only (tape at least 90 min past the day's end) in today, 7-day, forward and all; "
+          "- Net SOL is flat 15% fail leg / pressure leg, booked on the EXIT (close) UTC day. Complete UTC days only (tape at least 90 min past the day's end) in today, 7-day, forward and all; "
           "day in progress is a PARTIAL day (trades closed after the newest complete day), shown so trades are visible as they happen.",
           "- Forward = entry instant at or after the book's start instant; earlier entries are in-sample (IS), also when they close later. Forward days = complete UTC days from the day holding the start instant.",
           "- " + UNPRICED_SENTENCE + " Open = no exit decision by the tape end (a tape-end value, repeated in every window as n_open_now); listed below.",
@@ -703,7 +711,7 @@ def board_md(res):
                    "| id | entry UTC | exit UTC | flat | press | ret % | exit | IS |", "|---|---|---|---|---|---|---|---|"]
             for t in last:
                 md.append("| %s | %s | %s | %s | %s | %.2f | %s | %s |" % (t["tid"], t["entry_utc"], t["exit_utc"], f4(t["net_sol_flat"]), f4(t["net_sol_press"]), t["ret_pct"],
-                                                                                    t["exit_reason"] + (("; gap-in-hold, blind %s s" % ("%g" % t["blind_s"])) if t.get("gap_in_hold") else ""), "y" if t["in_sample"] else "n"))
+                                                                                    exit_label(t["exit_reason"], bk) + (("; gap-in-hold, blind %s s" % ("%g" % t["blind_s"])) if t.get("gap_in_hold") else ""), "y" if t["in_sample"] else "n"))
             md += ["", "## %s, stake 0.25: open (%d)" % (bk["id"], len(r["open"])), ""]
             md += ["- %s entered %s, age %.1f h" % (o["tid"], o["entry_utc"], o["age_h"]) for o in r["open"]] or ["- none"]
     return "\n".join(md) + "\n"
