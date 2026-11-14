@@ -181,9 +181,74 @@ def test_the_real_keeper_dir_is_allowed_by_the_gate_but_refused_under_pytest():
     assert K.main(["--keeper-dir", K.REAL_KEEPER_DIR, "--from-hour", HOURS[0], "--to-hour", HOURS[1]]) == 2
 
 
-def test_help_says_inclusive():
-    r = subprocess.run([sys.executable, "-m", "tools.r4bt_keeper_check", "--help"], capture_output=True, text=True, cwd=str(REPO))
-    assert r.returncode == 0 and r.stdout.count("inclusive") == 2
+@pytest.mark.parametrize("flag", ["-h", "--help"])
+def test_help_is_never_exit_0_and_says_inclusive(flag):
+    r = subprocess.run([sys.executable, "-m", "tools.r4bt_keeper_check", flag], capture_output=True, text=True, cwd=str(REPO))
+    assert r.returncode == 2 and r.stderr.count("inclusive") == 2 and r.stdout == ""
+
+
+def test_abbreviations_are_refused(tmp_path):
+    d, _ = keeper(tmp_path)
+    assert K.main(["--keeper-dir", str(d), "--from", HOURS[0], "--to", HOURS[-1]]) == 2
+    assert K.main(["--keeper-dir", str(d), "--from-hour", HOURS[0], "--to-hour", HOURS[-1], "--he"]) == 2
+    assert K.main(["--keeper", str(d), "--from-hour", HOURS[0], "--to-hour", HOURS[-1]]) == 2
+
+
+@pytest.mark.parametrize("bad", [
+    lambda r: {k: v for k, v in r.items() if k != "inode"},
+    lambda r: dict(r, dev=str(r["dev"])),
+    lambda r: dict(r, zst_sha=r["zst_sha"].upper()),
+    lambda r: dict(r, zst_sha=r["zst_sha"][:-1]),
+    lambda r: dict(r, zst_bytes=True),
+    lambda r: dict(r, inode=True),
+    lambda r: [1, 2],
+])
+def test_malformed_complete_line_refuses_in_or_out_of_range(tmp_path, capsys, bad):
+    d, rows = keeper(tmp_path)
+    for target in (rows[1], dict(rows[1], name=name("2030-01-01T00"))):  # a second row for an in-range hour; a row for an hour out of range
+        write_rows(d, rows)
+        with open(d / K.KEEPER_HOURS, "a") as fh:
+            fh.write(json.dumps(bad(target)) + "\n")
+        assert run(d) == 2
+        assert "1 malformed line(s)" in capsys.readouterr().err
+
+
+def test_garbage_complete_lines_refuse_and_count(tmp_path, capsys):
+    d, rows = keeper(tmp_path)
+    write_rows(d, rows)
+    with open(d / K.KEEPER_HOURS, "a") as fh:
+        fh.write("not json\n{\n\n[]\n")
+    assert run(d) == 2
+    assert "3 malformed line(s)" in capsys.readouterr().err
+
+
+def test_a_valid_unterminated_last_line_is_ignored_as_torn(tmp_path):
+    d, rows = keeper(tmp_path)
+    write_rows(d, rows[:3])
+    with open(d / K.KEEPER_HOURS, "a") as fh:
+        fh.write(json.dumps(rows[3]))
+    assert run(d) == 2  # the hour-4 row is torn, so it has no row
+
+
+def test_fifo_at_a_tape_name_or_the_hours_file_refuses_without_hanging(tmp_path):
+    d, _ = keeper(tmp_path)
+    f = d / name(HOURS[1])
+    f.unlink()
+    os.mkfifo(str(f))
+    assert run(d) == 2
+    d2, _ = keeper(tmp_path / "x") if (tmp_path / "x").mkdir() is None else (None, None)
+    (d2 / K.KEEPER_HOURS).unlink()
+    os.mkfifo(str(d2 / K.KEEPER_HOURS))
+    assert run(d2) == 2
+
+
+def test_symlinked_keeper_dir_is_refused(tmp_path):
+    d, _ = keeper(tmp_path)
+    link = tmp_path / "link"
+    os.symlink(str(d), str(link))
+    assert run(d) == 0
+    assert run(link) == 2
+    assert run(str(link) + "/") == 2
 
 
 def test_module_does_not_import_the_preview_or_the_pricer():
