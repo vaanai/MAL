@@ -19,7 +19,9 @@ Checks, for every hour of the INCLUSIVE range [--from-hour, --to-hour]:
   * the file exists (opened read-only with O_NOFOLLOW, regular file);
   * its size equals `zst_bytes`; its streamed sha256 equals `zst_sha`; its `st_dev` and `st_ino` equal the row's `dev` and `inode`.
 The keeper dir must be a real directory: a symlinked keeper dir is refused. A malformed complete line of `.keeper-hours.jsonl` (bad JSON, a missing field, a wrong type,
-a bool for an int, a sha that is not 64 lower-case hex) that names an in-range hour's file (`tape-<h>.jsonl.zst`, substring test on the raw line) is a refusal; any other
+a bool for an int, a sha that is not 64 lower-case hex) that names an in-range hour is a refusal. "Names" errs toward refusal: case-insensitively, an in-range hour token `YYYY-MM-DDTHH` appears in any decoded JSON string
+value or key at any depth (line parses as JSON), or in the raw text de-escaped of `\\uXXXX` and backslash escapes (applied to every malformed line, parsed or not).
+A row whose `name` is not `tape-<h>.jsonl.zst` for its own `h` is malformed. Any other
 malformed complete line is counted and printed as `malformed lines outside range <n>` and does not change the exit code (QP verdict on PR #1387 at edf4bf59: the file
 is append-only, so a line about an hour never read must not end a read). A torn last line (no trailing newline) is ignored. All refusals are checked
 before any mismatch, so a refusal (2) wins over a mismatch (3). Options are exact (no abbreviations); a help request is not a pass: it prints usage and exits 2.
@@ -74,7 +76,7 @@ def hours_in_range(a: str, b: str) -> list[str]:
 
 
 def _valid_row(r) -> bool:
-    return (isinstance(r, dict) and isinstance(r.get("name"), str) and _is_int(r.get("zst_bytes")) and isinstance(r.get("zst_sha"), str)
+    return (isinstance(r, dict) and isinstance(r.get("h"), str) and isinstance(r.get("name"), str) and r["name"] == f"tape-{r['h']}.jsonl.zst" and _is_int(r.get("zst_bytes")) and isinstance(r.get("zst_sha"), str)
             and SHA_RE.match(r["zst_sha"]) is not None and _is_int(r.get("dev")) and _is_int(r.get("inode")))
 
 
@@ -93,8 +95,35 @@ def _open_ro(path: Path) -> int:
     return fd
 
 
-def load_rows(keeper: Path, in_range_names: Sequence[str] = ()) -> tuple[dict[str, list[dict]], int, int]:
-    """({file name: [rows]}, torn count, malformed lines outside range). Every valid row is kept so duplicates are seen. A malformed COMPLETE line naming an in-range hour file
+def _strings(x):
+    """Every string value and key of a decoded JSON value, at any depth."""
+    if isinstance(x, str):
+        yield x
+    elif isinstance(x, dict):
+        for k, v in x.items():
+            yield from _strings(k)
+            yield from _strings(v)
+    elif isinstance(x, list):
+        for v in x:
+            yield from _strings(v)
+
+
+def _deescape(raw: bytes) -> str:
+    t = raw.decode("utf-8", "replace")
+    t = re.sub(r"\\u([0-9a-fA-F]{4})", lambda m: chr(int(m.group(1), 16)), t)
+    return re.sub(r"\\(.)", r"\1", t, flags=re.S)
+
+
+def _names_in_range(line: bytes, parsed, tokens: Sequence[str]) -> bool:
+    texts = [_deescape(line)]
+    if parsed is not None:
+        texts.extend(_strings(parsed))
+    folded = [t.casefold() for t in texts]
+    return any(tok in t for tok in tokens for t in folded)
+
+
+def load_rows(keeper: Path, in_range_hours: Sequence[str] = ()) -> tuple[dict[str, list[dict]], int, int]:
+    """({file name: [rows]}, torn count, malformed lines outside range). Every valid row is kept so duplicates are seen. A malformed COMPLETE line naming an in-range hour (conservatively, see the module docstring)
     refuses; any other is counted; a torn last line (no newline) is ignored."""
     try:
         fd = _open_ro(keeper / KEEPER_HOURS)
@@ -107,6 +136,7 @@ def load_rows(keeper: Path, in_range_names: Sequence[str] = ()) -> tuple[dict[st
     parts = parts[:-1]  # the piece after the last newline is empty or torn
     rows: dict[str, list[dict]] = {}
     outside = 0
+    tokens = [h.casefold() for h in in_range_hours]
     for line in parts:
         if not line.strip():
             continue
@@ -115,7 +145,7 @@ def load_rows(keeper: Path, in_range_names: Sequence[str] = ()) -> tuple[dict[st
         except ValueError:
             r = None
         if not _valid_row(r):
-            if any(n.encode() in line for n in in_range_names):
+            if _names_in_range(line, r, tokens):
                 raise G.Refused(f"a malformed line in {KEEPER_HOURS} names an in-range hour file (malformed_line_in_range)")
             outside += 1
             continue
@@ -137,7 +167,7 @@ def check(keeper_dir: str | Path, from_hour: str, to_hour: str) -> dict:
     if os.environ.get("PYTEST_CURRENT_TEST") and str(keeper) == REAL_KEEPER_DIR:
         raise G.Refused("the real keeper dir is never used under pytest")
     hours = hours_in_range(from_hour, to_hour)
-    rows, _torn, outside = load_rows(keeper, [f"tape-{h}.jsonl.zst" for h in hours])
+    rows, _torn, outside = load_rows(keeper, hours)
     res = {"malformed_outside": outside, "n": len(hours), "first": hours[0], "last": hours[-1], "ok": True, "fail_hour": None, "fail_kind": None}
     # pass 1: refusals (an hour with no row or no file), before any byte is hashed
     for h in hours:

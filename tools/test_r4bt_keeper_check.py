@@ -224,9 +224,74 @@ def test_garbage_line_naming_an_in_range_hour_refuses(tmp_path):
 def test_malformed_line_naming_an_out_of_range_hour_passes_with_the_count(tmp_path, capsys, bad):
     d, rows = keeper(tmp_path)
     with open(d / K.KEEPER_HOURS, "a") as fh:
-        fh.write(json.dumps(bad(dict(rows[1], name=name("2030-01-01T00")))) + "\n")
+        fh.write(json.dumps(bad(dict(rows[1], h="2030-01-01T00", linked_utc="2030-01-01T00:00:00Z", name=name("2030-01-01T00")))) + "\n")
     assert run(d) == 0
     assert "malformed lines outside range 1" in capsys.readouterr().out
+
+
+def _append(d, text):
+    with open(d / K.KEEPER_HOURS, "a") as fh:
+        fh.write(text + "\n")
+
+
+def _keeper_in(tmp_path, sub):
+    (tmp_path / sub).mkdir()
+    return keeper(tmp_path / sub)
+
+
+def test_reviewer_case_unicode_escaped_name_refuses(tmp_path):
+    d, rows = keeper(tmp_path)
+    good = json.dumps(dict(rows[1], dev="x"))
+    _append(d, good.replace("tape-", "\\u0074ape-"))  # the name written with a \u escape (in the raw line), row malformed (dev a string)
+    assert run(d) == 2
+
+
+def test_reviewer_case_missing_or_null_name_with_in_range_h_refuses(tmp_path):
+    d, rows = keeper(tmp_path)
+    _append(d, json.dumps({k: v for k, v in rows[1].items() if k != "name"}))
+    assert run(d) == 2
+    d2, rows2 = _keeper_in(tmp_path, "n")
+    _append(d2, json.dumps(dict(rows2[1], name=None)))
+    assert run(d2) == 2
+
+
+def test_reviewer_case_upper_cased_name_refuses(tmp_path):
+    d, rows = keeper(tmp_path)
+    _append(d, json.dumps(dict(rows[1], name=name(HOURS[1]).upper(), inode="x")))
+    assert run(d) == 2
+
+
+def test_reviewer_case_broken_json_holding_an_escaped_name_refuses(tmp_path):
+    d, _ = keeper(tmp_path)
+    _append(d, '{"name": "tape\\u002d' + HOURS[1] + '.jsonl.zst", "zst_bytes": ')  # a complete line, invalid JSON
+    assert run(d) == 2
+
+
+def test_mixed_case_hour_token_in_range_refuses(tmp_path):
+    d, _ = keeper(tmp_path)
+    _append(d, "garbage " + HOURS[2].replace("T", "t"))
+    assert run(d) == 2
+
+
+def test_valid_row_whose_name_and_h_disagree_is_malformed(tmp_path, capsys):
+    d, rows = keeper(tmp_path)
+    _append(d, json.dumps(dict(rows[1], h=HOURS[2])))  # name says hour 1, h says hour 2, otherwise a valid row
+    assert run(d) == 2
+    d2, rows2 = _keeper_in(tmp_path, "o")
+    _append(d2, json.dumps(dict(rows2[1], h="2030-01-01T00", linked_utc="2030-01-01T00:00:00Z")))  # name in range, h out of range: still names an in-range hour
+    assert run(d2) == 2
+    d3, rows3 = _keeper_in(tmp_path, "p")
+    _append(d3, json.dumps(dict(rows3[1], h="2030-01-01T00", linked_utc="2030-01-01T00:00:00Z", name=name("2031-01-01T00"))))  # both out of range: counted only
+    assert run(d3) == 0
+    assert "malformed lines outside range 1" in capsys.readouterr().out
+
+
+def test_out_of_range_escaped_or_upper_cased_name_still_does_not_refuse(tmp_path, capsys):
+    d, rows = keeper(tmp_path)
+    _append(d, json.dumps(dict(rows[1], h="2030-01-01T00", linked_utc="2030-01-01T00:00:00Z", name=name("2030-01-01T00").upper(), inode="x")))
+    _append(d, '{"name": "tape\\u002d2030-01-01T00')
+    assert run(d) == 0
+    assert "malformed lines outside range 2" in capsys.readouterr().out
 
 
 def test_malformed_lines_naming_no_hour_pass_with_the_count(tmp_path, capsys):
