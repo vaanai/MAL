@@ -23,6 +23,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import re
 import os
 import shlex
 import subprocess
@@ -65,6 +66,7 @@ ALIASES = {
     "refusal_why": ("why", "label", "reason"),
     "gap_kind": ("kind",),
 }
+OID_OK = re.compile(r"[0-9a-f]{16}|[A-Za-z0-9_-]{1,15}")  # the same rule as scripts/research/osb_recon.py OID_OK (kept equal by a test)
 KIND_ORDER = ("header", "order", "gap_refusal", "span_ignored", "restart", "start", "feed_gap_hold")
 
 
@@ -90,6 +92,16 @@ def pick(row, names):
         if isinstance(row, dict) and row.get(n) is not None:
             return row[n]
     return None
+
+
+def pick_one(row, names, field):
+    """pick() that refuses when two alias names of ONE field are both present on ONE row (the caller passes the names of that row's own kind). The message names the field only."""
+    if not isinstance(row, dict):
+        return None
+    present = [n for n in names if row.get(n) is not None]
+    if len(present) > 1:
+        refuse("alias conflict: two names of field %s are both present on one row" % field)
+    return row[present[0]] if present else None
 
 
 def ms_of_hour(h):
@@ -269,11 +281,11 @@ def build_rows(host, bridge, lrows, fills, since_ms, stats=None):
         hx = (followed or host_exits or [None])[0]
         fl = fill_by_oid.get(oid) or {}
         row = {"kind": "order", "order_id": oid, "has_host_entry": e is not None,
-               "pool": e.get("pool") if e else None, "trig_slot": pick(meta, ALIASES["trig_slot"]), "trig_ms": pick(meta, ALIASES["trig_ms"]), "decision_ms": e.get("ms") if e else None,
+               "pool": e.get("pool") if e else None, "trig_slot": pick_one(meta, ALIASES["trig_slot"], "trig_slot"), "trig_ms": pick_one(meta, ALIASES["trig_ms"], "trig_ms"), "decision_ms": e.get("ms") if e else None,
                "stake_sol": e.get("stake_sol") if e else None, "mark0": meta.get("mark0"),
                "sent": sent is not None or g is not None, "send_ms": sent.get("send_ms") if sent else None,
                "stake_lamports": (sent or {}).get("stake_lamports") if sent else (g or {}).get("stake_lamports"),
-               "refused_why": pick(refused, ("why", "label")) if refused else None, "refused_kind": refused.get("kind") if refused else None,
+               "refused_why": pick_one(refused, ("why", "label"), "refusal_why") if refused else None, "refused_kind": refused.get("kind") if refused else None,
                "landed_ms": landed.get("ts_ms") if landed else None, "landed_slot": landed.get("landed_slot") if landed else None, "decision_slot": (sent or landed or {}).get("decision_slot") if (sent or landed) else None,
                "buy_failed": bool(b.get("buy_failed")), "sell_failed": bool(b.get("sell_failed")),
                "exit_reason": hx.get("reason") if hx else None, "exit_ms": hx.get("ms") if hx else None, "has_host_exit": hx is not None,
@@ -283,7 +295,7 @@ def build_rows(host, bridge, lrows, fills, since_ms, stats=None):
                "led_rent_unreclaimed_lamports": g["rent_unreclaimed"] if g else None, "led_close_ev": g["close_ev"] if g else None, "led_close_reason": g["close_reason"] if g else None,
                "led_close_ms": g["close_ms"] if g else None, "led_writeoff": g["close_reason"] if g and g["close_ev"] == "writeoff" else None, "led_ok_buy": bool(g and g["ok_buy"]), "led_estimated_rows": g["estimated_rows"] if g else None,
                "led_stake_lamports": g["stake_lamports"] if g else None,
-               "fill_spend_lamports": pick(fl, ALIASES["spend_lamports"]), "fill_tokens_received": pick(fl, ALIASES["tokens_received"]),
+               "fill_spend_lamports": pick(fl, ALIASES["spend_lamports"]), "fill_tokens_received": pick_one(fl, ALIASES["tokens_received"], "tokens_received"),
                "fill_price_vs_quote_bps": pick(fl, ALIASES["price_vs_quote_bps"]), "fill_tokens_source": pick(fl, ALIASES["tokens_source"]), "fill_estimated": fl.get("estimated") is True}
         if row["decision_ms"] is None and row["led_intent_ms"] is not None and row["led_intent_ms"] < since_ms:
             continue  # an older trade's group that only has ledger rows in this file
@@ -397,6 +409,9 @@ def structure_check(a):
     for alias_name in ("trig_slot", "trig_ms"):
         for n in ALIASES[alias_name]:
             print("  alias %s: %s present in entry meta %d" % (alias_name, n, sum(1 for r in host if r.get("kind") == "entry" and isinstance(r.get("meta"), dict) and r["meta"].get(n) is not None)))
+    oids = [r["order_id"] for r in host + bridge if isinstance(r.get("order_id"), str)]
+    ok = sum(1 for o in oids if OID_OK.fullmatch(o))
+    print("order id shape (recon rule: 16 lowercase hex, or at most 15 of [A-Za-z0-9_-]): matching %d, not matching %d" % (ok, len(oids) - ok))
     print("bad_lines %d torn_tail %d" % (stats["bad_lines"], stats["torn_tail"]))
     return 0
 
