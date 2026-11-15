@@ -1,8 +1,8 @@
 {
   "schema": "pump_structure_pins.v1",
   "note": "Written by tools/pump_structure_monitor.py --write-pins from a live public-RPC read. Re-pin only after reviewing the change that halted the monitor.",
-  "pinned_utc": "2026-11-14T08:58:57Z",
-  "pinned_at_slot": 469269411,
+  "pinned_utc": "2026-11-15T20:04:51Z",
+  "pinned_at_slot": 469856995,
   "accounts": {
     "bonding_fee_config": {
       "address": "8Wf5TiAheLUqBrKXeYg2JtAFFMWtKdG2BSFgqUcPVwTt",
@@ -23,16 +23,16 @@
   "programs": {
     "pump": {
       "program_id": "6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P",
-      "deploy_slot": 469055660,
-      "deploy_utc": "2026-11-13T20:12:28Z",
-      "sha256": "c849155c1d5bf990c564bad8df406d704ed05b8d3dc4ee30ce2350bfbc4edf3a",
+      "deploy_slot": 469811025,
+      "deploy_utc": "2026-11-15T17:20:10Z",
+      "sha256": "bfd2a2bd4a062f03f2c389bb836fb63c1b9b7983e255e4f84a826287ef31b8be",
       "data_len": 10485760
     },
     "pumpswap": {
       "program_id": "pAMMBay6oceH9fJKBRHGP5D4bD4sWpmSwMn52FMfXEA",
-      "deploy_slot": 458921517,
-      "deploy_utc": "2026-10-19T17:47:20Z",
-      "sha256": "e3d3be2256841163ba89b6184c2cc90ca1700c820bf887e5bb58b0aa668f5840",
+      "deploy_slot": 469811067,
+      "deploy_utc": "2026-11-15T17:20:20Z",
+      "sha256": "78046072fdf83eee2ac366c9da0bee22cdb030a2d7b194aa9ab81a14ea13671e",
       "data_len": 10485760
     },
     "fees": {
