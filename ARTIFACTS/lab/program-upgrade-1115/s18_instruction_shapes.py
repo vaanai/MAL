@@ -8,7 +8,7 @@ from pathlib import Path
 sys.argv = [sys.argv[0]]
 exec(open("s06_parity.py").read().split("acc = dict(")[0])
 from common import LClient, OUT
-spec = importlib.util.spec_from_file_location("pst", "/data2/mal/scratch/a3-repin-1115/pumpswap_tx_e5fd255b.py"); pst = importlib.util.module_from_spec(spec); spec.loader.exec_module(pst)
+spec = importlib.util.spec_from_file_location("pst", "/data2/mal/scratch/a3-repin-1115/pumpswap_tx_e5fd255b.py"); pst = importlib.util.module_from_spec(spec); sys.modules["pst"] = pst; spec.loader.exec_module(pst)
 from solders.pubkey import Pubkey
 P = Pubkey.from_string
 BASE = Path("/data2/mal/scratch/a3-repin-1115")
