@@ -24,7 +24,7 @@
    "kind": "finding",
    "atUtc": "2026-11-15T17:20:10Z",
    "approx": false,
-   "title": "Pump and PumpSwap programs were upgraded (17:20:10Z and 17:20:20Z); the guard paused new FLOOR entries from 19:10Z to about 20:23Z",
+   "title": "Pump and PumpSwap programs were upgraded (17:20:10Z and 17:20:20Z); the guard paused new FLOOR entries from the carry of the 19:10:06Z record to about 20:23Z",
    "detail": "Pump at slot 469811025 and PumpSwap at slot 469811067, one upgrade each. The daily check of 2026-11-15T19:10:06Z flagged the changed programs, so FLOOR would have refused new entries until a clean record (job #2833 dry decision). 0 guard rows were read at 19:31Z because no entry candidate had come. FLOOR's exits kept running. No book has cleared the promotion gate."
   },
   {
@@ -2654,7 +2654,7 @@
    "kind": "status",
    "atUtc": "2026-11-15T20:25:00Z",
    "approx": false,
-   "text": "Pump and PumpSwap were upgraded at 17:20 UTC on Nov 15. The safety guard paused new FLOOR entries from 19:10Z to about 20:23Z; no entry candidate had come, as far as read. The review merged at 20:14Z and the guard was re-pinned and passed its resume check at 20:14:49Z, so FLOOR is not paused. This rests on stage 1 of a two-stage review; stage 2 is due by 2026-11-16T15:00Z or the lane STOP file is created. Two positions bought before the upgrade are still open (cost 0.203347680 SOL in all). The wallet holds 2,952,437,180 lamports. No book has cleared the promotion gate."
+   "text": "Pump and PumpSwap were upgraded at 17:20 UTC on Nov 15. The safety guard paused new FLOOR entries from the carry of the 19:10:06Z record to about 20:23Z; no entry candidate had come, as far as read. The review merged at 20:14Z and the guard was re-pinned and passed its resume check at 20:14:49Z, so FLOOR is not paused. This rests on stage 1 of a two-stage review; stage 2 is due by 2026-11-16T15:00Z or the lane STOP file is created. Two positions bought before the upgrade are still open (cost 0.203347680 SOL in all). The wallet holds 2,952,437,180 lamports. No book has cleared the promotion gate."
   },
   {
    "id": "s-20261115-floor-state",
