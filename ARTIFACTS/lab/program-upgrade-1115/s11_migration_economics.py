@@ -98,26 +98,39 @@ def acct(addrs):
         for a, v in zip(ch, r["value"]):
             out[a] = None if v is None else {"owner": v["owner"], "data": base64.b64decode(v["data"][0])}
     return out
-for label in ("post", "pre"):
-    sel = res[label]["rows"][:12]
-    pools = acct([x["pool"] for x in sel]); pools_info = []
-    for x in sel:
-        a = pools.get(x["pool"])
-        if not a: pools_info.append({"pool": x["pool"], "closed": True}); continue
-        d = a["data"]; o = 8
-        def pk(off): return b58e(d[off:off + 32])
-        info = {"pool": x["pool"], "owner": a["owner"], "len": len(d), "disc": d[:8].hex(), "pool_bump": d[8], "index": int.from_bytes(d[9:11], "little"),
-                "creator": pk(11), "base_mint": pk(43), "quote_mint": pk(75), "lp_mint": pk(107), "pool_base_token_account": pk(139), "pool_quote_token_account": pk(171),
-                "lp_supply": int.from_bytes(d[203:211], "little"), "coin_creator": pk(211), "is_mayhem_mode": d[243], "is_cashback_coin": d[244],
-                "virtual_quote_reserves_now_i128_hex": d[245:261].hex(), "creator_fee_bps": int.from_bytes(d[261:269], "little"), "can_edit_creator_fee": d[269], "is_holder_reward": d[270]}
-        pools_info.append(info)
-    toks = acct([i[k] for i in pools_info if "owner" in i for k in ("pool_base_token_account", "pool_quote_token_account")])
-    for i in pools_info:
+OLD = json.load(open("../program-upgrade-1114/out/s11_migration_economics.json"))
+def pool_info(pools, x_pool, a):
+    if not a: return {"pool": x_pool, "closed": True}
+    d = a["data"]
+    def pk(off): return b58e(d[off:off + 32])
+    return {"pool": x_pool, "owner": a["owner"], "len": len(d), "disc": d[:8].hex(), "pool_bump": d[8], "index": int.from_bytes(d[9:11], "little"),
+            "creator": pk(11), "base_mint": pk(43), "quote_mint": pk(75), "lp_mint": pk(107), "pool_base_token_account": pk(139), "pool_quote_token_account": pk(171),
+            "lp_supply": int.from_bytes(d[203:211], "little"), "coin_creator": pk(211), "is_mayhem_mode": d[243], "is_cashback_coin": d[244],
+            "creator_fee_bps": int.from_bytes(d[261:269], "little"), "can_edit_creator_fee": d[269], "is_holder_reward": d[270], "coin_creator_is_zero": pk(211) == "1" * 32}
+# (c3): the 24 pool accounts of the 1114 review (12 post-1114 + 12 pre-1114) read NOW and compared with the 1114 owner/len/disc, plus the first 10 WSOL pools created after D (from M)
+old = [(lab, x["pool"], x) for lab in ("post", "pre") for x in OLD[lab]["pool_accounts"] if "owner" in x]
+new10 = res["post"]["rows"][:10]
+allp = [p for _, p, _ in old] + [x["pool"] for x in new10]
+pools = acct(allp)
+c3 = {"old24": [], "new10": []}
+for lab, p, o in old:
+    i = pool_info(pools, p, pools.get(p)); i["from_1114"] = lab
+    i["equal_1114_owner_len_disc"] = bool("owner" in i and (i["owner"], i["len"], i["disc"]) == (o["owner"], o["len"], o["disc"]))
+    i["coin_creator_unchanged_vs_1114"] = bool("owner" in i and i["coin_creator"] == o["coin_creator"]); c3["old24"].append(i)
+for x in new10:
+    i = pool_info(pools, x["pool"], pools.get(x["pool"]))
+    i["base_mint_equals_CreatePool_event_mint"] = bool("owner" in i and i["base_mint"] == x["mint"]); i["coin_creator_equals_event"] = bool("owner" in i and i["coin_creator"] == x.get("coin_creator")); c3["new10"].append(i)
+toks = acct([i[k] for g in c3.values() for i in g if "owner" in i for k in ("pool_base_token_account", "pool_quote_token_account")])
+for g in c3.values():
+    for i in g:
         if "owner" in i:
-            i["base_token_account_owner_program"] = (toks.get(i["pool_base_token_account"]) or {}).get("owner")
-            i["quote_token_account_owner_program"] = (toks.get(i["pool_quote_token_account"]) or {}).get("owner")
-            i["coin_creator_is_zero"] = i["coin_creator"] == "1" * 32
-    res[label]["pool_accounts"] = pools_info
+            i["base_token_account_owner_program"] = (toks.get(i["pool_base_token_account"]) or {}).get("owner"); i["quote_token_account_owner_program"] = (toks.get(i["pool_quote_token_account"]) or {}).get("owner")
+res["c3_pool_accounts"] = c3
+res["c3_summary"] = {"old24_n": len(c3["old24"]), "old24_equal_1114": sum(i.get("equal_1114_owner_len_disc", False) for i in c3["old24"]),
+                     "new10_n": len(c3["new10"]), "new10_owner_len_disc": sorted({(i.get("owner"), i.get("len"), i.get("disc")) for i in c3["new10"]}),
+                     "new10_coin_creator_set": sum(1 for i in c3["new10"] if "owner" in i and not i["coin_creator_is_zero"]), "new10_base_mint_matches_event": sum(i.get("base_mint_equals_CreatePool_event_mint", False) for i in c3["new10"]),
+                     "new10_coin_creator_matches_event": sum(i.get("coin_creator_equals_event", False) for i in c3["new10"])}
+for label in ("post", "pre"): res[label]["pool_accounts"] = []
 
 
 def rng(vals):
