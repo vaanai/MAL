@@ -1,8 +1,32 @@
 {
  "schema_version": "console.v1",
- "updated_utc": "2026-11-15T17:09:00Z",
+ "updated_utc": "2026-11-15T20:25:00Z",
  "review_windows": [],
  "events": [
+  {
+   "id": "a3-guard-switch-resume-1115",
+   "kind": "record",
+   "atUtc": "2026-11-15T20:14:49Z",
+   "approx": false,
+   "title": "Guard re-pinned and FLOOR resumed: the safety loop was switched to the new program versions at 20:14Z",
+   "detail": "The guard is the daily check that pauses FLOOR's new entries when pump.fun programs change. Job #2708 was cancelled at 20:14:23Z and its successor #2845 started at 20:14:47Z on pin commit 8810d7989bf1c8372ea0032b05dc3b6f7a1a3e08. Its first run, 2026-11-15T20:14:49Z, met every condition set before it started (both program versions recognised, no pause flag). A dry check at 20:23:40Z said pause: none, so FLOOR is no longer paused by this guard. The research-0 monitor was re-pinned too (jobs #2847 and #2848). The basis is stage 1 of a two-stage review: stage 2 is owed by 2026-11-16T15:00:00Z, otherwise the lane STOP file is created at once. Two positions opened before the redeploy are still open. Nothing here says FLOOR makes money. No book has cleared the promotion gate."
+  },
+  {
+   "id": "a3-stage1-review-merged-1115",
+   "kind": "record",
+   "atUtc": "2026-11-15T20:14:01Z",
+   "approx": false,
+   "title": "Stage-1 review of the pump and PumpSwap changes merged (PR #1405)",
+   "detail": "The review compared transactions before and after the upgrades (240 blocks after, 19,044 transactions, 0 unknown instruction types, 0 differences in decoded fields). Three checks read NOT MET as first written; QP accepted or replaced them and the changes are labelled (fee triples accepted, labelled post hoc). Three keyless test simulations: the last one passed 6 of 6 (job #2839). A stage-1 sample is not a proof of equal behaviour. Review sha256 08efb01994650af226c1baabd4a1fffb352c2fa99a85a114701df79060149bd5. No book has cleared the promotion gate."
+  },
+  {
+   "id": "pump-pumpswap-redeploy-1115",
+   "kind": "finding",
+   "atUtc": "2026-11-15T17:20:10Z",
+   "approx": false,
+   "title": "Pump and PumpSwap programs were upgraded (17:20:10Z and 17:20:20Z); the guard paused new FLOOR entries from 19:10Z to about 20:23Z",
+   "detail": "Pump at slot 469811025 and PumpSwap at slot 469811067, one upgrade each. The daily check of 2026-11-15T19:10:06Z flagged the changed programs, so FLOOR would have refused new entries until a clean record (job #2833 dry decision). 0 guard rows were read at 19:31Z because no entry candidate had come. FLOOR's exits kept running. No book has cleared the promotion gate."
+  },
   {
    "id": "killline-pass-1115",
    "kind": "result",
@@ -1914,7 +1938,7 @@
    "id": "FLOOR",
    "title": "FLOOR",
    "stage": "LIVE in DEC-035 lane as floor-lane-1 (since 2026-11-08T14:19:43Z); EXP-029 read done 2026-11-14T01:00:18Z: FAIL (procedural); Am.6 gate count 2 of 20; 2 positions open at 2026-11-15T16:31Z",
-   "note": "floor-lane-1 is live on mal-fast-0: stake 0.10 SOL, budget 1.20 SOL, daily stop 0.20 SOL, max_open 16. At 2026-11-15T16:31Z: wallet 2,952,437,180 lamports, 2 open (live buys of 2026-11-15T11:06:28Z and 13:12:55Z, no exits), the closed-trade total of the 12 closed trades is +0.010363342 SOL and rests on one take-profit of 0.018778152 SOL (without it the 12 sum to -0.008414810 SOL); the report's lane cost-capped pnl of -0.192984338 SOL counts the two open buys at their cost (basis 0.203347680 SOL) because it has no marks, so it is open positions counted at cost, not a loss taken, Amendment 6 gate count 2 of 20 closed 0.10 trades. Executor PID 3992781 (Am.10, 2026-11-14T22:14:45Z); host PID 3750092 (Am.8 part A, 2026-11-14T15:01Z, the first cheap restart); the kill-line check passed at 2026-11-15T17:08Z (job #2825). A3 re-pinned (loop #2708), so FLOOR is not blocked by the pump redeploy. Am.10 (rpc_rps 4.0) installed 2026-11-14T22:14:45Z; 2 live buys measured so far (1,068 ms and 1,089 ms), not a result until the 10th buy. A count, not a gate read. No profit claim. No book has cleared the promotion gate.",
+   "note": "floor-lane-1 is live on mal-fast-0: stake 0.10 SOL, budget 1.20 SOL, daily stop 0.20 SOL, max_open 16. At 2026-11-15T16:31Z: wallet 2,952,437,180 lamports, 2 open (live buys of 2026-11-15T11:06:28Z and 13:12:55Z, no exits), the closed-trade total of the 12 closed trades is +0.010363342 SOL and rests on one take-profit of 0.018778152 SOL (without it the 12 sum to -0.008414810 SOL); the report's lane cost-capped pnl of -0.192984338 SOL counts the two open buys at their cost (basis 0.203347680 SOL) because it has no marks, so it is open positions counted at cost, not a loss taken, Amendment 6 gate count 2 of 20 closed 0.10 trades. Executor PID 3992781 (Am.10, 2026-11-14T22:14:45Z); host PID 3750092 (Am.8 part A, 2026-11-14T15:01Z, the first cheap restart); the kill-line check passed at 2026-11-15T17:08Z (job #2825). A3 re-pinned twice: loop #2845 at pin 8810d798 since 2026-11-15T20:14:47Z after the pump and PumpSwap redeploys of 2026-11-15T17:20Z (stage 1 of a two-stage review; stage 2 owed by 2026-11-16T15:00:00Z, else the lane STOP file); FLOOR is not paused by A3 since about 20:23Z. Am.10 (rpc_rps 4.0) installed 2026-11-14T22:14:45Z; 2 live buys measured so far (1,068 ms and 1,089 ms), not a result until the 10th buy. A count, not a gate read. No profit claim. No book has cleared the promotion gate.",
    "tag": {
     "text": "LIVE (lane)",
     "tone": "accent"
@@ -2205,7 +2229,7 @@
   {
    "id": "fy-20261115-no-open-items",
    "from": "claude",
-   "text": "Nothing is waiting on you. The FLOOR reset you approved is scheduled by Helm for Nov 16, 9:00 AM PST (17:00 UTC). FLOOR made two live buys on Nov 15 (11:06:28Z and 13:12:55Z); both are still open, and two buys are not a result yet. The kill-line check of the Nov 14 restart passed. The wallet holds 2.952437180 SOL (the two open buys cost 0.203347680 SOL). No book has cleared the promotion gate.",
+   "text": "Nothing is waiting on you. The FLOOR reset you approved is scheduled by Helm for Nov 16, 9:00 AM PST (17:00 UTC). FLOOR made two live buys on Nov 15 (11:06:28Z and 13:12:55Z); both are still open, and two buys are not a result yet. The kill-line check of the Nov 14 restart passed. The wallet holds 2.952437180 SOL (the two open buys cost 0.203347680 SOL). Pump.fun upgraded its programs on Nov 15 at 17:20 UTC; the safety guard paused new FLOOR entries from about 19:10Z to about 20:23Z and was re-pinned; nothing is needed from you. No book has cleared the promotion gate.",
    "atUtc": "2026-11-15T17:09:00Z"
   },
   {
@@ -2624,6 +2648,14 @@
   }
  ],
  "stream": [
+  {
+   "id": "s-20261115-redeploy-resume",
+   "from": "claude",
+   "kind": "status",
+   "atUtc": "2026-11-15T20:25:00Z",
+   "approx": false,
+   "text": "Pump and PumpSwap were upgraded at 17:20 UTC on Nov 15. The safety guard paused new FLOOR entries from 19:10Z to about 20:23Z; no entry candidate had come, as far as read. The review merged at 20:14Z and the guard was re-pinned and passed its resume check at 20:14:49Z, so FLOOR is not paused. This rests on stage 1 of a two-stage review; stage 2 is due by 2026-11-16T15:00Z or the lane STOP file is created. Two positions bought before the upgrade are still open (cost 0.203347680 SOL in all). The wallet holds 2,952,437,180 lamports. No book has cleared the promotion gate."
+  },
   {
    "id": "s-20261115-floor-state",
    "from": "claude",
