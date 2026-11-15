@@ -70,7 +70,8 @@ latency kind), or FAIL naming the failing check, or NOT_PASS naming a PENDING / 
 ledger directory of the ACTIVE run (the `book` target), not the older runs. --on-copy-run is ignored in this mode (noted in --out; C2r/L2r are not part of the daily re-check).
 RETRY reasons (exit 4, snapshot deleted, no verdict): any source book's md5-by-hour sha256, last hour, decisions.md5 or ledger file list / sizes / sha256 differ between the before and the after read (the driver appends an
 hour's ledger rows BEFORE it writes that hour's md5 line, so an hour in progress changes the ledger); a copied ledger row has written_ms (the engine clock, as the ledger writes it) later than the end_ms of the copy's last
-verified hour; a copied ledger file ends in a half-written line. status.json `waiting_for_hour` is not used (the on-disk value can be stale).
+verified hour; a copied ledger file ends in a half-written line; osb_follow.tree_md5 of a copied ledger differs from the ledger_md5 of that copy's LAST md5-by-hour line (the exact end-of-hour test: rows
+of the last second of an hour are written by the next hour's run with an earlier stamp; the driver writes tree_md5 of the run's ledger dir into that line right after the hour ran). Each RETRY message names its cause. status.json `waiting_for_hour` is not used (the on-disk value can be stale).
 Without the flag everything behaves exactly as before.
 
 Exit codes: 0 every requested condition PASS; 3 any condition FAIL, PENDING or NO_DATA; 2 refused (missing or unreadable file, manifest not a twin, windows differ, output file exists); 4 RETRY (--snapshot only: the
@@ -555,8 +556,11 @@ def in_progress_reason(copy_dir):
     """a reason (str) when the COPY shows an hour in progress, else None: a ledger row with written_ms later than the end_ms of the last verified hour of md5-by-hour.jsonl (written_ms is the engine's clock, as
     arena_paper writes it), or a ledger file ending in a half-written line"""
     copy_dir = Path(copy_dir)
+    last_line = None
     try:
-        ends = [json.loads(ln).get("end_ms") for ln in (copy_dir / "md5-by-hour.jsonl").read_text().splitlines() if ln.strip()]
+        lines = [json.loads(ln) for ln in (copy_dir / "md5-by-hour.jsonl").read_text().splitlines() if ln.strip()]
+        ends = [d.get("end_ms") for d in lines]
+        last_line = lines[-1] if lines else None
     except (OSError, ValueError, AttributeError):
         ends = []
     ends = [e for e in ends if isinstance(e, int) and not isinstance(e, bool)]
@@ -578,6 +582,15 @@ def in_progress_reason(copy_dir):
             w = r.get("written_ms") if isinstance(r, dict) else None
             if isinstance(w, int) and not isinstance(w, bool) and w > last_end:
                 return "a ledger row has written_ms later than the end of the last verified hour (an hour is in progress)"
+    # the exact test (QP, PR #1403): the driver writes osb_follow.tree_md5(run_dir / "ledger") into the `ledger_md5` of an hour's line right after the hour ran, so the copied ledger is the end-of-hour state
+    # (nothing of the next hour; rows of the last second of an hour are written by the NEXT hour's run with their own earlier stamp, which written_ms cannot see) exactly when the two are equal
+    want = last_line.get("ledger_md5") if isinstance(last_line, dict) else None
+    try:
+        got = O.tree_md5(run / "ledger")
+    except (OSError, ValueError):
+        return "the copied ledger could not be read as a ledger projection"
+    if got != want:
+        return "the copied ledger's md5 differs from the ledger_md5 of the last md5-by-hour line (an hour is in progress or the book is catching up)"
     return None
 
 
@@ -681,7 +694,7 @@ def prepare_snapshot_dir(d, sources):
 
 
 def take_snapshot(snap, runs):
-    """runs: {role: source dir}. -> (copies {role: dir}, before, after) or None on RETRY (the snapshot is deleted)"""
+    """runs: {role: source dir}. -> (copies {role: dir}, before, after), or (None, reason, None) on RETRY (the snapshot is deleted; reason names the cause)"""
     prepare_snapshot_dir(snap, runs.values())
     snap = Path(snap)
     before = {r: book_state(d) for r, d in runs.items()}
@@ -697,9 +710,14 @@ def take_snapshot(snap, runs):
     except BaseException:
         remove_tree(snap)
         raise
-    if before != after or any(reasons):
+    if before != after:
         remove_tree(snap)
-        return None
+        changed = sorted(r for r in before if before[r] != after[r])
+        what = "the ledger changed" if any((before[r] or {}).get("ledger") != (after[r] or {}).get("ledger") for r in changed) else "an hour step landed"
+        return None, "%s during the copy (%s)" % (what, ", ".join(changed)), None
+    if any(reasons):
+        remove_tree(snap)
+        return None, next(r for r in reasons if r), None
     return copies, before, after
 
 
@@ -719,11 +737,10 @@ def run_snapshot(a, must):
     runs = {"strict": a.strict_run, "twin": a.twin_run}
     if a.on_copy_run:
         print("osb_twin_check: note: --on-copy-run is ignored in --snapshot mode (C2r/L2r are not part of the daily re-check)", file=sys.stderr)
-    snapped = take_snapshot(a.snapshot, runs)
-    if snapped is None:
-        print("osb_twin_check: RETRY: a source book moved (an hour step) during the copy; the snapshot was deleted and nothing was checked", file=sys.stderr)
+    copies, before, after = take_snapshot(a.snapshot, runs)
+    if copies is None:
+        print("osb_twin_check: RETRY: %s; the snapshot was deleted and nothing was checked" % before, file=sys.stderr)
         return EXIT_RETRY
-    copies, before, after = snapped
     try:
         res = run_check(a.kind, copies["strict"], copies["twin"], None, a.strict_manifest, a.twin_manifest, must)
     except BaseException:

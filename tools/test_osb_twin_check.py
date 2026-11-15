@@ -571,8 +571,23 @@ def tree_state(root):
     return out
 
 
+def snapfix(args):
+    """snapshot fixtures: the last md5-by-hour line of the strict and twin runs carries the REAL osb_follow.tree_md5 of the run's ledger (as the driver writes it right after the hour ran)"""
+    for flag in ("--strict-run", "--twin-run"):
+        d = Path(args[args.index(flag) + 1])
+        f = d / "md5-by-hour.jsonl"
+        lines = [json.loads(ln) for ln in f.read_text().splitlines() if ln.strip()]
+        lines[-1]["ledger_md5"] = O.tree_md5(d / "runs" / "0001" / "ledger")
+        f.write_text("".join(json.dumps(r) + "\n" for r in lines))
+    return args
+
+
+def setup_s(*a, **k):
+    return snapfix(setup(*a, **k))
+
+
 def snap_args(tmp, kind, snap, **kw):
-    return setup(tmp, kind, with_oncopy=False, **kw) + ["--snapshot", str(snap)]
+    return setup_s(tmp, kind, with_oncopy=False, **kw) + ["--snapshot", str(snap)]
 
 
 def text_run(args, capsys):
@@ -643,7 +658,7 @@ def test_an_existing_non_empty_dir_is_refused_and_an_empty_one_is_used(tmp_path,
     assert code == 2 and "not an empty directory" in err and (snapdir / "x").read_text() == "keep" and not (snapdir / "strict").exists()
     (snapdir / "x").unlink()
     (tmp_path / "again").mkdir()
-    code, out, err = text_run(setup(tmp_path / "again", "gap-hold", with_oncopy=False) + ["--snapshot", str(snapdir)], capsys)
+    code, out, err = text_run(setup_s(tmp_path / "again", "gap-hold", with_oncopy=False) + ["--snapshot", str(snapdir)], capsys)
     assert code == 0 and out.splitlines()[-1].startswith("C3/C4/C5 PASS")
 
 
@@ -657,7 +672,7 @@ def test_a_symlink_leaving_the_run_dir_is_refused_and_nothing_is_left(tmp_path, 
 
 
 def test_the_snapshot_dir_may_not_be_inside_a_source_run(tmp_path, capsys):
-    args = setup(tmp_path, "gap-hold", with_oncopy=False) + ["--snapshot", str(tmp_path / "strict" / "snap")]
+    args = setup_s(tmp_path, "gap-hold", with_oncopy=False) + ["--snapshot", str(tmp_path / "strict" / "snap")]
     code, out, err = text_run(args, capsys)
     assert code == 2 and "inside a source run dir" in err and not (tmp_path / "strict" / "snap").exists()
 
@@ -675,7 +690,7 @@ def test_snapshot_keeps_must_cover_working_on_the_copy(tmp_path, capsys, snapdir
     assert code == 0, err
     assert "PASS" in out.splitlines()[-1]
     (tmp_path / "s2").mkdir()
-    code, out, err = text_run(setup(tmp_path / "s2", "gap-hold", with_oncopy=False) + ["--snapshot", str(tmp_path / "snap2"), "--must-cover-from", "2026-11-05T00", "--must-cover-hours", "7"], capsys)
+    code, out, err = text_run(setup_s(tmp_path / "s2", "gap-hold", with_oncopy=False) + ["--snapshot", str(tmp_path / "snap2"), "--must-cover-from", "2026-11-05T00", "--must-cover-hours", "7"], capsys)
     assert code == 2 and "does not contain" in err
     for cur, dirs, files in os.walk(tmp_path / "snap2"):
         os.chmod(cur, 0o700)
@@ -746,7 +761,7 @@ def test_a_failing_snapshot_is_kept_read_only_and_says_so_a_refusal_removes_it(t
     res = json.loads((tmp_path / "out.json").read_text())
     assert code == 3 and snapdir.is_dir() and res["snapshot"]["kept_read_only_as_evidence"] is True and not (os.stat(snapdir).st_mode & 0o222)
     (tmp_path / "r").mkdir()
-    code, out, err = text_run(setup(tmp_path / "r", "gap-hold", with_oncopy=False) + ["--snapshot", str(tmp_path / "snapr"), "--must-cover-from", "2026-11-05T00", "--must-cover-hours", "7"], capsys)
+    code, out, err = text_run(setup_s(tmp_path / "r", "gap-hold", with_oncopy=False) + ["--snapshot", str(tmp_path / "snapr"), "--must-cover-from", "2026-11-05T00", "--must-cover-hours", "7"], capsys)
     assert code == 2 and not (tmp_path / "snapr").exists()
 
 
@@ -762,7 +777,31 @@ def test_setfacl_failure_refuses_before_any_copy_and_its_absence_is_noted(tmp_pa
 
 
 def test_on_copy_run_is_ignored_with_a_note_in_snapshot_mode(tmp_path, capsys, snapdir):
-    args = setup(tmp_path, "gap-hold") + ["--snapshot", str(snapdir)]
+    args = setup_s(tmp_path, "gap-hold") + ["--snapshot", str(snapdir)]
     code, out, err = text_run(args, capsys)
     assert code == 0 and "--on-copy-run is ignored" in err and not (snapdir / "on_copy").exists()
     assert json.loads((tmp_path / "out.json").read_text())["snapshot"]["on_copy_run_ignored"] is True
+
+
+def test_a_last_second_row_of_the_next_hour_is_retry_by_the_tree_md5_and_the_message_names_it(tmp_path, capsys, snapdir):
+    """a trade row stamped BEFORE the end of the last verified hour (written_ms = end_ms - 500, as a row of the last second written by the next hour's run) appended after the last md5 line: the written_ms
+    rule cannot see it, the ledger_md5 of the last md5-by-hour line can"""
+    args = snap_args(tmp_path, "gap-hold", snapdir)
+    with open(ledger_file(tmp_path, "twin"), "a") as fh:
+        fh.write(json.dumps(trade("p9", 0.1, written_ms=10**13 - 500)) + "\n")
+    code, out, err = text_run(args, capsys)
+    assert code == 4 and "RETRY" in err and "ledger's md5 differs from the ledger_md5 of the last md5-by-hour line" in err and out == "" and not snapdir.exists()
+    assert not (tmp_path / "out.json").exists()
+
+
+def test_retry_messages_name_their_cause(tmp_path, capsys, snapdir, monkeypatch):
+    args = snap_args(tmp_path, "gap-hold", snapdir)
+
+    def step(role, d):
+        if role == "twin":
+            with open(Path(d) / "md5-by-hour.jsonl", "a") as fh:
+                fh.write(json.dumps({"hour": "2026-11-05T06", "end_ms": 0, "ledger_md5": "x", "decision_md5": "y"}) + "\n")
+    monkeypatch.setattr(T, "_COPY_HOOK", step)
+    assert text_run(args, capsys)[2].count("an hour step landed during the copy (twin)") == 1
+    monkeypatch.setattr(T, "_COPY_HOOK", lambda role, d: open(ledger_file(tmp_path, "strict"), "a").write(json.dumps(trade("p9", 0.1)) + "\n") if role == "twin" else None)
+    assert "the ledger changed during the copy (strict)" in text_run(args, capsys)[2]
