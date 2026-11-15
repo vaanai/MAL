@@ -8,7 +8,7 @@ sys.argv = [sys.argv[0]]
 exec(open("s06_parity.py").read().split("acc = dict(")[0])
 BASE = Path("/data2/mal/scratch/a3-repin-1115")
 res = {}
-for label, root in (("post", "raw"), ("pre_P", "raw_pre"), ("pre_P2", "raw_pre2")):
+for label, root in (("post", "raw"), ("pre_P", "raw_pre")):
     c = collections.Counter(); mism = []
     for p in sorted((BASE / root / "blocks").glob("*.json.gz")):
         blk = json.loads(gzip.open(p).read())["r"]

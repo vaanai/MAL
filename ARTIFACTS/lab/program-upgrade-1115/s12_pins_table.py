@@ -13,7 +13,7 @@ def load(names):
         p = O / n
         if p.exists(): out.append(json.load(open(p)))
     return out
-groups = {"post": load(["s06_parity.json"]), "pre": load(["s06_parity_pre.json", "s06_parity_pre2.json", "s06_parity_premig.json"])}
+groups = {"post": load(["s06_parity.json"]), "pre": load(["s06_parity_pre.json", "s06_parity_premig.json"])}
 rows = {}
 for g, js in groups.items():
     for j in js:

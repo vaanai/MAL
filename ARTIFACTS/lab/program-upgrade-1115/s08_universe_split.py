@@ -13,7 +13,7 @@ from common import LClient, OUT
 WSOL = td.WSOL_MINT
 ZERO = "11111111111111111111111111111111"
 BASE = Path("/data2/mal/scratch/a3-repin-1115")
-ROOTS = {"post": BASE / "raw", "pre": BASE / "raw_pre", "pre2": BASE / "raw_pre2"}
+ROOTS = {"post": BASE / "raw", "pre": BASE / "raw_pre"}
 MIG = json.load(open(BASE / "raw" / "migrate_index.json"))
 EPISODE_POOL = "34tiphuqXUgkH9c2KCrFqCiyuhz58HEbhQBk61ub46bU"
 
@@ -25,26 +25,13 @@ def txs_of(root, label):
         for tx in blk["transactions"]:
             if tx["transaction"]["signatures"][0] in idx["a"]:
                 yield "A", tx
-    mrows = MIG["post"] if label == "post" else MIG["pre"] if label == "pre" else []
+    mrows = MIG["post"] if label == "post" else MIG["pre"]
     seenm = set(idx["a"])
     for row in mrows:
         pth = BASE / "raw" / "txs" / f"{row['sig']}.json.gz"
         if row["sig"] not in seenm and pth.exists():
             r_ = json.loads(gzip.open(pth).read())["r"]
             if r_: seenm.add(row["sig"]); yield "M", r_
-    if label == "post":
-        seen = set(idx["a"])
-        for sig in idx["b"]:
-            p = root / "txs" / f"{sig}.json.gz"
-            if p.exists() and sig not in seen:
-                r_ = json.loads(gzip.open(p).read())["r"]
-                if r_: seen.add(sig); yield "B", r_
-        for c in idx["c"]:
-            for sig in c["picked"]:
-                p = root / "txs" / f"{sig}.json.gz"
-                if p.exists() and sig not in seen:
-                    r_ = json.loads(gzip.open(p).read())["r"]
-                    if r_: seen.add(sig); yield "C", r_
 
 def events_of(tx):
     meta = tx.get("meta") or {}

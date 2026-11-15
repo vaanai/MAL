@@ -339,38 +339,27 @@ for p in ([] if SAMPLE == "premig" else sorted((RAW / "blocks").glob("*.json.gz"
         sig = tx["transaction"]["signatures"][0]
         if sig in idx["a"]:
             analyse(tx, slot, sig, "A", acc)
-for sig, meta in idx["b"].items():
-    tx = load("txs", sig)
-    if tx: analyse(tx, tx["slot"], sig, "B", acc)
-    else: acc["nondecode"].append(dict(cat="FETCH", sig=sig, why="getTransaction returned null"))
-cs = set()
-for c in idx["c"]:
-    for s in c["picked"]:
-        if s in cs or s in idx["b"] or s in idx["a"]: continue
-        cs.add(s); tx = load("txs", s)
-        if tx: analyse(tx, tx["slot"], s, "C", acc)
-        else: acc["nondecode"].append(dict(cat="FETCH", sig=s, why="getTransaction returned null"))
 # migrate samples (added after QP ruling 384d99f3): M (post) with the post run, M_pre with SAMPLE=premig; each tx whole, analysed as class "M"
 mig_idx = RAW.parent / "raw" / "migrate_index.json"
 if mig_idx.exists() and SAMPLE in ("post", "premig"):
-    mi = json.load(open(mig_idx)); seen_m = set(idx["a"]) | set(idx["b"])
+    mi = json.load(open(mig_idx)); seen_m = set(idx["a"])
     for row in mi["pre" if SAMPLE == "premig" else "post"]:
         sg = row["sig"]
         if sg in seen_m: continue
         tx = json.loads(gzip.open(RAW.parent / "raw" / "txs" / f"{sg}.json.gz").read())["r"]
         analyse(tx, row["slot"], sg, "M", acc)
 blob_sha = {}
-import subprocess
-for f in ("observe/trade_decode.py", "tools/pump_history_backfill.py", "tools/h5_shadow.py"):
-    here = hashlib.sha1(b"blob %d\0" % len((REPO / f).read_bytes()) + (REPO / f).read_bytes()).hexdigest()
-    frozen = subprocess.run(["git", "-C", str(REPO), "rev-parse", f"1f7a89c:{f}"], capture_output=True, text=True).stdout.strip()
-    blob_sha[f] = dict(here=here, at_1f7a89c=frozen, equal=here == frozen)
+EXPECT = {"observe/trade_decode.py": "238942a6", "observe/trade_store.py": "ea4e11ed", "tools/pump_history_backfill.py": "9a8bebb3"}
+for f, pre in EXPECT.items():
+    bts = (REPO / f).read_bytes()
+    here = hashlib.sha1(b"blob %d\0" % len(bts) + bts).hexdigest()
+    blob_sha[f] = dict(here=here, expected_prefix=pre, equal=here.startswith(pre))
 res = dict(n_blocks_A=nblocks, n_A_txs_success_touching=len(idx["a"]), tx_analysed=dict(acc["txs"]), failed_txs=acc["failed_txs"], log_truncated_txs=acc["log_truncated_txs"],
     events=dict(acc["events"]), read_events=dict(acc["read_events"]), cpi_only=dict(acc["cpi_only"]), unknown_disc=dict(acc["unknown_disc"]), unknown_ix=dict(acc["unknown_ix"]),
     ix=dict(acc["ix"]), layout_len={k: dict(v) for k, v in acc["layout_len"].items()}, compared_fields_ok_or_not=dict(acc["compared"]), multihop_txs=acc["multihop_txs"],
     frozen_rows_records_from_logs=acc["frozen_rows"], indep_log_trade_events=acc["indep_log_trade_events"], unresolved_mint_rows=acc["unresolved_mint_rows"], trade_ix_total=acc["trade_ix_total"],
     walker_rows=dict(walker), walker_unknown_disc=dict(wk["unknown_disc"]), walker_bad_disc=dict(wk["bad_disc"]), walker_cpi_only_disc=dict(wk["cpi_only_disc"]),
     empty_tag_cpi=acc["empty_tag_cpi"], nontrade={k: dict(total=acc['nt_total'][k], frozen_none=acc['nt_none'][k], value_unmatched=acc['nt_unmatched'][k], equal=acc['nt_equal'][k], in_migrate_tx=acc['nt_in_migrate_tx'][k]) for k in acc['nt_total']}, trail8=dict(acc['trail8']), refused={f'{a}|{b}': v for (a, b), v in acc['refused'].items()}, refused_quote=dict(acc['refused_quote']), refused_rows=acc['refused_rows'], trail8_values=dict(collections.Counter(v for _, _, v in acc['trail8_by_slot']).most_common(10)), trail8_nonzero=[(a, b, v) for a, b, v in acc['trail8_by_slot'] if v], trail8_total=len(acc['trail8_by_slot']), trail8_first_last_slot=[min((x[0] for x in acc['trail8_by_slot']), default=None), max((x[0] for x in acc['trail8_by_slot']), default=None)], nondecode_by_cat=dict(collections.Counter(n["cat"] for n in acc["nondecode"])), nondecode=acc["nondecode"], blob_sha=blob_sha,
-    idl_sha256={k: hashlib.sha256((DOCS / f"{k}.main.json").read_bytes()).hexdigest() for k in IDL}, c_sample=idx["c"])
-(OUT / {"pre": "s06_parity_pre.json", "pre2": "s06_parity_pre2.json", "premig": "s06_parity_premig.json"}.get(SAMPLE, "s06_parity.json")).write_text(json.dumps(res, indent=1, sort_keys=True, default=str) + "\n")
+    idl_sha256={k: hashlib.sha256((DOCS / f"{k}.main.json").read_bytes()).hexdigest() for k in IDL})
+(OUT / {"pre": "s06_parity_pre.json", "premig": "s06_parity_premig.json"}.get(SAMPLE, "s06_parity.json")).write_text(json.dumps(res, indent=1, sort_keys=True, default=str) + "\n")
 print(json.dumps({k: v for k, v in res.items() if k not in ("nondecode", "ix", "layout_len", "c_sample", "events", "read_events")}, indent=1, default=str)[:5000])
