@@ -1,0 +1,6598 @@
+{
+ "blob_sha": {
+  "observe/trade_decode.py": {
+   "equal": true,
+   "expected_prefix": "238942a6",
+   "here": "238942a6b3c5425389eddfde4d11268c300acbec"
+  },
+  "observe/trade_store.py": {
+   "equal": true,
+   "expected_prefix": "ea4e11ed",
+   "here": "ea4e11eddf9f034e3bc7318ce8743337d753f350"
+  },
+  "tools/pump_history_backfill.py": {
+   "equal": true,
+   "expected_prefix": "9a8bebb3",
+   "here": "9a8bebb32adcf86de060b55f5a08110d11c0a550"
+  }
+ },
+ "compared_fields_ok_or_not": {
+  "BuyEvent": 1904,
+  "SellEvent": 2310,
+  "TradeEvent": 1596
+ },
+ "cpi_only": {},
+ "empty_tag_cpi": 0,
+ "events": {
+  "pump.ClaimCashbackEvent": 2,
+  "pump.CloseUserVolumeAccumulatorEvent": 35,
+  "pump.CollectCreatorFeeEvent": 9,
+  "pump.CreateEvent": 8,
+  "pump.DistributeCreatorFeesEvent": 5,
+  "pump.DistributeFeeToHoldersEvent": 50,
+  "pump.InitUserVolumeAccumulatorEvent": 18,
+  "pump.SweepBondingCurveFeeEvent": 3,
+  "pump.TradeEvent": 1596,
+  "pump_amm.BoostBuyAndBurnEvent": 3,
+  "pump_amm.BuyEvent": 2053,
+  "pump_amm.ClaimCashbackEvent": 6,
+  "pump_amm.CloseUserVolumeAccumulatorEvent": 210,
+  "pump_amm.CollectCoinCreatorFeeEvent": 6,
+  "pump_amm.CreatePoolEvent": 1,
+  "pump_amm.ExtendAccountEvent": 1,
+  "pump_amm.InitUserVolumeAccumulatorEvent": 37,
+  "pump_amm.SellEvent": 2461,
+  "pump_amm.SweepPoolFeeEvent": 1,
+  "pump_amm.WithdrawEvent": 1,
+  "pump_fees.WithdrawEvent": 1
+ },
+ "failed_txs": 0,
+ "frozen_rows_records_from_logs": 5810,
+ "idl_sha256": {
+  "pump": "7616681ea557975f9f623ac211080f22a93060781eaf4765b0a488d980997207",
+  "pump_amm": "b7d8c57a4d9c4dd0109a9ab893052352333252d4eedced10ac091d4d66cab89b",
+  "pump_fees": "6b9fa3eccc6e06273076a47b581f9fcb9e531bb7c3c88acbcd44db55a4002b29"
+ },
+ "indep_log_trade_events": 6110,
+ "ix": {
+  "pump.buy": 234,
+  "pump.buy_exact_quote_in_v2": 97,
+  "pump.buy_exact_quote_in_v3": 314,
+  "pump.buy_exact_sol_in": 34,
+  "pump.buy_v2": 15,
+  "pump.buy_v3": 47,
+  "pump.claim_cashback": 1,
+  "pump.claim_cashback_v2": 2,
+  "pump.close_user_volume_accumulator": 35,
+  "pump.collect_creator_fee": 8,
+  "pump.collect_creator_fee_v2": 13,
+  "pump.create_v2": 8,
+  "pump.distribute_creator_fees": 3,
+  "pump.distribute_creator_fees_v2": 2,
+  "pump.distribute_fee_to_holders": 50,
+  "pump.extend_account": 1,
+  "pump.init_user_volume_accumulator": 18,
+  "pump.multi_hop_curve_swap": 170,
+  "pump.sell": 300,
+  "pump.sell_v2": 83,
+  "pump.sell_v3": 295,
+  "pump.sweep_creator_fee": 8,
+  "pump_amm.boost_buy_and_burn": 3,
+  "pump_amm.buy": 553,
+  "pump_amm.buy_exact_quote_in": 934,
+  "pump_amm.buy_exact_quote_in_v2": 338,
+  "pump_amm.buy_v2": 104,
+  "pump_amm.claim_cashback": 6,
+  "pump_amm.close_user_volume_accumulator": 210,
+  "pump_amm.collect_coin_creator_fee": 11,
+  "pump_amm.create_pool": 1,
+  "pump_amm.extend_account": 2,
+  "pump_amm.init_user_volume_accumulator": 37,
+  "pump_amm.multi_hop_swap": 193,
+  "pump_amm.sell": 1900,
+  "pump_amm.sell_v2": 465,
+  "pump_amm.sweep_creator_fee": 1,
+  "pump_amm.withdraw": 1,
+  "pump_fees.get_fees": 5,
+  "pump_fees.get_fees_with_quote_mint": 4129,
+  "pump_fees.withdraw": 1
+ },
+ "layout_len": {
+  "pump.ClaimCashbackEvent": {
+   "72": 2
+  },
+  "pump.CloseUserVolumeAccumulatorEvent": {
+   "80": 35
+  },
+  "pump.CollectCreatorFeeEvent": {
+   "88": 9
+  },
+  "pump.CreateEvent": {
+   "334": 1,
+   "348": 1,
+   "351": 1,
+   "353": 1,
+   "358": 1,
+   "363": 1,
+   "366": 1,
+   "372": 1
+  },
+  "pump.DistributeCreatorFeesEvent": {
+   "222": 3,
+   "256": 2
+  },
+  "pump.DistributeFeeToHoldersEvent": {
+   "96": 50
+  },
+  "pump.InitUserVolumeAccumulatorEvent": {
+   "80": 18
+  },
+  "pump.SweepBondingCurveFeeEvent": {
+   "153": 3
+  },
+  "pump.TradeEvent": {
+   "390": 296,
+   "391": 669,
+   "401": 177,
+   "403": 34,
+   "405": 400,
+   "425": 9,
+   "439": 10,
+   "473": 1
+  },
+  "pump_amm.BoostBuyAndBurnEvent": {
+   "208": 3
+  },
+  "pump_amm.BuyEvent": {
+   "497": 553,
+   "500": 104,
+   "508": 121,
+   "512": 937,
+   "515": 338
+  },
+  "pump_amm.ClaimCashbackEvent": {
+   "72": 6
+  },
+  "pump_amm.CloseUserVolumeAccumulatorEvent": {
+   "80": 210
+  },
+  "pump_amm.CollectCoinCreatorFeeEvent": {
+   "120": 6
+  },
+  "pump_amm.CreatePoolEvent": {
+   "344": 1
+  },
+  "pump_amm.ExtendAccountEvent": {
+   "96": 1
+  },
+  "pump_amm.InitUserVolumeAccumulatorEvent": {
+   "80": 37
+  },
+  "pump_amm.SellEvent": {
+   "449": 2461
+  },
+  "pump_amm.SweepPoolFeeEvent": {
+   "185": 1
+  },
+  "pump_amm.WithdrawEvent": {
+   "264": 1
+  },
+  "pump_fees.WithdrawEvent": {
+   "88": 1
+  }
+ },
+ "log_truncated_txs": 0,
+ "multihop_txs": 193,
+ "n_A_txs_success_touching": 8264,
+ "n_blocks_A": 120,
+ "nondecode": [
+  {
+   "capped_log_events": 2,
+   "cat": "N5",
+   "explained_by_cap": true,
+   "frozen_rows": 0,
+   "indep_log_trade_events": 2,
+   "sig": "furWFYgzcPCH7Xi2fSuE3rsA7SrrXxATs9PGcqsVvx3q5tMjVSNhtJcZUQ4qDrYapeEoXVXSugMUoeup4DyhMD6",
+   "slot": 469751025,
+   "src": "A",
+   "why": "records_from_logs row count differs"
+  },
+  {
+   "capped_log_events": 2,
+   "cat": "N5",
+   "explained_by_cap": true,
+   "frozen_rows": 0,
+   "indep_log_trade_events": 2,
+   "sig": "4Y7hzMeC5GogjcuE8pU1M587YfJ4YUU55ttoebspTkHsnNdgPXiYB5JLmzmNkEx9VpiS9UM2P8xYuULVPzXAmNjR",
+   "slot": 469751025,
+   "src": "A",
+   "why": "records_from_logs row count differs"
+  },
+  {
+   "capped_log_events": 2,
+   "cat": "N5",
+   "explained_by_cap": true,
+   "frozen_rows": 0,
+   "indep_log_trade_events": 2,
+   "sig": "5Wt5W2TVLckUeoxCTYMRbj8bqjmAZ7kDpiNuUbLuutZrKLfy7Dq1KAFPcDx4fkotTUBk9XTvoGzp4MShEqTqDF7G",
+   "slot": 469751027,
+   "src": "A",
+   "why": "records_from_logs row count differs"
+  },
+  {
+   "capped_log_events": 2,
+   "cat": "N5",
+   "explained_by_cap": true,
+   "frozen_rows": 0,
+   "indep_log_trade_events": 2,
+   "sig": "4F9nehRCqteGh7Q8RACVspY8epwpyDpC4Mm7Z9HkaGi3wxvpibVFbTPSngFzVS1iJei3BXivpm7yamzQjjF4XNTQ",
+   "slot": 469751028,
+   "src": "A",
+   "why": "records_from_logs row count differs"
+  },
+  {
+   "capped_log_events": 2,
+   "cat": "N5",
+   "explained_by_cap": true,
+   "frozen_rows": 0,
+   "indep_log_trade_events": 2,
+   "sig": "52Br1jx9Vb8GjVKTciH66wLPM4PZPxP63Btvk4SCef4y5GDXBM6d3BPzjm94FGD8RFCzhu9E7ZkDG4Sj22eWAARu",
+   "slot": 469751028,
+   "src": "A",
+   "why": "records_from_logs row count differs"
+  },
+  {
+   "capped_log_events": 2,
+   "cat": "N5",
+   "explained_by_cap": true,
+   "frozen_rows": 0,
+   "indep_log_trade_events": 2,
+   "sig": "2otoGGZU3Pqk8KXMBTvSCtPALybtVBywfV9CmVjr3ZRo6rUrz3RxiCoGTxTLEfj7YsuwGzHJ56jcK8LSiB1XEh7f",
+   "slot": 469751032,
+   "src": "A",
+   "why": "records_from_logs row count differs"
+  },
+  {
+   "capped_log_events": 2,
+   "cat": "N5",
+   "explained_by_cap": true,
+   "frozen_rows": 0,
+   "indep_log_trade_events": 2,
+   "sig": "3SRJ1VxXaYitv3x8fyy669b53yazMhXbR12ekkwFWS9XdfyQTMTcYHA1daMJqZ7nsmN7K22hXP2g96RpPkWKYm9h",
+   "slot": 469751032,
+   "src": "A",
+   "why": "records_from_logs row count differs"
+  },
+  {
+   "capped_log_events": 2,
+   "cat": "N5",
+   "explained_by_cap": true,
+   "frozen_rows": 0,
+   "indep_log_trade_events": 2,
+   "sig": "4gdZG8YXBgicxVH67BfJ56aQGmvduCpQaZg7b68ngQro4RDv6MsYfN2uoZPUyyWqhQ4ztQzsAj3PQFLdXbL9qZPp",
+   "slot": 469751032,
+   "src": "A",
+   "why": "records_from_logs row count differs"
+  },
+  {
+   "capped_log_events": 2,
+   "cat": "N5",
+   "explained_by_cap": true,
+   "frozen_rows": 0,
+   "indep_log_trade_events": 2,
+   "sig": "PQpTZMYQv42SZrQMLzv3YT463Uyb543fYKLcWKxfdL4AiGMtPU73Gqsuk2u3npSFVrabJFG7PV1GH73wbEhCaW1",
+   "slot": 469751033,
+   "src": "A",
+   "why": "records_from_logs row count differs"
+  },
+  {
+   "capped_log_events": 2,
+   "cat": "N5",
+   "explained_by_cap": true,
+   "frozen_rows": 0,
+   "indep_log_trade_events": 2,
+   "sig": "2CNFT6QQS3YP3Coru23MWsap17mfiiAgXMSxwp93dmvKSFujxHHYALx3LA1UC8H2cMuSJFHDbWje7Z914p6i5UCp",
+   "slot": 469751033,
+   "src": "A",
+   "why": "records_from_logs row count differs"
+  },
+  {
+   "capped_log_events": 2,
+   "cat": "N5",
+   "explained_by_cap": true,
+   "frozen_rows": 0,
+   "indep_log_trade_events": 2,
+   "sig": "2pEVfJpCPWYoVJ9virZS6oY1GnZkvuzPzEnzLKJzXQeBcLwabQ7fCN1jWazRtYtknKMsdpJBa3oTh97GAyk3Hxi7",
+   "slot": 469751033,
+   "src": "A",
+   "why": "records_from_logs row count differs"
+  },
+  {
+   "capped_log_events": 2,
+   "cat": "N5",
+   "explained_by_cap": true,
+   "frozen_rows": 0,
+   "indep_log_trade_events": 2,
+   "sig": "yQbdVQimZ9d7rRde496vc2rkFxcZ9S4t2zhogCLFb2LbdKF7U3JiBwWAcrEMf3gveXSSBFNGmnPvwnhamgyNUxS",
+   "slot": 469756428,
+   "src": "A",
+   "why": "records_from_logs row count differs"
+  },
+  {
+   "capped_log_events": 2,
+   "cat": "N5",
+   "explained_by_cap": true,
+   "frozen_rows": 0,
+   "indep_log_trade_events": 2,
+   "sig": "4Cycr35PmkzBxwjEsQmnVkcu3ZFUV92wKe6qj5qvWGrwPXbjsngh3Ue3dXUJk55CqoW1jaEMknKpxtZpkPPJEdcu",
+   "slot": 469756428,
+   "src": "A",
+   "why": "records_from_logs row count differs"
+  },
+  {
+   "capped_log_events": 2,
+   "cat": "N5",
+   "explained_by_cap": true,
+   "frozen_rows": 0,
+   "indep_log_trade_events": 2,
+   "sig": "63hGbNc6tk2cgn4sBaK7JgX6Tp5pWAMtZ2muLuV9Vh8mS4SewHjy93g6jhph9s7onxc6Ummin5EZed4h24bPgpR4",
+   "slot": 469756428,
+   "src": "A",
+   "why": "records_from_logs row count differs"
+  },
+  {
+   "capped_log_events": 2,
+   "cat": "N5",
+   "explained_by_cap": true,
+   "frozen_rows": 0,
+   "indep_log_trade_events": 2,
+   "sig": "59uQDRWSAt7i3MmhbeY1hc6kR6yDDHAS3k1jHYPDP37BgpTwoRAis3ARbcnGspBs3FzJjWzNoaq8gfuo8hVf8LSy",
+   "slot": 469756428,
+   "src": "A",
+   "why": "records_from_logs row count differs"
+  },
+  {
+   "capped_log_events": 2,
+   "cat": "N5",
+   "explained_by_cap": true,
+   "frozen_rows": 0,
+   "indep_log_trade_events": 2,
+   "sig": "65j1ymW65Sq83vHFwoxDvvXhA1K3e6Yva6C1LmEdEUgi1AVgjLpVTWqhtJMSsEowYCGfLR9haM5i1xdQyGMd2AYJ",
+   "slot": 469756428,
+   "src": "A",
+   "why": "records_from_logs row count differs"
+  },
+  {
+   "capped_log_events": 2,
+   "cat": "N5",
+   "explained_by_cap": true,
+   "frozen_rows": 0,
+   "indep_log_trade_events": 2,
+   "sig": "5Xpd92SXm25Lu33YZD3jJDNMDAeJcTzs95fBpssmJCm9RQfuu8W7TLZ7A8enovuBBMBzoPT9nxCi9CF7PRCE3V5o",
+   "slot": 469756429,
+   "src": "A",
+   "why": "records_from_logs row count differs"
+  },
+  {
+   "capped_log_events": 2,
+   "cat": "N5",
+   "explained_by_cap": true,
+   "frozen_rows": 0,
+   "indep_log_trade_events": 2,
+   "sig": "3NMJBCzciifwpfDFrUvaTeAgvoE2yupWsA8jikdtrKL4KhLH137cLKcm2oksKLFa4oFMAw2bEgcgwg3sgAoW4ixA",
+   "slot": 469756430,
+   "src": "A",
+   "why": "records_from_logs row count differs"
+  },
+  {
+   "capped_log_events": 2,
+   "cat": "N5",
+   "explained_by_cap": true,
+   "frozen_rows": 0,
+   "indep_log_trade_events": 2,
+   "sig": "3qcX5iHJNoD1LrDuQ6NhdVPbY5cZUUsNSrYu12VD3T2jvM65gYFaSZkjG4mJFJKCU74MMx4aQw3YcijtHnFmXvYU",
+   "slot": 469756432,
+   "src": "A",
+   "why": "records_from_logs row count differs"
+  },
+  {
+   "capped_log_events": 2,
+   "cat": "N5",
+   "explained_by_cap": true,
+   "frozen_rows": 0,
+   "indep_log_trade_events": 2,
+   "sig": "4fpRqpuRsjRy4GKq74uH1fgMsn9Pei4rf9p1x8To7LrTMoKg9XHqiokG6Vg81kHJBaMQtm6FzwqeEsiBPQZTq11g",
+   "slot": 469756433,
+   "src": "A",
+   "why": "records_from_logs row count differs"
+  },
+  {
+   "capped_log_events": 2,
+   "cat": "N5",
+   "explained_by_cap": true,
+   "frozen_rows": 0,
+   "indep_log_trade_events": 2,
+   "sig": "4iCQHNVLCVngTWL2UdmaWfZDTAHKXrgkaxeWb6zfXZU4zPnqhS23bfqjF227kBqxfN4n3ymT7CX9dLPPcGnCb4hd",
+   "slot": 469761826,
+   "src": "A",
+   "why": "records_from_logs row count differs"
+  },
+  {
+   "capped_log_events": 2,
+   "cat": "N5",
+   "explained_by_cap": true,
+   "frozen_rows": 0,
+   "indep_log_trade_events": 2,
+   "sig": "3xZD9H1RCRVVRcu6F69TvESRA6fKgsGUzL85ZeUD78LohJcBtc8vNmTvHoMQBYmqtJckM9z9VxyEvGWqL47R7WCA",
+   "slot": 469761827,
+   "src": "A",
+   "why": "records_from_logs row count differs"
+  },
+  {
+   "capped_log_events": 2,
+   "cat": "N5",
+   "explained_by_cap": true,
+   "frozen_rows": 0,
+   "indep_log_trade_events": 2,
+   "sig": "46UcFR4idYdqx1o3pcQpHaSzKimm8b68J4WbEr6otzL8XpVBBQHs8yG3LY2tjZeWBEMk29bkRCwBD5ZNSNW8QiBN",
+   "slot": 469761828,
+   "src": "A",
+   "why": "records_from_logs row count differs"
+  },
+  {
+   "capped_log_events": 1,
+   "cat": "N5",
+   "explained_by_cap": true,
+   "frozen_rows": 0,
+   "indep_log_trade_events": 1,
+   "sig": "rDjF1C3BaNhvVhuHQoGvnwxnn7vRBoT5gs1wt5ek42JkK1dQ13iH27QRFgpndGy4dU96sAjoGcKHSABushcoq7L",
+   "slot": 469761829,
+   "src": "A",
+   "why": "records_from_logs row count differs"
+  },
+  {
+   "capped_log_events": 2,
+   "cat": "N5",
+   "explained_by_cap": true,
+   "frozen_rows": 0,
+   "indep_log_trade_events": 2,
+   "sig": "33d9N2bJTdQTuAcjwQiH766d4sVpY32jjAW2Q7B8AomJnD99zgss16fMuop7xyMjFV8HXFRUJGrcXxvicmFHh2LG",
+   "slot": 469761830,
+   "src": "A",
+   "why": "records_from_logs row count differs"
+  },
+  {
+   "capped_log_events": 2,
+   "cat": "N5",
+   "explained_by_cap": true,
+   "frozen_rows": 0,
+   "indep_log_trade_events": 2,
+   "sig": "5AJ7ToPBd4HxRo6TPiToSywgjpHRRCJQoBokqFiqh4eZGFTvkXg5uwjEhYd8yuqTYSCoRJDGXAYXQRuzBKWHuS8n",
+   "slot": 469761833,
+   "src": "A",
+   "why": "records_from_logs row count differs"
+  },
+  {
+   "capped_log_events": 2,
+   "cat": "N5",
+   "explained_by_cap": true,
+   "frozen_rows": 0,
+   "indep_log_trade_events": 2,
+   "sig": "f2qAGRUwbRAQjpdVGXiNxZjv3cf7xss9AhbagsEeJfVyrd5QfCsuKo3G2SYw4Xffj1LMRW3J4LdYzF3NAgQB5wP",
+   "slot": 469761834,
+   "src": "A",
+   "why": "records_from_logs row count differs"
+  },
+  {
+   "capped_log_events": 2,
+   "cat": "N5",
+   "explained_by_cap": true,
+   "frozen_rows": 0,
+   "indep_log_trade_events": 2,
+   "sig": "JjXt6ACqesCFKPKU3Vmr1RBNVAaziqLQ4k8fCzJHz1o6L4QxgWYizgMnbybeUgmq2LEPuNkErLuNoWzkTj2FmsC",
+   "slot": 469767225,
+   "src": "A",
+   "why": "records_from_logs row count differs"
+  },
+  {
+   "capped_log_events": 2,
+   "cat": "N5",
+   "explained_by_cap": true,
+   "frozen_rows": 0,
+   "indep_log_trade_events": 2,
+   "sig": "3r8iMJkrP7hcYQ9xoAS5S9ZN7Zdf94ybX9EkytSXfwxLodRRQVru2HUutyRCP8aSkoqvei1TWpNdnrgtonCPCDPV",
+   "slot": 469767225,
+   "src": "A",
+   "why": "records_from_logs row count differs"
+  },
+  {
+   "capped_log_events": 2,
+   "cat": "N5",
+   "explained_by_cap": true,
+   "frozen_rows": 0,
+   "indep_log_trade_events": 2,
+   "sig": "2KgGBTGkiaW7NJt4i2NVpsem76tj1bBQoqKVB8hKwa1Cnw8GJjJezSvpBABgYq8U4bbc2Nxae5CyNHT8wXZGfdop",
+   "slot": 469767225,
+   "src": "A",
+   "why": "records_from_logs row count differs"
+  },
+  {
+   "capped_log_events": 2,
+   "cat": "N5",
+   "explained_by_cap": true,
+   "frozen_rows": 0,
+   "indep_log_trade_events": 2,
+   "sig": "391PWeETftRd2AsV9S2EAVZ5KpKFqYxxGt4FGWRf1Ku9Xb9d55SqCm6CVdiQDemEUEsMNz3PGXUgVrRyPa1iq74x",
+   "slot": 469767225,
+   "src": "A",
+   "why": "records_from_logs row count differs"
+  },
+  {
+   "capped_log_events": 2,
+   "cat": "N5",
+   "explained_by_cap": true,
+   "frozen_rows": 0,
+   "indep_log_trade_events": 2,
+   "sig": "3og2J9u9fLw5nCmw33mMs9ELMpWPeHddfA6cTDiLQ1vp5JsEnC3GJHMYUPtXnwJite4o4KZDhmMtpzXUSqfMJnsu",
+   "slot": 469767227,
+   "src": "A",
+   "why": "records_from_logs row count differs"
+  },
+  {
+   "capped_log_events": 2,
+   "cat": "N5",
+   "explained_by_cap": true,
+   "frozen_rows": 0,
+   "indep_log_trade_events": 2,
+   "sig": "4KRZFLEuf1dkMoqAscM5uGYGqFA2JTFTp6mG3LbZBzE1b12HsELGFfpME9bj1bPvr372TPW2ydA8A2uGUpgaZfqY",
+   "slot": 469767229,
+   "src": "A",
+   "why": "records_from_logs row count differs"
+  },
+  {
+   "capped_log_events": 2,
+   "cat": "N5",
+   "explained_by_cap": true,
+   "frozen_rows": 0,
+   "indep_log_trade_events": 2,
+   "sig": "2wFfGv2Pw5ENZkn7irjKQdd4NJPzuyE1pdPfxCXmd3KmG99DRebWUqoWLKrSgrjYpfB3um4UxbrfJ8zyJDzeqwVm",
+   "slot": 469767230,
+   "src": "A",
+   "why": "records_from_logs row count differs"
+  },
+  {
+   "capped_log_events": 2,
+   "cat": "N5",
+   "explained_by_cap": true,
+   "frozen_rows": 0,
+   "indep_log_trade_events": 2,
+   "sig": "3FKqNwLHnMJhwrxMmh9U6Ah7ynqfzs6LE3n53neZ8skkYNbZSr4L8SPeAjWqGHphfZfhmRtQGky4yrYea1znbTYR",
+   "slot": 469767230,
+   "src": "A",
+   "why": "records_from_logs row count differs"
+  },
+  {
+   "capped_log_events": 2,
+   "cat": "N5",
+   "explained_by_cap": true,
+   "frozen_rows": 0,
+   "indep_log_trade_events": 2,
+   "sig": "3VrB4pWjb25RQHqKDtEDw7SdBwSP1tJ7MgCRXP3rZu7T1g6Ee7xViGgMZbFoFP478GSiBPAvujSgyvQQA9UDRidu",
+   "slot": 469767230,
+   "src": "A",
+   "why": "records_from_logs row count differs"
+  },
+  {
+   "capped_log_events": 2,
+   "cat": "N5",
+   "explained_by_cap": true,
+   "frozen_rows": 0,
+   "indep_log_trade_events": 2,
+   "sig": "3B76196gUKzJcWMYZZz4QRmKTL9RWV6REdoahrjGWCNxtEYawh7i2FAJiMNNHBZS4Gcn71NzB6Vdx15ok5veg5GC",
+   "slot": 469767230,
+   "src": "A",
+   "why": "records_from_logs row count differs"
+  },
+  {
+   "capped_log_events": 2,
+   "cat": "N5",
+   "explained_by_cap": true,
+   "frozen_rows": 0,
+   "indep_log_trade_events": 2,
+   "sig": "2SrwmfkvwAdcemQWmpjrWRdqYpVCZCZPGrLfKxRdocTUjsCB5uWWhjEceAaYZunkJgm2agvP3RXxszbbc4NhzSSC",
+   "slot": 469767230,
+   "src": "A",
+   "why": "records_from_logs row count differs"
+  },
+  {
+   "capped_log_events": 2,
+   "cat": "N5",
+   "explained_by_cap": true,
+   "frozen_rows": 0,
+   "indep_log_trade_events": 2,
+   "sig": "3wKiBd1rFsAtkUBHcbck1jVBz3scwtM5dtsHwX6erQiupU4LjiFbSw2q7Sbv8dFxws61NvNopi8kEkwQeeXq4cKD",
+   "slot": 469767231,
+   "src": "A",
+   "why": "records_from_logs row count differs"
+  },
+  {
+   "capped_log_events": 2,
+   "cat": "N5",
+   "explained_by_cap": true,
+   "frozen_rows": 0,
+   "indep_log_trade_events": 2,
+   "sig": "3ePKm6KmML1vDVqBovZkgPx4yHytb9s4FEJxVaBggdMcznQc82UvJvyeG721XqiurGXpWzC4rbf6nk7TUyEpiEhg",
+   "slot": 469767231,
+   "src": "A",
+   "why": "records_from_logs row count differs"
+  },
+  {
+   "capped_log_events": 2,
+   "cat": "N5",
+   "explained_by_cap": true,
+   "frozen_rows": 0,
+   "indep_log_trade_events": 2,
+   "sig": "5XrczzwUFsVZNEtFQaDf2FNTs837byk8aHwKbDS6paV7eYstcYDY2vCFC7CcMxut5vJPVvCRm47DwTyQrkUAx4BD",
+   "slot": 469767232,
+   "src": "A",
+   "why": "records_from_logs row count differs"
+  },
+  {
+   "capped_log_events": 2,
+   "cat": "N5",
+   "explained_by_cap": true,
+   "frozen_rows": 0,
+   "indep_log_trade_events": 2,
+   "sig": "5iorzaPKo77EWWdFBfg7VvywpGTy4Nryy73gSKSBoyfbzp5M5FaqnQbAPFq26FVNkspTEzy1EBFbdtc2EbBQ7Fic",
+   "slot": 469767233,
+   "src": "A",
+   "why": "records_from_logs row count differs"
+  },
+  {
+   "capped_log_events": 2,
+   "cat": "N5",
+   "explained_by_cap": true,
+   "frozen_rows": 0,
+   "indep_log_trade_events": 2,
+   "sig": "2A4Aip1gPGXym1wjU3tqkVnTYVWtyFXCL8GkoKKbN3tFLCfA4XrbUeEtuYExB7F9nGWXxRKkExhewa8x6Cxfk1s3",
+   "slot": 469767233,
+   "src": "A",
+   "why": "records_from_logs row count differs"
+  },
+  {
+   "capped_log_events": 2,
+   "cat": "N5",
+   "explained_by_cap": true,
+   "frozen_rows": 0,
+   "indep_log_trade_events": 2,
+   "sig": "3KUM7i5256a5pLae6uHxQxb47MstYJ5fVvQRqzMZfiLe1sGMRrPwoJkLFZS5vKBgX5dRsUyhR1iDx5RQiDUC5NK",
+   "slot": 469767233,
+   "src": "A",
+   "why": "records_from_logs row count differs"
+  },
+  {
+   "capped_log_events": 2,
+   "cat": "N5",
+   "explained_by_cap": true,
+   "frozen_rows": 0,
+   "indep_log_trade_events": 2,
+   "sig": "YcDbURVhcMzZ7CnjQ3zBjd9ByrgbEzoJ6NE7u8sNXns1y13T5Wx4U6YkbrqdNFBbBhcF22bDCJJVdVBUYxFeK1v",
+   "slot": 469772625,
+   "src": "A",
+   "why": "records_from_logs row count differs"
+  },
+  {
+   "capped_log_events": 2,
+   "cat": "N5",
+   "explained_by_cap": true,
+   "frozen_rows": 0,
+   "indep_log_trade_events": 2,
+   "sig": "2GKrpccLsf2rEZvHrurVRfWdcNeQgqKsuQXi4sP8RbRmLXjChQQiPi8KoY1TG3oCM6JQGBvRv3cPkXzVcAhYGPJE",
+   "slot": 469772627,
+   "src": "A",
+   "why": "records_from_logs row count differs"
+  },
+  {
+   "capped_log_events": 2,
+   "cat": "N5",
+   "explained_by_cap": true,
+   "frozen_rows": 0,
+   "indep_log_trade_events": 2,
+   "sig": "5fbPkvunp9jXqaQyC2icUkdbJr5QvoPsewJgL8r6Wd2ZS6oCADauiFvgVZkJQssVndSVjfYYSNVWiVnuPBKhXY48",
+   "slot": 469772627,
+   "src": "A",
+   "why": "records_from_logs row count differs"
+  },
+  {
+   "cat": "N5",
+   "sig": "3WKfpXuGgaoxGMJ4DUCuStcy4fDJt39X6KYAKR4Tfsd8tDzuEkxwHfqTPRaz39Ye1bjH1oscngkC1MHe38wU5DoX",
+   "slot": 469772628,
+   "src": "A",
+   "trade_events": 1,
+   "trade_ix": 0,
+   "truncated": false,
+   "why": "events != trade instructions"
+  },
+  {
+   "capped_log_events": 2,
+   "cat": "N5",
+   "explained_by_cap": true,
+   "frozen_rows": 0,
+   "indep_log_trade_events": 2,
+   "sig": "64pkC9Uuk1GWGhpHMd1dd7RhrdDwXVzB2axyNvii5Qgz2kgM2qcdkjy2dGT97wD3d24tTJ95qwLi2o9i49SD42aR",
+   "slot": 469772630,
+   "src": "A",
+   "why": "records_from_logs row count differs"
+  },
+  {
+   "capped_log_events": 2,
+   "cat": "N5",
+   "explained_by_cap": true,
+   "frozen_rows": 0,
+   "indep_log_trade_events": 2,
+   "sig": "3HReYHpQKzE67t1cEvjUVzFhmRLCrk1nBcm2u63p81itUDZ5sA3achpQ3pHEPSWaBSBBZE7gfTAxZ6FX4gwjFbGH",
+   "slot": 469772630,
+   "src": "A",
+   "why": "records_from_logs row count differs"
+  },
+  {
+   "capped_log_events": 2,
+   "cat": "N5",
+   "explained_by_cap": true,
+   "frozen_rows": 0,
+   "indep_log_trade_events": 2,
+   "sig": "3yPYyQcniZb7u3Qm6oEiy1j8VDvX36fghqkQMvmhX8qqP2UQe3EzcHE2e75nP3wbfyZoFuTuHYMLq7JgZM7sFcmU",
+   "slot": 469772631,
+   "src": "A",
+   "why": "records_from_logs row count differs"
+  },
+  {
+   "capped_log_events": 2,
+   "cat": "N5",
+   "explained_by_cap": true,
+   "frozen_rows": 0,
+   "indep_log_trade_events": 2,
+   "sig": "5QY2isyxxP52uJ93Sz7PVnDkXS29xh9P4xFQ8RRBDcy4rCm575QifB2SJJMJFPyfcPfACSTEWg8EovFyJWUdjuZA",
+   "slot": 469772633,
+   "src": "A",
+   "why": "records_from_logs row count differs"
+  },
+  {
+   "capped_log_events": 2,
+   "cat": "N5",
+   "explained_by_cap": true,
+   "frozen_rows": 0,
+   "indep_log_trade_events": 2,
+   "sig": "2TMiV9g7WDjTQoCgM9HYM6Zqqz5PrxAgMVghm31REnau62PRstZFvvMQw5HP1uLYUM5nDC3Pe9LtVrVZujyGw8Aa",
+   "slot": 469772633,
+   "src": "A",
+   "why": "records_from_logs row count differs"
+  },
+  {
+   "capped_log_events": 2,
+   "cat": "N5",
+   "explained_by_cap": true,
+   "frozen_rows": 0,
+   "indep_log_trade_events": 2,
+   "sig": "2tqdJzVTSLwu8vAwRCzJsSsJs7NFfswRXsWK7kBMHtmKojp2GCU3tp3bvmgQdYfSBdr5mAwF5d91yZjaAsGyDbj1",
+   "slot": 469778025,
+   "src": "A",
+   "why": "records_from_logs row count differs"
+  },
+  {
+   "capped_log_events": 2,
+   "cat": "N5",
+   "explained_by_cap": true,
+   "frozen_rows": 0,
+   "indep_log_trade_events": 2,
+   "sig": "2yD1EwuW7WTo2wNJjigd5pFeVdZSpymg39Vb32W7DuHV4FeNM8dr9SAzchN5jKE2trXAFUYuJ9D3j823wTGxcPcv",
+   "slot": 469778026,
+   "src": "A",
+   "why": "records_from_logs row count differs"
+  },
+  {
+   "capped_log_events": 2,
+   "cat": "N5",
+   "explained_by_cap": true,
+   "frozen_rows": 0,
+   "indep_log_trade_events": 2,
+   "sig": "4LAbNMnU5z17oAxwMRRNvx9xApUgvYhX42cdTkaC8T7bocn389psJ1MRakXXJBBnJSf8BU4mk8cXMEVmfkgmo5Zj",
+   "slot": 469778027,
+   "src": "A",
+   "why": "records_from_logs row count differs"
+  },
+  {
+   "capped_log_events": 2,
+   "cat": "N5",
+   "explained_by_cap": true,
+   "frozen_rows": 0,
+   "indep_log_trade_events": 2,
+   "sig": "2vSoSyxFV3WyaDKPKJ67qTt5NWdpi44g7xKDeeqgXmZjLkzsW7tdZHy1T8dh5kCVm6V21u7ridvsgoJvEKNbhoYA",
+   "slot": 469778029,
+   "src": "A",
+   "why": "records_from_logs row count differs"
+  },
+  {
+   "capped_log_events": 2,
+   "cat": "N5",
+   "explained_by_cap": true,
+   "frozen_rows": 0,
+   "indep_log_trade_events": 2,
+   "sig": "4u3yBgDnYdiMH9maBXx1913qXRRVGe5Co1wkkcKaeZ1s65cks46KXkLbVwuj8H9dR1tB2pLd1HWhGNABbtCSFfnX",
+   "slot": 469778029,
+   "src": "A",
+   "why": "records_from_logs row count differs"
+  },
+  {
+   "capped_log_events": 2,
+   "cat": "N5",
+   "explained_by_cap": true,
+   "frozen_rows": 0,
+   "indep_log_trade_events": 2,
+   "sig": "4uTL54NPdgJTsoMcESFJvRPKdqX342AKQRYNZiAJRiKMVQesxrcR55tAKJHQKNZciwcniG7JV8N9uwRiViZc3nXk",
+   "slot": 469778029,
+   "src": "A",
+   "why": "records_from_logs row count differs"
+  },
+  {
+   "capped_log_events": 2,
+   "cat": "N5",
+   "explained_by_cap": true,
+   "frozen_rows": 0,
+   "indep_log_trade_events": 2,
+   "sig": "328baki96wjk2MsJBb1GWzHRVwvHaVTPm8XhezMHVDrsifTgki5FdmmuEJ5otoQW6fiVEHfeRh5ApyWbEmW8Nea6",
+   "slot": 469778030,
+   "src": "A",
+   "why": "records_from_logs row count differs"
+  },
+  {
+   "capped_log_events": 2,
+   "cat": "N5",
+   "explained_by_cap": true,
+   "frozen_rows": 0,
+   "indep_log_trade_events": 2,
+   "sig": "2A6NzRiEjNPajSwEakJb3Y4aVPgFjEpKZQCp5NBdPYq8BY9EXJSAb816jw9H1Ya8F5t1XfzMYg2isajdGiR9Wvfk",
+   "slot": 469778030,
+   "src": "A",
+   "why": "records_from_logs row count differs"
+  },
+  {
+   "capped_log_events": 2,
+   "cat": "N5",
+   "explained_by_cap": true,
+   "frozen_rows": 0,
+   "indep_log_trade_events": 2,
+   "sig": "rUf7Lb5BfoR8tqKiy3usgLxV4MKP61cmsFWuin1jFQ1Ndgg2Ah7iuQPprCNjoWQBaaYRYFRRus9sEFH64jzda8V",
+   "slot": 469778030,
+   "src": "A",
+   "why": "records_from_logs row count differs"
+  },
+  {
+   "capped_log_events": 2,
+   "cat": "N5",
+   "explained_by_cap": true,
+   "frozen_rows": 0,
+   "indep_log_trade_events": 2,
+   "sig": "4xZ4ChzwYb4KgHePEzagvPwcQvhJEt4Fmpjr3vESxzuhv2kF9Zu2yyZMiPKQqxJ1g2GdvKRBmPFSAFi2ANVCNphb",
+   "slot": 469778032,
+   "src": "A",
+   "why": "records_from_logs row count differs"
+  },
+  {
+   "capped_log_events": 2,
+   "cat": "N5",
+   "explained_by_cap": true,
+   "frozen_rows": 0,
+   "indep_log_trade_events": 2,
+   "sig": "4mYoYuRQf4KVcmzsSe28rjyCzTYXXvBT53PrUC6wTEHdTFn7rstoH9amVRydtmqZ66nozT5nXga9PxDRji3fMBtB",
+   "slot": 469778032,
+   "src": "A",
+   "why": "records_from_logs row count differs"
+  },
+  {
+   "capped_log_events": 2,
+   "cat": "N5",
+   "explained_by_cap": true,
+   "frozen_rows": 0,
+   "indep_log_trade_events": 2,
+   "sig": "2CbLDCQ4LztKRLaSYKaFqxCUoF6PoReg32LwtDS7WVcr6byKcNFd35tsQnMH6d1WJL2ErrMmZTceGFMbiNEHUJxL",
+   "slot": 469778032,
+   "src": "A",
+   "why": "records_from_logs row count differs"
+  },
+  {
+   "capped_log_events": 2,
+   "cat": "N5",
+   "explained_by_cap": true,
+   "frozen_rows": 0,
+   "indep_log_trade_events": 2,
+   "sig": "4bK9YPLQB4p54n2y635LBPHLwSHpkRZK4zv1N37wYAukMvGCbWopjNjC7tgiE6x83SJLRHCcJTVzL8dXsqN7d3jY",
+   "slot": 469778033,
+   "src": "A",
+   "why": "records_from_logs row count differs"
+  },
+  {
+   "capped_log_events": 2,
+   "cat": "N5",
+   "explained_by_cap": true,
+   "frozen_rows": 0,
+   "indep_log_trade_events": 2,
+   "sig": "rPPXRZSXqe4xCQ8PHsckp3hqLCjJs44aYveKdnHjHYTPSdgXhegkJpzp4VsZjtcGf14KfQF5wKFBxC4AfrGL5qB",
+   "slot": 469778034,
+   "src": "A",
+   "why": "records_from_logs row count differs"
+  },
+  {
+   "capped_log_events": 2,
+   "cat": "N5",
+   "explained_by_cap": true,
+   "frozen_rows": 0,
+   "indep_log_trade_events": 2,
+   "sig": "4N2NQejtTXUxAxzSSqhh3jERmuVxivdfCjrDUde35mxDAB6B7UZeNFN6BwrEhFjHoQe2VkFvPwLq8t7nf1UhvV7U",
+   "slot": 469783425,
+   "src": "A",
+   "why": "records_from_logs row count differs"
+  },
+  {
+   "capped_log_events": 2,
+   "cat": "N5",
+   "explained_by_cap": true,
+   "frozen_rows": 0,
+   "indep_log_trade_events": 2,
+   "sig": "4sAakKemZgX31VvSyd5FNNJfBe3ovT2XB4tr4wjv2chpj7HypEVvEMknnxhGie7xvp7SA9vT1twbXfFkkrThXd8s",
+   "slot": 469783425,
+   "src": "A",
+   "why": "records_from_logs row count differs"
+  },
+  {
+   "capped_log_events": 2,
+   "cat": "N5",
+   "explained_by_cap": true,
+   "frozen_rows": 0,
+   "indep_log_trade_events": 2,
+   "sig": "KfDfzeufFzbrFZqxyoAPsQU5E9EJKh95v4hNaUKWEbPZMofqt2ybijwoMMXaww4uXsQPNeMUxdhCsKUcGYNEmki",
+   "slot": 469783425,
+   "src": "A",
+   "why": "records_from_logs row count differs"
+  },
+  {
+   "capped_log_events": 2,
+   "cat": "N5",
+   "explained_by_cap": true,
+   "frozen_rows": 0,
+   "indep_log_trade_events": 2,
+   "sig": "CMBfSB8J2mvGZhQQv3K9GESQxGtmofoPxXzm2y8nkWL6NhafHX9MpvW6iaKT131oXzExN57d1ndfgZaoQDJz6KG",
+   "slot": 469783425,
+   "src": "A",
+   "why": "records_from_logs row count differs"
+  },
+  {
+   "capped_log_events": 2,
+   "cat": "N5",
+   "explained_by_cap": true,
+   "frozen_rows": 0,
+   "indep_log_trade_events": 2,
+   "sig": "4TE7TJ5MfgN6VxQbdJQ1PAdtsiZGsbDAWCnvu4P8vCB6ei2zDzAxQ91gZFgftmANanD94BGK7QuMeiBhfDqyDvUM",
+   "slot": 469783427,
+   "src": "A",
+   "why": "records_from_logs row count differs"
+  },
+  {
+   "capped_log_events": 2,
+   "cat": "N5",
+   "explained_by_cap": true,
+   "frozen_rows": 0,
+   "indep_log_trade_events": 2,
+   "sig": "4GFjqaVGkLPpiSaQ7A69smTyeesaXcLeUBMAYxWYWWYEeqihi7DXoy8P6eD9GDBBp7tymnDbdjo4WcxK1dFXT3Y4",
+   "slot": 469783427,
+   "src": "A",
+   "why": "records_from_logs row count differs"
+  },
+  {
+   "capped_log_events": 2,
+   "cat": "N5",
+   "explained_by_cap": true,
+   "frozen_rows": 0,
+   "indep_log_trade_events": 2,
+   "sig": "44YQ72R9XzjhUyGGg8WzLqpUYhJYzxAb89ccRH1DQUuFsGb5FTTQNpwy7odK1TeCx2w18yAqttTF4Kb1F45yFBWQ",
+   "slot": 469783428,
+   "src": "A",
+   "why": "records_from_logs row count differs"
+  },
+  {
+   "capped_log_events": 2,
+   "cat": "N5",
+   "explained_by_cap": true,
+   "frozen_rows": 0,
+   "indep_log_trade_events": 2,
+   "sig": "4mR48oBzBJVv3qrRQyhCJxP73d6R9L5d6PBM2gQuqfBVxkU68on1H6xbuQ2cRf3zoStWcnD2QyZYpBcKjUfMBEkk",
+   "slot": 469783428,
+   "src": "A",
+   "why": "records_from_logs row count differs"
+  },
+  {
+   "capped_log_events": 2,
+   "cat": "N5",
+   "explained_by_cap": true,
+   "frozen_rows": 0,
+   "indep_log_trade_events": 2,
+   "sig": "4koGMh2o5gy9yTYtuwjxh5sxuwg7sc7ze4uLYA6UP9NtJWmhp4ZZ5oAAoW7tjhZcqvjBvbXMv5FTMFnhKC2LKj4H",
+   "slot": 469783430,
+   "src": "A",
+   "why": "records_from_logs row count differs"
+  },
+  {
+   "capped_log_events": 2,
+   "cat": "N5",
+   "explained_by_cap": true,
+   "frozen_rows": 0,
+   "indep_log_trade_events": 2,
+   "sig": "597MFRV7cFxtrzeR2TRrnU87QQgiDymYBjJBWqfRAoKQqimSBi9Pe1dxznBmjUQiBqmeFQ6FxpV8zSm1sqe87LHv",
+   "slot": 469783430,
+   "src": "A",
+   "why": "records_from_logs row count differs"
+  },
+  {
+   "capped_log_events": 2,
+   "cat": "N5",
+   "explained_by_cap": true,
+   "frozen_rows": 0,
+   "indep_log_trade_events": 2,
+   "sig": "3FPGsFFxjTLgLaF2rWY4eNdRrRYYVMP4epzdYN8FjBh5JXvGWjVAboXCh8EzgEWVRFbCjEd4TsJ8vkh6ZaAMucSz",
+   "slot": 469783430,
+   "src": "A",
+   "why": "records_from_logs row count differs"
+  },
+  {
+   "capped_log_events": 2,
+   "cat": "N5",
+   "explained_by_cap": true,
+   "frozen_rows": 0,
+   "indep_log_trade_events": 2,
+   "sig": "Z3v8LCf5pnCZXH9Yh9Nh9uNFYv3xNXW2EUTwPorJqAD2qTqLdN6HazShqY8pnSfxaXZ7m6BC94uQW1XHvryEX2r",
+   "slot": 469783430,
+   "src": "A",
+   "why": "records_from_logs row count differs"
+  },
+  {
+   "capped_log_events": 2,
+   "cat": "N5",
+   "explained_by_cap": true,
+   "frozen_rows": 0,
+   "indep_log_trade_events": 2,
+   "sig": "3t2rCoLpVyP5WtUetWB6w1D499J4dGmyGZ82ma9UzR333upExoTS4XVoxx8LxKfpMuvkgRivfj7nkpryLtJ5mvGr",
+   "slot": 469783432,
+   "src": "A",
+   "why": "records_from_logs row count differs"
+  },
+  {
+   "capped_log_events": 2,
+   "cat": "N5",
+   "explained_by_cap": true,
+   "frozen_rows": 0,
+   "indep_log_trade_events": 2,
+   "sig": "4unFDrgQeH6pCb8Xw1oWndf9d4C568rDeWumEuaq3eBybAEymK5mDxyRKcQfvW1JNa6tPY31BVF3BksB9KWaAC2d",
+   "slot": 469783432,
+   "src": "A",
+   "why": "records_from_logs row count differs"
+  },
+  {
+   "capped_log_events": 2,
+   "cat": "N5",
+   "explained_by_cap": true,
+   "frozen_rows": 0,
+   "indep_log_trade_events": 2,
+   "sig": "2tZz9mrEMvKru9Bp6nUkg5VZ5WshSjAkhUUB4my1332WNaU8i9QQkCuRK3ybxCxJZk8LwvqCtpaz6h6fC5sak7S1",
+   "slot": 469783432,
+   "src": "A",
+   "why": "records_from_logs row count differs"
+  },
+  {
+   "capped_log_events": 2,
+   "cat": "N5",
+   "explained_by_cap": true,
+   "frozen_rows": 0,
+   "indep_log_trade_events": 2,
+   "sig": "4op9DkxBf8jQFdEuJt6i9pdLZoNnoENFshH5wbRJjYTfastZtpLmY7iNuDPdFsVUXNKv1gmv6smuzyLdjUK1Lduy",
+   "slot": 469783433,
+   "src": "A",
+   "why": "records_from_logs row count differs"
+  },
+  {
+   "capped_log_events": 2,
+   "cat": "N5",
+   "explained_by_cap": true,
+   "frozen_rows": 0,
+   "indep_log_trade_events": 2,
+   "sig": "4vwq5q1vYixWj7AK2Vgj5YT4UamrmchHzdLwrrktP7jmwa8NuMQEbd2cGMg5vvRcUSBtyp6BsBdXDWWEDUhdGnUw",
+   "slot": 469788826,
+   "src": "A",
+   "why": "records_from_logs row count differs"
+  },
+  {
+   "capped_log_events": 2,
+   "cat": "N5",
+   "explained_by_cap": true,
+   "frozen_rows": 0,
+   "indep_log_trade_events": 2,
+   "sig": "4eXgWCozVi4DjN1qgjgkso9uDwu8zJh8uKfyE1WXhWdZ4HRPFk7oMDAR5oKHR2zjNgrhQcATM2crDNxZQxJrebLz",
+   "slot": 469788826,
+   "src": "A",
+   "why": "records_from_logs row count differs"
+  },
+  {
+   "capped_log_events": 2,
+   "cat": "N5",
+   "explained_by_cap": true,
+   "frozen_rows": 0,
+   "indep_log_trade_events": 2,
+   "sig": "4wHacHJX9RspwNGpLRzrfcoU3aBHC7897uaSuPc9X2Qbmff5o5fejdNDMRuKBtRNA8jC2TAAoNXV8PUNDwsCJoeF",
+   "slot": 469788829,
+   "src": "A",
+   "why": "records_from_logs row count differs"
+  },
+  {
+   "capped_log_events": 2,
+   "cat": "N5",
+   "explained_by_cap": true,
+   "frozen_rows": 0,
+   "indep_log_trade_events": 2,
+   "sig": "5TPE4mXsAWMRkQC1ieTX2X3wBLFUi5F2P7UVKfse8e4Ui2Nw7bZBfdX1Ls3y1McsuatDQZoUXCaoSBn9JS92qtMA",
+   "slot": 469788831,
+   "src": "A",
+   "why": "records_from_logs row count differs"
+  },
+  {
+   "capped_log_events": 2,
+   "cat": "N5",
+   "explained_by_cap": true,
+   "frozen_rows": 0,
+   "indep_log_trade_events": 2,
+   "sig": "2F7nx8G3t6HBXq79Q3tE5y56TtsvnZKkKAVzn2nVY8AopxTgSppij1UfrvNtGLpF4iCpQJfdkrezb2LJ8C9njH1p",
+   "slot": 469788832,
+   "src": "A",
+   "why": "records_from_logs row count differs"
+  },
+  {
+   "capped_log_events": 2,
+   "cat": "N5",
+   "explained_by_cap": true,
+   "frozen_rows": 0,
+   "indep_log_trade_events": 2,
+   "sig": "5m7KH3tXjdviZwgeKdz3eeWsk6nyMnZRw9rZuy6jYSE2BnTuAXhu4GcahJkcUL9pxdkH92W6b8PVNQSAzXTjW3LF",
+   "slot": 469788834,
+   "src": "A",
+   "why": "records_from_logs row count differs"
+  },
+  {
+   "capped_log_events": 2,
+   "cat": "N5",
+   "explained_by_cap": true,
+   "frozen_rows": 0,
+   "indep_log_trade_events": 2,
+   "sig": "5M6goLQw9YnRKKDFfqyqSDyXRkLVpXYNDRcVpbQ3wNHLghZFtecLQ8C6nSCSAaJytZZ9d4771Jvcng2MBPR1tCzM",
+   "slot": 469794225,
+   "src": "A",
+   "why": "records_from_logs row count differs"
+  },
+  {
+   "capped_log_events": 2,
+   "cat": "N5",
+   "explained_by_cap": true,
+   "frozen_rows": 0,
+   "indep_log_trade_events": 2,
+   "sig": "4KLCGL5oNJd59R2anSLZkh5HewbLfdDHBwdxMZ2nVsqH6ff2xLybvFvGVa9agTDPJryPfMFB9V73hBDUo6PWMFzo",
+   "slot": 469794226,
+   "src": "A",
+   "why": "records_from_logs row count differs"
+  },
+  {
+   "capped_log_events": 2,
+   "cat": "N5",
+   "explained_by_cap": true,
+   "frozen_rows": 0,
+   "indep_log_trade_events": 2,
+   "sig": "2Z228rwYroKj7FgAybDJ8SzMB62tzBRho2XDc1Ynb7zQYTX7Y1LpyfoAFJK8dU7FMfveUthdULc416ztxPffx8QW",
+   "slot": 469794226,
+   "src": "A",
+   "why": "records_from_logs row count differs"
+  },
+  {
+   "capped_log_events": 2,
+   "cat": "N5",
+   "explained_by_cap": true,
+   "frozen_rows": 0,
+   "indep_log_trade_events": 2,
+   "sig": "3kWq29znagVEiEoEPnKnd1XfJRUKPwvBXnSFAYaQ5HrBoBfJhHCqbuP4YsB4xjJNF6amuAvCE2m3LkVcejvYTs9J",
+   "slot": 469794226,
+   "src": "A",
+   "why": "records_from_logs row count differs"
+  },
+  {
+   "capped_log_events": 2,
+   "cat": "N5",
+   "explained_by_cap": true,
+   "frozen_rows": 0,
+   "indep_log_trade_events": 2,
+   "sig": "4jJdkgyfmNoKpis6EriQhC4dwJGpdCMSvunWVNkVCTfi7yhvFp4Du8xtUoiL8NFrAX8vdUxLzSKKfhKLipbB5ZDH",
+   "slot": 469794229,
+   "src": "A",
+   "why": "records_from_logs row count differs"
+  },
+  {
+   "capped_log_events": 2,
+   "cat": "N5",
+   "explained_by_cap": true,
+   "frozen_rows": 0,
+   "indep_log_trade_events": 2,
+   "sig": "2KH2jWRTY8AjLGD5xKLCebqTuLeKpVZNnajW64Hn5CgYiu37GjL5SM9QuuatAj5YNkK48SKXPJuLfgPb6iuLhMC8",
+   "slot": 469794229,
+   "src": "A",
+   "why": "records_from_logs row count differs"
+  },
+  {
+   "capped_log_events": 2,
+   "cat": "N5",
+   "explained_by_cap": true,
+   "frozen_rows": 0,
+   "indep_log_trade_events": 2,
+   "sig": "665X7naxjbBwagco1X21D2uzHrcQhs36K2mSyjdtpsL5ePnU84CvWgRdwZogkJ8KSy3xSiqDGfmqbpMzuEgfG1pH",
+   "slot": 469794231,
+   "src": "A",
+   "why": "records_from_logs row count differs"
+  },
+  {
+   "capped_log_events": 2,
+   "cat": "N5",
+   "explained_by_cap": true,
+   "frozen_rows": 0,
+   "indep_log_trade_events": 2,
+   "sig": "5JpTiBGmpPjBNVaCfA9WjyZwyTeNhxYELEyjXRehB7rKfCrsHF5AiSXA72LHvKbfR6eYB5ASpZBj2Esx3HfLyGhj",
+   "slot": 469794232,
+   "src": "A",
+   "why": "records_from_logs row count differs"
+  },
+  {
+   "capped_log_events": 2,
+   "cat": "N5",
+   "explained_by_cap": true,
+   "frozen_rows": 0,
+   "indep_log_trade_events": 2,
+   "sig": "5iuGgJsAw92pDi9A3p2SjsYgXaRbWhxyBdKVefc6bzy4nr7yT1SDm1TikoLRNKrrg5R4xB4gcfsfudwmLzu13TkE",
+   "slot": 469794232,
+   "src": "A",
+   "why": "records_from_logs row count differs"
+  },
+  {
+   "capped_log_events": 2,
+   "cat": "N5",
+   "explained_by_cap": true,
+   "frozen_rows": 0,
+   "indep_log_trade_events": 2,
+   "sig": "2Nzwij1mpX3kmniN35HdVrNdxGAR1fJhhFNaZWVASNZ6TviFdjXstczhU8KfxGS4APW9TV3cG94SR7XWM3jKLjdT",
+   "slot": 469794232,
+   "src": "A",
+   "why": "records_from_logs row count differs"
+  },
+  {
+   "capped_log_events": 2,
+   "cat": "N5",
+   "explained_by_cap": true,
+   "frozen_rows": 0,
+   "indep_log_trade_events": 2,
+   "sig": "3BRgC8q8HsAtz3hGeQrS6UMqmKGENTuYpt1xvjuGBUnX947PNxqrX2NZF8dVuJTYf68NrXj2mTzaYfFxYQ2UMbaJ",
+   "slot": 469794233,
+   "src": "A",
+   "why": "records_from_logs row count differs"
+  },
+  {
+   "capped_log_events": 2,
+   "cat": "N5",
+   "explained_by_cap": true,
+   "frozen_rows": 0,
+   "indep_log_trade_events": 2,
+   "sig": "xx9VSKhxFocMCsECAKuXSnsjKoNKg2R731iro9L6WMqQ3rUx8SY8nNDgFd6fhpJv2pBBQMSzBBGj27wnsTLGvpj",
+   "slot": 469794234,
+   "src": "A",
+   "why": "records_from_logs row count differs"
+  },
+  {
+   "capped_log_events": 2,
+   "cat": "N5",
+   "explained_by_cap": true,
+   "frozen_rows": 0,
+   "indep_log_trade_events": 2,
+   "sig": "26hReHMmJzL13MNzwGyWEYqbHtW388XJg3Cbqq5wKzU4UBUNsdgyzoPVnMi59iqjhmzWvJhsJtzDDLNJJuMvJQyW",
+   "slot": 469794234,
+   "src": "A",
+   "why": "records_from_logs row count differs"
+  },
+  {
+   "capped_log_events": 2,
+   "cat": "N5",
+   "explained_by_cap": true,
+   "frozen_rows": 0,
+   "indep_log_trade_events": 2,
+   "sig": "5Uq7yMTjd9aK7mP8rGR5ZuSffEuvjxxaxHSLZdrdt8RP8QJq6q52VKHku9VEGm9UK3BtK4BXwmZQwfaxXMngDMpb",
+   "slot": 469799625,
+   "src": "A",
+   "why": "records_from_logs row count differs"
+  },
+  {
+   "capped_log_events": 2,
+   "cat": "N5",
+   "explained_by_cap": true,
+   "frozen_rows": 0,
+   "indep_log_trade_events": 2,
+   "sig": "5mep6PnkM7anELhM1g3UATFos5swYCetr3mdNARKXWmXtyu4Mu9gZTwNvaAbVzo2EuUjMat4uuoqyfra8PGTjpSw",
+   "slot": 469799625,
+   "src": "A",
+   "why": "records_from_logs row count differs"
+  },
+  {
+   "capped_log_events": 2,
+   "cat": "N5",
+   "explained_by_cap": true,
+   "frozen_rows": 0,
+   "indep_log_trade_events": 2,
+   "sig": "5ZbmgbJFByk8xbUeE38H6gRq8dwrDDLCWfi89SuW2rPZGYnGNkZRmv2Z5ajkEsnXXN4CJkYgiBQC1YXh2Csa2ucM",
+   "slot": 469799625,
+   "src": "A",
+   "why": "records_from_logs row count differs"
+  },
+  {
+   "capped_log_events": 2,
+   "cat": "N5",
+   "explained_by_cap": true,
+   "frozen_rows": 0,
+   "indep_log_trade_events": 2,
+   "sig": "tjA6No7p1z8BZGxXqAmGgfga5a161hqn3PW2nCsyqiRWzcw22UXHekXme3XgVfKzQYsqJWBRuH8DZaw7YxsdtzH",
+   "slot": 469799626,
+   "src": "A",
+   "why": "records_from_logs row count differs"
+  },
+  {
+   "capped_log_events": 2,
+   "cat": "N5",
+   "explained_by_cap": true,
+   "frozen_rows": 0,
+   "indep_log_trade_events": 2,
+   "sig": "srBjtmYm7iVH1FLbFP1C3MgcXvFJhyps2YdSvthRp72RFiepm688fqD87dWwGFvEo4dqGjZRn189TKkkrQa198U",
+   "slot": 469799628,
+   "src": "A",
+   "why": "records_from_logs row count differs"
+  },
+  {
+   "capped_log_events": 1,
+   "cat": "N5",
+   "explained_by_cap": true,
+   "frozen_rows": 1,
+   "indep_log_trade_events": 2,
+   "sig": "3cz2MEKaQWKecGoCXTCA1VZGPSokknAzthFRMCJbLRfMbfQ2FS52Z1bpqbrrURyBjTNM3pQHgMv5bUybmaYkMYYs",
+   "slot": 469799629,
+   "src": "A",
+   "why": "records_from_logs row count differs"
+  },
+  {
+   "capped_log_events": 2,
+   "cat": "N5",
+   "explained_by_cap": true,
+   "frozen_rows": 0,
+   "indep_log_trade_events": 2,
+   "sig": "3kNKmQkqwQPs9vMZqqgAqRYGVcKiGkcH9KjVSKRanLwTQjJzxsLqezMkBS1SWAG5BV8ggWLpN7jQZjh5gym6ucWY",
+   "slot": 469799632,
+   "src": "A",
+   "why": "records_from_logs row count differs"
+  },
+  {
+   "cat": "N5",
+   "sig": "2Y3qyFX3X845pVWeFrB6xht7h5pkE2PWNUxpAf69mDsSHik76pMhee1udJjgtUhxYk1xpD8G5oeKPCFjzRWWNA5b",
+   "slot": 469799632,
+   "src": "A",
+   "trade_events": 1,
+   "trade_ix": 0,
+   "truncated": false,
+   "why": "events != trade instructions"
+  },
+  {
+   "cat": "N5",
+   "sig": "2ppcjGMK8KAzyLkzmiAws18VAsDW2eXScAA5y3W1GPiAfeYH83GuXpSjFuDu96NW6WUb1mdT17FhnoveAFdJGiUy",
+   "slot": 469799632,
+   "src": "A",
+   "trade_events": 1,
+   "trade_ix": 0,
+   "truncated": false,
+   "why": "events != trade instructions"
+  },
+  {
+   "capped_log_events": 2,
+   "cat": "N5",
+   "explained_by_cap": true,
+   "frozen_rows": 0,
+   "indep_log_trade_events": 2,
+   "sig": "2CuAwnxobaaQ3sruuYALQyCAPGrLvmke1299fBpMEq5sbhFFcNMCKdtSZ13TtbmpM8MoKQiXkj7QF8kvDfY96hB1",
+   "slot": 469799633,
+   "src": "A",
+   "why": "records_from_logs row count differs"
+  },
+  {
+   "capped_log_events": 2,
+   "cat": "N5",
+   "explained_by_cap": true,
+   "frozen_rows": 0,
+   "indep_log_trade_events": 2,
+   "sig": "4D5Lj87KgV9Qb7sQz4HPzUaWUQPxmCCwtnMg98sjHWq9RtCoZF4TE1jrkFBdeux75mL9D6BQLqbxDLqwn6dH6SZu",
+   "slot": 469799633,
+   "src": "A",
+   "why": "records_from_logs row count differs"
+  },
+  {
+   "capped_log_events": 2,
+   "cat": "N5",
+   "explained_by_cap": true,
+   "frozen_rows": 0,
+   "indep_log_trade_events": 2,
+   "sig": "3S2otzDzh4jLRQ4AEbETWYjnUNZrGGsnvdDZ3uoVip59R2jbx66mquATuvut1JSb1chLYjwztnCPwEB7SEtfRrwb",
+   "slot": 469799633,
+   "src": "A",
+   "why": "records_from_logs row count differs"
+  },
+  {
+   "capped_log_events": 2,
+   "cat": "N5",
+   "explained_by_cap": true,
+   "frozen_rows": 0,
+   "indep_log_trade_events": 2,
+   "sig": "5sXuXANRcThjhm4TBKjXbcACfM93zrEwyC7FcLEYTaJWVncBBiLTNKN8xU3sAFe46PWmrqgsyUd3QZ7kRYUggzg9",
+   "slot": 469799634,
+   "src": "A",
+   "why": "records_from_logs row count differs"
+  },
+  {
+   "capped_log_events": 2,
+   "cat": "N5",
+   "explained_by_cap": true,
+   "frozen_rows": 0,
+   "indep_log_trade_events": 2,
+   "sig": "4GUrSwTKLtUfKigUbNfE3mZEHc1cEx4YZDXv6vgnWF6bBuEJxPevrS5G6VGTfyxvWBNVV7UQhH1Xkqv9ih7cimcQ",
+   "slot": 469799634,
+   "src": "A",
+   "why": "records_from_logs row count differs"
+  },
+  {
+   "capped_log_events": 2,
+   "cat": "N5",
+   "explained_by_cap": true,
+   "frozen_rows": 0,
+   "indep_log_trade_events": 2,
+   "sig": "2ao4tbWaG5vsMAHYWQfqmNTaE4U7zYuqjNDuK1pudaysPqWzg6dPuyVGX2S85gLTP79gAAj884zZbmaPURSo7h7T",
+   "slot": 469799634,
+   "src": "A",
+   "why": "records_from_logs row count differs"
+  },
+  {
+   "capped_log_events": 2,
+   "cat": "N5",
+   "explained_by_cap": true,
+   "frozen_rows": 0,
+   "indep_log_trade_events": 2,
+   "sig": "35SHwVqJmLMp1cXT7NmQVRs4dCRg1yuVKkjHZYERmGG8zzBGuMJeZzRyWsTAyQ1Q9tqoxPQSWTVSCA6ZqUkVYPfS",
+   "slot": 469805026,
+   "src": "A",
+   "why": "records_from_logs row count differs"
+  },
+  {
+   "capped_log_events": 2,
+   "cat": "N5",
+   "explained_by_cap": true,
+   "frozen_rows": 0,
+   "indep_log_trade_events": 2,
+   "sig": "4KDm4NyRkjqBu7tFEdZDgG6TteMzRc35MMcS5ZXhAbEpf3N9NPdU7wf4c7DApseYU35Zxqr6DTPaof94SVzBSDjm",
+   "slot": 469805026,
+   "src": "A",
+   "why": "records_from_logs row count differs"
+  },
+  {
+   "capped_log_events": 2,
+   "cat": "N5",
+   "explained_by_cap": true,
+   "frozen_rows": 0,
+   "indep_log_trade_events": 2,
+   "sig": "3YY8nV7riDEtd5YY5eX3hnK9SmSunZmJWDjh1Ry1hjP7n9MfFArBj3Y1fwM3dLaoYa8DbQtSnmwkcQDtHA95Wdc3",
+   "slot": 469805026,
+   "src": "A",
+   "why": "records_from_logs row count differs"
+  },
+  {
+   "capped_log_events": 2,
+   "cat": "N5",
+   "explained_by_cap": true,
+   "frozen_rows": 0,
+   "indep_log_trade_events": 2,
+   "sig": "5KbzNkJkoptDNXqtLNqzmx7bXUvPjMaPjX36ak9MYyRgwYhFqtxZnrqcBhd1pzdmZ7wd5RvGngNDXEgLdc33Gmno",
+   "slot": 469805026,
+   "src": "A",
+   "why": "records_from_logs row count differs"
+  },
+  {
+   "capped_log_events": 2,
+   "cat": "N5",
+   "explained_by_cap": true,
+   "frozen_rows": 0,
+   "indep_log_trade_events": 2,
+   "sig": "5tEdQWb7p4uZKV9mfJAQ1zSPTbrMN7GmgrTBQzWwUtcXWpgSaG5ZFgm2bh9aBKneXNzLWwDCZ292HDPzVBBMxG6s",
+   "slot": 469805027,
+   "src": "A",
+   "why": "records_from_logs row count differs"
+  },
+  {
+   "capped_log_events": 2,
+   "cat": "N5",
+   "explained_by_cap": true,
+   "frozen_rows": 0,
+   "indep_log_trade_events": 2,
+   "sig": "2uywMMUHGtcbKaHe7KucRq8QD1MtV4qxmVM66hm4BVEMxGaji4tvBFDgqT9EP6nV6ogbo2QVxMcvqMYyVsudhiMz",
+   "slot": 469805027,
+   "src": "A",
+   "why": "records_from_logs row count differs"
+  },
+  {
+   "capped_log_events": 1,
+   "cat": "N5",
+   "explained_by_cap": true,
+   "frozen_rows": 1,
+   "indep_log_trade_events": 2,
+   "sig": "RLFmh5jKmuiqa133xvv55BorvR1RkTTF7za9nwRoDpBGKwP918kr6d1aDozQYxNnYWmF2QpAQAyE9dmZ58R3MmA",
+   "slot": 469805027,
+   "src": "A",
+   "why": "records_from_logs row count differs"
+  },
+  {
+   "capped_log_events": 2,
+   "cat": "N5",
+   "explained_by_cap": true,
+   "frozen_rows": 0,
+   "indep_log_trade_events": 2,
+   "sig": "5CQ7yeHG4MW6vFL3Ub7UC5JGDPoe55ZdsJKBTgvRGXVXTwmoi8PutvPBWRMzLFgLxCjoTWby7h5DejxRuF5gShPR",
+   "slot": 469805027,
+   "src": "A",
+   "why": "records_from_logs row count differs"
+  },
+  {
+   "capped_log_events": 2,
+   "cat": "N5",
+   "explained_by_cap": true,
+   "frozen_rows": 0,
+   "indep_log_trade_events": 2,
+   "sig": "5EZd6nQsiPS59zYDBTQeKDxPbdL3UmLmMbGbXosxNZSr81qkPGwFcfVkjyPT3xRNtvGquz4HvwPt8YDmPdjTmeK2",
+   "slot": 469805028,
+   "src": "A",
+   "why": "records_from_logs row count differs"
+  },
+  {
+   "capped_log_events": 2,
+   "cat": "N5",
+   "explained_by_cap": true,
+   "frozen_rows": 0,
+   "indep_log_trade_events": 2,
+   "sig": "2xGwDfdGTuZVzTgBreDFXdSuCrZmqxFquWLWvofwLigC3D37B4xziitX5htr6j49yWnxTEe1gohmNJDxsiVUJ7mc",
+   "slot": 469805029,
+   "src": "A",
+   "why": "records_from_logs row count differs"
+  },
+  {
+   "capped_log_events": 2,
+   "cat": "N5",
+   "explained_by_cap": true,
+   "frozen_rows": 0,
+   "indep_log_trade_events": 2,
+   "sig": "3LNyea6jGcnyrnS6EcstNdEdrZounYvHByDJrU9rqXZcn56uLwXiR9bcptt29bCgCr6B5XmPgkMvwy9t2Veo6teu",
+   "slot": 469805029,
+   "src": "A",
+   "why": "records_from_logs row count differs"
+  },
+  {
+   "capped_log_events": 2,
+   "cat": "N5",
+   "explained_by_cap": true,
+   "frozen_rows": 0,
+   "indep_log_trade_events": 2,
+   "sig": "5AM5egQUtepBx77VoCA8tsca6SvHcHW6Ckq3iKk63r2DrXRvm36YopNnJZN59qfef5FQmaaiqWtBCW4shCkfQMan",
+   "slot": 469805030,
+   "src": "A",
+   "why": "records_from_logs row count differs"
+  },
+  {
+   "capped_log_events": 2,
+   "cat": "N5",
+   "explained_by_cap": true,
+   "frozen_rows": 0,
+   "indep_log_trade_events": 2,
+   "sig": "5q1XiSqd7t9rqLkhBvTVGpWh5ysDoDc5wYa2iQCQhKrLr1thRcFMrMmvJxDeW8YCgyt8XoVqJZCN3Zj344muUphW",
+   "slot": 469805032,
+   "src": "A",
+   "why": "records_from_logs row count differs"
+  },
+  {
+   "capped_log_events": 2,
+   "cat": "N5",
+   "explained_by_cap": true,
+   "frozen_rows": 0,
+   "indep_log_trade_events": 2,
+   "sig": "W5p2urJdRyPLG8xbXA5uZ2BmFWisD6y2TyQcoFRxbwfkrA47gD2Yegw1ubm9Y2sGoPjm2kNsfJtsFgAeHG5Pg5N",
+   "slot": 469805032,
+   "src": "A",
+   "why": "records_from_logs row count differs"
+  },
+  {
+   "capped_log_events": 2,
+   "cat": "N5",
+   "explained_by_cap": true,
+   "frozen_rows": 0,
+   "indep_log_trade_events": 2,
+   "sig": "3vyiqxav4A8yVMNNbksQh7SLUfoxrj1j6WxBoaer28RUH71TNNRmdNSFecxzEEk8RTZb4NpX3ynJ69Wt2mQennx1",
+   "slot": 469805032,
+   "src": "A",
+   "why": "records_from_logs row count differs"
+  },
+  {
+   "capped_log_events": 2,
+   "cat": "N5",
+   "explained_by_cap": true,
+   "frozen_rows": 0,
+   "indep_log_trade_events": 2,
+   "sig": "ebug6icqE3JZ4yQufmoM9m9xGmrUnrNRjDm4ckQs1SYc8vLvveTDjeaUXWPvwRAQh4jyvxZzj1eRFy3WE1GVRoj",
+   "slot": 469805033,
+   "src": "A",
+   "why": "records_from_logs row count differs"
+  },
+  {
+   "capped_log_events": 2,
+   "cat": "N5",
+   "explained_by_cap": true,
+   "frozen_rows": 0,
+   "indep_log_trade_events": 2,
+   "sig": "5awQAxLrCDGvqMcN9M3ZmHbsGPJ4oU4uaemiAj7SmPvvApX2ffTjnLPRGRpLE5e78WYj1n3oT7SrbUSY1TAREuqo",
+   "slot": 469805033,
+   "src": "A",
+   "why": "records_from_logs row count differs"
+  },
+  {
+   "capped_log_events": 2,
+   "cat": "N5",
+   "explained_by_cap": true,
+   "frozen_rows": 0,
+   "indep_log_trade_events": 2,
+   "sig": "4Up8HP2HegjCUmhQL6DrXVgBze2t1dvYVSQzCrZhWMYRmQqr6giAmSMm1sAw4Xz6Kq18oLL2ADykk63VHXSsqUoN",
+   "slot": 469805034,
+   "src": "A",
+   "why": "records_from_logs row count differs"
+  },
+  {
+   "capped_log_events": 2,
+   "cat": "N5",
+   "explained_by_cap": true,
+   "frozen_rows": 0,
+   "indep_log_trade_events": 2,
+   "sig": "5Kb3p9pmRmjeXXckGrzVoeB4jgb9omnq5qVkxCF3GakSpHEyRakBc4VBmyTe2oJeXRUHv4hRK1hqKQpqDzMEv2YA",
+   "slot": 469805034,
+   "src": "A",
+   "why": "records_from_logs row count differs"
+  },
+  {
+   "capped_log_events": 2,
+   "cat": "N5",
+   "explained_by_cap": true,
+   "frozen_rows": 0,
+   "indep_log_trade_events": 2,
+   "sig": "57R1RsSQqHxWgpi3YXf7YJiSUGPPtsjiAsgakYTB61S9yyfM5QKxyy7278y3U3NpVDU88EuDWCBbd1hati2ptMc3",
+   "slot": 469805034,
+   "src": "A",
+   "why": "records_from_logs row count differs"
+  },
+  {
+   "capped_log_events": 2,
+   "cat": "N5",
+   "explained_by_cap": true,
+   "frozen_rows": 0,
+   "indep_log_trade_events": 2,
+   "sig": "4B7QsSuKfy2BYYYeUG3w49P9Ur4FNiXkQXcwEgK2RiKBGxW9PMyDSXDPKb4TjLU1vwyCJgoHPgSihZ6G2AHfqrxM",
+   "slot": 469805034,
+   "src": "A",
+   "why": "records_from_logs row count differs"
+  },
+  {
+   "capped_log_events": 2,
+   "cat": "N5",
+   "explained_by_cap": true,
+   "frozen_rows": 0,
+   "indep_log_trade_events": 2,
+   "sig": "5K5Ebk5cKi7Ye3D1MfXfwW5eJBbwLi7V7gK9Cc9Xav4jtqZV9DZXWzwbMPUAqyKHV2hsNavPGfWyYv21tZvtQ9x6",
+   "slot": 469805034,
+   "src": "A",
+   "why": "records_from_logs row count differs"
+  },
+  {
+   "capped_log_events": 2,
+   "cat": "N5",
+   "explained_by_cap": true,
+   "frozen_rows": 0,
+   "indep_log_trade_events": 2,
+   "sig": "3hbQxg2B21xxJivRDUBN5zZsmeutura3uiL8KwFS7uCBGs9AbmSn8HAn7Bjzq5ZmZh9wGur4o6gTu3DnzLoeQ2Jf",
+   "slot": 469810426,
+   "src": "A",
+   "why": "records_from_logs row count differs"
+  },
+  {
+   "capped_log_events": 2,
+   "cat": "N5",
+   "explained_by_cap": true,
+   "frozen_rows": 0,
+   "indep_log_trade_events": 2,
+   "sig": "5FtV8YiWxpaF2rYUNgFBGeBpyXeww9SHTpzWEbXsB72KqX8fbJbZX1MgF5HQwJpR28dRRWvYRnD7JBQabAUauQ7T",
+   "slot": 469810427,
+   "src": "A",
+   "why": "records_from_logs row count differs"
+  },
+  {
+   "capped_log_events": 2,
+   "cat": "N5",
+   "explained_by_cap": true,
+   "frozen_rows": 0,
+   "indep_log_trade_events": 2,
+   "sig": "24KKNEsWFpxLAokeB4whppAfqeUYmnhVgACSQokSE6bPoGCM62Rjd663EoAQhVmfaFKU2K5KyxirWrF4XQqSAGhh",
+   "slot": 469810427,
+   "src": "A",
+   "why": "records_from_logs row count differs"
+  },
+  {
+   "capped_log_events": 2,
+   "cat": "N5",
+   "explained_by_cap": true,
+   "frozen_rows": 0,
+   "indep_log_trade_events": 2,
+   "sig": "3nAapmodiaUX7ZNKfLPtKccFjhxA1qrccAUXwpF9fQwHAj8vvQppFtddLdtgGPmdP3utG4C9R5qBdF71bkTsKKxP",
+   "slot": 469810428,
+   "src": "A",
+   "why": "records_from_logs row count differs"
+  },
+  {
+   "capped_log_events": 2,
+   "cat": "N5",
+   "explained_by_cap": true,
+   "frozen_rows": 0,
+   "indep_log_trade_events": 2,
+   "sig": "x9jqkzNJd1XtAtpfEr78e5TiRE6Uu3ttrpL6Wy6M13wvjMtVsn9vjsP2gtv3vGLU8vWg2HXhHYWo6CPJDGmPjqn",
+   "slot": 469810428,
+   "src": "A",
+   "why": "records_from_logs row count differs"
+  },
+  {
+   "capped_log_events": 2,
+   "cat": "N5",
+   "explained_by_cap": true,
+   "frozen_rows": 0,
+   "indep_log_trade_events": 2,
+   "sig": "4bLv952kM7mezyMdH8khVnsSbFYi6Brb2LbtkzihTWQ599poXGhqq8ouGsV89z3WR6dRc8Ri1qmw2wNgep2j4gRc",
+   "slot": 469810428,
+   "src": "A",
+   "why": "records_from_logs row count differs"
+  },
+  {
+   "capped_log_events": 2,
+   "cat": "N5",
+   "explained_by_cap": true,
+   "frozen_rows": 0,
+   "indep_log_trade_events": 2,
+   "sig": "G87eeuWhW59uGtrSYAaueVUfq765Xq5viuWYqyPw2gpBmQ9x6W8AMTw1UpD1XPM7zX1kKV8t73qzk6RQhuitV3U",
+   "slot": 469810428,
+   "src": "A",
+   "why": "records_from_logs row count differs"
+  },
+  {
+   "capped_log_events": 1,
+   "cat": "N5",
+   "explained_by_cap": true,
+   "frozen_rows": 1,
+   "indep_log_trade_events": 2,
+   "sig": "4SCp1Awqm8DoyXsFUicU5WzRGCb6R33tu1xa2bLTNpb397t6FjVVCxGXxxAeJ4mcpFzEQJzheuMGg2TAyaehy17F",
+   "slot": 469810428,
+   "src": "A",
+   "why": "records_from_logs row count differs"
+  },
+  {
+   "capped_log_events": 2,
+   "cat": "N5",
+   "explained_by_cap": true,
+   "frozen_rows": 0,
+   "indep_log_trade_events": 2,
+   "sig": "4gKez7zoLk8ChmNYX3DarQiWZRjKhkvusoUUpvfkaYXfmHpprtyRhm4LnkkEC59FPHKMLTuVbhiT1uiV3dMrbaj5",
+   "slot": 469810429,
+   "src": "A",
+   "why": "records_from_logs row count differs"
+  },
+  {
+   "capped_log_events": 2,
+   "cat": "N5",
+   "explained_by_cap": true,
+   "frozen_rows": 0,
+   "indep_log_trade_events": 2,
+   "sig": "2JW5v6vUgYUk7noYhPi2Sbo9U8bNK1GNPcd1bZJktyKVGyTabSw7yXnFqYZqaPsLAQ4AXb6ivzPHtKaDzYtRXpvW",
+   "slot": 469810430,
+   "src": "A",
+   "why": "records_from_logs row count differs"
+  },
+  {
+   "capped_log_events": 2,
+   "cat": "N5",
+   "explained_by_cap": true,
+   "frozen_rows": 0,
+   "indep_log_trade_events": 2,
+   "sig": "4yjmecLrYhpjGyRUub6xSJgzHNpoPM5VH5yGxKEBpw9WPeWRS8pPc2SnvFtyV8DmBeuk9uB7tp9QGMiP6xZzNPkV",
+   "slot": 469810430,
+   "src": "A",
+   "why": "records_from_logs row count differs"
+  },
+  {
+   "capped_log_events": 2,
+   "cat": "N5",
+   "explained_by_cap": true,
+   "frozen_rows": 0,
+   "indep_log_trade_events": 2,
+   "sig": "3zjC4fbnBSd1JoWXyGC6znp9C74cHZ8D45ww4FwEhd8iVeGoyoA4VscYhoXH13ycs8Hd3fm3uij2jc7wBPXcGKtg",
+   "slot": 469810430,
+   "src": "A",
+   "why": "records_from_logs row count differs"
+  },
+  {
+   "capped_log_events": 2,
+   "cat": "N5",
+   "explained_by_cap": true,
+   "frozen_rows": 0,
+   "indep_log_trade_events": 2,
+   "sig": "5NDAXyTnkVPiSs8fFWeQhzZUN5UdsZRpJmiEiKiY4Yz27LzgngySamg2wuL8izEKAcbMwXUc1PnUCbgZvLVkyW8p",
+   "slot": 469810430,
+   "src": "A",
+   "why": "records_from_logs row count differs"
+  },
+  {
+   "capped_log_events": 2,
+   "cat": "N5",
+   "explained_by_cap": true,
+   "frozen_rows": 0,
+   "indep_log_trade_events": 2,
+   "sig": "7HVdwv6mk3hK2Lawou293oBaAonFRNkU86CLBBtFqv5rGXNGdL31Zfx1JpBd41yqr1uNBzwjfEbdKcBtMCWny59",
+   "slot": 469810434,
+   "src": "A",
+   "why": "records_from_logs row count differs"
+  },
+  {
+   "capped_log_events": 2,
+   "cat": "N5",
+   "explained_by_cap": true,
+   "frozen_rows": 0,
+   "indep_log_trade_events": 2,
+   "sig": "4VGdAgbthkxZcdhoDgrzvYrWAUnV7ZjFBizKfk4RAKcj6jGUkBwY6pqdNC2GeYehiHox998XDHot1asUhHDoRg7N",
+   "slot": 469810434,
+   "src": "A",
+   "why": "records_from_logs row count differs"
+  },
+  {
+   "capped_log_events": 2,
+   "cat": "N5",
+   "explained_by_cap": true,
+   "frozen_rows": 0,
+   "indep_log_trade_events": 2,
+   "sig": "3mkafoS9ytDYAhf1mRD1hBfTmEcKaoGpm2uJViC8Yb7hfvPT7Fbtqu4PM9H18vma28c7j5T2SsJoCSAfm4X6xDC",
+   "slot": 469810434,
+   "src": "A",
+   "why": "records_from_logs row count differs"
+  }
+ ],
+ "nondecode_by_cat": {
+  "N5": 155
+ },
+ "nontrade": {
+  "pump.CreateEvent|log": {
+   "equal": 8,
+   "frozen_none": 0,
+   "in_migrate_tx": 0,
+   "total": 8,
+   "value_unmatched": 0
+  },
+  "pump.SweepBondingCurveFeeEvent|log": {
+   "equal": 3,
+   "frozen_none": 0,
+   "in_migrate_tx": 0,
+   "total": 3,
+   "value_unmatched": 0
+  },
+  "pump_amm.BoostBuyAndBurnEvent|log": {
+   "equal": 3,
+   "frozen_none": 0,
+   "in_migrate_tx": 0,
+   "total": 3,
+   "value_unmatched": 0
+  },
+  "pump_amm.CreatePoolEvent|log": {
+   "equal": 1,
+   "frozen_none": 0,
+   "in_migrate_tx": 0,
+   "total": 1,
+   "value_unmatched": 0
+  },
+  "pump_amm.SweepPoolFeeEvent|log": {
+   "equal": 1,
+   "frozen_none": 0,
+   "in_migrate_tx": 0,
+   "total": 1,
+   "value_unmatched": 0
+  }
+ },
+ "read_events": {
+  "pump.CreateEvent": 8,
+  "pump.SweepBondingCurveFeeEvent": 3,
+  "pump.TradeEvent": 1596,
+  "pump_amm.BoostBuyAndBurnEvent": 3,
+  "pump_amm.BuyEvent": 2053,
+  "pump_amm.CreatePoolEvent": 1,
+  "pump_amm.SellEvent": 2461,
+  "pump_amm.SweepPoolFeeEvent": 1
+ },
+ "refused": {
+  "pump_amm.BuyEvent|sol_lamports > cap": 149,
+  "pump_amm.SellEvent|sol_lamports > cap": 151
+ },
+ "refused_quote": {
+  "12KYNMSdN411RtbeDEXEuS9zF5ZYumFXsZMCAHiHw8Gp": 22,
+  "12WCzB2EdrZaLuthjU6VrNSyGia6fjyg5MWL6hq9YW2t": 16,
+  "14FrwsS4QHSfNNKFwwX7tSjYeaehfUGn3oycxeFLQnzE": 16,
+  "394Z8rGwerTRBxjJ4fDtFcyT1bALAez7N37mawfQk7gB": 28,
+  "5fsBmQPYYYzzf6jRZC4RdtKGcVz3v24UH1R134z32Rq": 8,
+  "7aqvfTLyRkqVTKRUCHQmocEWC54sojgcJ5vobjmwrEH": 16,
+  "AFVnNpMHMVfjg3mvpmZhFrZY9bu1SzccpypKkQKjVjy": 34,
+  "DePfvtUL1VGmpQUAq5yxRw7JpwDKGgPkCbTb7jC92Uwr": 2,
+  "FiqTaUpF9G1wEfYB3uq6rMFhsvHGLrwQggKeHp2xrJ4": 22,
+  "FywuxAM8MsPYo72aYKBeKKU9WZzsQ255vpgcrxE6uxE": 5,
+  "G8PANYt66HHt2r6iQ3Y39qNWrLg1uGz8fqf81PbNKoe": 14,
+  "GBq3MuN5U69zwjSLBG3zUmXhw7AubRQqajCtEysxQsM": 8,
+  "GFAWqawKD1sF2XrEC26Ha2J9nnceGPKXuMkh1c5aMVZ1": 21,
+  "GxHPr6boXVhmQwp97uCPYuKzZtFEfcPFUkSsYoi8CSC": 6,
+  "KkDX2so1ET1SCKkGJ2gmjJkmWBZG38rAucfTUuTiyXx": 8,
+  "QQdUVyjCM8qKSres4QP9MQMcZRvkT3NFnVKgfs5JoC7": 16,
+  "R7vVNkv3sYJjxUstCcYiMRbVEUwh5wG4JPiCPZ8WUMr": 32,
+  "RwHLWANYC3Csim7wVaoky5rPHSmQzuVJ5un8kJBAx3H": 12,
+  "SPS6cwq5MbvzfzCqrjWRqaAkcAx7jnA3WqayyYwcNLf": 14
+ },
+ "refused_rows": [
+  {
+   "amount": 440790063755058,
+   "event": "pump_amm.SellEvent",
+   "quote_mints": [
+    "5fsBmQPYYYzzf6jRZC4RdtKGcVz3v24UH1R134z32Rq"
+   ],
+   "sig": "furWFYgzcPCH7Xi2fSuE3rsA7SrrXxATs9PGcqsVvx3q5tMjVSNhtJcZUQ4qDrYapeEoXVXSugMUoeup4DyhMD6",
+   "slot": 469751025,
+   "why": "sol_lamports > cap"
+  },
+  {
+   "amount": 552394345565078,
+   "event": "pump_amm.BuyEvent",
+   "quote_mints": [
+    "5fsBmQPYYYzzf6jRZC4RdtKGcVz3v24UH1R134z32Rq"
+   ],
+   "sig": "furWFYgzcPCH7Xi2fSuE3rsA7SrrXxATs9PGcqsVvx3q5tMjVSNhtJcZUQ4qDrYapeEoXVXSugMUoeup4DyhMD6",
+   "slot": 469751025,
+   "why": "sol_lamports > cap"
+  },
+  {
+   "amount": 425750496629892,
+   "event": "pump_amm.SellEvent",
+   "quote_mints": [
+    "14FrwsS4QHSfNNKFwwX7tSjYeaehfUGn3oycxeFLQnzE"
+   ],
+   "sig": "4Y7hzMeC5GogjcuE8pU1M587YfJ4YUU55ttoebspTkHsnNdgPXiYB5JLmzmNkEx9VpiS9UM2P8xYuULVPzXAmNjR",
+   "slot": 469751025,
+   "why": "sol_lamports > cap"
+  },
+  {
+   "amount": 568683529984892,
+   "event": "pump_amm.BuyEvent",
+   "quote_mints": [
+    "14FrwsS4QHSfNNKFwwX7tSjYeaehfUGn3oycxeFLQnzE"
+   ],
+   "sig": "4Y7hzMeC5GogjcuE8pU1M587YfJ4YUU55ttoebspTkHsnNdgPXiYB5JLmzmNkEx9VpiS9UM2P8xYuULVPzXAmNjR",
+   "slot": 469751025,
+   "why": "sol_lamports > cap"
+  },
+  {
+   "amount": 993392141109706,
+   "event": "pump_amm.SellEvent",
+   "quote_mints": [
+    "G8PANYt66HHt2r6iQ3Y39qNWrLg1uGz8fqf81PbNKoe"
+   ],
+   "sig": "5Wt5W2TVLckUeoxCTYMRbj8bqjmAZ7kDpiNuUbLuutZrKLfy7Dq1KAFPcDx4fkotTUBk9XTvoGzp4MShEqTqDF7G",
+   "slot": 469751027,
+   "why": "sol_lamports > cap"
+  },
+  {
+   "amount": 998489701999956,
+   "event": "pump_amm.BuyEvent",
+   "quote_mints": [
+    "G8PANYt66HHt2r6iQ3Y39qNWrLg1uGz8fqf81PbNKoe"
+   ],
+   "sig": "5Wt5W2TVLckUeoxCTYMRbj8bqjmAZ7kDpiNuUbLuutZrKLfy7Dq1KAFPcDx4fkotTUBk9XTvoGzp4MShEqTqDF7G",
+   "slot": 469751027,
+   "why": "sol_lamports > cap"
+  },
+  {
+   "amount": 542823417186471,
+   "event": "pump_amm.SellEvent",
+   "quote_mints": [
+    "5fsBmQPYYYzzf6jRZC4RdtKGcVz3v24UH1R134z32Rq"
+   ],
+   "sig": "4F9nehRCqteGh7Q8RACVspY8epwpyDpC4Mm7Z9HkaGi3wxvpibVFbTPSngFzVS1iJei3BXivpm7yamzQjjF4XNTQ",
+   "slot": 469751028,
+   "why": "sol_lamports > cap"
+  },
+  {
+   "amount": 644559640183892,
+   "event": "pump_amm.BuyEvent",
+   "quote_mints": [
+    "5fsBmQPYYYzzf6jRZC4RdtKGcVz3v24UH1R134z32Rq"
+   ],
+   "sig": "4F9nehRCqteGh7Q8RACVspY8epwpyDpC4Mm7Z9HkaGi3wxvpibVFbTPSngFzVS1iJei3BXivpm7yamzQjjF4XNTQ",
+   "slot": 469751028,
+   "why": "sol_lamports > cap"
+  },
+  {
+   "amount": 511554140369093,
+   "event": "pump_amm.SellEvent",
+   "quote_mints": [
+    "14FrwsS4QHSfNNKFwwX7tSjYeaehfUGn3oycxeFLQnzE"
+   ],
+   "sig": "52Br1jx9Vb8GjVKTciH66wLPM4PZPxP63Btvk4SCef4y5GDXBM6d3BPzjm94FGD8RFCzhu9E7ZkDG4Sj22eWAARu",
+   "slot": 469751028,
+   "why": "sol_lamports > cap"
+  },
+  {
+   "amount": 514123905865195,
+   "event": "pump_amm.BuyEvent",
+   "quote_mints": [
+    "14FrwsS4QHSfNNKFwwX7tSjYeaehfUGn3oycxeFLQnzE"
+   ],
+   "sig": "52Br1jx9Vb8GjVKTciH66wLPM4PZPxP63Btvk4SCef4y5GDXBM6d3BPzjm94FGD8RFCzhu9E7ZkDG4Sj22eWAARu",
+   "slot": 469751028,
+   "why": "sol_lamports > cap"
+  },
+  {
+   "amount": 715622131947340,
+   "event": "pump_amm.SellEvent",
+   "quote_mints": [
+    "G8PANYt66HHt2r6iQ3Y39qNWrLg1uGz8fqf81PbNKoe"
+   ],
+   "sig": "2otoGGZU3Pqk8KXMBTvSCtPALybtVBywfV9CmVjr3ZRo6rUrz3RxiCoGTxTLEfj7YsuwGzHJ56jcK8LSiB1XEh7f",
+   "slot": 469751032,
+   "why": "sol_lamports > cap"
+  },
+  {
+   "amount": 719290506086562,
+   "event": "pump_amm.BuyEvent",
+   "quote_mints": [
+    "G8PANYt66HHt2r6iQ3Y39qNWrLg1uGz8fqf81PbNKoe"
+   ],
+   "sig": "2otoGGZU3Pqk8KXMBTvSCtPALybtVBywfV9CmVjr3ZRo6rUrz3RxiCoGTxTLEfj7YsuwGzHJ56jcK8LSiB1XEh7f",
+   "slot": 469751032,
+   "why": "sol_lamports > cap"
+  },
+  {
+   "amount": 468907522377065,
+   "event": "pump_amm.SellEvent",
+   "quote_mints": [
+    "14FrwsS4QHSfNNKFwwX7tSjYeaehfUGn3oycxeFLQnzE"
+   ],
+   "sig": "3SRJ1VxXaYitv3x8fyy669b53yazMhXbR12ekkwFWS9XdfyQTMTcYHA1daMJqZ7nsmN7K22hXP2g96RpPkWKYm9h",
+   "slot": 469751032,
+   "why": "sol_lamports > cap"
+  },
+  {
+   "amount": 471262645287323,
+   "event": "pump_amm.BuyEvent",
+   "quote_mints": [
+    "14FrwsS4QHSfNNKFwwX7tSjYeaehfUGn3oycxeFLQnzE"
+   ],
+   "sig": "3SRJ1VxXaYitv3x8fyy669b53yazMhXbR12ekkwFWS9XdfyQTMTcYHA1daMJqZ7nsmN7K22hXP2g96RpPkWKYm9h",
+   "slot": 469751032,
+   "why": "sol_lamports > cap"
+  },
+  {
+   "amount": 502116234221018,
+   "event": "pump_amm.SellEvent",
+   "quote_mints": [
+    "14FrwsS4QHSfNNKFwwX7tSjYeaehfUGn3oycxeFLQnzE"
+   ],
+   "sig": "4gdZG8YXBgicxVH67BfJ56aQGmvduCpQaZg7b68ngQro4RDv6MsYfN2uoZPUyyWqhQ4ztQzsAj3PQFLdXbL9qZPp",
+   "slot": 469751032,
+   "why": "sol_lamports > cap"
+  },
+  {
+   "amount": 577838971300470,
+   "event": "pump_amm.BuyEvent",
+   "quote_mints": [
+    "14FrwsS4QHSfNNKFwwX7tSjYeaehfUGn3oycxeFLQnzE"
+   ],
+   "sig": "4gdZG8YXBgicxVH67BfJ56aQGmvduCpQaZg7b68ngQro4RDv6MsYfN2uoZPUyyWqhQ4ztQzsAj3PQFLdXbL9qZPp",
+   "slot": 469751032,
+   "why": "sol_lamports > cap"
+  },
+  {
+   "amount": 566325201998430,
+   "event": "pump_amm.SellEvent",
+   "quote_mints": [
+    "5fsBmQPYYYzzf6jRZC4RdtKGcVz3v24UH1R134z32Rq"
+   ],
+   "sig": "PQpTZMYQv42SZrQMLzv3YT463Uyb543fYKLcWKxfdL4AiGMtPU73Gqsuk2u3npSFVrabJFG7PV1GH73wbEhCaW1",
+   "slot": 469751033,
+   "why": "sol_lamports > cap"
+  },
+  {
+   "amount": 631453425731545,
+   "event": "pump_amm.BuyEvent",
+   "quote_mints": [
+    "5fsBmQPYYYzzf6jRZC4RdtKGcVz3v24UH1R134z32Rq"
+   ],
+   "sig": "PQpTZMYQv42SZrQMLzv3YT463Uyb543fYKLcWKxfdL4AiGMtPU73Gqsuk2u3npSFVrabJFG7PV1GH73wbEhCaW1",
+   "slot": 469751033,
+   "why": "sol_lamports > cap"
+  },
+  {
+   "amount": 715211455641229,
+   "event": "pump_amm.SellEvent",
+   "quote_mints": [
+    "G8PANYt66HHt2r6iQ3Y39qNWrLg1uGz8fqf81PbNKoe"
+   ],
+   "sig": "2CNFT6QQS3YP3Coru23MWsap17mfiiAgXMSxwp93dmvKSFujxHHYALx3LA1UC8H2cMuSJFHDbWje7Z914p6i5UCp",
+   "slot": 469751033,
+   "why": "sol_lamports > cap"
+  },
+  {
+   "amount": 718805949484964,
+   "event": "pump_amm.BuyEvent",
+   "quote_mints": [
+    "G8PANYt66HHt2r6iQ3Y39qNWrLg1uGz8fqf81PbNKoe"
+   ],
+   "sig": "2CNFT6QQS3YP3Coru23MWsap17mfiiAgXMSxwp93dmvKSFujxHHYALx3LA1UC8H2cMuSJFHDbWje7Z914p6i5UCp",
+   "slot": 469751033,
+   "why": "sol_lamports > cap"
+  },
+  {
+   "amount": 534984261465741,
+   "event": "pump_amm.SellEvent",
+   "quote_mints": [
+    "5fsBmQPYYYzzf6jRZC4RdtKGcVz3v24UH1R134z32Rq"
+   ],
+   "sig": "2pEVfJpCPWYoVJ9virZS6oY1GnZkvuzPzEnzLKJzXQeBcLwabQ7fCN1jWazRtYtknKMsdpJBa3oTh97GAyk3Hxi7",
+   "slot": 469751033,
+   "why": "sol_lamports > cap"
+  },
+  {
+   "amount": 553499860619568,
+   "event": "pump_amm.BuyEvent",
+   "quote_mints": [
+    "5fsBmQPYYYzzf6jRZC4RdtKGcVz3v24UH1R134z32Rq"
+   ],
+   "sig": "2pEVfJpCPWYoVJ9virZS6oY1GnZkvuzPzEnzLKJzXQeBcLwabQ7fCN1jWazRtYtknKMsdpJBa3oTh97GAyk3Hxi7",
+   "slot": 469751033,
+   "why": "sol_lamports > cap"
+  },
+  {
+   "amount": 566099569662012,
+   "event": "pump_amm.SellEvent",
+   "quote_mints": [
+    "G8PANYt66HHt2r6iQ3Y39qNWrLg1uGz8fqf81PbNKoe"
+   ],
+   "sig": "yQbdVQimZ9d7rRde496vc2rkFxcZ9S4t2zhogCLFb2LbdKF7U3JiBwWAcrEMf3gveXSSBFNGmnPvwnhamgyNUxS",
+   "slot": 469756428,
+   "why": "sol_lamports > cap"
+  },
+  {
+   "amount": 532985878989560,
+   "event": "pump_amm.BuyEvent",
+   "quote_mints": [
+    "G8PANYt66HHt2r6iQ3Y39qNWrLg1uGz8fqf81PbNKoe"
+   ],
+   "sig": "yQbdVQimZ9d7rRde496vc2rkFxcZ9S4t2zhogCLFb2LbdKF7U3JiBwWAcrEMf3gveXSSBFNGmnPvwnhamgyNUxS",
+   "slot": 469756428,
+   "why": "sol_lamports > cap"
+  },
+  {
+   "amount": 430299491345842,
+   "event": "pump_amm.SellEvent",
+   "quote_mints": [
+    "14FrwsS4QHSfNNKFwwX7tSjYeaehfUGn3oycxeFLQnzE"
+   ],
+   "sig": "4Cycr35PmkzBxwjEsQmnVkcu3ZFUV92wKe6qj5qvWGrwPXbjsngh3Ue3dXUJk55CqoW1jaEMknKpxtZpkPPJEdcu",
+   "slot": 469756428,
+   "why": "sol_lamports > cap"
+  },
+  {
+   "amount": 589571621320253,
+   "event": "pump_amm.BuyEvent",
+   "quote_mints": [
+    "14FrwsS4QHSfNNKFwwX7tSjYeaehfUGn3oycxeFLQnzE"
+   ],
+   "sig": "4Cycr35PmkzBxwjEsQmnVkcu3ZFUV92wKe6qj5qvWGrwPXbjsngh3Ue3dXUJk55CqoW1jaEMknKpxtZpkPPJEdcu",
+   "slot": 469756428,
+   "why": "sol_lamports > cap"
+  },
+  {
+   "amount": 533346413109727,
+   "event": "pump_amm.SellEvent",
+   "quote_mints": [
+    "G8PANYt66HHt2r6iQ3Y39qNWrLg1uGz8fqf81PbNKoe"
+   ],
+   "sig": "63hGbNc6tk2cgn4sBaK7JgX6Tp5pWAMtZ2muLuV9Vh8mS4SewHjy93g6jhph9s7onxc6Ummin5EZed4h24bPgpR4",
+   "slot": 469756428,
+   "why": "sol_lamports > cap"
+  },
+  {
+   "amount": 503534995859041,
+   "event": "pump_amm.BuyEvent",
+   "quote_mints": [
+    "G8PANYt66HHt2r6iQ3Y39qNWrLg1uGz8fqf81PbNKoe"
+   ],
+   "sig": "63hGbNc6tk2cgn4sBaK7JgX6Tp5pWAMtZ2muLuV9Vh8mS4SewHjy93g6jhph9s7onxc6Ummin5EZed4h24bPgpR4",
+   "slot": 469756428,
+   "why": "sol_lamports > cap"
+  },
+  {
+   "amount": 416670333203243,
+   "event": "pump_amm.SellEvent",
+   "quote_mints": [
+    "14FrwsS4QHSfNNKFwwX7tSjYeaehfUGn3oycxeFLQnzE"
+   ],
+   "sig": "59uQDRWSAt7i3MmhbeY1hc6kR6yDDHAS3k1jHYPDP37BgpTwoRAis3ARbcnGspBs3FzJjWzNoaq8gfuo8hVf8LSy",
+   "slot": 469756428,
+   "why": "sol_lamports > cap"
+  },
+  {
+   "amount": 446728104499640,
+   "event": "pump_amm.BuyEvent",
+   "quote_mints": [
+    "14FrwsS4QHSfNNKFwwX7tSjYeaehfUGn3oycxeFLQnzE"
+   ],
+   "sig": "59uQDRWSAt7i3MmhbeY1hc6kR6yDDHAS3k1jHYPDP37BgpTwoRAis3ARbcnGspBs3FzJjWzNoaq8gfuo8hVf8LSy",
+   "slot": 469756428,
+   "why": "sol_lamports > cap"
+  },
+  {
+   "amount": 133288686525609,
+   "event": "pump_amm.SellEvent",
+   "quote_mints": [
+    "DePfvtUL1VGmpQUAq5yxRw7JpwDKGgPkCbTb7jC92Uwr"
+   ],
+   "sig": "65j1ymW65Sq83vHFwoxDvvXhA1K3e6Yva6C1LmEdEUgi1AVgjLpVTWqhtJMSsEowYCGfLR9haM5i1xdQyGMd2AYJ",
+   "slot": 469756428,
+   "why": "sol_lamports > cap"
+  },
+  {
+   "amount": 132897630928340,
+   "event": "pump_amm.BuyEvent",
+   "quote_mints": [
+    "DePfvtUL1VGmpQUAq5yxRw7JpwDKGgPkCbTb7jC92Uwr"
+   ],
+   "sig": "65j1ymW65Sq83vHFwoxDvvXhA1K3e6Yva6C1LmEdEUgi1AVgjLpVTWqhtJMSsEowYCGfLR9haM5i1xdQyGMd2AYJ",
+   "slot": 469756428,
+   "why": "sol_lamports > cap"
+  },
+  {
+   "amount": 581610514214902,
+   "event": "pump_amm.SellEvent",
+   "quote_mints": [
+    "G8PANYt66HHt2r6iQ3Y39qNWrLg1uGz8fqf81PbNKoe"
+   ],
+   "sig": "5Xpd92SXm25Lu33YZD3jJDNMDAeJcTzs95fBpssmJCm9RQfuu8W7TLZ7A8enovuBBMBzoPT9nxCi9CF7PRCE3V5o",
+   "slot": 469756429,
+   "why": "sol_lamports > cap"
+  },
+  {
+   "amount": 486860545406546,
+   "event": "pump_amm.BuyEvent",
+   "quote_mints": [
+    "G8PANYt66HHt2r6iQ3Y39qNWrLg1uGz8fqf81PbNKoe"
+   ],
+   "sig": "5Xpd92SXm25Lu33YZD3jJDNMDAeJcTzs95fBpssmJCm9RQfuu8W7TLZ7A8enovuBBMBzoPT9nxCi9CF7PRCE3V5o",
+   "slot": 469756429,
+   "why": "sol_lamports > cap"
+  },
+  {
+   "amount": 540141016308994,
+   "event": "pump_amm.SellEvent",
+   "quote_mints": [
+    "14FrwsS4QHSfNNKFwwX7tSjYeaehfUGn3oycxeFLQnzE"
+   ],
+   "sig": "3NMJBCzciifwpfDFrUvaTeAgvoE2yupWsA8jikdtrKL4KhLH137cLKcm2oksKLFa4oFMAw2bEgcgwg3sgAoW4ixA",
+   "slot": 469756430,
+   "why": "sol_lamports > cap"
+  },
+  {
+   "amount": 420794706909621,
+   "event": "pump_amm.BuyEvent",
+   "quote_mints": [
+    "14FrwsS4QHSfNNKFwwX7tSjYeaehfUGn3oycxeFLQnzE"
+   ],
+   "sig": "3NMJBCzciifwpfDFrUvaTeAgvoE2yupWsA8jikdtrKL4KhLH137cLKcm2oksKLFa4oFMAw2bEgcgwg3sgAoW4ixA",
+   "slot": 469756430,
+   "why": "sol_lamports > cap"
+  },
+  {
+   "amount": 560047266508756,
+   "event": "pump_amm.SellEvent",
+   "quote_mints": [
+    "G8PANYt66HHt2r6iQ3Y39qNWrLg1uGz8fqf81PbNKoe"
+   ],
+   "sig": "3qcX5iHJNoD1LrDuQ6NhdVPbY5cZUUsNSrYu12VD3T2jvM65gYFaSZkjG4mJFJKCU74MMx4aQw3YcijtHnFmXvYU",
+   "slot": 469756432,
+   "why": "sol_lamports > cap"
+  },
+  {
+   "amount": 737097566949972,
+   "event": "pump_amm.BuyEvent",
+   "quote_mints": [
+    "G8PANYt66HHt2r6iQ3Y39qNWrLg1uGz8fqf81PbNKoe"
+   ],
+   "sig": "3qcX5iHJNoD1LrDuQ6NhdVPbY5cZUUsNSrYu12VD3T2jvM65gYFaSZkjG4mJFJKCU74MMx4aQw3YcijtHnFmXvYU",
+   "slot": 469756432,
+   "why": "sol_lamports > cap"
+  },
+  {
+   "amount": 369477572289712,
+   "event": "pump_amm.SellEvent",
+   "quote_mints": [
+    "14FrwsS4QHSfNNKFwwX7tSjYeaehfUGn3oycxeFLQnzE"
+   ],
+   "sig": "4fpRqpuRsjRy4GKq74uH1fgMsn9Pei4rf9p1x8To7LrTMoKg9XHqiokG6Vg81kHJBaMQtm6FzwqeEsiBPQZTq11g",
+   "slot": 469756433,
+   "why": "sol_lamports > cap"
+  },
+  {
+   "amount": 450732788468430,
+   "event": "pump_amm.BuyEvent",
+   "quote_mints": [
+    "14FrwsS4QHSfNNKFwwX7tSjYeaehfUGn3oycxeFLQnzE"
+   ],
+   "sig": "4fpRqpuRsjRy4GKq74uH1fgMsn9Pei4rf9p1x8To7LrTMoKg9XHqiokG6Vg81kHJBaMQtm6FzwqeEsiBPQZTq11g",
+   "slot": 469756433,
+   "why": "sol_lamports > cap"
+  },
+  {
+   "amount": 692812256042273,
+   "event": "pump_amm.SellEvent",
+   "quote_mints": [
+    "7aqvfTLyRkqVTKRUCHQmocEWC54sojgcJ5vobjmwrEH"
+   ],
+   "sig": "4iCQHNVLCVngTWL2UdmaWfZDTAHKXrgkaxeWb6zfXZU4zPnqhS23bfqjF227kBqxfN4n3ymT7CX9dLPPcGnCb4hd",
+   "slot": 469761826,
+   "why": "sol_lamports > cap"
+  },
+  {
+   "amount": 710327295371163,
+   "event": "pump_amm.BuyEvent",
+   "quote_mints": [
+    "7aqvfTLyRkqVTKRUCHQmocEWC54sojgcJ5vobjmwrEH"
+   ],
+   "sig": "4iCQHNVLCVngTWL2UdmaWfZDTAHKXrgkaxeWb6zfXZU4zPnqhS23bfqjF227kBqxfN4n3ymT7CX9dLPPcGnCb4hd",
+   "slot": 469761826,
+   "why": "sol_lamports > cap"
+  },
+  {
+   "amount": 702118222282772,
+   "event": "pump_amm.SellEvent",
+   "quote_mints": [
+    "FywuxAM8MsPYo72aYKBeKKU9WZzsQ255vpgcrxE6uxE"
+   ],
+   "sig": "3xZD9H1RCRVVRcu6F69TvESRA6fKgsGUzL85ZeUD78LohJcBtc8vNmTvHoMQBYmqtJckM9z9VxyEvGWqL47R7WCA",
+   "slot": 469761827,
+   "why": "sol_lamports > cap"
+  },
+  {
+   "amount": 705647690236101,
+   "event": "pump_amm.BuyEvent",
+   "quote_mints": [
+    "FywuxAM8MsPYo72aYKBeKKU9WZzsQ255vpgcrxE6uxE"
+   ],
+   "sig": "3xZD9H1RCRVVRcu6F69TvESRA6fKgsGUzL85ZeUD78LohJcBtc8vNmTvHoMQBYmqtJckM9z9VxyEvGWqL47R7WCA",
+   "slot": 469761827,
+   "why": "sol_lamports > cap"
+  },
+  {
+   "amount": 641516596816572,
+   "event": "pump_amm.SellEvent",
+   "quote_mints": [
+    "7aqvfTLyRkqVTKRUCHQmocEWC54sojgcJ5vobjmwrEH"
+   ],
+   "sig": "46UcFR4idYdqx1o3pcQpHaSzKimm8b68J4WbEr6otzL8XpVBBQHs8yG3LY2tjZeWBEMk29bkRCwBD5ZNSNW8QiBN",
+   "slot": 469761828,
+   "why": "sol_lamports > cap"
+  },
+  {
+   "amount": 644740384127905,
+   "event": "pump_amm.BuyEvent",
+   "quote_mints": [
+    "7aqvfTLyRkqVTKRUCHQmocEWC54sojgcJ5vobjmwrEH"
+   ],
+   "sig": "46UcFR4idYdqx1o3pcQpHaSzKimm8b68J4WbEr6otzL8XpVBBQHs8yG3LY2tjZeWBEMk29bkRCwBD5ZNSNW8QiBN",
+   "slot": 469761828,
+   "why": "sol_lamports > cap"
+  },
+  {
+   "amount": 198185634261984,
+   "event": "pump_amm.SellEvent",
+   "quote_mints": [
+    "FywuxAM8MsPYo72aYKBeKKU9WZzsQ255vpgcrxE6uxE"
+   ],
+   "sig": "rDjF1C3BaNhvVhuHQoGvnwxnn7vRBoT5gs1wt5ek42JkK1dQ13iH27QRFgpndGy4dU96sAjoGcKHSABushcoq7L",
+   "slot": 469761829,
+   "why": "sol_lamports > cap"
+  },
+  {
+   "amount": 634455581283598,
+   "event": "pump_amm.SellEvent",
+   "quote_mints": [
+    "7aqvfTLyRkqVTKRUCHQmocEWC54sojgcJ5vobjmwrEH"
+   ],
+   "sig": "33d9N2bJTdQTuAcjwQiH766d4sVpY32jjAW2Q7B8AomJnD99zgss16fMuop7xyMjFV8HXFRUJGrcXxvicmFHh2LG",
+   "slot": 469761830,
+   "why": "sol_lamports > cap"
+  },
+  {
+   "amount": 635548606618666,
+   "event": "pump_amm.BuyEvent",
+   "quote_mints": [
+    "7aqvfTLyRkqVTKRUCHQmocEWC54sojgcJ5vobjmwrEH"
+   ],
+   "sig": "33d9N2bJTdQTuAcjwQiH766d4sVpY32jjAW2Q7B8AomJnD99zgss16fMuop7xyMjFV8HXFRUJGrcXxvicmFHh2LG",
+   "slot": 469761830,
+   "why": "sol_lamports > cap"
+  },
+  {
+   "amount": 559204143685569,
+   "event": "pump_amm.SellEvent",
+   "quote_mints": [
+    "7aqvfTLyRkqVTKRUCHQmocEWC54sojgcJ5vobjmwrEH"
+   ],
+   "sig": "5AJ7ToPBd4HxRo6TPiToSywgjpHRRCJQoBokqFiqh4eZGFTvkXg5uwjEhYd8yuqTYSCoRJDGXAYXQRuzBKWHuS8n",
+   "slot": 469761833,
+   "why": "sol_lamports > cap"
+  },
+  {
+   "amount": 559636798216572,
+   "event": "pump_amm.BuyEvent",
+   "quote_mints": [
+    "7aqvfTLyRkqVTKRUCHQmocEWC54sojgcJ5vobjmwrEH"
+   ],
+   "sig": "5AJ7ToPBd4HxRo6TPiToSywgjpHRRCJQoBokqFiqh4eZGFTvkXg5uwjEhYd8yuqTYSCoRJDGXAYXQRuzBKWHuS8n",
+   "slot": 469761833,
+   "why": "sol_lamports > cap"
+  },
+  {
+   "amount": 641981824067923,
+   "event": "pump_amm.SellEvent",
+   "quote_mints": [
+    "FywuxAM8MsPYo72aYKBeKKU9WZzsQ255vpgcrxE6uxE"
+   ],
+   "sig": "f2qAGRUwbRAQjpdVGXiNxZjv3cf7xss9AhbagsEeJfVyrd5QfCsuKo3G2SYw4Xffj1LMRW3J4LdYzF3NAgQB5wP",
+   "slot": 469761834,
+   "why": "sol_lamports > cap"
+  },
+  {
+   "amount": 645208246374308,
+   "event": "pump_amm.BuyEvent",
+   "quote_mints": [
+    "FywuxAM8MsPYo72aYKBeKKU9WZzsQ255vpgcrxE6uxE"
+   ],
+   "sig": "f2qAGRUwbRAQjpdVGXiNxZjv3cf7xss9AhbagsEeJfVyrd5QfCsuKo3G2SYw4Xffj1LMRW3J4LdYzF3NAgQB5wP",
+   "slot": 469761834,
+   "why": "sol_lamports > cap"
+  },
+  {
+   "amount": 499155532093824,
+   "event": "pump_amm.SellEvent",
+   "quote_mints": [
+    "7aqvfTLyRkqVTKRUCHQmocEWC54sojgcJ5vobjmwrEH"
+   ],
+   "sig": "JjXt6ACqesCFKPKU3Vmr1RBNVAaziqLQ4k8fCzJHz1o6L4QxgWYizgMnbybeUgmq2LEPuNkErLuNoWzkTj2FmsC",
+   "slot": 469767225,
+   "why": "sol_lamports > cap"
+  },
+  {
+   "amount": 482140737281730,
+   "event": "pump_amm.BuyEvent",
+   "quote_mints": [
+    "7aqvfTLyRkqVTKRUCHQmocEWC54sojgcJ5vobjmwrEH"
+   ],
+   "sig": "JjXt6ACqesCFKPKU3Vmr1RBNVAaziqLQ4k8fCzJHz1o6L4QxgWYizgMnbybeUgmq2LEPuNkErLuNoWzkTj2FmsC",
+   "slot": 469767225,
+   "why": "sol_lamports > cap"
+  },
+  {
+   "amount": 749691369548447,
+   "event": "pump_amm.SellEvent",
+   "quote_mints": [
+    "12KYNMSdN411RtbeDEXEuS9zF5ZYumFXsZMCAHiHw8Gp"
+   ],
+   "sig": "3r8iMJkrP7hcYQ9xoAS5S9ZN7Zdf94ybX9EkytSXfwxLodRRQVru2HUutyRCP8aSkoqvei1TWpNdnrgtonCPCDPV",
+   "slot": 469767225,
+   "why": "sol_lamports > cap"
+  },
+  {
+   "amount": 753459474273951,
+   "event": "pump_amm.BuyEvent",
+   "quote_mints": [
+    "12KYNMSdN411RtbeDEXEuS9zF5ZYumFXsZMCAHiHw8Gp"
+   ],
+   "sig": "3r8iMJkrP7hcYQ9xoAS5S9ZN7Zdf94ybX9EkytSXfwxLodRRQVru2HUutyRCP8aSkoqvei1TWpNdnrgtonCPCDPV",
+   "slot": 469767225,
+   "why": "sol_lamports > cap"
+  },
+  {
+   "amount": 498085658429356,
+   "event": "pump_amm.SellEvent",
+   "quote_mints": [
+    "SPS6cwq5MbvzfzCqrjWRqaAkcAx7jnA3WqayyYwcNLf"
+   ],
+   "sig": "2KgGBTGkiaW7NJt4i2NVpsem76tj1bBQoqKVB8hKwa1Cnw8GJjJezSvpBABgYq8U4bbc2Nxae5CyNHT8wXZGfdop",
+   "slot": 469767225,
+   "why": "sol_lamports > cap"
+  },
+  {
+   "amount": 577700141829392,
+   "event": "pump_amm.BuyEvent",
+   "quote_mints": [
+    "SPS6cwq5MbvzfzCqrjWRqaAkcAx7jnA3WqayyYwcNLf"
+   ],
+   "sig": "2KgGBTGkiaW7NJt4i2NVpsem76tj1bBQoqKVB8hKwa1Cnw8GJjJezSvpBABgYq8U4bbc2Nxae5CyNHT8wXZGfdop",
+   "slot": 469767225,
+   "why": "sol_lamports > cap"
+  },
+  {
+   "amount": 667069537587658,
+   "event": "pump_amm.SellEvent",
+   "quote_mints": [
+    "KkDX2so1ET1SCKkGJ2gmjJkmWBZG38rAucfTUuTiyXx"
+   ],
+   "sig": "391PWeETftRd2AsV9S2EAVZ5KpKFqYxxGt4FGWRf1Ku9Xb9d55SqCm6CVdiQDemEUEsMNz3PGXUgVrRyPa1iq74x",
+   "slot": 469767225,
+   "why": "sol_lamports > cap"
+  },
+  {
+   "amount": 760479548227798,
+   "event": "pump_amm.BuyEvent",
+   "quote_mints": [
+    "KkDX2so1ET1SCKkGJ2gmjJkmWBZG38rAucfTUuTiyXx"
+   ],
+   "sig": "391PWeETftRd2AsV9S2EAVZ5KpKFqYxxGt4FGWRf1Ku9Xb9d55SqCm6CVdiQDemEUEsMNz3PGXUgVrRyPa1iq74x",
+   "slot": 469767225,
+   "why": "sol_lamports > cap"
+  },
+  {
+   "amount": 178430397965378,
+   "event": "pump_amm.SellEvent",
+   "quote_mints": [
+    "394Z8rGwerTRBxjJ4fDtFcyT1bALAez7N37mawfQk7gB"
+   ],
+   "sig": "3og2J9u9fLw5nCmw33mMs9ELMpWPeHddfA6cTDiLQ1vp5JsEnC3GJHMYUPtXnwJite4o4KZDhmMtpzXUSqfMJnsu",
+   "slot": 469767227,
+   "why": "sol_lamports > cap"
+  },
+  {
+   "amount": 177494061596641,
+   "event": "pump_amm.BuyEvent",
+   "quote_mints": [
+    "394Z8rGwerTRBxjJ4fDtFcyT1bALAez7N37mawfQk7gB"
+   ],
+   "sig": "3og2J9u9fLw5nCmw33mMs9ELMpWPeHddfA6cTDiLQ1vp5JsEnC3GJHMYUPtXnwJite4o4KZDhmMtpzXUSqfMJnsu",
+   "slot": 469767227,
+   "why": "sol_lamports > cap"
+  },
+  {
+   "amount": 650687921638559,
+   "event": "pump_amm.SellEvent",
+   "quote_mints": [
+    "12KYNMSdN411RtbeDEXEuS9zF5ZYumFXsZMCAHiHw8Gp"
+   ],
+   "sig": "4KRZFLEuf1dkMoqAscM5uGYGqFA2JTFTp6mG3LbZBzE1b12HsELGFfpME9bj1bPvr372TPW2ydA8A2uGUpgaZfqY",
+   "slot": 469767229,
+   "why": "sol_lamports > cap"
+  },
+  {
+   "amount": 653957274253630,
+   "event": "pump_amm.BuyEvent",
+   "quote_mints": [
+    "12KYNMSdN411RtbeDEXEuS9zF5ZYumFXsZMCAHiHw8Gp"
+   ],
+   "sig": "4KRZFLEuf1dkMoqAscM5uGYGqFA2JTFTp6mG3LbZBzE1b12HsELGFfpME9bj1bPvr372TPW2ydA8A2uGUpgaZfqY",
+   "slot": 469767229,
+   "why": "sol_lamports > cap"
+  },
+  {
+   "amount": 757252050455027,
+   "event": "pump_amm.SellEvent",
+   "quote_mints": [
+    "KkDX2so1ET1SCKkGJ2gmjJkmWBZG38rAucfTUuTiyXx"
+   ],
+   "sig": "2wFfGv2Pw5ENZkn7irjKQdd4NJPzuyE1pdPfxCXmd3KmG99DRebWUqoWLKrSgrjYpfB3um4UxbrfJ8zyJDzeqwVm",
+   "slot": 469767230,
+   "why": "sol_lamports > cap"
+  },
+  {
+   "amount": 640400979704774,
+   "event": "pump_amm.BuyEvent",
+   "quote_mints": [
+    "KkDX2so1ET1SCKkGJ2gmjJkmWBZG38rAucfTUuTiyXx"
+   ],
+   "sig": "2wFfGv2Pw5ENZkn7irjKQdd4NJPzuyE1pdPfxCXmd3KmG99DRebWUqoWLKrSgrjYpfB3um4UxbrfJ8zyJDzeqwVm",
+   "slot": 469767230,
+   "why": "sol_lamports > cap"
+  },
+  {
+   "amount": 658018150055441,
+   "event": "pump_amm.SellEvent",
+   "quote_mints": [
+    "SPS6cwq5MbvzfzCqrjWRqaAkcAx7jnA3WqayyYwcNLf"
+   ],
+   "sig": "3FKqNwLHnMJhwrxMmh9U6Ah7ynqfzs6LE3n53neZ8skkYNbZSr4L8SPeAjWqGHphfZfhmRtQGky4yrYea1znbTYR",
+   "slot": 469767230,
+   "why": "sol_lamports > cap"
+  },
+  {
+   "amount": 500733837416148,
+   "event": "pump_amm.BuyEvent",
+   "quote_mints": [
+    "SPS6cwq5MbvzfzCqrjWRqaAkcAx7jnA3WqayyYwcNLf"
+   ],
+   "sig": "3FKqNwLHnMJhwrxMmh9U6Ah7ynqfzs6LE3n53neZ8skkYNbZSr4L8SPeAjWqGHphfZfhmRtQGky4yrYea1znbTYR",
+   "slot": 469767230,
+   "why": "sol_lamports > cap"
+  },
+  {
+   "amount": 625780842153350,
+   "event": "pump_amm.SellEvent",
+   "quote_mints": [
+    "7aqvfTLyRkqVTKRUCHQmocEWC54sojgcJ5vobjmwrEH"
+   ],
+   "sig": "3VrB4pWjb25RQHqKDtEDw7SdBwSP1tJ7MgCRXP3rZu7T1g6Ee7xViGgMZbFoFP478GSiBPAvujSgyvQQA9UDRidu",
+   "slot": 469767230,
+   "why": "sol_lamports > cap"
+  },
+  {
+   "amount": 453234564606739,
+   "event": "pump_amm.BuyEvent",
+   "quote_mints": [
+    "7aqvfTLyRkqVTKRUCHQmocEWC54sojgcJ5vobjmwrEH"
+   ],
+   "sig": "3VrB4pWjb25RQHqKDtEDw7SdBwSP1tJ7MgCRXP3rZu7T1g6Ee7xViGgMZbFoFP478GSiBPAvujSgyvQQA9UDRidu",
+   "slot": 469767230,
+   "why": "sol_lamports > cap"
+  },
+  {
+   "amount": 621397408429077,
+   "event": "pump_amm.SellEvent",
+   "quote_mints": [
+    "12KYNMSdN411RtbeDEXEuS9zF5ZYumFXsZMCAHiHw8Gp"
+   ],
+   "sig": "3B76196gUKzJcWMYZZz4QRmKTL9RWV6REdoahrjGWCNxtEYawh7i2FAJiMNNHBZS4Gcn71NzB6Vdx15ok5veg5GC",
+   "slot": 469767230,
+   "why": "sol_lamports > cap"
+  },
+  {
+   "amount": 623457823679412,
+   "event": "pump_amm.BuyEvent",
+   "quote_mints": [
+    "12KYNMSdN411RtbeDEXEuS9zF5ZYumFXsZMCAHiHw8Gp"
+   ],
+   "sig": "3B76196gUKzJcWMYZZz4QRmKTL9RWV6REdoahrjGWCNxtEYawh7i2FAJiMNNHBZS4Gcn71NzB6Vdx15ok5veg5GC",
+   "slot": 469767230,
+   "why": "sol_lamports > cap"
+  },
+  {
+   "amount": 607682643962185,
+   "event": "pump_amm.SellEvent",
+   "quote_mints": [
+    "SPS6cwq5MbvzfzCqrjWRqaAkcAx7jnA3WqayyYwcNLf"
+   ],
+   "sig": "2SrwmfkvwAdcemQWmpjrWRdqYpVCZCZPGrLfKxRdocTUjsCB5uWWhjEceAaYZunkJgm2agvP3RXxszbbc4NhzSSC",
+   "slot": 469767230,
+   "why": "sol_lamports > cap"
+  },
+  {
+   "amount": 529462528234420,
+   "event": "pump_amm.BuyEvent",
+   "quote_mints": [
+    "SPS6cwq5MbvzfzCqrjWRqaAkcAx7jnA3WqayyYwcNLf"
+   ],
+   "sig": "2SrwmfkvwAdcemQWmpjrWRdqYpVCZCZPGrLfKxRdocTUjsCB5uWWhjEceAaYZunkJgm2agvP3RXxszbbc4NhzSSC",
+   "slot": 469767230,
+   "why": "sol_lamports > cap"
+  },
+  {
+   "amount": 806794173597211,
+   "event": "pump_amm.SellEvent",
+   "quote_mints": [
+    "KkDX2so1ET1SCKkGJ2gmjJkmWBZG38rAucfTUuTiyXx"
+   ],
+   "sig": "3wKiBd1rFsAtkUBHcbck1jVBz3scwtM5dtsHwX6erQiupU4LjiFbSw2q7Sbv8dFxws61NvNopi8kEkwQeeXq4cKD",
+   "slot": 469767231,
+   "why": "sol_lamports > cap"
+  },
+  {
+   "amount": 819583767058276,
+   "event": "pump_amm.BuyEvent",
+   "quote_mints": [
+    "KkDX2so1ET1SCKkGJ2gmjJkmWBZG38rAucfTUuTiyXx"
+   ],
+   "sig": "3wKiBd1rFsAtkUBHcbck1jVBz3scwtM5dtsHwX6erQiupU4LjiFbSw2q7Sbv8dFxws61NvNopi8kEkwQeeXq4cKD",
+   "slot": 469767231,
+   "why": "sol_lamports > cap"
+  },
+  {
+   "amount": 593097502295713,
+   "event": "pump_amm.SellEvent",
+   "quote_mints": [
+    "7aqvfTLyRkqVTKRUCHQmocEWC54sojgcJ5vobjmwrEH"
+   ],
+   "sig": "3ePKm6KmML1vDVqBovZkgPx4yHytb9s4FEJxVaBggdMcznQc82UvJvyeG721XqiurGXpWzC4rbf6nk7TUyEpiEhg",
+   "slot": 469767231,
+   "why": "sol_lamports > cap"
+  },
+  {
+   "amount": 661858876817056,
+   "event": "pump_amm.BuyEvent",
+   "quote_mints": [
+    "7aqvfTLyRkqVTKRUCHQmocEWC54sojgcJ5vobjmwrEH"
+   ],
+   "sig": "3ePKm6KmML1vDVqBovZkgPx4yHytb9s4FEJxVaBggdMcznQc82UvJvyeG721XqiurGXpWzC4rbf6nk7TUyEpiEhg",
+   "slot": 469767231,
+   "why": "sol_lamports > cap"
+  },
+  {
+   "amount": 628333960152709,
+   "event": "pump_amm.SellEvent",
+   "quote_mints": [
+    "KkDX2so1ET1SCKkGJ2gmjJkmWBZG38rAucfTUuTiyXx"
+   ],
+   "sig": "5XrczzwUFsVZNEtFQaDf2FNTs837byk8aHwKbDS6paV7eYstcYDY2vCFC7CcMxut5vJPVvCRm47DwTyQrkUAx4BD",
+   "slot": 469767232,
+   "why": "sol_lamports > cap"
+  },
+  {
+   "amount": 720203136637000,
+   "event": "pump_amm.BuyEvent",
+   "quote_mints": [
+    "KkDX2so1ET1SCKkGJ2gmjJkmWBZG38rAucfTUuTiyXx"
+   ],
+   "sig": "5XrczzwUFsVZNEtFQaDf2FNTs837byk8aHwKbDS6paV7eYstcYDY2vCFC7CcMxut5vJPVvCRm47DwTyQrkUAx4BD",
+   "slot": 469767232,
+   "why": "sol_lamports > cap"
+  },
+  {
+   "amount": 672943270517781,
+   "event": "pump_amm.SellEvent",
+   "quote_mints": [
+    "7aqvfTLyRkqVTKRUCHQmocEWC54sojgcJ5vobjmwrEH"
+   ],
+   "sig": "5iorzaPKo77EWWdFBfg7VvywpGTy4Nryy73gSKSBoyfbzp5M5FaqnQbAPFq26FVNkspTEzy1EBFbdtc2EbBQ7Fic",
+   "slot": 469767233,
+   "why": "sol_lamports > cap"
+  },
+  {
+   "amount": 539064134770999,
+   "event": "pump_amm.BuyEvent",
+   "quote_mints": [
+    "7aqvfTLyRkqVTKRUCHQmocEWC54sojgcJ5vobjmwrEH"
+   ],
+   "sig": "5iorzaPKo77EWWdFBfg7VvywpGTy4Nryy73gSKSBoyfbzp5M5FaqnQbAPFq26FVNkspTEzy1EBFbdtc2EbBQ7Fic",
+   "slot": 469767233,
+   "why": "sol_lamports > cap"
+  },
+  {
+   "amount": 557460874366545,
+   "event": "pump_amm.SellEvent",
+   "quote_mints": [
+    "SPS6cwq5MbvzfzCqrjWRqaAkcAx7jnA3WqayyYwcNLf"
+   ],
+   "sig": "2A4Aip1gPGXym1wjU3tqkVnTYVWtyFXCL8GkoKKbN3tFLCfA4XrbUeEtuYExB7F9nGWXxRKkExhewa8x6Cxfk1s3",
+   "slot": 469767233,
+   "why": "sol_lamports > cap"
+  },
+  {
+   "amount": 711872906098770,
+   "event": "pump_amm.BuyEvent",
+   "quote_mints": [
+    "SPS6cwq5MbvzfzCqrjWRqaAkcAx7jnA3WqayyYwcNLf"
+   ],
+   "sig": "2A4Aip1gPGXym1wjU3tqkVnTYVWtyFXCL8GkoKKbN3tFLCfA4XrbUeEtuYExB7F9nGWXxRKkExhewa8x6Cxfk1s3",
+   "slot": 469767233,
+   "why": "sol_lamports > cap"
+  },
+  {
+   "amount": 200316269055525,
+   "event": "pump_amm.SellEvent",
+   "quote_mints": [
+    "394Z8rGwerTRBxjJ4fDtFcyT1bALAez7N37mawfQk7gB"
+   ],
+   "sig": "3KUM7i5256a5pLae6uHxQxb47MstYJ5fVvQRqzMZfiLe1sGMRrPwoJkLFZS5vKBgX5dRsUyhR1iDx5RQiDUC5NK",
+   "slot": 469767233,
+   "why": "sol_lamports > cap"
+  },
+  {
+   "amount": 202800383511030,
+   "event": "pump_amm.BuyEvent",
+   "quote_mints": [
+    "394Z8rGwerTRBxjJ4fDtFcyT1bALAez7N37mawfQk7gB"
+   ],
+   "sig": "3KUM7i5256a5pLae6uHxQxb47MstYJ5fVvQRqzMZfiLe1sGMRrPwoJkLFZS5vKBgX5dRsUyhR1iDx5RQiDUC5NK",
+   "slot": 469767233,
+   "why": "sol_lamports > cap"
+  },
+  {
+   "amount": 594577755647236,
+   "event": "pump_amm.SellEvent",
+   "quote_mints": [
+    "12KYNMSdN411RtbeDEXEuS9zF5ZYumFXsZMCAHiHw8Gp"
+   ],
+   "sig": "YcDbURVhcMzZ7CnjQ3zBjd9ByrgbEzoJ6NE7u8sNXns1y13T5Wx4U6YkbrqdNFBbBhcF22bDCJJVdVBUYxFeK1v",
+   "slot": 469772625,
+   "why": "sol_lamports > cap"
+  },
+  {
+   "amount": 581237371819067,
+   "event": "pump_amm.BuyEvent",
+   "quote_mints": [
+    "12KYNMSdN411RtbeDEXEuS9zF5ZYumFXsZMCAHiHw8Gp"
+   ],
+   "sig": "YcDbURVhcMzZ7CnjQ3zBjd9ByrgbEzoJ6NE7u8sNXns1y13T5Wx4U6YkbrqdNFBbBhcF22bDCJJVdVBUYxFeK1v",
+   "slot": 469772625,
+   "why": "sol_lamports > cap"
+  },
+  {
+   "amount": 544497740420205,
+   "event": "pump_amm.SellEvent",
+   "quote_mints": [
+    "SPS6cwq5MbvzfzCqrjWRqaAkcAx7jnA3WqayyYwcNLf"
+   ],
+   "sig": "2GKrpccLsf2rEZvHrurVRfWdcNeQgqKsuQXi4sP8RbRmLXjChQQiPi8KoY1TG3oCM6JQGBvRv3cPkXzVcAhYGPJE",
+   "slot": 469772627,
+   "why": "sol_lamports > cap"
+  },
+  {
+   "amount": 561219047451513,
+   "event": "pump_amm.BuyEvent",
+   "quote_mints": [
+    "SPS6cwq5MbvzfzCqrjWRqaAkcAx7jnA3WqayyYwcNLf"
+   ],
+   "sig": "2GKrpccLsf2rEZvHrurVRfWdcNeQgqKsuQXi4sP8RbRmLXjChQQiPi8KoY1TG3oCM6JQGBvRv3cPkXzVcAhYGPJE",
+   "slot": 469772627,
+   "why": "sol_lamports > cap"
+  },
+  {
+   "amount": 546412274184068,
+   "event": "pump_amm.SellEvent",
+   "quote_mints": [
+    "12KYNMSdN411RtbeDEXEuS9zF5ZYumFXsZMCAHiHw8Gp"
+   ],
+   "sig": "5fbPkvunp9jXqaQyC2icUkdbJr5QvoPsewJgL8r6Wd2ZS6oCADauiFvgVZkJQssVndSVjfYYSNVWiVnuPBKhXY48",
+   "slot": 469772627,
+   "why": "sol_lamports > cap"
+  },
+  {
+   "amount": 479387367755722,
+   "event": "pump_amm.BuyEvent",
+   "quote_mints": [
+    "12KYNMSdN411RtbeDEXEuS9zF5ZYumFXsZMCAHiHw8Gp"
+   ],
+   "sig": "5fbPkvunp9jXqaQyC2icUkdbJr5QvoPsewJgL8r6Wd2ZS6oCADauiFvgVZkJQssVndSVjfYYSNVWiVnuPBKhXY48",
+   "slot": 469772627,
+   "why": "sol_lamports > cap"
+  },
+  {
+   "amount": 451565233020404,
+   "event": "pump_amm.SellEvent",
+   "quote_mints": [
+    "12KYNMSdN411RtbeDEXEuS9zF5ZYumFXsZMCAHiHw8Gp"
+   ],
+   "sig": "64pkC9Uuk1GWGhpHMd1dd7RhrdDwXVzB2axyNvii5Qgz2kgM2qcdkjy2dGT97wD3d24tTJ95qwLi2o9i49SD42aR",
+   "slot": 469772630,
+   "why": "sol_lamports > cap"
+  },
+  {
+   "amount": 470061389464224,
+   "event": "pump_amm.BuyEvent",
+   "quote_mints": [
+    "12KYNMSdN411RtbeDEXEuS9zF5ZYumFXsZMCAHiHw8Gp"
+   ],
+   "sig": "64pkC9Uuk1GWGhpHMd1dd7RhrdDwXVzB2axyNvii5Qgz2kgM2qcdkjy2dGT97wD3d24tTJ95qwLi2o9i49SD42aR",
+   "slot": 469772630,
+   "why": "sol_lamports > cap"
+  },
+  {
+   "amount": 506742062241860,
+   "event": "pump_amm.SellEvent",
+   "quote_mints": [
+    "SPS6cwq5MbvzfzCqrjWRqaAkcAx7jnA3WqayyYwcNLf"
+   ],
+   "sig": "3HReYHpQKzE67t1cEvjUVzFhmRLCrk1nBcm2u63p81itUDZ5sA3achpQ3pHEPSWaBSBBZE7gfTAxZ6FX4gwjFbGH",
+   "slot": 469772630,
+   "why": "sol_lamports > cap"
+  },
+  {
+   "amount": 564090027427168,
+   "event": "pump_amm.BuyEvent",
+   "quote_mints": [
+    "SPS6cwq5MbvzfzCqrjWRqaAkcAx7jnA3WqayyYwcNLf"
+   ],
+   "sig": "3HReYHpQKzE67t1cEvjUVzFhmRLCrk1nBcm2u63p81itUDZ5sA3achpQ3pHEPSWaBSBBZE7gfTAxZ6FX4gwjFbGH",
+   "slot": 469772630,
+   "why": "sol_lamports > cap"
+  },
+  {
+   "amount": 182652356382682,
+   "event": "pump_amm.SellEvent",
+   "quote_mints": [
+    "394Z8rGwerTRBxjJ4fDtFcyT1bALAez7N37mawfQk7gB"
+   ],
+   "sig": "3yPYyQcniZb7u3Qm6oEiy1j8VDvX36fghqkQMvmhX8qqP2UQe3EzcHE2e75nP3wbfyZoFuTuHYMLq7JgZM7sFcmU",
+   "slot": 469772631,
+   "why": "sol_lamports > cap"
+  },
+  {
+   "amount": 183648424437340,
+   "event": "pump_amm.BuyEvent",
+   "quote_mints": [
+    "394Z8rGwerTRBxjJ4fDtFcyT1bALAez7N37mawfQk7gB"
+   ],
+   "sig": "3yPYyQcniZb7u3Qm6oEiy1j8VDvX36fghqkQMvmhX8qqP2UQe3EzcHE2e75nP3wbfyZoFuTuHYMLq7JgZM7sFcmU",
+   "slot": 469772631,
+   "why": "sol_lamports > cap"
+  },
+  {
+   "amount": 438722313381785,
+   "event": "pump_amm.SellEvent",
+   "quote_mints": [
+    "SPS6cwq5MbvzfzCqrjWRqaAkcAx7jnA3WqayyYwcNLf"
+   ],
+   "sig": "5QY2isyxxP52uJ93Sz7PVnDkXS29xh9P4xFQ8RRBDcy4rCm575QifB2SJJMJFPyfcPfACSTEWg8EovFyJWUdjuZA",
+   "slot": 469772633,
+   "why": "sol_lamports > cap"
+  },
+  {
+   "amount": 474009294181335,
+   "event": "pump_amm.BuyEvent",
+   "quote_mints": [
+    "SPS6cwq5MbvzfzCqrjWRqaAkcAx7jnA3WqayyYwcNLf"
+   ],
+   "sig": "5QY2isyxxP52uJ93Sz7PVnDkXS29xh9P4xFQ8RRBDcy4rCm575QifB2SJJMJFPyfcPfACSTEWg8EovFyJWUdjuZA",
+   "slot": 469772633,
+   "why": "sol_lamports > cap"
+  },
+  {
+   "amount": 625524162665668,
+   "event": "pump_amm.SellEvent",
+   "quote_mints": [
+    "12KYNMSdN411RtbeDEXEuS9zF5ZYumFXsZMCAHiHw8Gp"
+   ],
+   "sig": "2TMiV9g7WDjTQoCgM9HYM6Zqqz5PrxAgMVghm31REnau62PRstZFvvMQw5HP1uLYUM5nDC3Pe9LtVrVZujyGw8Aa",
+   "slot": 469772633,
+   "why": "sol_lamports > cap"
+  },
+  {
+   "amount": 532657574090638,
+   "event": "pump_amm.BuyEvent",
+   "quote_mints": [
+    "12KYNMSdN411RtbeDEXEuS9zF5ZYumFXsZMCAHiHw8Gp"
+   ],
+   "sig": "2TMiV9g7WDjTQoCgM9HYM6Zqqz5PrxAgMVghm31REnau62PRstZFvvMQw5HP1uLYUM5nDC3Pe9LtVrVZujyGw8Aa",
+   "slot": 469772633,
+   "why": "sol_lamports > cap"
+  },
+  {
+   "amount": 582551136496731,
+   "event": "pump_amm.SellEvent",
+   "quote_mints": [
+    "12WCzB2EdrZaLuthjU6VrNSyGia6fjyg5MWL6hq9YW2t"
+   ],
+   "sig": "2tqdJzVTSLwu8vAwRCzJsSsJs7NFfswRXsWK7kBMHtmKojp2GCU3tp3bvmgQdYfSBdr5mAwF5d91yZjaAsGyDbj1",
+   "slot": 469778025,
+   "why": "sol_lamports > cap"
+  },
+  {
+   "amount": 685145641654403,
+   "event": "pump_amm.BuyEvent",
+   "quote_mints": [
+    "12WCzB2EdrZaLuthjU6VrNSyGia6fjyg5MWL6hq9YW2t"
+   ],
+   "sig": "2tqdJzVTSLwu8vAwRCzJsSsJs7NFfswRXsWK7kBMHtmKojp2GCU3tp3bvmgQdYfSBdr5mAwF5d91yZjaAsGyDbj1",
+   "slot": 469778025,
+   "why": "sol_lamports > cap"
+  },
+  {
+   "amount": 392944757746335,
+   "event": "pump_amm.SellEvent",
+   "quote_mints": [
+    "12KYNMSdN411RtbeDEXEuS9zF5ZYumFXsZMCAHiHw8Gp"
+   ],
+   "sig": "2yD1EwuW7WTo2wNJjigd5pFeVdZSpymg39Vb32W7DuHV4FeNM8dr9SAzchN5jKE2trXAFUYuJ9D3j823wTGxcPcv",
+   "slot": 469778026,
+   "why": "sol_lamports > cap"
+  },
+  {
+   "amount": 499215731199411,
+   "event": "pump_amm.BuyEvent",
+   "quote_mints": [
+    "12KYNMSdN411RtbeDEXEuS9zF5ZYumFXsZMCAHiHw8Gp"
+   ],
+   "sig": "2yD1EwuW7WTo2wNJjigd5pFeVdZSpymg39Vb32W7DuHV4FeNM8dr9SAzchN5jKE2trXAFUYuJ9D3j823wTGxcPcv",
+   "slot": 469778026,
+   "why": "sol_lamports > cap"
+  },
+  {
+   "amount": 157578553798905,
+   "event": "pump_amm.SellEvent",
+   "quote_mints": [
+    "394Z8rGwerTRBxjJ4fDtFcyT1bALAez7N37mawfQk7gB"
+   ],
+   "sig": "4LAbNMnU5z17oAxwMRRNvx9xApUgvYhX42cdTkaC8T7bocn389psJ1MRakXXJBBnJSf8BU4mk8cXMEVmfkgmo5Zj",
+   "slot": 469778027,
+   "why": "sol_lamports > cap"
+  },
+  {
+   "amount": 157374040597575,
+   "event": "pump_amm.BuyEvent",
+   "quote_mints": [
+    "394Z8rGwerTRBxjJ4fDtFcyT1bALAez7N37mawfQk7gB"
+   ],
+   "sig": "4LAbNMnU5z17oAxwMRRNvx9xApUgvYhX42cdTkaC8T7bocn389psJ1MRakXXJBBnJSf8BU4mk8cXMEVmfkgmo5Zj",
+   "slot": 469778027,
+   "why": "sol_lamports > cap"
+  },
+  {
+   "amount": 401312785475677,
+   "event": "pump_amm.SellEvent",
+   "quote_mints": [
+    "12KYNMSdN411RtbeDEXEuS9zF5ZYumFXsZMCAHiHw8Gp"
+   ],
+   "sig": "2vSoSyxFV3WyaDKPKJ67qTt5NWdpi44g7xKDeeqgXmZjLkzsW7tdZHy1T8dh5kCVm6V21u7ridvsgoJvEKNbhoYA",
+   "slot": 469778029,
+   "why": "sol_lamports > cap"
+  },
+  {
+   "amount": 600454832374889,
+   "event": "pump_amm.BuyEvent",
+   "quote_mints": [
+    "12KYNMSdN411RtbeDEXEuS9zF5ZYumFXsZMCAHiHw8Gp"
+   ],
+   "sig": "2vSoSyxFV3WyaDKPKJ67qTt5NWdpi44g7xKDeeqgXmZjLkzsW7tdZHy1T8dh5kCVm6V21u7ridvsgoJvEKNbhoYA",
+   "slot": 469778029,
+   "why": "sol_lamports > cap"
+  },
+  {
+   "amount": 491792655729600,
+   "event": "pump_amm.SellEvent",
+   "quote_mints": [
+    "QQdUVyjCM8qKSres4QP9MQMcZRvkT3NFnVKgfs5JoC7"
+   ],
+   "sig": "4u3yBgDnYdiMH9maBXx1913qXRRVGe5Co1wkkcKaeZ1s65cks46KXkLbVwuj8H9dR1tB2pLd1HWhGNABbtCSFfnX",
+   "slot": 469778029,
+   "why": "sol_lamports > cap"
+  },
+  {
+   "amount": 494263081323649,
+   "event": "pump_amm.BuyEvent",
+   "quote_mints": [
+    "QQdUVyjCM8qKSres4QP9MQMcZRvkT3NFnVKgfs5JoC7"
+   ],
+   "sig": "4u3yBgDnYdiMH9maBXx1913qXRRVGe5Co1wkkcKaeZ1s65cks46KXkLbVwuj8H9dR1tB2pLd1HWhGNABbtCSFfnX",
+   "slot": 469778029,
+   "why": "sol_lamports > cap"
+  },
+  {
+   "amount": 486828911949250,
+   "event": "pump_amm.SellEvent",
+   "quote_mints": [
+    "QQdUVyjCM8qKSres4QP9MQMcZRvkT3NFnVKgfs5JoC7"
+   ],
+   "sig": "4uTL54NPdgJTsoMcESFJvRPKdqX342AKQRYNZiAJRiKMVQesxrcR55tAKJHQKNZciwcniG7JV8N9uwRiViZc3nXk",
+   "slot": 469778029,
+   "why": "sol_lamports > cap"
+  },
+  {
+   "amount": 666833480994984,
+   "event": "pump_amm.BuyEvent",
+   "quote_mints": [
+    "QQdUVyjCM8qKSres4QP9MQMcZRvkT3NFnVKgfs5JoC7"
+   ],
+   "sig": "4uTL54NPdgJTsoMcESFJvRPKdqX342AKQRYNZiAJRiKMVQesxrcR55tAKJHQKNZciwcniG7JV8N9uwRiViZc3nXk",
+   "slot": 469778029,
+   "why": "sol_lamports > cap"
+  },
+  {
+   "amount": 577723722772930,
+   "event": "pump_amm.SellEvent",
+   "quote_mints": [
+    "12WCzB2EdrZaLuthjU6VrNSyGia6fjyg5MWL6hq9YW2t"
+   ],
+   "sig": "328baki96wjk2MsJBb1GWzHRVwvHaVTPm8XhezMHVDrsifTgki5FdmmuEJ5otoQW6fiVEHfeRh5ApyWbEmW8Nea6",
+   "slot": 469778030,
+   "why": "sol_lamports > cap"
+  },
+  {
+   "amount": 579016774441301,
+   "event": "pump_amm.BuyEvent",
+   "quote_mints": [
+    "12WCzB2EdrZaLuthjU6VrNSyGia6fjyg5MWL6hq9YW2t"
+   ],
+   "sig": "328baki96wjk2MsJBb1GWzHRVwvHaVTPm8XhezMHVDrsifTgki5FdmmuEJ5otoQW6fiVEHfeRh5ApyWbEmW8Nea6",
+   "slot": 469778030,
+   "why": "sol_lamports > cap"
+  },
+  {
+   "amount": 585561416410148,
+   "event": "pump_amm.SellEvent",
+   "quote_mints": [
+    "QQdUVyjCM8qKSres4QP9MQMcZRvkT3NFnVKgfs5JoC7"
+   ],
+   "sig": "2A6NzRiEjNPajSwEakJb3Y4aVPgFjEpKZQCp5NBdPYq8BY9EXJSAb816jw9H1Ya8F5t1XfzMYg2isajdGiR9Wvfk",
+   "slot": 469778030,
+   "why": "sol_lamports > cap"
+  },
+  {
+   "amount": 588504008785332,
+   "event": "pump_amm.BuyEvent",
+   "quote_mints": [
+    "QQdUVyjCM8qKSres4QP9MQMcZRvkT3NFnVKgfs5JoC7"
+   ],
+   "sig": "2A6NzRiEjNPajSwEakJb3Y4aVPgFjEpKZQCp5NBdPYq8BY9EXJSAb816jw9H1Ya8F5t1XfzMYg2isajdGiR9Wvfk",
+   "slot": 469778030,
+   "why": "sol_lamports > cap"
+  },
+  {
+   "amount": 631538883499473,
+   "event": "pump_amm.SellEvent",
+   "quote_mints": [
+    "12WCzB2EdrZaLuthjU6VrNSyGia6fjyg5MWL6hq9YW2t"
+   ],
+   "sig": "rUf7Lb5BfoR8tqKiy3usgLxV4MKP61cmsFWuin1jFQ1Ndgg2Ah7iuQPprCNjoWQBaaYRYFRRus9sEFH64jzda8V",
+   "slot": 469778030,
+   "why": "sol_lamports > cap"
+  },
+  {
+   "amount": 634712486596328,
+   "event": "pump_amm.BuyEvent",
+   "quote_mints": [
+    "12WCzB2EdrZaLuthjU6VrNSyGia6fjyg5MWL6hq9YW2t"
+   ],
+   "sig": "rUf7Lb5BfoR8tqKiy3usgLxV4MKP61cmsFWuin1jFQ1Ndgg2Ah7iuQPprCNjoWQBaaYRYFRRus9sEFH64jzda8V",
+   "slot": 469778030,
+   "why": "sol_lamports > cap"
+  },
+  {
+   "amount": 474972075968960,
+   "event": "pump_amm.SellEvent",
+   "quote_mints": [
+    "12KYNMSdN411RtbeDEXEuS9zF5ZYumFXsZMCAHiHw8Gp"
+   ],
+   "sig": "4xZ4ChzwYb4KgHePEzagvPwcQvhJEt4Fmpjr3vESxzuhv2kF9Zu2yyZMiPKQqxJ1g2GdvKRBmPFSAFi2ANVCNphb",
+   "slot": 469778032,
+   "why": "sol_lamports > cap"
+  },
+  {
+   "amount": 515500905544864,
+   "event": "pump_amm.BuyEvent",
+   "quote_mints": [
+    "12KYNMSdN411RtbeDEXEuS9zF5ZYumFXsZMCAHiHw8Gp"
+   ],
+   "sig": "4xZ4ChzwYb4KgHePEzagvPwcQvhJEt4Fmpjr3vESxzuhv2kF9Zu2yyZMiPKQqxJ1g2GdvKRBmPFSAFi2ANVCNphb",
+   "slot": 469778032,
+   "why": "sol_lamports > cap"
+  },
+  {
+   "amount": 682926442675389,
+   "event": "pump_amm.SellEvent",
+   "quote_mints": [
+    "QQdUVyjCM8qKSres4QP9MQMcZRvkT3NFnVKgfs5JoC7"
+   ],
+   "sig": "4mYoYuRQf4KVcmzsSe28rjyCzTYXXvBT53PrUC6wTEHdTFn7rstoH9amVRydtmqZ66nozT5nXga9PxDRji3fMBtB",
+   "slot": 469778032,
+   "why": "sol_lamports > cap"
+  },
+  {
+   "amount": 715222239083805,
+   "event": "pump_amm.BuyEvent",
+   "quote_mints": [
+    "QQdUVyjCM8qKSres4QP9MQMcZRvkT3NFnVKgfs5JoC7"
+   ],
+   "sig": "4mYoYuRQf4KVcmzsSe28rjyCzTYXXvBT53PrUC6wTEHdTFn7rstoH9amVRydtmqZ66nozT5nXga9PxDRji3fMBtB",
+   "slot": 469778032,
+   "why": "sol_lamports > cap"
+  },
+  {
+   "amount": 514010887726878,
+   "event": "pump_amm.SellEvent",
+   "quote_mints": [
+    "12WCzB2EdrZaLuthjU6VrNSyGia6fjyg5MWL6hq9YW2t"
+   ],
+   "sig": "2CbLDCQ4LztKRLaSYKaFqxCUoF6PoReg32LwtDS7WVcr6byKcNFd35tsQnMH6d1WJL2ErrMmZTceGFMbiNEHUJxL",
+   "slot": 469778032,
+   "why": "sol_lamports > cap"
+  },
+  {
+   "amount": 569238449821879,
+   "event": "pump_amm.BuyEvent",
+   "quote_mints": [
+    "12WCzB2EdrZaLuthjU6VrNSyGia6fjyg5MWL6hq9YW2t"
+   ],
+   "sig": "2CbLDCQ4LztKRLaSYKaFqxCUoF6PoReg32LwtDS7WVcr6byKcNFd35tsQnMH6d1WJL2ErrMmZTceGFMbiNEHUJxL",
+   "slot": 469778032,
+   "why": "sol_lamports > cap"
+  },
+  {
+   "amount": 595502015335656,
+   "event": "pump_amm.SellEvent",
+   "quote_mints": [
+    "12KYNMSdN411RtbeDEXEuS9zF5ZYumFXsZMCAHiHw8Gp"
+   ],
+   "sig": "4bK9YPLQB4p54n2y635LBPHLwSHpkRZK4zv1N37wYAukMvGCbWopjNjC7tgiE6x83SJLRHCcJTVzL8dXsqN7d3jY",
+   "slot": 469778033,
+   "why": "sol_lamports > cap"
+  },
+  {
+   "amount": 604632440216867,
+   "event": "pump_amm.BuyEvent",
+   "quote_mints": [
+    "12KYNMSdN411RtbeDEXEuS9zF5ZYumFXsZMCAHiHw8Gp"
+   ],
+   "sig": "4bK9YPLQB4p54n2y635LBPHLwSHpkRZK4zv1N37wYAukMvGCbWopjNjC7tgiE6x83SJLRHCcJTVzL8dXsqN7d3jY",
+   "slot": 469778033,
+   "why": "sol_lamports > cap"
+  },
+  {
+   "amount": 152782415969417,
+   "event": "pump_amm.SellEvent",
+   "quote_mints": [
+    "394Z8rGwerTRBxjJ4fDtFcyT1bALAez7N37mawfQk7gB"
+   ],
+   "sig": "rPPXRZSXqe4xCQ8PHsckp3hqLCjJs44aYveKdnHjHYTPSdgXhegkJpzp4VsZjtcGf14KfQF5wKFBxC4AfrGL5qB",
+   "slot": 469778034,
+   "why": "sol_lamports > cap"
+  },
+  {
+   "amount": 151699615700729,
+   "event": "pump_amm.BuyEvent",
+   "quote_mints": [
+    "394Z8rGwerTRBxjJ4fDtFcyT1bALAez7N37mawfQk7gB"
+   ],
+   "sig": "rPPXRZSXqe4xCQ8PHsckp3hqLCjJs44aYveKdnHjHYTPSdgXhegkJpzp4VsZjtcGf14KfQF5wKFBxC4AfrGL5qB",
+   "slot": 469778034,
+   "why": "sol_lamports > cap"
+  },
+  {
+   "amount": 628847340813375,
+   "event": "pump_amm.SellEvent",
+   "quote_mints": [
+    "12WCzB2EdrZaLuthjU6VrNSyGia6fjyg5MWL6hq9YW2t"
+   ],
+   "sig": "4N2NQejtTXUxAxzSSqhh3jERmuVxivdfCjrDUde35mxDAB6B7UZeNFN6BwrEhFjHoQe2VkFvPwLq8t7nf1UhvV7U",
+   "slot": 469783425,
+   "why": "sol_lamports > cap"
+  },
+  {
+   "amount": 596586224954677,
+   "event": "pump_amm.BuyEvent",
+   "quote_mints": [
+    "12WCzB2EdrZaLuthjU6VrNSyGia6fjyg5MWL6hq9YW2t"
+   ],
+   "sig": "4N2NQejtTXUxAxzSSqhh3jERmuVxivdfCjrDUde35mxDAB6B7UZeNFN6BwrEhFjHoQe2VkFvPwLq8t7nf1UhvV7U",
+   "slot": 469783425,
+   "why": "sol_lamports > cap"
+  },
+  {
+   "amount": 455475986940895,
+   "event": "pump_amm.SellEvent",
+   "quote_mints": [
+    "AFVnNpMHMVfjg3mvpmZhFrZY9bu1SzccpypKkQKjVjy"
+   ],
+   "sig": "4sAakKemZgX31VvSyd5FNNJfBe3ovT2XB4tr4wjv2chpj7HypEVvEMknnxhGie7xvp7SA9vT1twbXfFkkrThXd8s",
+   "slot": 469783425,
+   "why": "sol_lamports > cap"
+  },
+  {
+   "amount": 590050424627715,
+   "event": "pump_amm.BuyEvent",
+   "quote_mints": [
+    "AFVnNpMHMVfjg3mvpmZhFrZY9bu1SzccpypKkQKjVjy"
+   ],
+   "sig": "4sAakKemZgX31VvSyd5FNNJfBe3ovT2XB4tr4wjv2chpj7HypEVvEMknnxhGie7xvp7SA9vT1twbXfFkkrThXd8s",
+   "slot": 469783425,
+   "why": "sol_lamports > cap"
+  },
+  {
+   "amount": 123294692674240,
+   "event": "pump_amm.SellEvent",
+   "quote_mints": [
+    "394Z8rGwerTRBxjJ4fDtFcyT1bALAez7N37mawfQk7gB"
+   ],
+   "sig": "KfDfzeufFzbrFZqxyoAPsQU5E9EJKh95v4hNaUKWEbPZMofqt2ybijwoMMXaww4uXsQPNeMUxdhCsKUcGYNEmki",
+   "slot": 469783425,
+   "why": "sol_lamports > cap"
+  },
+  {
+   "amount": 124400965668894,
+   "event": "pump_amm.BuyEvent",
+   "quote_mints": [
+    "394Z8rGwerTRBxjJ4fDtFcyT1bALAez7N37mawfQk7gB"
+   ],
+   "sig": "KfDfzeufFzbrFZqxyoAPsQU5E9EJKh95v4hNaUKWEbPZMofqt2ybijwoMMXaww4uXsQPNeMUxdhCsKUcGYNEmki",
+   "slot": 469783425,
+   "why": "sol_lamports > cap"
+  },
+  {
+   "amount": 509883076103444,
+   "event": "pump_amm.SellEvent",
+   "quote_mints": [
+    "QQdUVyjCM8qKSres4QP9MQMcZRvkT3NFnVKgfs5JoC7"
+   ],
+   "sig": "CMBfSB8J2mvGZhQQv3K9GESQxGtmofoPxXzm2y8nkWL6NhafHX9MpvW6iaKT131oXzExN57d1ndfgZaoQDJz6KG",
+   "slot": 469783425,
+   "why": "sol_lamports > cap"
+  },
+  {
+   "amount": 523358890580818,
+   "event": "pump_amm.BuyEvent",
+   "quote_mints": [
+    "QQdUVyjCM8qKSres4QP9MQMcZRvkT3NFnVKgfs5JoC7"
+   ],
+   "sig": "CMBfSB8J2mvGZhQQv3K9GESQxGtmofoPxXzm2y8nkWL6NhafHX9MpvW6iaKT131oXzExN57d1ndfgZaoQDJz6KG",
+   "slot": 469783425,
+   "why": "sol_lamports > cap"
+  },
+  {
+   "amount": 615257700315249,
+   "event": "pump_amm.SellEvent",
+   "quote_mints": [
+    "QQdUVyjCM8qKSres4QP9MQMcZRvkT3NFnVKgfs5JoC7"
+   ],
+   "sig": "4TE7TJ5MfgN6VxQbdJQ1PAdtsiZGsbDAWCnvu4P8vCB6ei2zDzAxQ91gZFgftmANanD94BGK7QuMeiBhfDqyDvUM",
+   "slot": 469783427,
+   "why": "sol_lamports > cap"
+  },
+  {
+   "amount": 545498344579064,
+   "event": "pump_amm.BuyEvent",
+   "quote_mints": [
+    "QQdUVyjCM8qKSres4QP9MQMcZRvkT3NFnVKgfs5JoC7"
+   ],
+   "sig": "4TE7TJ5MfgN6VxQbdJQ1PAdtsiZGsbDAWCnvu4P8vCB6ei2zDzAxQ91gZFgftmANanD94BGK7QuMeiBhfDqyDvUM",
+   "slot": 469783427,
+   "why": "sol_lamports > cap"
+  },
+  {
+   "amount": 517966240261892,
+   "event": "pump_amm.SellEvent",
+   "quote_mints": [
+    "12WCzB2EdrZaLuthjU6VrNSyGia6fjyg5MWL6hq9YW2t"
+   ],
+   "sig": "4GFjqaVGkLPpiSaQ7A69smTyeesaXcLeUBMAYxWYWWYEeqihi7DXoy8P6eD9GDBBp7tymnDbdjo4WcxK1dFXT3Y4",
+   "slot": 469783427,
+   "why": "sol_lamports > cap"
+  },
+  {
+   "amount": 614507816925367,
+   "event": "pump_amm.BuyEvent",
+   "quote_mints": [
+    "12WCzB2EdrZaLuthjU6VrNSyGia6fjyg5MWL6hq9YW2t"
+   ],
+   "sig": "4GFjqaVGkLPpiSaQ7A69smTyeesaXcLeUBMAYxWYWWYEeqihi7DXoy8P6eD9GDBBp7tymnDbdjo4WcxK1dFXT3Y4",
+   "slot": 469783427,
+   "why": "sol_lamports > cap"
+  },
+  {
+   "amount": 648387959784459,
+   "event": "pump_amm.SellEvent",
+   "quote_mints": [
+    "AFVnNpMHMVfjg3mvpmZhFrZY9bu1SzccpypKkQKjVjy"
+   ],
+   "sig": "44YQ72R9XzjhUyGGg8WzLqpUYhJYzxAb89ccRH1DQUuFsGb5FTTQNpwy7odK1TeCx2w18yAqttTF4Kb1F45yFBWQ",
+   "slot": 469783428,
+   "why": "sol_lamports > cap"
+  },
+  {
+   "amount": 686634784317967,
+   "event": "pump_amm.BuyEvent",
+   "quote_mints": [
+    "AFVnNpMHMVfjg3mvpmZhFrZY9bu1SzccpypKkQKjVjy"
+   ],
+   "sig": "44YQ72R9XzjhUyGGg8WzLqpUYhJYzxAb89ccRH1DQUuFsGb5FTTQNpwy7odK1TeCx2w18yAqttTF4Kb1F45yFBWQ",
+   "slot": 469783428,
+   "why": "sol_lamports > cap"
+  },
+  {
+   "amount": 647833356399128,
+   "event": "pump_amm.SellEvent",
+   "quote_mints": [
+    "GxHPr6boXVhmQwp97uCPYuKzZtFEfcPFUkSsYoi8CSC"
+   ],
+   "sig": "4mR48oBzBJVv3qrRQyhCJxP73d6R9L5d6PBM2gQuqfBVxkU68on1H6xbuQ2cRf3zoStWcnD2QyZYpBcKjUfMBEkk",
+   "slot": 469783428,
+   "why": "sol_lamports > cap"
+  },
+  {
+   "amount": 651088409336027,
+   "event": "pump_amm.BuyEvent",
+   "quote_mints": [
+    "GxHPr6boXVhmQwp97uCPYuKzZtFEfcPFUkSsYoi8CSC"
+   ],
+   "sig": "4mR48oBzBJVv3qrRQyhCJxP73d6R9L5d6PBM2gQuqfBVxkU68on1H6xbuQ2cRf3zoStWcnD2QyZYpBcKjUfMBEkk",
+   "slot": 469783428,
+   "why": "sol_lamports > cap"
+  },
+  {
+   "amount": 589832751791760,
+   "event": "pump_amm.SellEvent",
+   "quote_mints": [
+    "GxHPr6boXVhmQwp97uCPYuKzZtFEfcPFUkSsYoi8CSC"
+   ],
+   "sig": "4koGMh2o5gy9yTYtuwjxh5sxuwg7sc7ze4uLYA6UP9NtJWmhp4ZZ5oAAoW7tjhZcqvjBvbXMv5FTMFnhKC2LKj4H",
+   "slot": 469783430,
+   "why": "sol_lamports > cap"
+  },
+  {
+   "amount": 592173580107576,
+   "event": "pump_amm.BuyEvent",
+   "quote_mints": [
+    "GxHPr6boXVhmQwp97uCPYuKzZtFEfcPFUkSsYoi8CSC"
+   ],
+   "sig": "4koGMh2o5gy9yTYtuwjxh5sxuwg7sc7ze4uLYA6UP9NtJWmhp4ZZ5oAAoW7tjhZcqvjBvbXMv5FTMFnhKC2LKj4H",
+   "slot": 469783430,
+   "why": "sol_lamports > cap"
+  },
+  {
+   "amount": 644149527767713,
+   "event": "pump_amm.SellEvent",
+   "quote_mints": [
+    "QQdUVyjCM8qKSres4QP9MQMcZRvkT3NFnVKgfs5JoC7"
+   ],
+   "sig": "597MFRV7cFxtrzeR2TRrnU87QQgiDymYBjJBWqfRAoKQqimSBi9Pe1dxznBmjUQiBqmeFQ6FxpV8zSm1sqe87LHv",
+   "slot": 469783430,
+   "why": "sol_lamports > cap"
+  },
+  {
+   "amount": 496838714833489,
+   "event": "pump_amm.BuyEvent",
+   "quote_mints": [
+    "QQdUVyjCM8qKSres4QP9MQMcZRvkT3NFnVKgfs5JoC7"
+   ],
+   "sig": "597MFRV7cFxtrzeR2TRrnU87QQgiDymYBjJBWqfRAoKQqimSBi9Pe1dxznBmjUQiBqmeFQ6FxpV8zSm1sqe87LHv",
+   "slot": 469783430,
+   "why": "sol_lamports > cap"
+  },
+  {
+   "amount": 493425076983254,
+   "event": "pump_amm.SellEvent",
+   "quote_mints": [
+    "12WCzB2EdrZaLuthjU6VrNSyGia6fjyg5MWL6hq9YW2t"
+   ],
+   "sig": "3FPGsFFxjTLgLaF2rWY4eNdRrRYYVMP4epzdYN8FjBh5JXvGWjVAboXCh8EzgEWVRFbCjEd4TsJ8vkh6ZaAMucSz",
+   "slot": 469783430,
+   "why": "sol_lamports > cap"
+  },
+  {
+   "amount": 626164968502209,
+   "event": "pump_amm.BuyEvent",
+   "quote_mints": [
+    "12WCzB2EdrZaLuthjU6VrNSyGia6fjyg5MWL6hq9YW2t"
+   ],
+   "sig": "3FPGsFFxjTLgLaF2rWY4eNdRrRYYVMP4epzdYN8FjBh5JXvGWjVAboXCh8EzgEWVRFbCjEd4TsJ8vkh6ZaAMucSz",
+   "slot": 469783430,
+   "why": "sol_lamports > cap"
+  },
+  {
+   "amount": 556352787919296,
+   "event": "pump_amm.SellEvent",
+   "quote_mints": [
+    "AFVnNpMHMVfjg3mvpmZhFrZY9bu1SzccpypKkQKjVjy"
+   ],
+   "sig": "Z3v8LCf5pnCZXH9Yh9Nh9uNFYv3xNXW2EUTwPorJqAD2qTqLdN6HazShqY8pnSfxaXZ7m6BC94uQW1XHvryEX2r",
+   "slot": 469783430,
+   "why": "sol_lamports > cap"
+  },
+  {
+   "amount": 433051602376610,
+   "event": "pump_amm.BuyEvent",
+   "quote_mints": [
+    "AFVnNpMHMVfjg3mvpmZhFrZY9bu1SzccpypKkQKjVjy"
+   ],
+   "sig": "Z3v8LCf5pnCZXH9Yh9Nh9uNFYv3xNXW2EUTwPorJqAD2qTqLdN6HazShqY8pnSfxaXZ7m6BC94uQW1XHvryEX2r",
+   "slot": 469783430,
+   "why": "sol_lamports > cap"
+  },
+  {
+   "amount": 570353189479254,
+   "event": "pump_amm.SellEvent",
+   "quote_mints": [
+    "QQdUVyjCM8qKSres4QP9MQMcZRvkT3NFnVKgfs5JoC7"
+   ],
+   "sig": "3t2rCoLpVyP5WtUetWB6w1D499J4dGmyGZ82ma9UzR333upExoTS4XVoxx8LxKfpMuvkgRivfj7nkpryLtJ5mvGr",
+   "slot": 469783432,
+   "why": "sol_lamports > cap"
+  },
+  {
+   "amount": 505807526238373,
+   "event": "pump_amm.BuyEvent",
+   "quote_mints": [
+    "QQdUVyjCM8qKSres4QP9MQMcZRvkT3NFnVKgfs5JoC7"
+   ],
+   "sig": "3t2rCoLpVyP5WtUetWB6w1D499J4dGmyGZ82ma9UzR333upExoTS4XVoxx8LxKfpMuvkgRivfj7nkpryLtJ5mvGr",
+   "slot": 469783432,
+   "why": "sol_lamports > cap"
+  },
+  {
+   "amount": 466000860314643,
+   "event": "pump_amm.SellEvent",
+   "quote_mints": [
+    "12WCzB2EdrZaLuthjU6VrNSyGia6fjyg5MWL6hq9YW2t"
+   ],
+   "sig": "4unFDrgQeH6pCb8Xw1oWndf9d4C568rDeWumEuaq3eBybAEymK5mDxyRKcQfvW1JNa6tPY31BVF3BksB9KWaAC2d",
+   "slot": 469783432,
+   "why": "sol_lamports > cap"
+  },
+  {
+   "amount": 649092191429238,
+   "event": "pump_amm.BuyEvent",
+   "quote_mints": [
+    "12WCzB2EdrZaLuthjU6VrNSyGia6fjyg5MWL6hq9YW2t"
+   ],
+   "sig": "4unFDrgQeH6pCb8Xw1oWndf9d4C568rDeWumEuaq3eBybAEymK5mDxyRKcQfvW1JNa6tPY31BVF3BksB9KWaAC2d",
+   "slot": 469783432,
+   "why": "sol_lamports > cap"
+  },
+  {
+   "amount": 699602877686668,
+   "event": "pump_amm.SellEvent",
+   "quote_mints": [
+    "GxHPr6boXVhmQwp97uCPYuKzZtFEfcPFUkSsYoi8CSC"
+   ],
+   "sig": "2tZz9mrEMvKru9Bp6nUkg5VZ5WshSjAkhUUB4my1332WNaU8i9QQkCuRK3ybxCxJZk8LwvqCtpaz6h6fC5sak7S1",
+   "slot": 469783432,
+   "why": "sol_lamports > cap"
+  },
+  {
+   "amount": 703188882068443,
+   "event": "pump_amm.BuyEvent",
+   "quote_mints": [
+    "GxHPr6boXVhmQwp97uCPYuKzZtFEfcPFUkSsYoi8CSC"
+   ],
+   "sig": "2tZz9mrEMvKru9Bp6nUkg5VZ5WshSjAkhUUB4my1332WNaU8i9QQkCuRK3ybxCxJZk8LwvqCtpaz6h6fC5sak7S1",
+   "slot": 469783432,
+   "why": "sol_lamports > cap"
+  },
+  {
+   "amount": 454838359699487,
+   "event": "pump_amm.SellEvent",
+   "quote_mints": [
+    "AFVnNpMHMVfjg3mvpmZhFrZY9bu1SzccpypKkQKjVjy"
+   ],
+   "sig": "4op9DkxBf8jQFdEuJt6i9pdLZoNnoENFshH5wbRJjYTfastZtpLmY7iNuDPdFsVUXNKv1gmv6smuzyLdjUK1Lduy",
+   "slot": 469783433,
+   "why": "sol_lamports > cap"
+  },
+  {
+   "amount": 616458933645804,
+   "event": "pump_amm.BuyEvent",
+   "quote_mints": [
+    "AFVnNpMHMVfjg3mvpmZhFrZY9bu1SzccpypKkQKjVjy"
+   ],
+   "sig": "4op9DkxBf8jQFdEuJt6i9pdLZoNnoENFshH5wbRJjYTfastZtpLmY7iNuDPdFsVUXNKv1gmv6smuzyLdjUK1Lduy",
+   "slot": 469783433,
+   "why": "sol_lamports > cap"
+  },
+  {
+   "amount": 102357645149465,
+   "event": "pump_amm.SellEvent",
+   "quote_mints": [
+    "394Z8rGwerTRBxjJ4fDtFcyT1bALAez7N37mawfQk7gB"
+   ],
+   "sig": "4vwq5q1vYixWj7AK2Vgj5YT4UamrmchHzdLwrrktP7jmwa8NuMQEbd2cGMg5vvRcUSBtyp6BsBdXDWWEDUhdGnUw",
+   "slot": 469788826,
+   "why": "sol_lamports > cap"
+  },
+  {
+   "amount": 102995725183494,
+   "event": "pump_amm.BuyEvent",
+   "quote_mints": [
+    "394Z8rGwerTRBxjJ4fDtFcyT1bALAez7N37mawfQk7gB"
+   ],
+   "sig": "4vwq5q1vYixWj7AK2Vgj5YT4UamrmchHzdLwrrktP7jmwa8NuMQEbd2cGMg5vvRcUSBtyp6BsBdXDWWEDUhdGnUw",
+   "slot": 469788826,
+   "why": "sol_lamports > cap"
+  },
+  {
+   "amount": 564199017892095,
+   "event": "pump_amm.SellEvent",
+   "quote_mints": [
+    "AFVnNpMHMVfjg3mvpmZhFrZY9bu1SzccpypKkQKjVjy"
+   ],
+   "sig": "4eXgWCozVi4DjN1qgjgkso9uDwu8zJh8uKfyE1WXhWdZ4HRPFk7oMDAR5oKHR2zjNgrhQcATM2crDNxZQxJrebLz",
+   "slot": 469788826,
+   "why": "sol_lamports > cap"
+  },
+  {
+   "amount": 555295260835986,
+   "event": "pump_amm.BuyEvent",
+   "quote_mints": [
+    "AFVnNpMHMVfjg3mvpmZhFrZY9bu1SzccpypKkQKjVjy"
+   ],
+   "sig": "4eXgWCozVi4DjN1qgjgkso9uDwu8zJh8uKfyE1WXhWdZ4HRPFk7oMDAR5oKHR2zjNgrhQcATM2crDNxZQxJrebLz",
+   "slot": 469788826,
+   "why": "sol_lamports > cap"
+  },
+  {
+   "amount": 501724786460794,
+   "event": "pump_amm.SellEvent",
+   "quote_mints": [
+    "AFVnNpMHMVfjg3mvpmZhFrZY9bu1SzccpypKkQKjVjy"
+   ],
+   "sig": "4wHacHJX9RspwNGpLRzrfcoU3aBHC7897uaSuPc9X2Qbmff5o5fejdNDMRuKBtRNA8jC2TAAoNXV8PUNDwsCJoeF",
+   "slot": 469788829,
+   "why": "sol_lamports > cap"
+  },
+  {
+   "amount": 472052788666129,
+   "event": "pump_amm.BuyEvent",
+   "quote_mints": [
+    "AFVnNpMHMVfjg3mvpmZhFrZY9bu1SzccpypKkQKjVjy"
+   ],
+   "sig": "4wHacHJX9RspwNGpLRzrfcoU3aBHC7897uaSuPc9X2Qbmff5o5fejdNDMRuKBtRNA8jC2TAAoNXV8PUNDwsCJoeF",
+   "slot": 469788829,
+   "why": "sol_lamports > cap"
+  },
+  {
+   "amount": 554118925558437,
+   "event": "pump_amm.SellEvent",
+   "quote_mints": [
+    "AFVnNpMHMVfjg3mvpmZhFrZY9bu1SzccpypKkQKjVjy"
+   ],
+   "sig": "5TPE4mXsAWMRkQC1ieTX2X3wBLFUi5F2P7UVKfse8e4Ui2Nw7bZBfdX1Ls3y1McsuatDQZoUXCaoSBn9JS92qtMA",
+   "slot": 469788831,
+   "why": "sol_lamports > cap"
+  },
+  {
+   "amount": 504439258129287,
+   "event": "pump_amm.BuyEvent",
+   "quote_mints": [
+    "AFVnNpMHMVfjg3mvpmZhFrZY9bu1SzccpypKkQKjVjy"
+   ],
+   "sig": "5TPE4mXsAWMRkQC1ieTX2X3wBLFUi5F2P7UVKfse8e4Ui2Nw7bZBfdX1Ls3y1McsuatDQZoUXCaoSBn9JS92qtMA",
+   "slot": 469788831,
+   "why": "sol_lamports > cap"
+  },
+  {
+   "amount": 117117154291390,
+   "event": "pump_amm.SellEvent",
+   "quote_mints": [
+    "394Z8rGwerTRBxjJ4fDtFcyT1bALAez7N37mawfQk7gB"
+   ],
+   "sig": "2F7nx8G3t6HBXq79Q3tE5y56TtsvnZKkKAVzn2nVY8AopxTgSppij1UfrvNtGLpF4iCpQJfdkrezb2LJ8C9njH1p",
+   "slot": 469788832,
+   "why": "sol_lamports > cap"
+  },
+  {
+   "amount": 117060327826013,
+   "event": "pump_amm.BuyEvent",
+   "quote_mints": [
+    "394Z8rGwerTRBxjJ4fDtFcyT1bALAez7N37mawfQk7gB"
+   ],
+   "sig": "2F7nx8G3t6HBXq79Q3tE5y56TtsvnZKkKAVzn2nVY8AopxTgSppij1UfrvNtGLpF4iCpQJfdkrezb2LJ8C9njH1p",
+   "slot": 469788832,
+   "why": "sol_lamports > cap"
+  },
+  {
+   "amount": 573692908644711,
+   "event": "pump_amm.SellEvent",
+   "quote_mints": [
+    "AFVnNpMHMVfjg3mvpmZhFrZY9bu1SzccpypKkQKjVjy"
+   ],
+   "sig": "5m7KH3tXjdviZwgeKdz3eeWsk6nyMnZRw9rZuy6jYSE2BnTuAXhu4GcahJkcUL9pxdkH92W6b8PVNQSAzXTjW3LF",
+   "slot": 469788834,
+   "why": "sol_lamports > cap"
+  },
+  {
+   "amount": 570871083068866,
+   "event": "pump_amm.BuyEvent",
+   "quote_mints": [
+    "AFVnNpMHMVfjg3mvpmZhFrZY9bu1SzccpypKkQKjVjy"
+   ],
+   "sig": "5m7KH3tXjdviZwgeKdz3eeWsk6nyMnZRw9rZuy6jYSE2BnTuAXhu4GcahJkcUL9pxdkH92W6b8PVNQSAzXTjW3LF",
+   "slot": 469788834,
+   "why": "sol_lamports > cap"
+  },
+  {
+   "amount": 110590456937563,
+   "event": "pump_amm.SellEvent",
+   "quote_mints": [
+    "394Z8rGwerTRBxjJ4fDtFcyT1bALAez7N37mawfQk7gB"
+   ],
+   "sig": "5M6goLQw9YnRKKDFfqyqSDyXRkLVpXYNDRcVpbQ3wNHLghZFtecLQ8C6nSCSAaJytZZ9d4771Jvcng2MBPR1tCzM",
+   "slot": 469794225,
+   "why": "sol_lamports > cap"
+  },
+  {
+   "amount": 110752526750143,
+   "event": "pump_amm.BuyEvent",
+   "quote_mints": [
+    "394Z8rGwerTRBxjJ4fDtFcyT1bALAez7N37mawfQk7gB"
+   ],
+   "sig": "5M6goLQw9YnRKKDFfqyqSDyXRkLVpXYNDRcVpbQ3wNHLghZFtecLQ8C6nSCSAaJytZZ9d4771Jvcng2MBPR1tCzM",
+   "slot": 469794225,
+   "why": "sol_lamports > cap"
+  },
+  {
+   "amount": 140648480550204,
+   "event": "pump_amm.SellEvent",
+   "quote_mints": [
+    "RwHLWANYC3Csim7wVaoky5rPHSmQzuVJ5un8kJBAx3H"
+   ],
+   "sig": "4KLCGL5oNJd59R2anSLZkh5HewbLfdDHBwdxMZ2nVsqH6ff2xLybvFvGVa9agTDPJryPfMFB9V73hBDUo6PWMFzo",
+   "slot": 469794226,
+   "why": "sol_lamports > cap"
+  },
+  {
+   "amount": 109746392651322,
+   "event": "pump_amm.BuyEvent",
+   "quote_mints": [
+    "RwHLWANYC3Csim7wVaoky5rPHSmQzuVJ5un8kJBAx3H"
+   ],
+   "sig": "4KLCGL5oNJd59R2anSLZkh5HewbLfdDHBwdxMZ2nVsqH6ff2xLybvFvGVa9agTDPJryPfMFB9V73hBDUo6PWMFzo",
+   "slot": 469794226,
+   "why": "sol_lamports > cap"
+  },
+  {
+   "amount": 564604123625295,
+   "event": "pump_amm.SellEvent",
+   "quote_mints": [
+    "AFVnNpMHMVfjg3mvpmZhFrZY9bu1SzccpypKkQKjVjy"
+   ],
+   "sig": "2Z228rwYroKj7FgAybDJ8SzMB62tzBRho2XDc1Ynb7zQYTX7Y1LpyfoAFJK8dU7FMfveUthdULc416ztxPffx8QW",
+   "slot": 469794226,
+   "why": "sol_lamports > cap"
+  },
+  {
+   "amount": 459888044579555,
+   "event": "pump_amm.BuyEvent",
+   "quote_mints": [
+    "AFVnNpMHMVfjg3mvpmZhFrZY9bu1SzccpypKkQKjVjy"
+   ],
+   "sig": "2Z228rwYroKj7FgAybDJ8SzMB62tzBRho2XDc1Ynb7zQYTX7Y1LpyfoAFJK8dU7FMfveUthdULc416ztxPffx8QW",
+   "slot": 469794226,
+   "why": "sol_lamports > cap"
+  },
+  {
+   "amount": 656694547411571,
+   "event": "pump_amm.SellEvent",
+   "quote_mints": [
+    "R7vVNkv3sYJjxUstCcYiMRbVEUwh5wG4JPiCPZ8WUMr"
+   ],
+   "sig": "3kWq29znagVEiEoEPnKnd1XfJRUKPwvBXnSFAYaQ5HrBoBfJhHCqbuP4YsB4xjJNF6amuAvCE2m3LkVcejvYTs9J",
+   "slot": 469794226,
+   "why": "sol_lamports > cap"
+  },
+  {
+   "amount": 655736190103807,
+   "event": "pump_amm.BuyEvent",
+   "quote_mints": [
+    "R7vVNkv3sYJjxUstCcYiMRbVEUwh5wG4JPiCPZ8WUMr"
+   ],
+   "sig": "3kWq29znagVEiEoEPnKnd1XfJRUKPwvBXnSFAYaQ5HrBoBfJhHCqbuP4YsB4xjJNF6amuAvCE2m3LkVcejvYTs9J",
+   "slot": 469794226,
+   "why": "sol_lamports > cap"
+  },
+  {
+   "amount": 111387724757365,
+   "event": "pump_amm.SellEvent",
+   "quote_mints": [
+    "RwHLWANYC3Csim7wVaoky5rPHSmQzuVJ5un8kJBAx3H"
+   ],
+   "sig": "4jJdkgyfmNoKpis6EriQhC4dwJGpdCMSvunWVNkVCTfi7yhvFp4Du8xtUoiL8NFrAX8vdUxLzSKKfhKLipbB5ZDH",
+   "slot": 469794229,
+   "why": "sol_lamports > cap"
+  },
+  {
+   "amount": 108314969926118,
+   "event": "pump_amm.BuyEvent",
+   "quote_mints": [
+    "RwHLWANYC3Csim7wVaoky5rPHSmQzuVJ5un8kJBAx3H"
+   ],
+   "sig": "4jJdkgyfmNoKpis6EriQhC4dwJGpdCMSvunWVNkVCTfi7yhvFp4Du8xtUoiL8NFrAX8vdUxLzSKKfhKLipbB5ZDH",
+   "slot": 469794229,
+   "why": "sol_lamports > cap"
+  },
+  {
+   "amount": 379888741922017,
+   "event": "pump_amm.SellEvent",
+   "quote_mints": [
+    "AFVnNpMHMVfjg3mvpmZhFrZY9bu1SzccpypKkQKjVjy"
+   ],
+   "sig": "2KH2jWRTY8AjLGD5xKLCebqTuLeKpVZNnajW64Hn5CgYiu37GjL5SM9QuuatAj5YNkK48SKXPJuLfgPb6iuLhMC8",
+   "slot": 469794229,
+   "why": "sol_lamports > cap"
+  },
+  {
+   "amount": 456283989936587,
+   "event": "pump_amm.BuyEvent",
+   "quote_mints": [
+    "AFVnNpMHMVfjg3mvpmZhFrZY9bu1SzccpypKkQKjVjy"
+   ],
+   "sig": "2KH2jWRTY8AjLGD5xKLCebqTuLeKpVZNnajW64Hn5CgYiu37GjL5SM9QuuatAj5YNkK48SKXPJuLfgPb6iuLhMC8",
+   "slot": 469794229,
+   "why": "sol_lamports > cap"
+  },
+  {
+   "amount": 111365385754475,
+   "event": "pump_amm.SellEvent",
+   "quote_mints": [
+    "394Z8rGwerTRBxjJ4fDtFcyT1bALAez7N37mawfQk7gB"
+   ],
+   "sig": "665X7naxjbBwagco1X21D2uzHrcQhs36K2mSyjdtpsL5ePnU84CvWgRdwZogkJ8KSy3xSiqDGfmqbpMzuEgfG1pH",
+   "slot": 469794231,
+   "why": "sol_lamports > cap"
+  },
+  {
+   "amount": 112483441202151,
+   "event": "pump_amm.BuyEvent",
+   "quote_mints": [
+    "394Z8rGwerTRBxjJ4fDtFcyT1bALAez7N37mawfQk7gB"
+   ],
+   "sig": "665X7naxjbBwagco1X21D2uzHrcQhs36K2mSyjdtpsL5ePnU84CvWgRdwZogkJ8KSy3xSiqDGfmqbpMzuEgfG1pH",
+   "slot": 469794231,
+   "why": "sol_lamports > cap"
+  },
+  {
+   "amount": 145146885691496,
+   "event": "pump_amm.SellEvent",
+   "quote_mints": [
+    "GFAWqawKD1sF2XrEC26Ha2J9nnceGPKXuMkh1c5aMVZ1"
+   ],
+   "sig": "5JpTiBGmpPjBNVaCfA9WjyZwyTeNhxYELEyjXRehB7rKfCrsHF5AiSXA72LHvKbfR6eYB5ASpZBj2Esx3HfLyGhj",
+   "slot": 469794232,
+   "why": "sol_lamports > cap"
+  },
+  {
+   "amount": 145891169845221,
+   "event": "pump_amm.BuyEvent",
+   "quote_mints": [
+    "GFAWqawKD1sF2XrEC26Ha2J9nnceGPKXuMkh1c5aMVZ1"
+   ],
+   "sig": "5JpTiBGmpPjBNVaCfA9WjyZwyTeNhxYELEyjXRehB7rKfCrsHF5AiSXA72LHvKbfR6eYB5ASpZBj2Esx3HfLyGhj",
+   "slot": 469794232,
+   "why": "sol_lamports > cap"
+  },
+  {
+   "amount": 640842837114052,
+   "event": "pump_amm.SellEvent",
+   "quote_mints": [
+    "R7vVNkv3sYJjxUstCcYiMRbVEUwh5wG4JPiCPZ8WUMr"
+   ],
+   "sig": "5iuGgJsAw92pDi9A3p2SjsYgXaRbWhxyBdKVefc6bzy4nr7yT1SDm1TikoLRNKrrg5R4xB4gcfsfudwmLzu13TkE",
+   "slot": 469794232,
+   "why": "sol_lamports > cap"
+  },
+  {
+   "amount": 675760561139761,
+   "event": "pump_amm.BuyEvent",
+   "quote_mints": [
+    "R7vVNkv3sYJjxUstCcYiMRbVEUwh5wG4JPiCPZ8WUMr"
+   ],
+   "sig": "5iuGgJsAw92pDi9A3p2SjsYgXaRbWhxyBdKVefc6bzy4nr7yT1SDm1TikoLRNKrrg5R4xB4gcfsfudwmLzu13TkE",
+   "slot": 469794232,
+   "why": "sol_lamports > cap"
+  },
+  {
+   "amount": 446702924666076,
+   "event": "pump_amm.SellEvent",
+   "quote_mints": [
+    "AFVnNpMHMVfjg3mvpmZhFrZY9bu1SzccpypKkQKjVjy"
+   ],
+   "sig": "2Nzwij1mpX3kmniN35HdVrNdxGAR1fJhhFNaZWVASNZ6TviFdjXstczhU8KfxGS4APW9TV3cG94SR7XWM3jKLjdT",
+   "slot": 469794232,
+   "why": "sol_lamports > cap"
+  },
+  {
+   "amount": 390644708128826,
+   "event": "pump_amm.BuyEvent",
+   "quote_mints": [
+    "AFVnNpMHMVfjg3mvpmZhFrZY9bu1SzccpypKkQKjVjy"
+   ],
+   "sig": "2Nzwij1mpX3kmniN35HdVrNdxGAR1fJhhFNaZWVASNZ6TviFdjXstczhU8KfxGS4APW9TV3cG94SR7XWM3jKLjdT",
+   "slot": 469794232,
+   "why": "sol_lamports > cap"
+  },
+  {
+   "amount": 618501944891566,
+   "event": "pump_amm.SellEvent",
+   "quote_mints": [
+    "R7vVNkv3sYJjxUstCcYiMRbVEUwh5wG4JPiCPZ8WUMr"
+   ],
+   "sig": "3BRgC8q8HsAtz3hGeQrS6UMqmKGENTuYpt1xvjuGBUnX947PNxqrX2NZF8dVuJTYf68NrXj2mTzaYfFxYQ2UMbaJ",
+   "slot": 469794233,
+   "why": "sol_lamports > cap"
+  },
+  {
+   "amount": 649246091293001,
+   "event": "pump_amm.BuyEvent",
+   "quote_mints": [
+    "R7vVNkv3sYJjxUstCcYiMRbVEUwh5wG4JPiCPZ8WUMr"
+   ],
+   "sig": "3BRgC8q8HsAtz3hGeQrS6UMqmKGENTuYpt1xvjuGBUnX947PNxqrX2NZF8dVuJTYf68NrXj2mTzaYfFxYQ2UMbaJ",
+   "slot": 469794233,
+   "why": "sol_lamports > cap"
+  },
+  {
+   "amount": 509238291512017,
+   "event": "pump_amm.SellEvent",
+   "quote_mints": [
+    "AFVnNpMHMVfjg3mvpmZhFrZY9bu1SzccpypKkQKjVjy"
+   ],
+   "sig": "xx9VSKhxFocMCsECAKuXSnsjKoNKg2R731iro9L6WMqQ3rUx8SY8nNDgFd6fhpJv2pBBQMSzBBGj27wnsTLGvpj",
+   "slot": 469794234,
+   "why": "sol_lamports > cap"
+  },
+  {
+   "amount": 391308736748507,
+   "event": "pump_amm.BuyEvent",
+   "quote_mints": [
+    "AFVnNpMHMVfjg3mvpmZhFrZY9bu1SzccpypKkQKjVjy"
+   ],
+   "sig": "xx9VSKhxFocMCsECAKuXSnsjKoNKg2R731iro9L6WMqQ3rUx8SY8nNDgFd6fhpJv2pBBQMSzBBGj27wnsTLGvpj",
+   "slot": 469794234,
+   "why": "sol_lamports > cap"
+  },
+  {
+   "amount": 146189397478120,
+   "event": "pump_amm.SellEvent",
+   "quote_mints": [
+    "GFAWqawKD1sF2XrEC26Ha2J9nnceGPKXuMkh1c5aMVZ1"
+   ],
+   "sig": "26hReHMmJzL13MNzwGyWEYqbHtW388XJg3Cbqq5wKzU4UBUNsdgyzoPVnMi59iqjhmzWvJhsJtzDDLNJJuMvJQyW",
+   "slot": 469794234,
+   "why": "sol_lamports > cap"
+  },
+  {
+   "amount": 146939043518855,
+   "event": "pump_amm.BuyEvent",
+   "quote_mints": [
+    "GFAWqawKD1sF2XrEC26Ha2J9nnceGPKXuMkh1c5aMVZ1"
+   ],
+   "sig": "26hReHMmJzL13MNzwGyWEYqbHtW388XJg3Cbqq5wKzU4UBUNsdgyzoPVnMi59iqjhmzWvJhsJtzDDLNJJuMvJQyW",
+   "slot": 469794234,
+   "why": "sol_lamports > cap"
+  },
+  {
+   "amount": 558890852999456,
+   "event": "pump_amm.SellEvent",
+   "quote_mints": [
+    "AFVnNpMHMVfjg3mvpmZhFrZY9bu1SzccpypKkQKjVjy"
+   ],
+   "sig": "5Uq7yMTjd9aK7mP8rGR5ZuSffEuvjxxaxHSLZdrdt8RP8QJq6q52VKHku9VEGm9UK3BtK4BXwmZQwfaxXMngDMpb",
+   "slot": 469799625,
+   "why": "sol_lamports > cap"
+  },
+  {
+   "amount": 609650175929526,
+   "event": "pump_amm.BuyEvent",
+   "quote_mints": [
+    "AFVnNpMHMVfjg3mvpmZhFrZY9bu1SzccpypKkQKjVjy"
+   ],
+   "sig": "5Uq7yMTjd9aK7mP8rGR5ZuSffEuvjxxaxHSLZdrdt8RP8QJq6q52VKHku9VEGm9UK3BtK4BXwmZQwfaxXMngDMpb",
+   "slot": 469799625,
+   "why": "sol_lamports > cap"
+  },
+  {
+   "amount": 545695083957269,
+   "event": "pump_amm.SellEvent",
+   "quote_mints": [
+    "R7vVNkv3sYJjxUstCcYiMRbVEUwh5wG4JPiCPZ8WUMr"
+   ],
+   "sig": "5mep6PnkM7anELhM1g3UATFos5swYCetr3mdNARKXWmXtyu4Mu9gZTwNvaAbVzo2EuUjMat4uuoqyfra8PGTjpSw",
+   "slot": 469799625,
+   "why": "sol_lamports > cap"
+  },
+  {
+   "amount": 452161569379823,
+   "event": "pump_amm.BuyEvent",
+   "quote_mints": [
+    "R7vVNkv3sYJjxUstCcYiMRbVEUwh5wG4JPiCPZ8WUMr"
+   ],
+   "sig": "5mep6PnkM7anELhM1g3UATFos5swYCetr3mdNARKXWmXtyu4Mu9gZTwNvaAbVzo2EuUjMat4uuoqyfra8PGTjpSw",
+   "slot": 469799625,
+   "why": "sol_lamports > cap"
+  },
+  {
+   "amount": 140184520307794,
+   "event": "pump_amm.SellEvent",
+   "quote_mints": [
+    "GFAWqawKD1sF2XrEC26Ha2J9nnceGPKXuMkh1c5aMVZ1"
+   ],
+   "sig": "5ZbmgbJFByk8xbUeE38H6gRq8dwrDDLCWfi89SuW2rPZGYnGNkZRmv2Z5ajkEsnXXN4CJkYgiBQC1YXh2Csa2ucM",
+   "slot": 469799625,
+   "why": "sol_lamports > cap"
+  },
+  {
+   "amount": 141031632736098,
+   "event": "pump_amm.BuyEvent",
+   "quote_mints": [
+    "GFAWqawKD1sF2XrEC26Ha2J9nnceGPKXuMkh1c5aMVZ1"
+   ],
+   "sig": "5ZbmgbJFByk8xbUeE38H6gRq8dwrDDLCWfi89SuW2rPZGYnGNkZRmv2Z5ajkEsnXXN4CJkYgiBQC1YXh2Csa2ucM",
+   "slot": 469799625,
+   "why": "sol_lamports > cap"
+  },
+  {
+   "amount": 592427973508951,
+   "event": "pump_amm.SellEvent",
+   "quote_mints": [
+    "FiqTaUpF9G1wEfYB3uq6rMFhsvHGLrwQggKeHp2xrJ4"
+   ],
+   "sig": "tjA6No7p1z8BZGxXqAmGgfga5a161hqn3PW2nCsyqiRWzcw22UXHekXme3XgVfKzQYsqJWBRuH8DZaw7YxsdtzH",
+   "slot": 469799626,
+   "why": "sol_lamports > cap"
+  },
+  {
+   "amount": 603504468071101,
+   "event": "pump_amm.BuyEvent",
+   "quote_mints": [
+    "FiqTaUpF9G1wEfYB3uq6rMFhsvHGLrwQggKeHp2xrJ4"
+   ],
+   "sig": "tjA6No7p1z8BZGxXqAmGgfga5a161hqn3PW2nCsyqiRWzcw22UXHekXme3XgVfKzQYsqJWBRuH8DZaw7YxsdtzH",
+   "slot": 469799626,
+   "why": "sol_lamports > cap"
+  },
+  {
+   "amount": 591098612671042,
+   "event": "pump_amm.SellEvent",
+   "quote_mints": [
+    "FiqTaUpF9G1wEfYB3uq6rMFhsvHGLrwQggKeHp2xrJ4"
+   ],
+   "sig": "srBjtmYm7iVH1FLbFP1C3MgcXvFJhyps2YdSvthRp72RFiepm688fqD87dWwGFvEo4dqGjZRn189TKkkrQa198U",
+   "slot": 469799628,
+   "why": "sol_lamports > cap"
+  },
+  {
+   "amount": 594128128195071,
+   "event": "pump_amm.BuyEvent",
+   "quote_mints": [
+    "FiqTaUpF9G1wEfYB3uq6rMFhsvHGLrwQggKeHp2xrJ4"
+   ],
+   "sig": "srBjtmYm7iVH1FLbFP1C3MgcXvFJhyps2YdSvthRp72RFiepm688fqD87dWwGFvEo4dqGjZRn189TKkkrQa198U",
+   "slot": 469799628,
+   "why": "sol_lamports > cap"
+  },
+  {
+   "amount": 133572288564141,
+   "event": "pump_amm.SellEvent",
+   "quote_mints": [
+    "RwHLWANYC3Csim7wVaoky5rPHSmQzuVJ5un8kJBAx3H"
+   ],
+   "sig": "3cz2MEKaQWKecGoCXTCA1VZGPSokknAzthFRMCJbLRfMbfQ2FS52Z1bpqbrrURyBjTNM3pQHgMv5bUybmaYkMYYs",
+   "slot": 469799629,
+   "why": "sol_lamports > cap"
+  },
+  {
+   "amount": 574640125841339,
+   "event": "pump_amm.SellEvent",
+   "quote_mints": [
+    "R7vVNkv3sYJjxUstCcYiMRbVEUwh5wG4JPiCPZ8WUMr"
+   ],
+   "sig": "3kNKmQkqwQPs9vMZqqgAqRYGVcKiGkcH9KjVSKRanLwTQjJzxsLqezMkBS1SWAG5BV8ggWLpN7jQZjh5gym6ucWY",
+   "slot": 469799632,
+   "why": "sol_lamports > cap"
+  },
+  {
+   "amount": 550184686878671,
+   "event": "pump_amm.BuyEvent",
+   "quote_mints": [
+    "R7vVNkv3sYJjxUstCcYiMRbVEUwh5wG4JPiCPZ8WUMr"
+   ],
+   "sig": "3kNKmQkqwQPs9vMZqqgAqRYGVcKiGkcH9KjVSKRanLwTQjJzxsLqezMkBS1SWAG5BV8ggWLpN7jQZjh5gym6ucWY",
+   "slot": 469799632,
+   "why": "sol_lamports > cap"
+  },
+  {
+   "amount": 402318516897264,
+   "event": "pump_amm.SellEvent",
+   "quote_mints": [
+    "AFVnNpMHMVfjg3mvpmZhFrZY9bu1SzccpypKkQKjVjy"
+   ],
+   "sig": "2CuAwnxobaaQ3sruuYALQyCAPGrLvmke1299fBpMEq5sbhFFcNMCKdtSZ13TtbmpM8MoKQiXkj7QF8kvDfY96hB1",
+   "slot": 469799633,
+   "why": "sol_lamports > cap"
+  },
+  {
+   "amount": 476839113877204,
+   "event": "pump_amm.BuyEvent",
+   "quote_mints": [
+    "AFVnNpMHMVfjg3mvpmZhFrZY9bu1SzccpypKkQKjVjy"
+   ],
+   "sig": "2CuAwnxobaaQ3sruuYALQyCAPGrLvmke1299fBpMEq5sbhFFcNMCKdtSZ13TtbmpM8MoKQiXkj7QF8kvDfY96hB1",
+   "slot": 469799633,
+   "why": "sol_lamports > cap"
+  },
+  {
+   "amount": 410263888411334,
+   "event": "pump_amm.SellEvent",
+   "quote_mints": [
+    "R7vVNkv3sYJjxUstCcYiMRbVEUwh5wG4JPiCPZ8WUMr"
+   ],
+   "sig": "4D5Lj87KgV9Qb7sQz4HPzUaWUQPxmCCwtnMg98sjHWq9RtCoZF4TE1jrkFBdeux75mL9D6BQLqbxDLqwn6dH6SZu",
+   "slot": 469799633,
+   "why": "sol_lamports > cap"
+  },
+  {
+   "amount": 589001391726176,
+   "event": "pump_amm.BuyEvent",
+   "quote_mints": [
+    "R7vVNkv3sYJjxUstCcYiMRbVEUwh5wG4JPiCPZ8WUMr"
+   ],
+   "sig": "4D5Lj87KgV9Qb7sQz4HPzUaWUQPxmCCwtnMg98sjHWq9RtCoZF4TE1jrkFBdeux75mL9D6BQLqbxDLqwn6dH6SZu",
+   "slot": 469799633,
+   "why": "sol_lamports > cap"
+  },
+  {
+   "amount": 127654739935993,
+   "event": "pump_amm.SellEvent",
+   "quote_mints": [
+    "GFAWqawKD1sF2XrEC26Ha2J9nnceGPKXuMkh1c5aMVZ1"
+   ],
+   "sig": "3S2otzDzh4jLRQ4AEbETWYjnUNZrGGsnvdDZ3uoVip59R2jbx66mquATuvut1JSb1chLYjwztnCPwEB7SEtfRrwb",
+   "slot": 469799633,
+   "why": "sol_lamports > cap"
+  },
+  {
+   "amount": 128425839761805,
+   "event": "pump_amm.BuyEvent",
+   "quote_mints": [
+    "GFAWqawKD1sF2XrEC26Ha2J9nnceGPKXuMkh1c5aMVZ1"
+   ],
+   "sig": "3S2otzDzh4jLRQ4AEbETWYjnUNZrGGsnvdDZ3uoVip59R2jbx66mquATuvut1JSb1chLYjwztnCPwEB7SEtfRrwb",
+   "slot": 469799633,
+   "why": "sol_lamports > cap"
+  },
+  {
+   "amount": 113283201710734,
+   "event": "pump_amm.SellEvent",
+   "quote_mints": [
+    "394Z8rGwerTRBxjJ4fDtFcyT1bALAez7N37mawfQk7gB"
+   ],
+   "sig": "5sXuXANRcThjhm4TBKjXbcACfM93zrEwyC7FcLEYTaJWVncBBiLTNKN8xU3sAFe46PWmrqgsyUd3QZ7kRYUggzg9",
+   "slot": 469799634,
+   "why": "sol_lamports > cap"
+  },
+  {
+   "amount": 113276883289192,
+   "event": "pump_amm.BuyEvent",
+   "quote_mints": [
+    "394Z8rGwerTRBxjJ4fDtFcyT1bALAez7N37mawfQk7gB"
+   ],
+   "sig": "5sXuXANRcThjhm4TBKjXbcACfM93zrEwyC7FcLEYTaJWVncBBiLTNKN8xU3sAFe46PWmrqgsyUd3QZ7kRYUggzg9",
+   "slot": 469799634,
+   "why": "sol_lamports > cap"
+  },
+  {
+   "amount": 544667217983504,
+   "event": "pump_amm.SellEvent",
+   "quote_mints": [
+    "R7vVNkv3sYJjxUstCcYiMRbVEUwh5wG4JPiCPZ8WUMr"
+   ],
+   "sig": "4GUrSwTKLtUfKigUbNfE3mZEHc1cEx4YZDXv6vgnWF6bBuEJxPevrS5G6VGTfyxvWBNVV7UQhH1Xkqv9ih7cimcQ",
+   "slot": 469799634,
+   "why": "sol_lamports > cap"
+  },
+  {
+   "amount": 580119377456199,
+   "event": "pump_amm.BuyEvent",
+   "quote_mints": [
+    "R7vVNkv3sYJjxUstCcYiMRbVEUwh5wG4JPiCPZ8WUMr"
+   ],
+   "sig": "4GUrSwTKLtUfKigUbNfE3mZEHc1cEx4YZDXv6vgnWF6bBuEJxPevrS5G6VGTfyxvWBNVV7UQhH1Xkqv9ih7cimcQ",
+   "slot": 469799634,
+   "why": "sol_lamports > cap"
+  },
+  {
+   "amount": 105120729699398,
+   "event": "pump_amm.SellEvent",
+   "quote_mints": [
+    "GFAWqawKD1sF2XrEC26Ha2J9nnceGPKXuMkh1c5aMVZ1"
+   ],
+   "sig": "2ao4tbWaG5vsMAHYWQfqmNTaE4U7zYuqjNDuK1pudaysPqWzg6dPuyVGX2S85gLTP79gAAj884zZbmaPURSo7h7T",
+   "slot": 469799634,
+   "why": "sol_lamports > cap"
+  },
+  {
+   "amount": 105755273758677,
+   "event": "pump_amm.BuyEvent",
+   "quote_mints": [
+    "GFAWqawKD1sF2XrEC26Ha2J9nnceGPKXuMkh1c5aMVZ1"
+   ],
+   "sig": "2ao4tbWaG5vsMAHYWQfqmNTaE4U7zYuqjNDuK1pudaysPqWzg6dPuyVGX2S85gLTP79gAAj884zZbmaPURSo7h7T",
+   "slot": 469799634,
+   "why": "sol_lamports > cap"
+  },
+  {
+   "amount": 386435250504710,
+   "event": "pump_amm.SellEvent",
+   "quote_mints": [
+    "R7vVNkv3sYJjxUstCcYiMRbVEUwh5wG4JPiCPZ8WUMr"
+   ],
+   "sig": "35SHwVqJmLMp1cXT7NmQVRs4dCRg1yuVKkjHZYERmGG8zzBGuMJeZzRyWsTAyQ1Q9tqoxPQSWTVSCA6ZqUkVYPfS",
+   "slot": 469805026,
+   "why": "sol_lamports > cap"
+  },
+  {
+   "amount": 388375559185966,
+   "event": "pump_amm.BuyEvent",
+   "quote_mints": [
+    "R7vVNkv3sYJjxUstCcYiMRbVEUwh5wG4JPiCPZ8WUMr"
+   ],
+   "sig": "35SHwVqJmLMp1cXT7NmQVRs4dCRg1yuVKkjHZYERmGG8zzBGuMJeZzRyWsTAyQ1Q9tqoxPQSWTVSCA6ZqUkVYPfS",
+   "slot": 469805026,
+   "why": "sol_lamports > cap"
+  },
+  {
+   "amount": 411784345299346,
+   "event": "pump_amm.SellEvent",
+   "quote_mints": [
+    "AFVnNpMHMVfjg3mvpmZhFrZY9bu1SzccpypKkQKjVjy"
+   ],
+   "sig": "4KDm4NyRkjqBu7tFEdZDgG6TteMzRc35MMcS5ZXhAbEpf3N9NPdU7wf4c7DApseYU35Zxqr6DTPaof94SVzBSDjm",
+   "slot": 469805026,
+   "why": "sol_lamports > cap"
+  },
+  {
+   "amount": 396800602986969,
+   "event": "pump_amm.BuyEvent",
+   "quote_mints": [
+    "AFVnNpMHMVfjg3mvpmZhFrZY9bu1SzccpypKkQKjVjy"
+   ],
+   "sig": "4KDm4NyRkjqBu7tFEdZDgG6TteMzRc35MMcS5ZXhAbEpf3N9NPdU7wf4c7DApseYU35Zxqr6DTPaof94SVzBSDjm",
+   "slot": 469805026,
+   "why": "sol_lamports > cap"
+  },
+  {
+   "amount": 111098136102748,
+   "event": "pump_amm.SellEvent",
+   "quote_mints": [
+    "GFAWqawKD1sF2XrEC26Ha2J9nnceGPKXuMkh1c5aMVZ1"
+   ],
+   "sig": "3YY8nV7riDEtd5YY5eX3hnK9SmSunZmJWDjh1Ry1hjP7n9MfFArBj3Y1fwM3dLaoYa8DbQtSnmwkcQDtHA95Wdc3",
+   "slot": 469805026,
+   "why": "sol_lamports > cap"
+  },
+  {
+   "amount": 119241690222186,
+   "event": "pump_amm.BuyEvent",
+   "quote_mints": [
+    "GFAWqawKD1sF2XrEC26Ha2J9nnceGPKXuMkh1c5aMVZ1"
+   ],
+   "sig": "3YY8nV7riDEtd5YY5eX3hnK9SmSunZmJWDjh1Ry1hjP7n9MfFArBj3Y1fwM3dLaoYa8DbQtSnmwkcQDtHA95Wdc3",
+   "slot": 469805026,
+   "why": "sol_lamports > cap"
+  },
+  {
+   "amount": 608834597757763,
+   "event": "pump_amm.SellEvent",
+   "quote_mints": [
+    "FiqTaUpF9G1wEfYB3uq6rMFhsvHGLrwQggKeHp2xrJ4"
+   ],
+   "sig": "5KbzNkJkoptDNXqtLNqzmx7bXUvPjMaPjX36ak9MYyRgwYhFqtxZnrqcBhd1pzdmZ7wd5RvGngNDXEgLdc33Gmno",
+   "slot": 469805026,
+   "why": "sol_lamports > cap"
+  },
+  {
+   "amount": 612510987405344,
+   "event": "pump_amm.BuyEvent",
+   "quote_mints": [
+    "FiqTaUpF9G1wEfYB3uq6rMFhsvHGLrwQggKeHp2xrJ4"
+   ],
+   "sig": "5KbzNkJkoptDNXqtLNqzmx7bXUvPjMaPjX36ak9MYyRgwYhFqtxZnrqcBhd1pzdmZ7wd5RvGngNDXEgLdc33Gmno",
+   "slot": 469805026,
+   "why": "sol_lamports > cap"
+  },
+  {
+   "amount": 393207027746307,
+   "event": "pump_amm.SellEvent",
+   "quote_mints": [
+    "AFVnNpMHMVfjg3mvpmZhFrZY9bu1SzccpypKkQKjVjy"
+   ],
+   "sig": "5tEdQWb7p4uZKV9mfJAQ1zSPTbrMN7GmgrTBQzWwUtcXWpgSaG5ZFgm2bh9aBKneXNzLWwDCZ292HDPzVBBMxG6s",
+   "slot": 469805027,
+   "why": "sol_lamports > cap"
+  },
+  {
+   "amount": 494053455431525,
+   "event": "pump_amm.BuyEvent",
+   "quote_mints": [
+    "AFVnNpMHMVfjg3mvpmZhFrZY9bu1SzccpypKkQKjVjy"
+   ],
+   "sig": "5tEdQWb7p4uZKV9mfJAQ1zSPTbrMN7GmgrTBQzWwUtcXWpgSaG5ZFgm2bh9aBKneXNzLWwDCZ292HDPzVBBMxG6s",
+   "slot": 469805027,
+   "why": "sol_lamports > cap"
+  },
+  {
+   "amount": 516164927939298,
+   "event": "pump_amm.SellEvent",
+   "quote_mints": [
+    "FiqTaUpF9G1wEfYB3uq6rMFhsvHGLrwQggKeHp2xrJ4"
+   ],
+   "sig": "2uywMMUHGtcbKaHe7KucRq8QD1MtV4qxmVM66hm4BVEMxGaji4tvBFDgqT9EP6nV6ogbo2QVxMcvqMYyVsudhiMz",
+   "slot": 469805027,
+   "why": "sol_lamports > cap"
+  },
+  {
+   "amount": 519280050203609,
+   "event": "pump_amm.BuyEvent",
+   "quote_mints": [
+    "FiqTaUpF9G1wEfYB3uq6rMFhsvHGLrwQggKeHp2xrJ4"
+   ],
+   "sig": "2uywMMUHGtcbKaHe7KucRq8QD1MtV4qxmVM66hm4BVEMxGaji4tvBFDgqT9EP6nV6ogbo2QVxMcvqMYyVsudhiMz",
+   "slot": 469805027,
+   "why": "sol_lamports > cap"
+  },
+  {
+   "amount": 105509314610699,
+   "event": "pump_amm.BuyEvent",
+   "quote_mints": [
+    "RwHLWANYC3Csim7wVaoky5rPHSmQzuVJ5un8kJBAx3H"
+   ],
+   "sig": "RLFmh5jKmuiqa133xvv55BorvR1RkTTF7za9nwRoDpBGKwP918kr6d1aDozQYxNnYWmF2QpAQAyE9dmZ58R3MmA",
+   "slot": 469805027,
+   "why": "sol_lamports > cap"
+  },
+  {
+   "amount": 395273710962422,
+   "event": "pump_amm.SellEvent",
+   "quote_mints": [
+    "R7vVNkv3sYJjxUstCcYiMRbVEUwh5wG4JPiCPZ8WUMr"
+   ],
+   "sig": "5CQ7yeHG4MW6vFL3Ub7UC5JGDPoe55ZdsJKBTgvRGXVXTwmoi8PutvPBWRMzLFgLxCjoTWby7h5DejxRuF5gShPR",
+   "slot": 469805027,
+   "why": "sol_lamports > cap"
+  },
+  {
+   "amount": 397258470585357,
+   "event": "pump_amm.BuyEvent",
+   "quote_mints": [
+    "R7vVNkv3sYJjxUstCcYiMRbVEUwh5wG4JPiCPZ8WUMr"
+   ],
+   "sig": "5CQ7yeHG4MW6vFL3Ub7UC5JGDPoe55ZdsJKBTgvRGXVXTwmoi8PutvPBWRMzLFgLxCjoTWby7h5DejxRuF5gShPR",
+   "slot": 469805027,
+   "why": "sol_lamports > cap"
+  },
+  {
+   "amount": 157428883075530,
+   "event": "pump_amm.SellEvent",
+   "quote_mints": [
+    "394Z8rGwerTRBxjJ4fDtFcyT1bALAez7N37mawfQk7gB"
+   ],
+   "sig": "5EZd6nQsiPS59zYDBTQeKDxPbdL3UmLmMbGbXosxNZSr81qkPGwFcfVkjyPT3xRNtvGquz4HvwPt8YDmPdjTmeK2",
+   "slot": 469805028,
+   "why": "sol_lamports > cap"
+  },
+  {
+   "amount": 158423476771682,
+   "event": "pump_amm.BuyEvent",
+   "quote_mints": [
+    "394Z8rGwerTRBxjJ4fDtFcyT1bALAez7N37mawfQk7gB"
+   ],
+   "sig": "5EZd6nQsiPS59zYDBTQeKDxPbdL3UmLmMbGbXosxNZSr81qkPGwFcfVkjyPT3xRNtvGquz4HvwPt8YDmPdjTmeK2",
+   "slot": 469805028,
+   "why": "sol_lamports > cap"
+  },
+  {
+   "amount": 705389220139227,
+   "event": "pump_amm.SellEvent",
+   "quote_mints": [
+    "FiqTaUpF9G1wEfYB3uq6rMFhsvHGLrwQggKeHp2xrJ4"
+   ],
+   "sig": "2xGwDfdGTuZVzTgBreDFXdSuCrZmqxFquWLWvofwLigC3D37B4xziitX5htr6j49yWnxTEe1gohmNJDxsiVUJ7mc",
+   "slot": 469805029,
+   "why": "sol_lamports > cap"
+  },
+  {
+   "amount": 586619411880237,
+   "event": "pump_amm.BuyEvent",
+   "quote_mints": [
+    "FiqTaUpF9G1wEfYB3uq6rMFhsvHGLrwQggKeHp2xrJ4"
+   ],
+   "sig": "2xGwDfdGTuZVzTgBreDFXdSuCrZmqxFquWLWvofwLigC3D37B4xziitX5htr6j49yWnxTEe1gohmNJDxsiVUJ7mc",
+   "slot": 469805029,
+   "why": "sol_lamports > cap"
+  },
+  {
+   "amount": 125723637721580,
+   "event": "pump_amm.SellEvent",
+   "quote_mints": [
+    "RwHLWANYC3Csim7wVaoky5rPHSmQzuVJ5un8kJBAx3H"
+   ],
+   "sig": "3LNyea6jGcnyrnS6EcstNdEdrZounYvHByDJrU9rqXZcn56uLwXiR9bcptt29bCgCr6B5XmPgkMvwy9t2Veo6teu",
+   "slot": 469805029,
+   "why": "sol_lamports > cap"
+  },
+  {
+   "amount": 123931909534327,
+   "event": "pump_amm.BuyEvent",
+   "quote_mints": [
+    "RwHLWANYC3Csim7wVaoky5rPHSmQzuVJ5un8kJBAx3H"
+   ],
+   "sig": "3LNyea6jGcnyrnS6EcstNdEdrZounYvHByDJrU9rqXZcn56uLwXiR9bcptt29bCgCr6B5XmPgkMvwy9t2Veo6teu",
+   "slot": 469805029,
+   "why": "sol_lamports > cap"
+  },
+  {
+   "amount": 368213411449346,
+   "event": "pump_amm.SellEvent",
+   "quote_mints": [
+    "R7vVNkv3sYJjxUstCcYiMRbVEUwh5wG4JPiCPZ8WUMr"
+   ],
+   "sig": "5AM5egQUtepBx77VoCA8tsca6SvHcHW6Ckq3iKk63r2DrXRvm36YopNnJZN59qfef5FQmaaiqWtBCW4shCkfQMan",
+   "slot": 469805030,
+   "why": "sol_lamports > cap"
+  },
+  {
+   "amount": 370062087642603,
+   "event": "pump_amm.BuyEvent",
+   "quote_mints": [
+    "R7vVNkv3sYJjxUstCcYiMRbVEUwh5wG4JPiCPZ8WUMr"
+   ],
+   "sig": "5AM5egQUtepBx77VoCA8tsca6SvHcHW6Ckq3iKk63r2DrXRvm36YopNnJZN59qfef5FQmaaiqWtBCW4shCkfQMan",
+   "slot": 469805030,
+   "why": "sol_lamports > cap"
+  },
+  {
+   "amount": 153851675017809,
+   "event": "pump_amm.SellEvent",
+   "quote_mints": [
+    "394Z8rGwerTRBxjJ4fDtFcyT1bALAez7N37mawfQk7gB"
+   ],
+   "sig": "5q1XiSqd7t9rqLkhBvTVGpWh5ysDoDc5wYa2iQCQhKrLr1thRcFMrMmvJxDeW8YCgyt8XoVqJZCN3Zj344muUphW",
+   "slot": 469805032,
+   "why": "sol_lamports > cap"
+  },
+  {
+   "amount": 155110665634468,
+   "event": "pump_amm.BuyEvent",
+   "quote_mints": [
+    "394Z8rGwerTRBxjJ4fDtFcyT1bALAez7N37mawfQk7gB"
+   ],
+   "sig": "5q1XiSqd7t9rqLkhBvTVGpWh5ysDoDc5wYa2iQCQhKrLr1thRcFMrMmvJxDeW8YCgyt8XoVqJZCN3Zj344muUphW",
+   "slot": 469805032,
+   "why": "sol_lamports > cap"
+  },
+  {
+   "amount": 583635152805578,
+   "event": "pump_amm.SellEvent",
+   "quote_mints": [
+    "FiqTaUpF9G1wEfYB3uq6rMFhsvHGLrwQggKeHp2xrJ4"
+   ],
+   "sig": "W5p2urJdRyPLG8xbXA5uZ2BmFWisD6y2TyQcoFRxbwfkrA47gD2Yegw1ubm9Y2sGoPjm2kNsfJtsFgAeHG5Pg5N",
+   "slot": 469805032,
+   "why": "sol_lamports > cap"
+  },
+  {
+   "amount": 472632024545163,
+   "event": "pump_amm.BuyEvent",
+   "quote_mints": [
+    "FiqTaUpF9G1wEfYB3uq6rMFhsvHGLrwQggKeHp2xrJ4"
+   ],
+   "sig": "W5p2urJdRyPLG8xbXA5uZ2BmFWisD6y2TyQcoFRxbwfkrA47gD2Yegw1ubm9Y2sGoPjm2kNsfJtsFgAeHG5Pg5N",
+   "slot": 469805032,
+   "why": "sol_lamports > cap"
+  },
+  {
+   "amount": 118219562279248,
+   "event": "pump_amm.SellEvent",
+   "quote_mints": [
+    "RwHLWANYC3Csim7wVaoky5rPHSmQzuVJ5un8kJBAx3H"
+   ],
+   "sig": "3vyiqxav4A8yVMNNbksQh7SLUfoxrj1j6WxBoaer28RUH71TNNRmdNSFecxzEEk8RTZb4NpX3ynJ69Wt2mQennx1",
+   "slot": 469805032,
+   "why": "sol_lamports > cap"
+  },
+  {
+   "amount": 127362470762220,
+   "event": "pump_amm.BuyEvent",
+   "quote_mints": [
+    "RwHLWANYC3Csim7wVaoky5rPHSmQzuVJ5un8kJBAx3H"
+   ],
+   "sig": "3vyiqxav4A8yVMNNbksQh7SLUfoxrj1j6WxBoaer28RUH71TNNRmdNSFecxzEEk8RTZb4NpX3ynJ69Wt2mQennx1",
+   "slot": 469805032,
+   "why": "sol_lamports > cap"
+  },
+  {
+   "amount": 417913361346424,
+   "event": "pump_amm.SellEvent",
+   "quote_mints": [
+    "R7vVNkv3sYJjxUstCcYiMRbVEUwh5wG4JPiCPZ8WUMr"
+   ],
+   "sig": "ebug6icqE3JZ4yQufmoM9m9xGmrUnrNRjDm4ckQs1SYc8vLvveTDjeaUXWPvwRAQh4jyvxZzj1eRFy3WE1GVRoj",
+   "slot": 469805033,
+   "why": "sol_lamports > cap"
+  },
+  {
+   "amount": 420011996777454,
+   "event": "pump_amm.BuyEvent",
+   "quote_mints": [
+    "R7vVNkv3sYJjxUstCcYiMRbVEUwh5wG4JPiCPZ8WUMr"
+   ],
+   "sig": "ebug6icqE3JZ4yQufmoM9m9xGmrUnrNRjDm4ckQs1SYc8vLvveTDjeaUXWPvwRAQh4jyvxZzj1eRFy3WE1GVRoj",
+   "slot": 469805033,
+   "why": "sol_lamports > cap"
+  },
+  {
+   "amount": 441897507978271,
+   "event": "pump_amm.SellEvent",
+   "quote_mints": [
+    "AFVnNpMHMVfjg3mvpmZhFrZY9bu1SzccpypKkQKjVjy"
+   ],
+   "sig": "5awQAxLrCDGvqMcN9M3ZmHbsGPJ4oU4uaemiAj7SmPvvApX2ffTjnLPRGRpLE5e78WYj1n3oT7SrbUSY1TAREuqo",
+   "slot": 469805033,
+   "why": "sol_lamports > cap"
+  },
+  {
+   "amount": 427824298753250,
+   "event": "pump_amm.BuyEvent",
+   "quote_mints": [
+    "AFVnNpMHMVfjg3mvpmZhFrZY9bu1SzccpypKkQKjVjy"
+   ],
+   "sig": "5awQAxLrCDGvqMcN9M3ZmHbsGPJ4oU4uaemiAj7SmPvvApX2ffTjnLPRGRpLE5e78WYj1n3oT7SrbUSY1TAREuqo",
+   "slot": 469805033,
+   "why": "sol_lamports > cap"
+  },
+  {
+   "amount": 123045956856505,
+   "event": "pump_amm.SellEvent",
+   "quote_mints": [
+    "GFAWqawKD1sF2XrEC26Ha2J9nnceGPKXuMkh1c5aMVZ1"
+   ],
+   "sig": "4Up8HP2HegjCUmhQL6DrXVgBze2t1dvYVSQzCrZhWMYRmQqr6giAmSMm1sAw4Xz6Kq18oLL2ADykk63VHXSsqUoN",
+   "slot": 469805034,
+   "why": "sol_lamports > cap"
+  },
+  {
+   "amount": 123664478971442,
+   "event": "pump_amm.BuyEvent",
+   "quote_mints": [
+    "GFAWqawKD1sF2XrEC26Ha2J9nnceGPKXuMkh1c5aMVZ1"
+   ],
+   "sig": "4Up8HP2HegjCUmhQL6DrXVgBze2t1dvYVSQzCrZhWMYRmQqr6giAmSMm1sAw4Xz6Kq18oLL2ADykk63VHXSsqUoN",
+   "slot": 469805034,
+   "why": "sol_lamports > cap"
+  },
+  {
+   "amount": 540681763909788,
+   "event": "pump_amm.SellEvent",
+   "quote_mints": [
+    "R7vVNkv3sYJjxUstCcYiMRbVEUwh5wG4JPiCPZ8WUMr"
+   ],
+   "sig": "5Kb3p9pmRmjeXXckGrzVoeB4jgb9omnq5qVkxCF3GakSpHEyRakBc4VBmyTe2oJeXRUHv4hRK1hqKQpqDzMEv2YA",
+   "slot": 469805034,
+   "why": "sol_lamports > cap"
+  },
+  {
+   "amount": 551622379087310,
+   "event": "pump_amm.BuyEvent",
+   "quote_mints": [
+    "R7vVNkv3sYJjxUstCcYiMRbVEUwh5wG4JPiCPZ8WUMr"
+   ],
+   "sig": "5Kb3p9pmRmjeXXckGrzVoeB4jgb9omnq5qVkxCF3GakSpHEyRakBc4VBmyTe2oJeXRUHv4hRK1hqKQpqDzMEv2YA",
+   "slot": 469805034,
+   "why": "sol_lamports > cap"
+  },
+  {
+   "amount": 463427088875066,
+   "event": "pump_amm.SellEvent",
+   "quote_mints": [
+    "FiqTaUpF9G1wEfYB3uq6rMFhsvHGLrwQggKeHp2xrJ4"
+   ],
+   "sig": "57R1RsSQqHxWgpi3YXf7YJiSUGPPtsjiAsgakYTB61S9yyfM5QKxyy7278y3U3NpVDU88EuDWCBbd1hati2ptMc3",
+   "slot": 469805034,
+   "why": "sol_lamports > cap"
+  },
+  {
+   "amount": 476794230529415,
+   "event": "pump_amm.BuyEvent",
+   "quote_mints": [
+    "FiqTaUpF9G1wEfYB3uq6rMFhsvHGLrwQggKeHp2xrJ4"
+   ],
+   "sig": "57R1RsSQqHxWgpi3YXf7YJiSUGPPtsjiAsgakYTB61S9yyfM5QKxyy7278y3U3NpVDU88EuDWCBbd1hati2ptMc3",
+   "slot": 469805034,
+   "why": "sol_lamports > cap"
+  },
+  {
+   "amount": 118904373817427,
+   "event": "pump_amm.SellEvent",
+   "quote_mints": [
+    "GFAWqawKD1sF2XrEC26Ha2J9nnceGPKXuMkh1c5aMVZ1"
+   ],
+   "sig": "4B7QsSuKfy2BYYYeUG3w49P9Ur4FNiXkQXcwEgK2RiKBGxW9PMyDSXDPKb4TjLU1vwyCJgoHPgSihZ6G2AHfqrxM",
+   "slot": 469805034,
+   "why": "sol_lamports > cap"
+  },
+  {
+   "amount": 131894469724455,
+   "event": "pump_amm.BuyEvent",
+   "quote_mints": [
+    "GFAWqawKD1sF2XrEC26Ha2J9nnceGPKXuMkh1c5aMVZ1"
+   ],
+   "sig": "4B7QsSuKfy2BYYYeUG3w49P9Ur4FNiXkQXcwEgK2RiKBGxW9PMyDSXDPKb4TjLU1vwyCJgoHPgSihZ6G2AHfqrxM",
+   "slot": 469805034,
+   "why": "sol_lamports > cap"
+  },
+  {
+   "amount": 117258539711276,
+   "event": "pump_amm.SellEvent",
+   "quote_mints": [
+    "RwHLWANYC3Csim7wVaoky5rPHSmQzuVJ5un8kJBAx3H"
+   ],
+   "sig": "5K5Ebk5cKi7Ye3D1MfXfwW5eJBbwLi7V7gK9Cc9Xav4jtqZV9DZXWzwbMPUAqyKHV2hsNavPGfWyYv21tZvtQ9x6",
+   "slot": 469805034,
+   "why": "sol_lamports > cap"
+  },
+  {
+   "amount": 116507189059402,
+   "event": "pump_amm.BuyEvent",
+   "quote_mints": [
+    "RwHLWANYC3Csim7wVaoky5rPHSmQzuVJ5un8kJBAx3H"
+   ],
+   "sig": "5K5Ebk5cKi7Ye3D1MfXfwW5eJBbwLi7V7gK9Cc9Xav4jtqZV9DZXWzwbMPUAqyKHV2hsNavPGfWyYv21tZvtQ9x6",
+   "slot": 469805034,
+   "why": "sol_lamports > cap"
+  },
+  {
+   "amount": 132129104403264,
+   "event": "pump_amm.SellEvent",
+   "quote_mints": [
+    "GFAWqawKD1sF2XrEC26Ha2J9nnceGPKXuMkh1c5aMVZ1"
+   ],
+   "sig": "3hbQxg2B21xxJivRDUBN5zZsmeutura3uiL8KwFS7uCBGs9AbmSn8HAn7Bjzq5ZmZh9wGur4o6gTu3DnzLoeQ2Jf",
+   "slot": 469810426,
+   "why": "sol_lamports > cap"
+  },
+  {
+   "amount": 117377158871335,
+   "event": "pump_amm.BuyEvent",
+   "quote_mints": [
+    "GFAWqawKD1sF2XrEC26Ha2J9nnceGPKXuMkh1c5aMVZ1"
+   ],
+   "sig": "3hbQxg2B21xxJivRDUBN5zZsmeutura3uiL8KwFS7uCBGs9AbmSn8HAn7Bjzq5ZmZh9wGur4o6gTu3DnzLoeQ2Jf",
+   "slot": 469810426,
+   "why": "sol_lamports > cap"
+  },
+  {
+   "amount": 491910122405195,
+   "event": "pump_amm.SellEvent",
+   "quote_mints": [
+    "R7vVNkv3sYJjxUstCcYiMRbVEUwh5wG4JPiCPZ8WUMr"
+   ],
+   "sig": "5FtV8YiWxpaF2rYUNgFBGeBpyXeww9SHTpzWEbXsB72KqX8fbJbZX1MgF5HQwJpR28dRRWvYRnD7JBQabAUauQ7T",
+   "slot": 469810427,
+   "why": "sol_lamports > cap"
+  },
+  {
+   "amount": 443200153837071,
+   "event": "pump_amm.BuyEvent",
+   "quote_mints": [
+    "R7vVNkv3sYJjxUstCcYiMRbVEUwh5wG4JPiCPZ8WUMr"
+   ],
+   "sig": "5FtV8YiWxpaF2rYUNgFBGeBpyXeww9SHTpzWEbXsB72KqX8fbJbZX1MgF5HQwJpR28dRRWvYRnD7JBQabAUauQ7T",
+   "slot": 469810427,
+   "why": "sol_lamports > cap"
+  },
+  {
+   "amount": 779070114125480,
+   "event": "pump_amm.SellEvent",
+   "quote_mints": [
+    "GBq3MuN5U69zwjSLBG3zUmXhw7AubRQqajCtEysxQsM"
+   ],
+   "sig": "24KKNEsWFpxLAokeB4whppAfqeUYmnhVgACSQokSE6bPoGCM62Rjd663EoAQhVmfaFKU2K5KyxirWrF4XQqSAGhh",
+   "slot": 469810427,
+   "why": "sol_lamports > cap"
+  },
+  {
+   "amount": 687676535854011,
+   "event": "pump_amm.BuyEvent",
+   "quote_mints": [
+    "GBq3MuN5U69zwjSLBG3zUmXhw7AubRQqajCtEysxQsM"
+   ],
+   "sig": "24KKNEsWFpxLAokeB4whppAfqeUYmnhVgACSQokSE6bPoGCM62Rjd663EoAQhVmfaFKU2K5KyxirWrF4XQqSAGhh",
+   "slot": 469810427,
+   "why": "sol_lamports > cap"
+  },
+  {
+   "amount": 493348280017435,
+   "event": "pump_amm.SellEvent",
+   "quote_mints": [
+    "FiqTaUpF9G1wEfYB3uq6rMFhsvHGLrwQggKeHp2xrJ4"
+   ],
+   "sig": "3nAapmodiaUX7ZNKfLPtKccFjhxA1qrccAUXwpF9fQwHAj8vvQppFtddLdtgGPmdP3utG4C9R5qBdF71bkTsKKxP",
+   "slot": 469810428,
+   "why": "sol_lamports > cap"
+  },
+  {
+   "amount": 495826566327730,
+   "event": "pump_amm.BuyEvent",
+   "quote_mints": [
+    "FiqTaUpF9G1wEfYB3uq6rMFhsvHGLrwQggKeHp2xrJ4"
+   ],
+   "sig": "3nAapmodiaUX7ZNKfLPtKccFjhxA1qrccAUXwpF9fQwHAj8vvQppFtddLdtgGPmdP3utG4C9R5qBdF71bkTsKKxP",
+   "slot": 469810428,
+   "why": "sol_lamports > cap"
+  },
+  {
+   "amount": 834091681132101,
+   "event": "pump_amm.SellEvent",
+   "quote_mints": [
+    "GBq3MuN5U69zwjSLBG3zUmXhw7AubRQqajCtEysxQsM"
+   ],
+   "sig": "x9jqkzNJd1XtAtpfEr78e5TiRE6Uu3ttrpL6Wy6M13wvjMtVsn9vjsP2gtv3vGLU8vWg2HXhHYWo6CPJDGmPjqn",
+   "slot": 469810428,
+   "why": "sol_lamports > cap"
+  },
+  {
+   "amount": 650758528297259,
+   "event": "pump_amm.BuyEvent",
+   "quote_mints": [
+    "GBq3MuN5U69zwjSLBG3zUmXhw7AubRQqajCtEysxQsM"
+   ],
+   "sig": "x9jqkzNJd1XtAtpfEr78e5TiRE6Uu3ttrpL6Wy6M13wvjMtVsn9vjsP2gtv3vGLU8vWg2HXhHYWo6CPJDGmPjqn",
+   "slot": 469810428,
+   "why": "sol_lamports > cap"
+  },
+  {
+   "amount": 452558095562069,
+   "event": "pump_amm.SellEvent",
+   "quote_mints": [
+    "FiqTaUpF9G1wEfYB3uq6rMFhsvHGLrwQggKeHp2xrJ4"
+   ],
+   "sig": "4bLv952kM7mezyMdH8khVnsSbFYi6Brb2LbtkzihTWQ599poXGhqq8ouGsV89z3WR6dRc8Ri1qmw2wNgep2j4gRc",
+   "slot": 469810428,
+   "why": "sol_lamports > cap"
+  },
+  {
+   "amount": 454831086202616,
+   "event": "pump_amm.BuyEvent",
+   "quote_mints": [
+    "FiqTaUpF9G1wEfYB3uq6rMFhsvHGLrwQggKeHp2xrJ4"
+   ],
+   "sig": "4bLv952kM7mezyMdH8khVnsSbFYi6Brb2LbtkzihTWQ599poXGhqq8ouGsV89z3WR6dRc8Ri1qmw2wNgep2j4gRc",
+   "slot": 469810428,
+   "why": "sol_lamports > cap"
+  },
+  {
+   "amount": 501052791075954,
+   "event": "pump_amm.SellEvent",
+   "quote_mints": [
+    "R7vVNkv3sYJjxUstCcYiMRbVEUwh5wG4JPiCPZ8WUMr"
+   ],
+   "sig": "G87eeuWhW59uGtrSYAaueVUfq765Xq5viuWYqyPw2gpBmQ9x6W8AMTw1UpD1XPM7zX1kKV8t73qzk6RQhuitV3U",
+   "slot": 469810428,
+   "why": "sol_lamports > cap"
+  },
+  {
+   "amount": 569029130244117,
+   "event": "pump_amm.BuyEvent",
+   "quote_mints": [
+    "R7vVNkv3sYJjxUstCcYiMRbVEUwh5wG4JPiCPZ8WUMr"
+   ],
+   "sig": "G87eeuWhW59uGtrSYAaueVUfq765Xq5viuWYqyPw2gpBmQ9x6W8AMTw1UpD1XPM7zX1kKV8t73qzk6RQhuitV3U",
+   "slot": 469810428,
+   "why": "sol_lamports > cap"
+  },
+  {
+   "amount": 120710053888228,
+   "event": "pump_amm.SellEvent",
+   "quote_mints": [
+    "GFAWqawKD1sF2XrEC26Ha2J9nnceGPKXuMkh1c5aMVZ1"
+   ],
+   "sig": "4SCp1Awqm8DoyXsFUicU5WzRGCb6R33tu1xa2bLTNpb397t6FjVVCxGXxxAeJ4mcpFzEQJzheuMGg2TAyaehy17F",
+   "slot": 469810428,
+   "why": "sol_lamports > cap"
+  },
+  {
+   "amount": 130072464640132,
+   "event": "pump_amm.SellEvent",
+   "quote_mints": [
+    "394Z8rGwerTRBxjJ4fDtFcyT1bALAez7N37mawfQk7gB"
+   ],
+   "sig": "4gKez7zoLk8ChmNYX3DarQiWZRjKhkvusoUUpvfkaYXfmHpprtyRhm4LnkkEC59FPHKMLTuVbhiT1uiV3dMrbaj5",
+   "slot": 469810429,
+   "why": "sol_lamports > cap"
+  },
+  {
+   "amount": 129876536009291,
+   "event": "pump_amm.BuyEvent",
+   "quote_mints": [
+    "394Z8rGwerTRBxjJ4fDtFcyT1bALAez7N37mawfQk7gB"
+   ],
+   "sig": "4gKez7zoLk8ChmNYX3DarQiWZRjKhkvusoUUpvfkaYXfmHpprtyRhm4LnkkEC59FPHKMLTuVbhiT1uiV3dMrbaj5",
+   "slot": 469810429,
+   "why": "sol_lamports > cap"
+  },
+  {
+   "amount": 830745107418909,
+   "event": "pump_amm.SellEvent",
+   "quote_mints": [
+    "GBq3MuN5U69zwjSLBG3zUmXhw7AubRQqajCtEysxQsM"
+   ],
+   "sig": "2JW5v6vUgYUk7noYhPi2Sbo9U8bNK1GNPcd1bZJktyKVGyTabSw7yXnFqYZqaPsLAQ4AXb6ivzPHtKaDzYtRXpvW",
+   "slot": 469810430,
+   "why": "sol_lamports > cap"
+  },
+  {
+   "amount": 696869803991685,
+   "event": "pump_amm.BuyEvent",
+   "quote_mints": [
+    "GBq3MuN5U69zwjSLBG3zUmXhw7AubRQqajCtEysxQsM"
+   ],
+   "sig": "2JW5v6vUgYUk7noYhPi2Sbo9U8bNK1GNPcd1bZJktyKVGyTabSw7yXnFqYZqaPsLAQ4AXb6ivzPHtKaDzYtRXpvW",
+   "slot": 469810430,
+   "why": "sol_lamports > cap"
+  },
+  {
+   "amount": 114120112482719,
+   "event": "pump_amm.SellEvent",
+   "quote_mints": [
+    "GFAWqawKD1sF2XrEC26Ha2J9nnceGPKXuMkh1c5aMVZ1"
+   ],
+   "sig": "4yjmecLrYhpjGyRUub6xSJgzHNpoPM5VH5yGxKEBpw9WPeWRS8pPc2SnvFtyV8DmBeuk9uB7tp9QGMiP6xZzNPkV",
+   "slot": 469810430,
+   "why": "sol_lamports > cap"
+  },
+  {
+   "amount": 120495311015042,
+   "event": "pump_amm.BuyEvent",
+   "quote_mints": [
+    "GFAWqawKD1sF2XrEC26Ha2J9nnceGPKXuMkh1c5aMVZ1"
+   ],
+   "sig": "4yjmecLrYhpjGyRUub6xSJgzHNpoPM5VH5yGxKEBpw9WPeWRS8pPc2SnvFtyV8DmBeuk9uB7tp9QGMiP6xZzNPkV",
+   "slot": 469810430,
+   "why": "sol_lamports > cap"
+  },
+  {
+   "amount": 407221571690232,
+   "event": "pump_amm.SellEvent",
+   "quote_mints": [
+    "R7vVNkv3sYJjxUstCcYiMRbVEUwh5wG4JPiCPZ8WUMr"
+   ],
+   "sig": "3zjC4fbnBSd1JoWXyGC6znp9C74cHZ8D45ww4FwEhd8iVeGoyoA4VscYhoXH13ycs8Hd3fm3uij2jc7wBPXcGKtg",
+   "slot": 469810430,
+   "why": "sol_lamports > cap"
+  },
+  {
+   "amount": 439827397477859,
+   "event": "pump_amm.BuyEvent",
+   "quote_mints": [
+    "R7vVNkv3sYJjxUstCcYiMRbVEUwh5wG4JPiCPZ8WUMr"
+   ],
+   "sig": "3zjC4fbnBSd1JoWXyGC6znp9C74cHZ8D45ww4FwEhd8iVeGoyoA4VscYhoXH13ycs8Hd3fm3uij2jc7wBPXcGKtg",
+   "slot": 469810430,
+   "why": "sol_lamports > cap"
+  },
+  {
+   "amount": 410294268992030,
+   "event": "pump_amm.SellEvent",
+   "quote_mints": [
+    "FiqTaUpF9G1wEfYB3uq6rMFhsvHGLrwQggKeHp2xrJ4"
+   ],
+   "sig": "5NDAXyTnkVPiSs8fFWeQhzZUN5UdsZRpJmiEiKiY4Yz27LzgngySamg2wuL8izEKAcbMwXUc1PnUCbgZvLVkyW8p",
+   "slot": 469810430,
+   "why": "sol_lamports > cap"
+  },
+  {
+   "amount": 613288363811339,
+   "event": "pump_amm.BuyEvent",
+   "quote_mints": [
+    "FiqTaUpF9G1wEfYB3uq6rMFhsvHGLrwQggKeHp2xrJ4"
+   ],
+   "sig": "5NDAXyTnkVPiSs8fFWeQhzZUN5UdsZRpJmiEiKiY4Yz27LzgngySamg2wuL8izEKAcbMwXUc1PnUCbgZvLVkyW8p",
+   "slot": 469810430,
+   "why": "sol_lamports > cap"
+  },
+  {
+   "amount": 489100018542365,
+   "event": "pump_amm.SellEvent",
+   "quote_mints": [
+    "FiqTaUpF9G1wEfYB3uq6rMFhsvHGLrwQggKeHp2xrJ4"
+   ],
+   "sig": "7HVdwv6mk3hK2Lawou293oBaAonFRNkU86CLBBtFqv5rGXNGdL31Zfx1JpBd41yqr1uNBzwjfEbdKcBtMCWny59",
+   "slot": 469810434,
+   "why": "sol_lamports > cap"
+  },
+  {
+   "amount": 633985927562219,
+   "event": "pump_amm.BuyEvent",
+   "quote_mints": [
+    "FiqTaUpF9G1wEfYB3uq6rMFhsvHGLrwQggKeHp2xrJ4"
+   ],
+   "sig": "7HVdwv6mk3hK2Lawou293oBaAonFRNkU86CLBBtFqv5rGXNGdL31Zfx1JpBd41yqr1uNBzwjfEbdKcBtMCWny59",
+   "slot": 469810434,
+   "why": "sol_lamports > cap"
+  },
+  {
+   "amount": 849170247364588,
+   "event": "pump_amm.SellEvent",
+   "quote_mints": [
+    "GBq3MuN5U69zwjSLBG3zUmXhw7AubRQqajCtEysxQsM"
+   ],
+   "sig": "4VGdAgbthkxZcdhoDgrzvYrWAUnV7ZjFBizKfk4RAKcj6jGUkBwY6pqdNC2GeYehiHox998XDHot1asUhHDoRg7N",
+   "slot": 469810434,
+   "why": "sol_lamports > cap"
+  },
+  {
+   "amount": 764511794852671,
+   "event": "pump_amm.BuyEvent",
+   "quote_mints": [
+    "GBq3MuN5U69zwjSLBG3zUmXhw7AubRQqajCtEysxQsM"
+   ],
+   "sig": "4VGdAgbthkxZcdhoDgrzvYrWAUnV7ZjFBizKfk4RAKcj6jGUkBwY6pqdNC2GeYehiHox998XDHot1asUhHDoRg7N",
+   "slot": 469810434,
+   "why": "sol_lamports > cap"
+  },
+  {
+   "amount": 371854224583567,
+   "event": "pump_amm.SellEvent",
+   "quote_mints": [
+    "R7vVNkv3sYJjxUstCcYiMRbVEUwh5wG4JPiCPZ8WUMr"
+   ],
+   "sig": "3mkafoS9ytDYAhf1mRD1hBfTmEcKaoGpm2uJViC8Yb7hfvPT7Fbtqu4PM9H18vma28c7j5T2SsJoCSAfm4X6xDC",
+   "slot": 469810434,
+   "why": "sol_lamports > cap"
+  },
+  {
+   "amount": 431067438298151,
+   "event": "pump_amm.BuyEvent",
+   "quote_mints": [
+    "R7vVNkv3sYJjxUstCcYiMRbVEUwh5wG4JPiCPZ8WUMr"
+   ],
+   "sig": "3mkafoS9ytDYAhf1mRD1hBfTmEcKaoGpm2uJViC8Yb7hfvPT7Fbtqu4PM9H18vma28c7j5T2SsJoCSAfm4X6xDC",
+   "slot": 469810434,
+   "why": "sol_lamports > cap"
+  }
+ ],
+ "trade_ix_total": 5713,
+ "trail8": {
+  "pump.TradeEvent": 1596,
+  "pump_amm.BuyEvent": 2053,
+  "pump_amm.SellEvent": 2461,
+  "pump_amm.WithdrawEvent": 1
+ },
+ "trail8_first_last_slot": [
+  469751025,
+  469810434
+ ],
+ "trail8_nonzero": [
+  [
+   469751025,
+   "pump_amm.BuyEvent",
+   400558
+  ],
+  [
+   469751025,
+   "pump.TradeEvent",
+   16343
+  ],
+  [
+   469751026,
+   "pump_amm.SellEvent",
+   1546028
+  ],
+  [
+   469751026,
+   "pump_amm.BuyEvent",
+   805
+  ],
+  [
+   469751028,
+   "pump.TradeEvent",
+   697378
+  ],
+  [
+   469751030,
+   "pump.TradeEvent",
+   2048928
+  ],
+  [
+   469751030,
+   "pump.TradeEvent",
+   615995
+  ],
+  [
+   469751030,
+   "pump.TradeEvent",
+   595477
+  ],
+  [
+   469751030,
+   "pump.TradeEvent",
+   574936
+  ],
+  [
+   469751031,
+   "pump.TradeEvent",
+   2475402
+  ],
+  [
+   469751031,
+   "pump.TradeEvent",
+   392468
+  ],
+  [
+   469751031,
+   "pump.TradeEvent",
+   774880
+  ],
+  [
+   469756431,
+   "pump_amm.BuyEvent",
+   27279
+  ],
+  [
+   469756431,
+   "pump.TradeEvent",
+   197988
+  ],
+  [
+   469756434,
+   "pump.TradeEvent",
+   81234
+  ],
+  [
+   469772626,
+   "pump_amm.BuyEvent",
+   4008
+  ],
+  [
+   469772627,
+   "pump_amm.BuyEvent",
+   4008
+  ],
+  [
+   469772630,
+   "pump_amm.BuyEvent",
+   167877
+  ],
+  [
+   469772630,
+   "pump.TradeEvent",
+   796390
+  ],
+  [
+   469772631,
+   "pump.TradeEvent",
+   23059
+  ],
+  [
+   469778025,
+   "pump.TradeEvent",
+   7395
+  ],
+  [
+   469778025,
+   "pump.TradeEvent",
+   370
+  ],
+  [
+   469778025,
+   "pump.TradeEvent",
+   282127
+  ],
+  [
+   469778025,
+   "pump.TradeEvent",
+   274813
+  ],
+  [
+   469778025,
+   "pump.TradeEvent",
+   286591
+  ],
+  [
+   469778026,
+   "pump.TradeEvent",
+   78485
+  ],
+  [
+   469778026,
+   "pump.TradeEvent",
+   4699085
+  ],
+  [
+   469778026,
+   "pump.TradeEvent",
+   69125
+  ],
+  [
+   469778026,
+   "pump.TradeEvent",
+   1158514
+  ],
+  [
+   469778026,
+   "pump.TradeEvent",
+   358808
+  ],
+  [
+   469778027,
+   "pump.TradeEvent",
+   376487
+  ],
+  [
+   469778027,
+   "pump.TradeEvent",
+   71857
+  ],
+  [
+   469778027,
+   "pump.TradeEvent",
+   159592
+  ],
+  [
+   469778027,
+   "pump.TradeEvent",
+   254591
+  ],
+  [
+   469778028,
+   "pump.TradeEvent",
+   1487617
+  ],
+  [
+   469778028,
+   "pump.TradeEvent",
+   211841
+  ],
+  [
+   469778029,
+   "pump.TradeEvent",
+   88761
+  ],
+  [
+   469778029,
+   "pump.TradeEvent",
+   3379341
+  ],
+  [
+   469778029,
+   "pump.TradeEvent",
+   98924
+  ],
+  [
+   469778030,
+   "pump.TradeEvent",
+   590645
+  ],
+  [
+   469778031,
+   "pump.TradeEvent",
+   138925
+  ],
+  [
+   469778032,
+   "pump.TradeEvent",
+   3872
+  ],
+  [
+   469778032,
+   "pump.TradeEvent",
+   157930
+  ],
+  [
+   469778032,
+   "pump.TradeEvent",
+   140868
+  ],
+  [
+   469778032,
+   "pump.TradeEvent",
+   154344
+  ],
+  [
+   469778032,
+   "pump.TradeEvent",
+   152909
+  ],
+  [
+   469778032,
+   "pump.TradeEvent",
+   147514
+  ],
+  [
+   469778032,
+   "pump.TradeEvent",
+   146105
+  ],
+  [
+   469778032,
+   "pump.TradeEvent",
+   135545
+  ],
+  [
+   469778032,
+   "pump.TradeEvent",
+   149104
+  ],
+  [
+   469778032,
+   "pump.TradeEvent",
+   147444
+  ],
+  [
+   469778032,
+   "pump.TradeEvent",
+   159074
+  ],
+  [
+   469778032,
+   "pump.TradeEvent",
+   142930
+  ],
+  [
+   469778032,
+   "pump.TradeEvent",
+   141413
+  ],
+  [
+   469778032,
+   "pump.TradeEvent",
+   159054
+  ],
+  [
+   469778032,
+   "pump.TradeEvent",
+   147316
+  ],
+  [
+   469778032,
+   "pump.TradeEvent",
+   136807
+  ],
+  [
+   469778032,
+   "pump.TradeEvent",
+   142429
+  ],
+  [
+   469778032,
+   "pump.TradeEvent",
+   144758
+  ],
+  [
+   469778032,
+   "pump.TradeEvent",
+   137493
+  ],
+  [
+   469778032,
+   "pump.TradeEvent",
+   158424
+  ],
+  [
+   469778032,
+   "pump.TradeEvent",
+   158383
+  ],
+  [
+   469778032,
+   "pump.TradeEvent",
+   154884
+  ],
+  [
+   469778032,
+   "pump.TradeEvent",
+   143609
+  ],
+  [
+   469778032,
+   "pump.TradeEvent",
+   146917
+  ],
+  [
+   469778032,
+   "pump.TradeEvent",
+   152240
+  ],
+  [
+   469778032,
+   "pump.TradeEvent",
+   142223
+  ],
+  [
+   469778032,
+   "pump.TradeEvent",
+   153946
+  ],
+  [
+   469778032,
+   "pump.TradeEvent",
+   139480
+  ],
+  [
+   469778032,
+   "pump.TradeEvent",
+   147170
+  ],
+  [
+   469778032,
+   "pump.TradeEvent",
+   149772
+  ],
+  [
+   469778032,
+   "pump.TradeEvent",
+   149469
+  ],
+  [
+   469778032,
+   "pump.TradeEvent",
+   2520808
+  ],
+  [
+   469778032,
+   "pump.TradeEvent",
+   105348
+  ],
+  [
+   469778032,
+   "pump.TradeEvent",
+   749047
+  ],
+  [
+   469778033,
+   "pump.TradeEvent",
+   262
+  ],
+  [
+   469783425,
+   "pump.TradeEvent",
+   476062
+  ],
+  [
+   469783425,
+   "pump.TradeEvent",
+   583825
+  ],
+  [
+   469783425,
+   "pump.TradeEvent",
+   7025
+  ],
+  [
+   469783425,
+   "pump.TradeEvent",
+   832929
+  ],
+  [
+   469783425,
+   "pump.TradeEvent",
+   792705
+  ],
+  [
+   469783425,
+   "pump.TradeEvent",
+   852296
+  ],
+  [
+   469783425,
+   "pump.TradeEvent",
+   779097
+  ],
+  [
+   469783425,
+   "pump.TradeEvent",
+   846806
+  ],
+  [
+   469783425,
+   "pump.TradeEvent",
+   799205
+  ],
+  [
+   469783425,
+   "pump.TradeEvent",
+   1045308
+  ],
+  [
+   469783425,
+   "pump_amm.BuyEvent",
+   7078
+  ],
+  [
+   469783426,
+   "pump_amm.BuyEvent",
+   70772
+  ],
+  [
+   469783426,
+   "pump.TradeEvent",
+   357476
+  ],
+  [
+   469783426,
+   "pump_amm.BuyEvent",
+   1433684
+  ],
+  [
+   469783426,
+   "pump_amm.SellEvent",
+   47556
+  ],
+  [
+   469783427,
+   "pump_amm.BuyEvent",
+   50038
+  ],
+  [
+   469783427,
+   "pump.TradeEvent",
+   357473
+  ],
+  [
+   469783427,
+   "pump_amm.BuyEvent",
+   1924839
+  ],
+  [
+   469783427,
+   "pump_amm.BuyEvent",
+   711760
+  ],
+  [
+   469783427,
+   "pump_amm.SellEvent",
+   1298254
+  ],
+  [
+   469783427,
+   "pump_amm.SellEvent",
+   1489689
+  ],
+  [
+   469783427,
+   "pump_amm.BuyEvent",
+   2902925
+  ],
+  [
+   469783427,
+   "pump.TradeEvent",
+   58428
+  ],
+  [
+   469783427,
+   "pump_amm.BuyEvent",
+   212260
+  ],
+  [
+   469783427,
+   "pump_amm.SellEvent",
+   70229
+  ],
+  [
+   469783428,
+   "pump_amm.BuyEvent",
+   13753
+  ],
+  [
+   469783428,
+   "pump_amm.BuyEvent",
+   70753
+  ],
+  [
+   469783428,
+   "pump_amm.SellEvent",
+   17475318
+  ],
+  [
+   469783428,
+   "pump_amm.BuyEvent",
+   457581
+  ],
+  [
+   469783428,
+   "pump_amm.SellEvent",
+   10425
+  ],
+  [
+   469783429,
+   "pump_amm.BuyEvent",
+   503003
+  ],
+  [
+   469783429,
+   "pump_amm.SellEvent",
+   2461504
+  ],
+  [
+   469783429,
+   "pump_amm.SellEvent",
+   691455
+  ],
+  [
+   469783429,
+   "pump.TradeEvent",
+   40057
+  ],
+  [
+   469783429,
+   "pump_amm.SellEvent",
+   1210702
+  ],
+  [
+   469783429,
+   "pump_amm.SellEvent",
+   1168280
+  ],
+  [
+   469783429,
+   "pump_amm.BuyEvent",
+   2413760
+  ],
+  [
+   469783429,
+   "pump.TradeEvent",
+   74814
+  ],
+  [
+   469783429,
+   "pump_amm.BuyEvent",
+   70767
+  ],
+  [
+   469783430,
+   "pump_amm.BuyEvent",
+   1132220
+  ],
+  [
+   469783430,
+   "pump_amm.BuyEvent",
+   35814
+  ],
+  [
+   469783430,
+   "pump_amm.SellEvent",
+   269520
+  ],
+  [
+   469783431,
+   "pump_amm.BuyEvent",
+   59640
+  ],
+  [
+   469783431,
+   "pump_amm.BuyEvent",
+   70762
+  ],
+  [
+   469783431,
+   "pump.TradeEvent",
+   531983
+  ],
+  [
+   469783431,
+   "pump.TradeEvent",
+   661100
+  ],
+  [
+   469783431,
+   "pump.TradeEvent",
+   626939
+  ],
+  [
+   469783431,
+   "pump.TradeEvent",
+   836706
+  ],
+  [
+   469783431,
+   "pump_amm.SellEvent",
+   2229596
+  ],
+  [
+   469783431,
+   "pump_amm.SellEvent",
+   50993
+  ],
+  [
+   469783431,
+   "pump_amm.BuyEvent",
+   636882
+  ],
+  [
+   469783431,
+   "pump_amm.BuyEvent",
+   40181
+  ],
+  [
+   469783432,
+   "pump_amm.BuyEvent",
+   771299
+  ],
+  [
+   469783433,
+   "pump_amm.BuyEvent",
+   70760
+  ],
+  [
+   469783433,
+   "pump_amm.BuyEvent",
+   3274805
+  ],
+  [
+   469783433,
+   "pump_amm.BuyEvent",
+   70759
+  ],
+  [
+   469783433,
+   "pump_amm.SellEvent",
+   1127372
+  ],
+  [
+   469783433,
+   "pump_amm.SellEvent",
+   1119398
+  ],
+  [
+   469783433,
+   "pump_amm.SellEvent",
+   1171572
+  ],
+  [
+   469783433,
+   "pump.TradeEvent",
+   253534
+  ],
+  [
+   469783434,
+   "pump_amm.BuyEvent",
+   3201
+  ],
+  [
+   469783434,
+   "pump_amm.BuyEvent",
+   3234
+  ],
+  [
+   469783434,
+   "pump_amm.BuyEvent",
+   31456
+  ],
+  [
+   469783434,
+   "pump_amm.SellEvent",
+   17490
+  ],
+  [
+   469783434,
+   "pump_amm.BuyEvent",
+   27260
+  ],
+  [
+   469783434,
+   "pump_amm.BuyEvent",
+   100050
+  ],
+  [
+   469783434,
+   "pump_amm.BuyEvent",
+   358248
+  ],
+  [
+   469788825,
+   "pump_amm.BuyEvent",
+   4808943
+  ],
+  [
+   469788826,
+   "pump.TradeEvent",
+   16065874
+  ],
+  [
+   469788827,
+   "pump.TradeEvent",
+   142979
+  ],
+  [
+   469788828,
+   "pump_amm.BuyEvent",
+   91253
+  ],
+  [
+   469788829,
+   "pump.TradeEvent",
+   5603994
+  ],
+  [
+   469788832,
+   "pump_amm.BuyEvent",
+   2967488
+  ],
+  [
+   469788832,
+   "pump.TradeEvent",
+   474624
+  ],
+  [
+   469788833,
+   "pump.TradeEvent",
+   1147303
+  ],
+  [
+   469788833,
+   "pump.TradeEvent",
+   1062364
+  ],
+  [
+   469788833,
+   "pump.TradeEvent",
+   979701
+  ],
+  [
+   469788834,
+   "pump_amm.SellEvent",
+   13631258
+  ],
+  [
+   469788834,
+   "pump_amm.BuyEvent",
+   156185
+  ],
+  [
+   469788834,
+   "pump_amm.BuyEvent",
+   1440
+  ],
+  [
+   469788834,
+   "pump_amm.BuyEvent",
+   1847
+  ],
+  [
+   469788834,
+   "pump_amm.BuyEvent",
+   237
+  ],
+  [
+   469794225,
+   "pump_amm.SellEvent",
+   211324
+  ],
+  [
+   469794226,
+   "pump_amm.SellEvent",
+   57885
+  ],
+  [
+   469794226,
+   "pump_amm.BuyEvent",
+   91578
+  ],
+  [
+   469794226,
+   "pump_amm.SellEvent",
+   225198
+  ],
+  [
+   469794227,
+   "pump_amm.BuyEvent",
+   496344
+  ],
+  [
+   469794229,
+   "pump_amm.SellEvent",
+   6491
+  ],
+  [
+   469794229,
+   "pump_amm.SellEvent",
+   319128
+  ],
+  [
+   469794229,
+   "pump_amm.SellEvent",
+   222601
+  ],
+  [
+   469794229,
+   "pump.TradeEvent",
+   23705
+  ],
+  [
+   469794230,
+   "pump_amm.BuyEvent",
+   282687
+  ],
+  [
+   469794230,
+   "pump_amm.BuyEvent",
+   71678
+  ],
+  [
+   469794231,
+   "pump_amm.BuyEvent",
+   25248
+  ],
+  [
+   469794232,
+   "pump.TradeEvent",
+   191296
+  ],
+  [
+   469794232,
+   "pump_amm.SellEvent",
+   4261738
+  ],
+  [
+   469794233,
+   "pump.TradeEvent",
+   66861
+  ],
+  [
+   469794234,
+   "pump_amm.BuyEvent",
+   10777
+  ],
+  [
+   469794234,
+   "pump_amm.BuyEvent",
+   91599
+  ],
+  [
+   469799628,
+   "pump_amm.BuyEvent",
+   1730
+  ],
+  [
+   469799629,
+   "pump_amm.BuyEvent",
+   601431
+  ],
+  [
+   469799629,
+   "pump_amm.SellEvent",
+   2034252
+  ],
+  [
+   469799630,
+   "pump_amm.BuyEvent",
+   5086
+  ],
+  [
+   469799630,
+   "pump_amm.BuyEvent",
+   36716
+  ],
+  [
+   469799632,
+   "pump.TradeEvent",
+   45904
+  ],
+  [
+   469799634,
+   "pump_amm.SellEvent",
+   52280
+  ],
+  [
+   469805027,
+   "pump.TradeEvent",
+   456607
+  ],
+  [
+   469805030,
+   "pump_amm.SellEvent",
+   2435207
+  ],
+  [
+   469810425,
+   "pump_amm.BuyEvent",
+   10354
+  ],
+  [
+   469810429,
+   "pump_amm.SellEvent",
+   1884890
+  ],
+  [
+   469810433,
+   "pump.TradeEvent",
+   1391585
+  ]
+ ],
+ "trail8_total": 6111,
+ "trail8_values": {
+  "0": 5924,
+  "805": 1,
+  "4008": 2,
+  "16343": 1,
+  "400558": 1,
+  "595477": 1,
+  "615995": 1,
+  "697378": 1,
+  "1546028": 1,
+  "2048928": 1
+ },
+ "tx_analysed": {
+  "A": 8264
+ },
+ "unknown_disc": {},
+ "unknown_ix": {},
+ "unresolved_mint_rows": 4214,
+ "walker_bad_disc": {
+  "3e2f370aa503dc2a": 151,
+  "67f4521f2cf57777": 149,
+  "bddb7fd34ee661ee": 34
+ },
+ "walker_cpi_only_disc": {},
+ "walker_rows": {
+  "creates": 8,
+  "events": 7,
+  "migrations": 0,
+  "trades": 1600,
+  "unresolved": 4210
+ },
+ "walker_unknown_disc": {
+  "000203007a24e32d": 1,
+  "007995033797824b": 3,
+  "007cbdec45d8d3ae": 1,
+  "0094357700000000": 2,
+  "009c24324d99ad48": 5,
+  "00a906f2ae8b22db": 6,
+  "00d9a99b1ef7e0f0": 2,
+  "00e1218bd4fabab4": 1,
+  "00ec402e76b5f21d": 2,
+  "00ed0849f960647a": 18,
+  "00f9d6ec5d9030c0": 1,
+  "0100030021b2c5a3": 1,
+  "0200415129001c00": 8,
+  "0200415229001c00": 9,
+  "0200415329001c00": 10,
+  "0200415429001c00": 8,
+  "0200415529001c00": 9,
+  "0200415629001c00": 9,
+  "0200415729001c00": 10,
+  "0200415829001c00": 8,
+  "0200415929001c00": 11,
+  "0200415a29001c00": 9,
+  "0200418953001c00": 1,
+  "0200418a53001c00": 6,
+  "020041c992001c00": 6,
+  "020041ca92001c00": 5,
+  "020041cb92001c00": 1,
+  "020041cc92001c00": 3,
+  "020041cd92001c00": 6,
+  "020041ce92001c00": 5,
+  "020041cf92001c00": 6,
+  "020041d092001c00": 3,
+  "020041d192001c00": 6,
+  "020041d292001c00": 2,
+  "020241d092001c00": 3,
+  "020c418153001c00": 9,
+  "020c418253001c00": 9,
+  "020c418353001c00": 7,
+  "020c418453001c00": 2,
+  "020c418553001c00": 5,
+  "020c418653001c00": 6,
+  "020c418753001c00": 9,
+  "020c418853001c00": 5,
+  "020c418953001c00": 4,
+  "020c419968001c00": 10,
+  "020c419a68001c00": 9,
+  "020c419b68001c00": 10,
+  "020c419c68001c00": 9,
+  "020c419d68001c00": 8,
+  "020c419e68001c00": 9,
+  "020c419f68001c00": 9,
+  "020c41a068001c00": 10,
+  "020c41a168001c00": 7,
+  "020c41a268001c00": 10,
+  "020c41cb92001c00": 4,
+  "020c41d192001c00": 1,
+  "020c41d292001c00": 2,
+  "022e0224ffcac9c8": 2,
+  "024041c992001c00": 18,
+  "024041ca92001c00": 17,
+  "024041cb92001c00": 4,
+  "024041cc92001c00": 15,
+  "024041cd92001c00": 17,
+  "024041ce92001c00": 16,
+  "024041cf92001c00": 16,
+  "024041d092001c00": 12,
+  "024041d192001c00": 17,
+  "024041d292001c00": 7,
+  "024241d092001c00": 5,
+  "024c41cb92001c00": 10,
+  "024c41d192001c00": 1,
+  "024c41d292001c00": 7,
+  "02cf05c1f9ebea41": 1,
+  "0300030061860fd8": 1,
+  "030117a1d6000022": 1,
+  "040101453b73da02": 1,
+  "06010017a1d60000": 1,
+  "0701004015d40000": 1,
+  "0801004015d40000": 1,
+  "08faa069b080a9b9": 16,
+  "0a0000000d000000": 256,
+  "0a0000000e000000": 144,
+  "0a0000000f000000": 4,
+  "0a0000001d000000": 80,
+  "0a00000061000000": 8,
+  "0a0001000d000000": 256,
+  "0a0001000e000000": 144,
+  "0a0001000f000000": 4,
+  "0a0001001d000000": 80,
+  "0a00010061000000": 8,
+  "0a0f2cfda50056f8": 2,
+  "0b00000000000000": 24,
+  "0b0000000d000000": 39,
+  "0b0000000e000000": 12,
+  "0b0000001d000000": 4,
+  "0b01000000000000": 17,
+  "0b0100000d000000": 9,
+  "0b0100000e000000": 31,
+  "0b0100001d000000": 5,
+  "0b01000061000000": 1,
+  "0b922dcde63ad5f0": 1,
+  "0bd944c4edfce7b1": 1,
+  "0bfec2cd3ddeb2fd": 1,
+  "0c00000000000000": 492,
+  "0c01000000000000": 492,
+  "0d0000000d000000": 241,
+  "0d0000000e000000": 143,
+  "0d0000000f000000": 4,
+  "0d0000001d000000": 79,
+  "0d0100000d000000": 250,
+  "0d0100000e000000": 141,
+  "0d0100000f000000": 4,
+  "0d0100001d000000": 78,
+  "0d5929e469b22d70": 20,
+  "0e0000000d000000": 1,
+  "0e0d50afb82f8aa6": 1,
+  "0f00000000000000": 1,
+  "0f000000ffffff00": 54,
+  "1000000061000000": 1,
+  "101a480191e8b647": 1,
+  "10dc376f07501019": 3,
+  "1100000000000000": 8,
+  "1101000000000000": 8,
+  "11337ce246613aba": 1,
+  "11c958800018e3a5": 1,
+  "1459dfc6c27cdb0d": 1,
+  "1609851aa02c47c0": 2,
+  "167649f0c19988e3": 2,
+  "176a128b59009e5a": 1,
+  "17d6182234686dbc": 21,
+  "1a5d467abd05fa78": 1,
+  "1e0790b566fe9ba1": 42,
+  "1f00010000000000": 51,
+  "1f01010000000000": 43,
+  "1f5e7d5ae3343dba": 20,
+  "1f6851992c502784": 16,
+  "20072f4401000000": 2,
+  "2043c87f04000000": 2,
+  "206e5e2700000000": 1,
+  "20eead3900000000": 1,
+  "21592f75527ceefa": 15,
+  "25fb9c28a6f84fd7": 121,
+  "274071d8a2e27c50": 6,
+  "28f7427b0ff41cbe": 36,
+  "2ab5c3ad63846a6d": 1,
+  "2c2e4ded46bbaa85": 1,
+  "2e2cd52a373bbe85": 2,
+  "2e52c18f49c5a04f": 1,
+  "3029fcc0852e2d86": 1,
+  "3084da6f36ad3d81": 1,
+  "312add5ba432a8d6": 1,
+  "31487b2d6e40b085": 428,
+  "314f69d420221e54": 1,
+  "318b4d4274102c71": 11,
+  "34ebe19a8cbdb37f": 1,
+  "38c8486dd6f25e3a": 1,
+  "3a46066ed1583665": 2,
+  "3ae6f2034b7104a9": 93,
+  "3bcc728f22e128bd": 36,
+  "3c0e4201ccca2aa1": 40,
+  "3d5330909032992d": 1,
+  "3e224c29aa869167": 2,
+  "3f0882202166bdf2": 1,
+  "409f2f4100000000": 2,
+  "40c6cde8260871e2": 999,
+  "414b534c504c414e": 7,
+  "41504c4f54533031": 1,
+  "4152434446443031": 1,
+  "4215cbad116f1172": 19,
+  "4477a183804145c9": 1,
+  "45b3a9f9437ba3ad": 1,
+  "4670001eead4537d": 78,
+  "4ab80ac1dc9556b2": 5,
+  "4b7542c14855f025": 8,
+  "4be87a588557d014": 6,
+  "4f3ef9573ed9881e": 28,
+  "504558430400b90c": 1,
+  "5052534d05050100": 1,
+  "516ce3becdd00ac4": 25,
+  "52c7af09453a61f3": 1,
+  "5343515402000000": 85,
+  "5343515402010000": 18,
+  "5343515402020000": 3,
+  "5343515402030000": 2,
+  "5350414d52535631": 58,
+  "560ced64f3abe39f": 3,
+  "5632504805050a00": 1,
+  "581e3b3066fd8bd9": 3,
+  "58b882e7e254063a": 1,
+  "5943e65f8f6ac7ca": 1,
+  "5f82b584fb32c326": 82,
+  "5fd5587fdb5e42c6": 1,
+  "6018dddb00000000": 2,
+  "6036351100000000": 2,
+  "607b36ba01000000": 2,
+  "607bb1ea00000000": 2,
+  "60c0e069db96167e": 1,
+  "60fd5f9242720beb": 2,
+  "6161d7905d92167c": 1,
+  "62c2ddce4d1d3cc3": 2,
+  "63cd256b88acf8ff": 6,
+  "640a2e71081cb37d": 7,
+  "641e57f9c4df9ace": 1,
+  "65ccefa2fc2edc8a": 71,
+  "65cd5975bf9ac07c": 1,
+  "6805f4fad0b2dc3b": 1,
+  "6858c7f00d99c8fd": 2,
+  "6875bb9c6f9a6aba": 3,
+  "6a533f7303f5c389": 1,
+  "6ac9405df9a6e4a0": 1,
+  "6c3bf65f54910d47": 6,
+  "70da6f3f125f8823": 39,
+  "724639b0bb8e7191": 2,
+  "736e724c69656e31": 4,
+  "7414000000000000": 1,
+  "74f461e8671f983a": 20,
+  "7592834ab39adbb2": 1,
+  "7620450100000000": 1,
+  "763521a9200ec593": 1,
+  "787c6d42f974ae1e": 2,
+  "78f83d531f8e6b90": 9,
+  "792a1df060d33326": 1,
+  "7a027f010ebf0caf": 9,
+  "7a903ff2e4407e33": 31,
+  "7b3449b998a92880": 2,
+  "7c42c433daad2e5d": 4,
+  "7e3071a56319854c": 1,
+  "7ef0afce9e58996b": 2,
+  "8027418104000000": 2,
+  "8030dc3600000000": 1,
+  "8067ac3900000000": 2,
+  "80c4874700000000": 2,
+  "8159c12a838ae40c": 1,
+  "81f4c92e508068aa": 1,
+  "8236cb4d1e6b4fa8": 2,
+  "84422f240248e81b": 1,
+  "86240d48e86582d8": 55,
+  "86c0766bbf0864ec": 1,
+  "87f3030100000000": 1,
+  "903a40234c3390c5": 21,
+  "905e8eaa316e43bd": 1,
+  "90a0905200000000": 2,
+  "929fbdac925838f4": 245,
+  "9388d50b96178d98": 1,
+  "93f586b8472174f6": 14,
+  "94d0746a4226c0f6": 3,
+  "96606c3166e07779": 2,
+  "96a61ae11c59264f": 3,
+  "96aa7a934171ee99": 2,
+  "9843cfd77bd43c10": 1,
+  "9dcfe4b140d7e2d6": 1,
+  "9eb4c256f8abe228": 60,
+  "9ffdb406cc994b97": 1,
+  "a02ad5490a5539d3": 2,
+  "a092b8ac00c579bb": 1,
+  "a1d700609096eca2": 6,
+  "a3265b657894975a": 10,
+  "a445efdd58deeaed": 1,
+  "a5310ea7e40d8f93": 1,
+  "a537817004b3ca28": 5,
+  "a601244770cab5ab": 37,
+  "ab5d10c4a6cf1c94": 1,
+  "ac5272cf1b67d304": 3,
+  "ad41ccf9824c31dc": 2,
+  "af33d1377116e4b1": 1,
+  "af3fe600180ed905": 1,
+  "afdcfadf62712b37": 23,
+  "b100f98502000000": 1,
+  "b101f98502000000": 1,
+  "b102f98502000000": 1,
+  "b103f98502000000": 1,
+  "b107ae4b00000000": 1,
+  "b108ae4b00000000": 1,
+  "b109ae4b00000000": 1,
+  "b10aae4b00000000": 1,
+  "b124ef4b00000000": 1,
+  "b125ef4b00000000": 1,
+  "b126ef4b00000000": 1,
+  "b127ef4b00000000": 1,
+  "b128ef4b00000000": 1,
+  "b143b24b00000000": 1,
+  "b144b24b00000000": 1,
+  "b14a620b00000000": 1,
+  "b14e248602000000": 1,
+  "b14f248602000000": 1,
+  "b150248602000000": 1,
+  "b151248602000000": 1,
+  "b152248602000000": 1,
+  "b153248602000000": 1,
+  "b154248602000000": 1,
+  "b154cc8502000000": 1,
+  "b155248602000000": 1,
+  "b155cc8502000000": 1,
+  "b156248602000000": 1,
+  "b156cc8502000000": 1,
+  "b157248602000000": 1,
+  "b157cc8502000000": 1,
+  "b158248602000000": 1,
+  "b158cc8502000000": 1,
+  "b159248602000000": 1,
+  "b159cc8502000000": 1,
+  "b15a248602000000": 1,
+  "b15acc8502000000": 1,
+  "b15b248602000000": 1,
+  "b15bcc8502000000": 1,
+  "b15ccc8502000000": 1,
+  "b15dcc8502000000": 1,
+  "b15ecc8502000000": 1,
+  "b15fcc8502000000": 1,
+  "b160cc8502000000": 1,
+  "b161cc8502000000": 1,
+  "b162cc8502000000": 1,
+  "b163cd8702000000": 1,
+  "b164cd8702000000": 1,
+  "b165cd8702000000": 1,
+  "b166cd8702000000": 1,
+  "b167cd8702000000": 1,
+  "b168cd8702000000": 1,
+  "b169cd8702000000": 1,
+  "b169d34b00000000": 1,
+  "b16acd8702000000": 1,
+  "b16ad34b00000000": 1,
+  "b16bcd8702000000": 1,
+  "b16bd34b00000000": 1,
+  "b16ccd8702000000": 1,
+  "b16cd34b00000000": 1,
+  "b16dcd8702000000": 1,
+  "b16dd34b00000000": 1,
+  "b16ecd8702000000": 1,
+  "b16ed34b00000000": 1,
+  "b16fcd8702000000": 1,
+  "b16fd34b00000000": 1,
+  "b170cd8702000000": 1,
+  "b170d34b00000000": 1,
+  "b170d88602000000": 1,
+  "b171cd8702000000": 1,
+  "b171d34b00000000": 1,
+  "b171d88602000000": 1,
+  "b172cd8702000000": 1,
+  "b172d34b00000000": 1,
+  "b172d88602000000": 1,
+  "b173cd8702000000": 1,
+  "b173d88602000000": 1,
+  "b1749f8602000000": 1,
+  "b174cd8702000000": 1,
+  "b174d88602000000": 1,
+  "b175640b00000000": 1,
+  "b1759f8602000000": 1,
+  "b175cd8702000000": 1,
+  "b175d88602000000": 1,
+  "b1769f8602000000": 1,
+  "b176cd8702000000": 1,
+  "b176d88602000000": 1,
+  "b176e74b00000000": 1,
+  "b1779f8602000000": 1,
+  "b177cd8702000000": 1,
+  "b177d88602000000": 1,
+  "b177e74b00000000": 1,
+  "b1789f8602000000": 1,
+  "b178cd8702000000": 1,
+  "b178d88602000000": 1,
+  "b1799f8602000000": 1,
+  "b179cd8702000000": 1,
+  "b179d88602000000": 1,
+  "b17a9f8602000000": 1,
+  "b17acd8702000000": 1,
+  "b17ace4b00000000": 1,
+  "b17ad88602000000": 1,
+  "b17b9f8602000000": 1,
+  "b17bcd8702000000": 1,
+  "b17bd88602000000": 1,
+  "b17c9f8602000000": 1,
+  "b17ccd8702000000": 1,
+  "b17d9f8602000000": 1,
+  "b17dcd8702000000": 1,
+  "b17e9f8602000000": 1,
+  "b17ecd8702000000": 1,
+  "b17f9f8602000000": 1,
+  "b17fcd8702000000": 1,
+  "b1809f8602000000": 1,
+  "b180cd8702000000": 1,
+  "b1819f8602000000": 1,
+  "b181cd8702000000": 1,
+  "b1829f8602000000": 1,
+  "b182cd8702000000": 1,
+  "b1839f8602000000": 1,
+  "b183cd8702000000": 1,
+  "b1849f8602000000": 1,
+  "b184cd8702000000": 1,
+  "b1859f8602000000": 1,
+  "b185cd8702000000": 1,
+  "b186cd8702000000": 1,
+  "b187cd8702000000": 1,
+  "b188398702000000": 1,
+  "b188cd8702000000": 1,
+  "b189398702000000": 1,
+  "b189cd8702000000": 1,
+  "b18a398702000000": 1,
+  "b18acd8702000000": 1,
+  "b18b398702000000": 1,
+  "b18bcd8702000000": 1,
+  "b18c398702000000": 1,
+  "b18ccd8702000000": 1,
+  "b18d398702000000": 1,
+  "b18dcd8702000000": 1,
+  "b18e398702000000": 1,
+  "b18ecd8702000000": 1,
+  "b18f398702000000": 1,
+  "b18fcd8702000000": 1,
+  "b190398702000000": 1,
+  "b190cd8702000000": 1,
+  "b191398702000000": 1,
+  "b191cd8702000000": 1,
+  "b192cd8702000000": 1,
+  "b193cd8702000000": 1,
+  "b194cd8702000000": 1,
+  "b195cd8702000000": 1,
+  "b195f68702000000": 1,
+  "b196cd8702000000": 1,
+  "b196f68702000000": 1,
+  "b197cd8702000000": 1,
+  "b198cd8702000000": 1,
+  "b199cd8702000000": 1,
+  "b19a6f0800000000": 1,
+  "b19acd8702000000": 1,
+  "b19b6f0800000000": 1,
+  "b19bcd8702000000": 1,
+  "b19c6f0800000000": 1,
+  "b19d5e0b00000000": 1,
+  "b19d630b00000000": 1,
+  "b19fa28702000000": 1,
+  "b1a0a28702000000": 1,
+  "b1a1a28702000000": 1,
+  "b1a2a28702000000": 1,
+  "b1a3a28702000000": 1,
+  "b1a4a28702000000": 1,
+  "b1a5a28702000000": 1,
+  "b1a6a28702000000": 1,
+  "b1a7a28702000000": 1,
+  "b1a8a28702000000": 1,
+  "b1a9a28702000000": 1,
+  "b1aaa28702000000": 1,
+  "b1aba28702000000": 1,
+  "b1aca28702000000": 1,
+  "b1ada28702000000": 1,
+  "b1aea28702000000": 1,
+  "b1afa28702000000": 1,
+  "b1b0a28702000000": 1,
+  "b1b1a28702000000": 1,
+  "b1b2a28702000000": 1,
+  "b1b3088702000000": 1,
+  "b1b3a28702000000": 1,
+  "b1b4088702000000": 1,
+  "b1b4a28702000000": 1,
+  "b1b5088702000000": 1,
+  "b1b5a28702000000": 1,
+  "b1b6088702000000": 1,
+  "b1b6a28702000000": 1,
+  "b1b7088702000000": 1,
+  "b1b7a28702000000": 1,
+  "b1b8088702000000": 1,
+  "b1b8a28702000000": 1,
+  "b1b9088702000000": 1,
+  "b1b9a28702000000": 1,
+  "b1ba088702000000": 1,
+  "b1baa28702000000": 1,
+  "b1bb088702000000": 1,
+  "b1bba28702000000": 1,
+  "b1bc088702000000": 1,
+  "b1bca28702000000": 1,
+  "b1bd088702000000": 1,
+  "b1bda28702000000": 1,
+  "b1bdf74b00000000": 1,
+  "b1be088702000000": 1,
+  "b1bea28702000000": 1,
+  "b1bf088702000000": 1,
+  "b1bfa28702000000": 1,
+  "b1c0a28702000000": 1,
+  "b1c1a28702000000": 1,
+  "b1c2a28702000000": 1,
+  "b1c3a28702000000": 1,
+  "b1c4a28702000000": 1,
+  "b1c5a28702000000": 1,
+  "b1c6a28702000000": 1,
+  "b1c76c8602000000": 1,
+  "b1c7a28702000000": 1,
+  "b1c86c8602000000": 1,
+  "b1c8a28702000000": 1,
+  "b1c96c8602000000": 1,
+  "b1c9a28702000000": 1,
+  "b1ca668702000000": 1,
+  "b1ca6c8602000000": 1,
+  "b1caa28702000000": 1,
+  "b1cb668702000000": 1,
+  "b1cb6c8602000000": 1,
+  "b1cba28702000000": 1,
+  "b1cc668702000000": 1,
+  "b1cc6c8602000000": 1,
+  "b1cca28702000000": 1,
+  "b1cd668702000000": 1,
+  "b1cd6c8602000000": 1,
+  "b1cda28702000000": 1,
+  "b1ce668702000000": 1,
+  "b1ce6c8602000000": 1,
+  "b1cea28702000000": 1,
+  "b1cedd4b00000000": 1,
+  "b1cf668702000000": 1,
+  "b1cf6b0800000000": 1,
+  "b1cf6c8602000000": 1,
+  "b1cfa28702000000": 1,
+  "b1cfdd4b00000000": 1,
+  "b1d0668702000000": 1,
+  "b1d06c8602000000": 1,
+  "b1d0a28702000000": 1,
+  "b1d1668702000000": 1,
+  "b1d16c8602000000": 1,
+  "b1d1a28702000000": 1,
+  "b1d2668702000000": 1,
+  "b1d26c8602000000": 1,
+  "b1d2a28702000000": 1,
+  "b1d3668702000000": 1,
+  "b1d36c8602000000": 1,
+  "b1d3a28702000000": 1,
+  "b1d4668702000000": 1,
+  "b1d46c8602000000": 1,
+  "b1d4a28702000000": 1,
+  "b1d5668702000000": 1,
+  "b1d56c8602000000": 1,
+  "b1d5a28702000000": 1,
+  "b1d6668702000000": 1,
+  "b1d66c8602000000": 1,
+  "b1d6a28702000000": 1,
+  "b1d7668702000000": 1,
+  "b1d76c8602000000": 1,
+  "b1d7a28702000000": 1,
+  "b1d86c8602000000": 1,
+  "b1d8a28702000000": 1,
+  "b1d96c8602000000": 1,
+  "b1d9a28702000000": 1,
+  "b1da6c8602000000": 1,
+  "b1daa28702000000": 1,
+  "b1db6c8602000000": 1,
+  "b1dba28702000000": 1,
+  "b1dca28702000000": 1,
+  "b1dda28702000000": 1,
+  "b1dea28702000000": 1,
+  "b1dfa28702000000": 1,
+  "b1e0a28702000000": 1,
+  "b1e2f88502000000": 1,
+  "b1e3f88502000000": 1,
+  "b1e4f88502000000": 1,
+  "b1e5f88502000000": 1,
+  "b1e6f88502000000": 1,
+  "b1e7f88502000000": 1,
+  "b1e8f88502000000": 1,
+  "b1e9f88502000000": 1,
+  "b1eaf88502000000": 1,
+  "b1ebca4b00000000": 1,
+  "b1ebf88502000000": 1,
+  "b1ecca4b00000000": 1,
+  "b1ecf88502000000": 1,
+  "b1edca4b00000000": 1,
+  "b1edf88502000000": 1,
+  "b1eeca4b00000000": 1,
+  "b1eef88502000000": 1,
+  "b1efca4b00000000": 1,
+  "b1eff88502000000": 1,
+  "b1f0ca4b00000000": 1,
+  "b1f0f88502000000": 1,
+  "b1f1ca4b00000000": 1,
+  "b1f1f88502000000": 1,
+  "b1f2ca4b00000000": 1,
+  "b1f2f88502000000": 1,
+  "b1f3ca4b00000000": 1,
+  "b1f3f88502000000": 1,
+  "b1f4ca4b00000000": 1,
+  "b1f4f88502000000": 1,
+  "b1f5ca4b00000000": 1,
+  "b1f5f88502000000": 1,
+  "b1f6ca4b00000000": 1,
+  "b1f6f88502000000": 1,
+  "b1f7ca4b00000000": 1,
+  "b1f7f88502000000": 1,
+  "b1f8ca4b00000000": 1,
+  "b1f8f88502000000": 1,
+  "b1f9ca4b00000000": 1,
+  "b1f9f88502000000": 1,
+  "b1faca4b00000000": 1,
+  "b1faf88502000000": 1,
+  "b1fbf88502000000": 1,
+  "b1fcf88502000000": 1,
+  "b1fdf88502000000": 1,
+  "b1fef88502000000": 1,
+  "b1fff88502000000": 1,
+  "b2677d59323bf16a": 1,
+  "b401000000000000": 2,
+  "b40851471384ad08": 40,
+  "b4d102f4ee30aa78": 1,
+  "b501000000000000": 1,
+  "b56f79458d712695": 11,
+  "b71c1787ad7f7cea": 1,
+  "b71ce78fde659f00": 6,
+  "b7d0b67690187112": 1,
+  "ba0b6d0775f6bcf9": 2,
+  "bad6484bd484ff80": 3,
+  "bd619feb8805018d": 88,
+  "c01e746100000000": 2,
+  "c1c1943226bd5990": 1,
+  "c4ac74781e82c9f3": 2,
+  "c55a1e4bfc50cf82": 1,
+  "c5784c52a4116721": 3,
+  "c58fd6b928c5205c": 2,
+  "c5bc770bb1a2b0b4": 8,
+  "caf2e41c25c23422": 14,
+  "cbfbc80843fe2996": 17,
+  "cc541bb03bbef008": 6,
+  "d05af374500fe4ca": 1,
+  "d0d436bcf647eb58": 2,
+  "d2ae83d528b6536e": 1,
+  "d3e3a80e206fbdd2": 3,
+  "d759136433327ea3": 1,
+  "d816b564eb1bceb0": 1,
+  "d8d6eb46133b3162": 17,
+  "db167ce33ae13756": 9,
+  "ddc4f65b00000000": 2,
+  "df60510a9c631a3b": 3,
+  "df79698301d505f1": 1,
+  "e01516dc8cefb365": 9,
+  "e0a9da3600000000": 2,
+  "e0c41f4401000000": 2,
+  "e1ca49af932ba096": 645,
+  "e2d6f62107f293e5": 8,
+  "e3bed7ceb0b4a584": 50,
+  "e433e4c96bd93524": 1,
+  "e8f5c2eeeada3a59": 6,
+  "ed7094e63954b4a2": 2,
+  "edaff3e693756579": 1,
+  "f12617ca69883d4c": 1,
+  "f4028205574f218b": 1,
+  "f4c974cf3e457a34": 3,
+  "f62bd7e45231e638": 1,
+  "f766d1cc618f05f5": 1,
+  "f886253791b1724f": 2,
+  "fd12556bc0afabac": 9,
+  "fe8c71cef2b7a7d7": 1,
+  "fefcff00070a10d5": 1,
+  "short": 117
+ }
+}
