@@ -679,3 +679,90 @@ def test_snapshot_keeps_must_cover_working_on_the_copy(tmp_path, capsys, snapdir
     assert code == 2 and "does not contain" in err
     for cur, dirs, files in os.walk(tmp_path / "snap2"):
         os.chmod(cur, 0o700)
+
+
+# ---- --snapshot: an hour in progress (ledger rows land BEFORE the hour's md5 line) is RETRY, never a verdict or a refusal
+def ledger_file(tmp, name):
+    return tmp / name / "runs" / "0001" / "ledger" / "botA" / "rows.jsonl"
+
+
+def test_a_trade_row_appended_between_the_two_reads_is_retry(tmp_path, capsys, snapdir, monkeypatch):
+    args = snap_args(tmp_path, "gap-hold", snapdir)
+
+    def append(role, d):  # a complete trade row of the hour in progress; no md5-by-hour line yet
+        if role == "strict":
+            with open(ledger_file(tmp_path, "twin"), "a") as fh:
+                fh.write(json.dumps(trade("p9", 0.1)) + "\n")
+    monkeypatch.setattr(T, "_COPY_HOOK", append)
+    code, out, err = text_run(args, capsys)
+    assert code == 4 and "RETRY" in err and out == "" and not snapdir.exists() and not (tmp_path / "out.json").exists()
+
+
+def test_a_row_written_after_the_last_verified_hour_is_retry(tmp_path, capsys, snapdir):
+    args = snap_args(tmp_path, "gap-hold", snapdir)
+    with open(ledger_file(tmp_path, "twin"), "a") as fh:  # written_ms is the engine clock; the last verified hour ends at end_ms 10**13
+        fh.write(json.dumps(trade("p9", 0.1, written_ms=10**13 + 1)) + "\n")
+    code, out, err = text_run(args, capsys)
+    assert code == 4 and "RETRY" in err and out == "" and not snapdir.exists()
+
+
+def test_a_row_written_exactly_at_the_end_of_the_last_hour_is_not_retry(tmp_path, capsys, snapdir):
+    args = snap_args(tmp_path, "gap-hold", snapdir, trows=GAP_TWIN + [trade("p1", 0.1, written_ms=10**13)])
+    code, out, err = text_run(args, capsys)
+    assert code != 4 and "RETRY" not in err
+
+
+def test_a_half_written_last_line_is_retry_not_a_refusal(tmp_path, capsys, snapdir):
+    args = snap_args(tmp_path, "gap-hold", snapdir)
+    with open(ledger_file(tmp_path, "twin"), "a") as fh:
+        fh.write('{"kind": "trade", "position_id": "p9", "sta')
+    code, out, err = text_run(args, capsys)
+    assert code == 4 and "RETRY" in err and "refused" not in err and out == "" and not snapdir.exists()
+    assert not (tmp_path / "out.json").exists()
+
+
+def test_a_clean_hour_boundary_still_passes_with_row_times_inside_the_last_hour(tmp_path, capsys, snapdir):
+    code, out, err = text_run(snap_args(tmp_path, "latency", snapdir), capsys)
+    assert code == 0 and out.splitlines()[-1].startswith("L3/L4/L5 PASS")
+
+
+def test_only_the_active_run_and_the_files_the_checks_read_are_copied(tmp_path, capsys, snapdir):
+    args = snap_args(tmp_path, "gap-hold", snapdir)
+    old = tmp_path / "twin" / "runs" / "0000" / "ledger" / "botA"
+    old.mkdir(parents=True)
+    (old / "rows.jsonl").write_text("old\n")
+    (tmp_path / "twin" / "scratch.tmp").write_text("x")
+    code, out, err = text_run(args, capsys)
+    assert code == 0, err
+    assert not (snapdir / "twin" / "runs" / "0000").exists() and not (snapdir / "twin" / "scratch.tmp").exists() and (snapdir / "twin" / "runs" / "0001" / "ledger" / "botA" / "rows.jsonl").is_file()
+    res = json.loads((tmp_path / "out.json").read_text())
+    assert "ledger dir of the active run" in res["snapshot"]["copied"] and "md5-by-hour.jsonl" in res["snapshot"]["copied"]
+
+
+def test_a_failing_snapshot_is_kept_read_only_and_says_so_a_refusal_removes_it(tmp_path, capsys, snapdir):
+    bad = list(GAP_TWIN)
+    bad[0] = trade("p1", 0.1, exit_reason="tampered")
+    code, out, err = text_run(snap_args(tmp_path, "gap-hold", snapdir, trows=bad), capsys)
+    res = json.loads((tmp_path / "out.json").read_text())
+    assert code == 3 and snapdir.is_dir() and res["snapshot"]["kept_read_only_as_evidence"] is True and not (os.stat(snapdir).st_mode & 0o222)
+    (tmp_path / "r").mkdir()
+    code, out, err = text_run(setup(tmp_path / "r", "gap-hold", with_oncopy=False) + ["--snapshot", str(tmp_path / "snapr"), "--must-cover-from", "2026-11-05T00", "--must-cover-hours", "7"], capsys)
+    assert code == 2 and not (tmp_path / "snapr").exists()
+
+
+def test_setfacl_failure_refuses_before_any_copy_and_its_absence_is_noted(tmp_path, capsys, snapdir, monkeypatch):
+    args = snap_args(tmp_path, "gap-hold", snapdir)
+    monkeypatch.setattr(T.shutil, "which", lambda n: "/bin/setfacl")
+    monkeypatch.setattr(T.subprocess, "run", lambda *a, **k: type("R", (), {"returncode": 1})())
+    code, out, err = text_run(args, capsys)
+    assert code == 2 and "setfacl" in err and not snapdir.exists()
+    monkeypatch.setattr(T.shutil, "which", lambda n: None)
+    code, out, err = text_run(args, capsys)
+    assert code == 0 and "setfacl is not installed" in err
+
+
+def test_on_copy_run_is_ignored_with_a_note_in_snapshot_mode(tmp_path, capsys, snapdir):
+    args = setup(tmp_path, "gap-hold") + ["--snapshot", str(snapdir)]
+    code, out, err = text_run(args, capsys)
+    assert code == 0 and "--on-copy-run is ignored" in err and not (snapdir / "on_copy").exists()
+    assert json.loads((tmp_path / "out.json").read_text())["snapshot"]["on_copy_run_ignored"] is True
