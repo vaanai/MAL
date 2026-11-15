@@ -1,0 +1,18 @@
+[miscusi] job #2839 role=ops (MISCUSI_JOB_ROLE)
+2026-11-15T19:49:35Z
+HEAD=e5fd255b43ddfda09eb7cf49f6477cda0bf08797 dirty=0
+script_sha256=632e659063d044b06858f74c3ec1f7ef9a7e71956c12d8b66350fc50a6af755d
+run_utc 2026-11-15T19:49:35Z rpc public
+buyer holds at least 0.05 SOL: True
+blocks read 140; pools with a matching WSOL sell (top-level or inner) 54
+age-checked 54; aged 24-200 h 9
+SIM sell 1 pool_age_h 32.1 shape [disc 33e685a4017f83ad data_bytes 24 accounts 24] err null units 84060 error_log_lines 0
+SIM sell 2 pool_age_h 38.3 shape [disc 33e685a4017f83ad data_bytes 24 accounts 24] err null units 88560 error_log_lines 0
+SIM sell 3 pool_age_h 64.8 shape [disc 33e685a4017f83ad data_bytes 24 accounts 24] err null units 90270 error_log_lines 0
+SIM buy 1 pool_age_h 42.8 shape [disc c62e1552b4d9e870 data_bytes 25 accounts 26] err null units 143635 error_log_lines 0
+SIM buy 2 pool_age_h 69.5 shape [disc c62e1552b4d9e870 data_bytes 25 accounts 26] err null units 132721 error_log_lines 0
+SIM buy 3 pool_age_h 32.1 shape [disc c62e1552b4d9e870 data_bytes 25 accounts 26] err null units 122220 error_log_lines 0
+KEYLESS-SIM sells 3 of 3 buys 3 of 3 err_null 6 of 6 rpc_calls 472 distinct_sell_pools 3 -> PASS
+SIM_RC_NOTE done
+2026-11-15T19:59:33Z
+(last lines kept by MiScusi; the full log is on mal-fast-0: miscusi-agent job log 2839 there)

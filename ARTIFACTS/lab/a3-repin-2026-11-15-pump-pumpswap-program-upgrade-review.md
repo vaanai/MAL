@@ -6,15 +6,15 @@ Standard: `/data/mal/hunt-1008/ops/QP-RULING-1115-a3-repin-dual.md` (sha256 64e3
 
 ## Verdict
 
-**NOT CLEAN on three bars of QP-RULING-1115 (stage 1). The pins are NOT changed in this PR. Draft PR; the case goes to QP.** No unknown discriminator, no field inequality, no trailing-byte change, no prefix inequality, no new Token-2022 extension. The three bars that read not clean:
+**Clean on stage-1 bars as amended by QP-RULING-1115-a3-repin-dual-ADD1** (sha256 cfb13f96696441c7c30a4e234d690328d940718fcb2f6a098e6f865c7f2576b4; parent ruling 64e37d095a33644e18eda93f33f97953a0de7258d06d0d0d035db8c870a31ce9). The first run of this review read three bars NOT MET as declared; QP's addendum settled them (section 13), and the supplementary CompleteEvent sample met its bar (8 kept post, bar >= 5; 5 kept pre control; 0 field inequalities; blob 144 bytes and trailing 0; 0 unknown discriminators). No unknown discriminator, no field inequality, no trailing-byte change, no prefix inequality, no new Token-2022 extension. Stage 2 (A2, M2, the ADD1 B and D rules) is OWED: a T1 PR with QP OK by 2026-11-16T15:00:00Z, else the lane STOP file (parent ruling Q1 (a)). No sentence here says any book makes money; no book has cleared the promotion gate.
 
-| Bar | Result |
+| Bar (as amended) | Result |
 | --- | --- |
-| (b) fee triples, post subset of pre, WSOL-only Buy/Sell | **NOT MET as declared.** Post has 24 distinct (lp, protocol, coin_creator) bps triples, pre (P + M_pre) 23. Five post triples are absent from the declared pre set: `0,5,0` (1 Sell), `2,93,0` (3 Buy, 1 Sell), `20,0,5` (1 Sell), `20,5,30` (1 Buy), `20,5,45` (2 Buy). Report-only post-hoc extension (s19, section 6c): four of the five occur in the 35,474 pre-redeploy txs of the 2026-11-14 review samples (PumpSwap at the old binary); only `20,0,5` (1 SellEvent, protocol_fee_bps 0) occurs in no pre data read. The extension does not replace the declared bar. Goes to QP. |
-| Stage 1 sample: CompleteEvent >= 1 | **NOT MET.** A1 + M hold 0 `pump.CompleteEvent` (41 `CompletePumpAmmMigrationEvent`, 17 `CreateEvent`). All other stage 1 counts are met (section 4). |
-| Item 9 (ii) migration economics, post inside pre range | **NOT MET.** Of 29 WSOL post migrations, `sol_amount` min 14,991,574 (pre min 34,744,342), `mint_amount` min 195,275,405,814,792 (pre min 201,060,921,814,347), `initial_liquidity` min 55,693,416,671 (pre min 84,785,637,697): the post minima lie below the pre minima; maxima, medians and `pool_migration_fee` (15,000,001 in both) are equal. Per ruling item 9 (ii) a post value outside the pre range fails pending QP. |
-
-Everything else that this builder measures passes (table in section 11).
+| (b) fee triples | Declared bar (post subset of pre) read NOT MET with 5 new triples; accepted by QP ADD1 B (post-hoc extension s19; the single `20,0,5` SellEvent disclosed in section 13). Binding rule R for stage 2. |
+| Stage 1 CompleteEvent >= 1 | Replaced by ADD1 C: 8 kept post (slots 469811457 to 469813250), 5 kept pre; bars met (section 13). |
+| 9 (ii) migration economics | Declared range bar read NOT MET; replaced by ADD1 D: medians equal to the lamport, `pool_migration_fee` 15,000,001 constant, every post value inside the union of pre data: met on stage 1 (section 13). |
+| (c2) keyless simulation | Met: run 3 (job #2839), 6 of 6 `err` null (section 11). |
+| Everything else this builder measures | passes (table in section 11). |
 
 ## 1. Chain facts read (stage 1; ruling Q1 item 11, (d), (e))
 
@@ -101,7 +101,7 @@ Route (a): `s07_upgrade_history.py` on public RPC, 0 credits, 177 RPC attempts (
 
 ## 9. Pins diff (item 11, ruling (e))
 
-**Pins NOT changed in this PR** (the review is not clean, see Verdict). The monitor's own `--write-pins` path was run read-only to scratch twice (s02): at slot 469855021 (2026-11-15T19:57:46Z, after the last A1/M sample block 469850404) it produced exactly these differences from main's pins and no other: `pinned_at_slot` 469269411 -> 469855021; `pinned_utc` -> 2026-11-15T19:57:46Z; `programs.pump` deploy_slot 469811025, deploy_utc 2026-11-15T17:20:10Z, sha256 `bfd2a2bd4a062f03f2c389bb836fb63c1b9b7983e255e4f84a826287ef31b8be`, data_len 10485760; `programs.pumpswap` deploy_slot 469811067, deploy_utc 2026-11-15T17:20:20Z, sha256 `78046072fdf83eee2ac366c9da0bee22cdb030a2d7b194aa9ab81a14ea13671e`, data_len 10485760. No other deploy slot or hash was seen (no newer write). Accounts, fees and boost: byte-identical. The fixture was re-recorded by `s15_rerecord_fixture.py` (decodes to [469811025, 469811067, 456132171], context slot 469855044), and the line-354 test list changed to the same. These three changes are saved as a patch NOT applied: `program-upgrade-1115/out/repin_candidate_NOT_APPLIED.patch` (`git apply` on main). With the candidate applied (not committed), `MAL_ARENA_TEST=1 /data/mal/venv/bin/python -m pytest -q tools/test_pump_structure_monitor.py tools/test_a3_redeploy_check.py tools/test_a3_halt.py tools/test_h5_shadow_synthetic.py`: 346 passed, 1 skipped, 0 failed. (The ruling's baseline of 345 passed / 2 skipped is for `/usr/bin/python3` on mal-fast-0; this run used the research-0 venv.) The tools tree of this PR is unchanged.
+(Filled after the re-pin step, see the end of this section's text in the commit that changes the pins.)
 
 ## 10. Binary diff (item 7, report-only) (s04)
 
@@ -119,7 +119,11 @@ Shapes that landed (WSOL-quoted, success, top-level or inner; `out/s18_instructi
 - **Failed shares** (all WSOL-quoted txs in the cached blocks, `out/s20_failed_shape_txs.json`): buy_exact_quote_in post 618 failed of 1,278 (48.36%), pre 334 of 682 (48.97%); sell post 331 of 907 (36.49%), pre 115 of 307 (37.46%). Top words post: buy 6040 BuySlippageBelowMinBaseAmountOut 493, 6001 ZeroBaseAmount 99; sell 6004 ExceededSlippage 233, 6001 26. The post share is below pre on both: the 5-percentage-point trigger does not fire.
 - **Owner programs by position (read now; accounts closed since are `(closed or absent now)`; `out/s18`):** both sides, 200 instructions per side post, 200 buy / 184 sell pre. Position 0 pool, 2 global_config: owner PumpSwap; 3 base mint: Token-2022 195 / Tokenkeg 5 (post sell); 4 quote mint: Tokenkeg; 7: Token-2022 or Tokenkeg like the mint, 8 Tokenkeg; 9 fee recipient: system (194) or a program-owned account (6); 17 vault ATA: Tokenkeg; 19 (sell) fee_config: fees program `pfeeUxB6...`; 22 (sell) buyback recipient: fees program; the program accounts (positions 11 to 16 where they are programs) are owned by their loaders as expected. Pre has the same owner sets per position (see JSON).
 
-**(c2) keyless simulation (manager's job): placeholder.** Script `program-upgrade-1115/s16_keyless_sim.py` (sha256 fe2c7ba00dbacc9e127f3b9da6bb2932eaf4afd0dd3e269efd5507decfd00fa4, a byte copy of the manager's file at 2026-11-15T19:5xZ). Job id: ______; six `err` values: ______. (Not run by this builder; the review cannot pass (c) without 6 of 6 `err` null.)
+**(c2) keyless simulation (manager's jobs; outputs `out/s16-keyless-sim-job2836.txt`, `-job2838.txt`, `-job2839.txt`; script `s16_keyless_sim.py`, byte copy, sha256 632e659063d044b06858f74c3ec1f7ef9a7e71956c12d8b66350fc50a6af755d).** All runs: mal-fast-0, clean tree at e5fd255b43ddfda09eb7cf49f6477cda0bf08797 (`dirty=0`), public RPC, no key, unsigned `tools/pumpswap_tx` transactions through `simulateTransaction` (sigVerify false), output `err`, units and shape only.
+- **Run 1, job #2836 (2026-11-15T19:42Z):** script bug (`getBlock` needs `maxSupportedTransactionVersion` 1); stopped before any simulation.
+- **Run 2, job #2838 (19:43:21Z; script sha256 fe2c7ba00dbacc9e127f3b9da6bb2932eaf4afd0dd3e269efd5507decfd00fa4):** 80 blocks, 19 pools with a matching top-level WSOL sell, 4 aged 24-200 h; 1 sell `err` null (pool age 38.2 h, 85,561 units); only 1 holder found; 3 buys at minimum out 0 refused with 6001 `ZeroBaseAmount`.
+- **Run 3, job #2839 (19:49:35Z, finished 19:59:33Z; script sha256 632e6590...):** changes against run 2: inner sells collected, 140 blocks read (54 pools with a matching WSOL sell, 9 aged 24-200 h), buys use minimum out 1 raw unit. Six simulations, shape as the executor (buy_exact_quote_in `c62e1552b4d9e870`, 25 data bytes, 26 accounts; sell `33e685a4017f83ad`, 24 bytes, 24 accounts): sells on 3 distinct pools aged 32.1, 38.3, 64.8 h, units 84,060 / 88,560 / 90,270; buys on pools aged 42.8, 69.5, 32.1 h, units 143,635 / 132,721 / 122,220; **all six `err` null, 0 error log lines**; "KEYLESS-SIM sells 3 of 3 buys 3 of 3 err_null 6 of 6 rpc_calls 472 distinct_sell_pools 3 -> PASS".
+- **ADD1 A disposition (QP-RULING-1115-a3-repin-dual-ADD1): MET, with disclosure.** The change from minimum out 0 to 1 raw unit is a feasibility correction, not tuning: the program refuses a zero minimum (6001 `ZeroBaseAmount`), the same word appears 80 times among PRE failed `buy_exact_quote_in` transactions (`out/s20_failed_shape_txs.json`), and the executor never sends 0.
 
 **Stage 2 (A2, M2): not run, declared in section 3.** Stage 2's result belongs to a later T1 PR (ruling (a)).
 
@@ -128,24 +132,33 @@ Shapes that landed (WSOL-quoted, success, top-level or inner; `out/s18_instructi
 | Ruling bar | Result |
 | --- | --- |
 | 1 rule declared and committed before fetch | met (section 3, commit before the first `getBlock`) |
-| 2 / (a) stage-1 sample A1 | met except CompleteEvent 0 |
+| 2 / (a) stage-1 sample A1 | met; CompleteEvent carried by the ADD1 C sample: 8 kept post |
 | 3 M (>= 20 usable, >= 10 WSOL) | met: 40 usable, 29 WSOL |
 | 4 P (>= 100 blocks, >= 5 hours, before earliest write) + M_pre (>= 10) | met: 120 blocks, 5 hours; M_pre 40 |
 | 5 decode paths | met (frozen blobs equal EXP027; follower facts by manager) |
 | 6 discriminators, field inequalities, non-decodes | met: 0 / 0 / all explained |
 | (b) prefix parity and trailing bytes, all PumpSwap types | met |
 | (b) 8-byte field | met: 0 non-zero |
-| (b) fee triples post subset of pre | **NOT met** (5 new triples) |
+| (b) fee triples post subset of pre | NOT met as declared (5 new triples); accepted by ADD1 B, rule R binding for stage 2 |
 | (b) reserve fields | met (0 inequalities) |
 | (d) Token-2022 | met: no new extension |
-| 9 (ii) migration economics | **NOT met** (post minima below pre minima) |
+| 9 (ii) migration economics | declared range bar NOT met; replacement bar of ADD1 D met on stage 1 |
 | 9 (iii) / (c3) pool accounts | met on owner, length, discriminator (24 of 24 equal 1114; 10 new sane) |
 | 9 (iv) fee pins | met (fees program and three accounts equal pins) |
 | (c1) executor shape accepted post-deploy | met: 375 and 557 successful, 0 fixed-address misses |
-| (c2) keyless simulation | placeholder, manager's |
+| (c2) keyless simulation | met: job #2839, 6 of 6 `err` null (ADD1 A) |
 | 10 / (d) write enumeration | met: exactly 1 Upgrade per program, route (a) |
 | 11 / (e) re-pin read | read made after the last sample; pins NOT changed |
 
 ## 12. Not checked
 
 No tape, tip, ledger, book or P&L file. No Helius key, SSH or MiScusi job. The 07:10:06Z and 19:10:06Z monitor records themselves (brief facts only). First-print V for pools beyond the page budget. Owner programs of position accounts at transaction time (read now). The follower's own inner-migration path was not re-run. Stage 2 (A2, M2). No simulation (c2). No claim that any book makes money; no book has cleared the promotion gate.
+
+## 13. QP-RULING-1115-a3-repin-dual-ADD1 dispositions (stage 1)
+
+- **C, CompleteEvent (QP-RULING-1115-a3-repin-dual-ADD1): MET.** Rule in section 3-supp, committed before the fetch. Post: the 8 first WSOL migrations of M in slot order each gave a kept completion (8 of 8 tried; completion slots 469811457, 469811594, 469811674, 469811731, 469812275, 469812424, 469812450, 469813250, all >= 469811175); 8 kept (bar >= 5, K = 8; M was not exhausted, so M2 was not needed). Pre control (M_pre newest first, slot <= 469810875): 5 kept (slots 469809951, 469808669, 469808244, 469808008, 469807880). Bars: 0 field inequalities frozen (`bf.decode_complete_event`) vs independent walker in 13 of 13; blob length 144 and trailing 0 in 13 of 13 (post and pre); 0 unknown discriminators in those transactions. The 1114 sample's blob length (144) is as quoted by QP, not re-read. Files: `out/s22_complete_events_post.json`, `_pre.json`.
+- **B, fee triples (QP-RULING-1115-a3-repin-dual-ADD1): ACCEPTED, post hoc.** The declared bar failed on 5 triples; the extension s19 was added AFTER that failure was seen (post hoc), chosen to test whether the combination is old behaviour. Four of the five occur in the 35,474 pre-redeploy transactions of the 11-14 samples. The single `20,0,5` event is one successful WSOL-only **SellEvent**, signature `4GfrqsjS9jnFewzkeJgyW3AdLCctNSFZiiAVWr35WKgy4Nnd3WaDmHLZUUd5Yxa5uHazT4dqhT2V1yCHfV5KqhB4`, slot 469828253 (`out/s23_triple_and_errors.json`). Each component occurs in pre data (QP). Rule R and the 0.5% cap are binding for stage 2 (section 3-supp).
+- **D, migration economics (QP-RULING-1115-a3-repin-dual-ADD1): replacement bar MET on stage 1.** Medians post vs pre equal to the lamport: `sol_amount` 84,990,359,056; `mint_amount` 206,900,000,000,000; `initial_liquidity` 4,193,388,282,604; `pool_migration_fee` 15,000,001 on all 29 post and 33 pre. Post extremes inside the union of pre data (the 1114 values as quoted by QP, not re-read by this builder): `sol_amount` 14,991,574 to 90,049,772,950 within 12,582,941 to 94,846,797,684; `mint_amount` min 195,275,405,814,792 >= 185,399,044,810,855; `initial_liquidity` min 55,693,416,671 >= 51,023,626,810. First-print V: post observed {0 x6; 17,584,505,288 to 17,584,506,268 x5}, pre {0 x3; 17,584,505,288 to 17,584,505,399 x3}; two modes in both; NOT OBSERVED for the 9 unobserved post pools (reported only).
+- **A, (c2): MET**, section 11.
+- **Report-only, error codes seen in post failed WSOL buy_exact_quote_in / sell and not in pre (`out/s20`, names from the pump_amm IDL):** buy: 6000 FeeBasisPointsExceedsMaximum, 6036 DayIndexAfterEndIndex; 3005, 2052, 15 are not pump_amm IDL errors (Anchor framework or other-program codes, unnamed here). Sell: 6014 InvalidPoolBaseTokenAccount, 6002 ZeroQuoteAmount, 6006 UnsupportedBaseMint, 6001 ZeroBaseAmount; 7, 1000, 259, 1771, 2052 are not pump_amm IDL errors. Failure shares post are below pre (buy 0.484 vs 0.490; sell 0.365 vs 0.375). Counts are in `out/s20_failed_shape_txs.json`.
+- **Q5 disclosure facts.** pump redeploy at 2026-11-15T17:20:10Z (slot 469811025), one enumerated write, signature `37aGknd9Jy8gHXPQXbDj6mg1ytSEWNJFqbT3Z7qCrzyjJ2Z5hvv4B7fAvf4nt4boSwKL5US7SKiqDfbpkbukCXgN`; PumpSwap redeploy at 2026-11-15T17:20:20Z (slot 469811067), one enumerated write, signature `2uB6vN55cWe95KmCpk5FH7jkaFoXjLt3MLDyETiLfuQVJzcUt1FeES8W1NEwJufvyQMeaWZfVdB7R1C7RELp8uCS` (both Squads-inner BPF-loader Upgrades; section 8). Decode parity clean on stage-1 bars as amended; review path above; the stage-2 PR is owed by 2026-11-16T15:00:00Z.

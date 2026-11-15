@@ -1,0 +1,71 @@
+{
+ "triple_20_0_5_events": [
+  {
+   "event": "SellEvent",
+   "slot": null,
+   "sig": "4GfrqsjS9jnFewzkeJgyW3AdLCctNSFZiiAVWr35WKgy4Nnd3WaDmHLZUUd5Yxa5uHazT4dqhT2V1yCHfV5KqhB4"
+  }
+ ],
+ "error_names_pump_amm": {
+  "buy_post_only": [
+   [
+    6000,
+    "FeeBasisPointsExceedsMaximum"
+   ],
+   [
+    6036,
+    "DayIndexAfterEndIndex"
+   ],
+   [
+    3005,
+    "(not an IDL error of pump_amm)"
+   ],
+   [
+    2052,
+    "(not an IDL error of pump_amm)"
+   ],
+   [
+    15,
+    "(not an IDL error of pump_amm)"
+   ]
+  ],
+  "sell_post_only": [
+   [
+    6014,
+    "InvalidPoolBaseTokenAccount"
+   ],
+   [
+    6002,
+    "ZeroQuoteAmount"
+   ],
+   [
+    6006,
+    "UnsupportedBaseMint"
+   ],
+   [
+    7,
+    "(not an IDL error of pump_amm)"
+   ],
+   [
+    1000,
+    "(not an IDL error of pump_amm)"
+   ],
+   [
+    259,
+    "(not an IDL error of pump_amm)"
+   ],
+   [
+    1771,
+    "(not an IDL error of pump_amm)"
+   ],
+   [
+    6001,
+    "ZeroBaseAmount"
+   ],
+   [
+    2052,
+    "(not an IDL error of pump_amm)"
+   ]
+  ]
+ }
+}

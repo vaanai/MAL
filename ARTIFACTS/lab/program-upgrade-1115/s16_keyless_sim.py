@@ -10,8 +10,9 @@ getTokenAccountBalance, getBalance, simulateTransaction (sigVerify false, replac
 Nothing is signed or sent; no key file is opened; no lab file is read (pools and sellers come from recent public blocks).
 
 What it does
-  1. Reads recent finalized blocks and collects successful TOP-LEVEL PumpSwap `sell` instructions (discriminator
-     33e685a4017f83ad, 24 data bytes, 24 accounts, quote mint WSOL) whose user is the transaction's fee payer.
+  1. Reads recent finalized blocks and collects successful PumpSwap `sell` instructions, top-level or inner
+     (discriminator 33e685a4017f83ad, 24 data bytes, 24 accounts, quote mint WSOL), whose user is the transaction's
+     fee payer.
   2. Keeps pools that are the canonical migrated pool of their base mint (tools.pumpswap_tx.canonical_pool), are not
      mayhem, and are aged 24 h to 200 h. Age = now minus the block time of the newest signature on the mint's pump
      bonding-curve account (PDA ["bonding-curve", mint] under the pump program): after migration nothing writes
@@ -21,7 +22,9 @@ What it does
      0.01 SOL; token amount = half of that balance (at least 1 raw unit); min out 0. These users are third parties,
      so a sell is never on a lane position.
   4. Buys: on 3 distinct such pools, user = --lane-pubkey (a PUBLIC key; must hold at least 0.05 SOL), spend
-     0.01 SOL, min out 0 (expected 1 raw token at 10,000 bps slippage, the builder's way to say 0).
+     0.01 SOL, min out 1 raw token unit (expected 2 at 5,000 bps slippage). Run 2 (job #2838) used min out 0 and
+     the program refused all three buys with error 6001 ZeroBaseAmount (buy.rs:636), i.e. it refuses a zero
+     minimum; 1 raw unit is the smallest value the instruction accepts. The lane executor never sends 0.
   5. Prints, per simulation, only: side, the instruction shape built (discriminator, data bytes, account count),
      err, units consumed, and log lines matching Error|failed. No amounts, no prices.
 Bar (QP): 6 of 6 with err null.
@@ -114,7 +117,10 @@ def collect_sells(rpc: Rpc, n_blocks: int, step: int) -> tuple[dict[str, list[st
             keys = list(msg["accountKeys"])
             la = meta.get("loadedAddresses") or {}
             keys += list(la.get("writable") or []) + list(la.get("readonly") or [])
-            for ix in msg.get("instructions") or []:
+            ixs = list(msg.get("instructions") or [])
+            for grp in meta.get("innerInstructions") or []:
+                ixs += list(grp.get("instructions") or [])
+            for ix in ixs:
                 if keys[ix["programIdIndex"]] != PAMM:
                     continue
                 acc = ix.get("accounts") or []
@@ -192,8 +198,8 @@ def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--rpc", default=PUBLIC_RPC)
     ap.add_argument("--lane-pubkey", required=True, help="PUBLIC key used as the buyer (never a key file)")
-    ap.add_argument("--blocks", type=int, default=80)
-    ap.add_argument("--step", type=int, default=9)
+    ap.add_argument("--blocks", type=int, default=140)
+    ap.add_argument("--step", type=int, default=31)
     a = ap.parse_args()
     rpc = Rpc(a.rpc)
     now = time.time()
@@ -205,11 +211,11 @@ def main() -> int:
         return 2
     pools, mints, read = collect_sells(rpc, a.blocks, a.step)
     order = sorted(pools, key=lambda p: -len(pools[p]))
-    print(f"blocks read {read}; pools with a matching top-level WSOL sell {len(order)}")
+    print(f"blocks read {read}; pools with a matching WSOL sell (top-level or inner) {len(order)}")
     aged: list[tuple[str, float]] = []
     n_age_checked = 0
     for p in order:
-        if len(aged) >= 12 or n_age_checked >= 120:
+        if len(aged) >= 20 or n_age_checked >= 300:
             break
         n_age_checked += 1
         age = pool_age_h(rpc, mints[p], now)
@@ -223,7 +229,7 @@ def main() -> int:
         if n_sell >= 3:
             break
         done = False
-        for u in pools[p][:8]:
+        for u in pools[p][:25]:
             user = Pubkey.from_string(u)
             ps = pool_state(rpc, p, user)
             if ps is None:
@@ -255,7 +261,7 @@ def main() -> int:
         ps = pool_state(rpc, p, buyer)
         if ps is None:
             continue
-        msg = tx.build_buy(ps, buyer, 10_000_000, 10_000, 1, exact_quote_in=True)
+        msg = tx.build_buy(ps, buyer, 10_000_000, 5_000, 2, exact_quote_in=True)  # min out = 2 * 5000 // 10000 = 1 raw unit
         n_buy += 1
         ok += report("buy", n_buy, age, msg, simulate(rpc, msg))
     print(f"KEYLESS-SIM sells {n_sell} of 3 buys {n_buy} of 3 err_null {ok} of 6 rpc_calls {rpc.calls} "

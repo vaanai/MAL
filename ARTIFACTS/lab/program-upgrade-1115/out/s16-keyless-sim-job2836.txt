@@ -1,0 +1,10 @@
+[miscusi] job #2836 role=ops (MISCUSI_JOB_ROLE)
+2026-11-15T19:42:02Z
+HEAD=e5fd255b43ddfda09eb7cf49f6477cda0bf08797 dirty=0
+script_sha256=ae6dc28b7b5d8729369181bb98a6bc5ec869b316d3c0a200c1e5fb7ee826c6b0
+run_utc 2026-11-15T19:42:02Z rpc public
+buyer holds at least 0.05 SOL: True
+rpc getBlock failed after 6 tries: rpc error -32015
+SIM_RC_NOTE done
+2026-11-15T19:42:35Z
+(last lines kept by MiScusi; the full log is on mal-fast-0: miscusi-agent job log 2836 there)
