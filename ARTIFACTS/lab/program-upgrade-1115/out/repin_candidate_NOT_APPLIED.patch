@@ -1,0 +1,62 @@
+diff --git a/tools/fixtures/pump_structure_monitor/programdata.json b/tools/fixtures/pump_structure_monitor/programdata.json
+index 5339b880..76fe27e1 100644
+--- a/tools/fixtures/pump_structure_monitor/programdata.json
++++ b/tools/fixtures/pump_structure_monitor/programdata.json
+@@ -1 +1 @@
+-{"context":{"apiVersion":"4.4.0","slot":469272738},"value":[{"data":["AwAAAKw49RsAAAAAAWNI+4ICMfurc9wwg+Hz8Un/EltxiCDzLrGhW/781hsJ","base64"],"executable":false,"lamports":53268311040,"owner":"BPFLoaderUpgradeab1e11111111111111111111111","rentEpoch":18446744073709551615,"space":10485760},{"data":["AwAAAC2WWhsAAAAAAWNI+4ICMfurc9wwg+Hz8Un/EltxiCDzLrGhW/781hsJ","base64"],"executable":false,"lamports":53268311040,"owner":"BPFLoaderUpgradeab1e11111111111111111111111","rentEpoch":18446744073709551615,"space":10485760},{"data":["AwAAAEsGMBsAAAAAAWNI+4ICMfurc9wwg+Hz8Un/EltxiCDzLrGhW/781hsJ","base64"],"executable":false,"lamports":4821514360,"owner":"BPFLoaderUpgradeab1e11111111111111111111111","rentEpoch":18446744073709551615,"space":948989}]}
+\ No newline at end of file
++{"context":{"apiVersion":"4.4.0","slot":469855044},"value":[{"data":["AwAAAFG/ABwAAAAAAWNI+4ICMfurc9wwg+Hz8Un/EltxiCDzLrGhW/781hsJ","base64"],"executable":false,"lamports":53268311040,"owner":"BPFLoaderUpgradeab1e11111111111111111111111","rentEpoch":18446744073709551615,"space":10485760},{"data":["AwAAAHu/ABwAAAAAAWNI+4ICMfurc9wwg+Hz8Un/EltxiCDzLrGhW/781hsJ","base64"],"executable":false,"lamports":53268311040,"owner":"BPFLoaderUpgradeab1e11111111111111111111111","rentEpoch":18446744073709551615,"space":10485760},{"data":["AwAAAEsGMBsAAAAAAWNI+4ICMfurc9wwg+Hz8Un/EltxiCDzLrGhW/781hsJ","base64"],"executable":false,"lamports":4821514360,"owner":"BPFLoaderUpgradeab1e11111111111111111111111","rentEpoch":18446744073709551615,"space":948989}]}
+\ No newline at end of file
+diff --git a/tools/pump_structure_pins.json b/tools/pump_structure_pins.json
+index f559a024..725ab835 100644
+--- a/tools/pump_structure_pins.json
++++ b/tools/pump_structure_pins.json
+@@ -1,8 +1,8 @@
+ {
+   "schema": "pump_structure_pins.v1",
+   "note": "Written by tools/pump_structure_monitor.py --write-pins from a live public-RPC read. Re-pin only after reviewing the change that halted the monitor.",
+-  "pinned_utc": "2026-11-14T08:58:57Z",
+-  "pinned_at_slot": 469269411,
++  "pinned_utc": "2026-11-15T19:57:46Z",
++  "pinned_at_slot": 469855021,
+   "accounts": {
+     "bonding_fee_config": {
+       "address": "8Wf5TiAheLUqBrKXeYg2JtAFFMWtKdG2BSFgqUcPVwTt",
+@@ -23,16 +23,16 @@
+   "programs": {
+     "pump": {
+       "program_id": "6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P",
+-      "deploy_slot": 469055660,
+-      "deploy_utc": "2026-11-13T20:12:28Z",
+-      "sha256": "c849155c1d5bf990c564bad8df406d704ed05b8d3dc4ee30ce2350bfbc4edf3a",
++      "deploy_slot": 469811025,
++      "deploy_utc": "2026-11-15T17:20:10Z",
++      "sha256": "bfd2a2bd4a062f03f2c389bb836fb63c1b9b7983e255e4f84a826287ef31b8be",
+       "data_len": 10485760
+     },
+     "pumpswap": {
+       "program_id": "pAMMBay6oceH9fJKBRHGP5D4bD4sWpmSwMn52FMfXEA",
+-      "deploy_slot": 458921517,
+-      "deploy_utc": "2026-10-19T17:47:20Z",
+-      "sha256": "e3d3be2256841163ba89b6184c2cc90ca1700c820bf887e5bb58b0aa668f5840",
++      "deploy_slot": 469811067,
++      "deploy_utc": "2026-11-15T17:20:20Z",
++      "sha256": "78046072fdf83eee2ac366c9da0bee22cdb030a2d7b194aa9ab81a14ea13671e",
+       "data_len": 10485760
+     },
+     "fees": {
+diff --git a/tools/test_pump_structure_monitor.py b/tools/test_pump_structure_monitor.py
+index 929e33ea..8537f6d4 100644
+--- a/tools/test_pump_structure_monitor.py
++++ b/tools/test_pump_structure_monitor.py
+@@ -350,8 +350,8 @@ def test_programdata_and_program_accounts_recorded():
+         "B5MvUwXdiW1NMM6QFFD3ssPKBujD4zMohncbM73Z2BQu", "6naEzKeUuFh1Jeeu51NXQgr5qkXgXtc9WKNct4xynVJc", "75Uu23mqWBb8LM8vDppqC1mQAnCcBuLXhVaDezVMQLRw"]
+     # programdata.json was re-recorded on 2026-10-09 (after the 2026-10-08T16:20Z redeploy), on 2026-10-13 (after the
+     # 2026-10-12T17:40:24Z fees-program redeploy), on 2026-10-14 (after the 2026-10-13T15:40:41Z pump-program redeploy) and on
+-    # 2026-10-21 (after the 2026-10-19T17:47:02Z pump / 17:47:20Z PumpSwap redeploys) and on 2026-11-14 (after the 2026-11-13T20:12:28Z pump redeploy), so it carries the current deploy slots
+-    assert [m.decode_programdata_slot(m._account_bytes(v)) for v in fx("programdata.json")["value"]] == [469055660, 458921517, 456132171]
++    # 2026-10-21 (after the 2026-10-19T17:47:02Z pump / 17:47:20Z PumpSwap redeploys) and on 2026-11-14 (after the 2026-11-13T20:12:28Z pump redeploy) and on 2026-11-15 (after the 2026-11-15T17:20:10Z pump / 17:20:20Z PumpSwap redeploys), so it carries the current deploy slots
++    assert [m.decode_programdata_slot(m._account_bytes(v)) for v in fx("programdata.json")["value"]] == [469811025, 469811067, 456132171]
+     assert m.decode_programdata_slot(bytes(45)) is None and m.decode_programdata_slot(None) is None
+ 
+ 
