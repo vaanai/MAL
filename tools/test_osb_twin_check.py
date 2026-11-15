@@ -48,7 +48,7 @@ def make_run(tmp, name, manifest_dict, rows, hours=HOURS, md5s=None, dmd5="d" * 
     (led / "rows.jsonl").write_text("".join(json.dumps(r) + "\n" for r in ident + list(rows)))
     (out / "book").symlink_to("runs/0001")
     md5s = md5s or {h: ("L" + h, "D" + h) for h in hours}
-    (out / "md5-by-hour.jsonl").write_text("".join(json.dumps({"hour": h, "end_ms": 0, "ledger_md5": md5s[h][0], "decision_md5": md5s[h][1]}) + "\n" for h in hours))
+    (out / "md5-by-hour.jsonl").write_text("".join(json.dumps({"hour": h, "end_ms": 10**13, "ledger_md5": md5s[h][0], "decision_md5": md5s[h][1]}) + "\n" for h in hours))
     (out / "status.json").write_text(json.dumps({"last_hour": last or max(hours)}))
     (out / "decisions.md5").write_text(dmd5 + "\n")
     (out / "manifest.sha256").write_text(O.manifest_sha256(manifest_dict) + "\n")
@@ -672,7 +672,8 @@ def test_the_summary_and_output_never_contain_overall_and_sources_are_untouched(
 
 def test_snapshot_keeps_must_cover_working_on_the_copy(tmp_path, capsys, snapdir):
     code, out, err = text_run(snap_args(tmp_path, "gap-hold", snapdir) + ["--must-cover-from", "2026-11-05T00", "--must-cover-hours", "6"], capsys)
-    assert code == 0 and "PASS" in out.splitlines()[-1]
+    assert code == 0, err
+    assert "PASS" in out.splitlines()[-1]
     (tmp_path / "s2").mkdir()
     code, out, err = text_run(setup(tmp_path / "s2", "gap-hold", with_oncopy=False) + ["--snapshot", str(tmp_path / "snap2"), "--must-cover-from", "2026-11-05T00", "--must-cover-hours", "7"], capsys)
     assert code == 2 and "does not contain" in err
