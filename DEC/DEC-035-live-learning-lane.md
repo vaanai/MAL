@@ -875,6 +875,13 @@ In force from its merge. Records only; changes no threshold, window, pin or cloc
 
 No book has cleared the promotion gate. Nothing here says any book makes money.
 
+
+## Amendment 9 book-list record, 2026-11-16: osb-ce1
+
+In force from its merge. Written 2026-11-15 (`date -u` 22:2xZ) by manager24, at main 927d140e. Records only; changes no threshold, window, pin, clock or limit.
+
+**Amendment 9 book-list record, 2026-11-16: osb-ce1.** Under §4 ("Later books ... start under this amendment"), one more strict open simulation book, not in design §1: `osb-ce1` (CE1), manifest `/data2/mal/scratch/floor-open-sim/manifests/CE1.json` (file sha256 `ad64618bf4694c95e8bd0d313b529ca62d71c3225edb6b48115c41978436139b`, canonical manifest sha256 `5fe6053311e4dce37f8affa21b7bb9bed9d4cf930ed513d935da7ffaf6c7767a`), host lane, rule_overrides {"Q_STAR": 1.0e9, "TP": 1.3}, lane {gap_lookback_s 21600, status_span_no_loss false, cheap_restart false}, stakes 0.10 / 0.25 / 0.5 / 1.0 SOL, send 160000 lamports, seed_from_hour 2026-11-03T03, start_hour 2026-11-17T00, start instant 2026-11-17T00:00:00Z; run by `scripts/research/osb_follow.py` at 457795f4d0cb252656fd48f795d3abd617d5c380 from `/data2/mal/wt/osb-457795f4` (code.sha256 5ee17b2ce2296bc3a71bdc371803843b3a1486f9ecb533ba0e28a3ecec6c6690), covered by the 457795f4 proof PASS (QP-RULING-1114-osb-proof Q1: host lane, with or without overrides); no new proof. Read rule, read instants, next-step bar, definitions and disclosures are fixed in `/data/mal/hunt-1008/ops/QP-RULING-1115-ce1-prereg.md` (sha256 `d985b5e7c2926c1b7c2a9b1d37749a9d36a0c5f797c2f6af84ce3a3ec35da4f7`) before the start instant. Winner's curse: C and E1 were chosen on 2026-11-03..11-16 and CE1 is the best-looking of 40 board rows; its in-sample 0.084 SOL/day at 0.25 is selected and shrunk. CE1 runs with status_span_no_loss false; floor-lane-1 runs with it true. A pass leads only to an l1-floor-v3 draft plus a DEC-035 amendment; a fail ends the line; NOT_DECIDABLE at 2026-12-01T00:00:00Z licenses nothing; a tweak is a new book. Paper only; not a gate read; no stake, budget, limit or live step rests on it. Nothing here says CE1 makes money. No book has cleared the promotion gate.
+
 ## Amendment 10 (2026-11-14): floor-lane-1 executor key `rpc_rps` 4.0
 **Status: DRAFT until merge. NOT installed. It authorises nothing until the owner's own word and a Helm install.** Written 2026-11-14T10:15Z (`date -u`) for manager23, at main e5fd255b. Amendment 10 was the next free number (Amendment 9 and its Erratum 1 are the last). Records only: no code, host or live file is touched. Nothing here says FLOOR or any variant makes money, and no promotion-gate threshold changes.
 
