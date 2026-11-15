@@ -138,12 +138,22 @@ def parse_rpc_rps(raw: Mapping[str, Any]) -> float:
     return float(v)
 
 
+def parse_presend_batch(raw: Mapping[str, Any]) -> bool:
+    """Optional top-level key `presend_batch`: batch the independent pre-send reads (pool, mint, wallet) into one getMultipleAccounts. Absent = False (the serial reads,
+    unchanged). Only the JSON true or false is accepted; anything else is a refusal."""
+    v = raw.get("presend_batch", False)
+    if not isinstance(v, bool):
+        raise ValueError(f"config presend_batch must be true or false (got {v!r})")
+    return v
+
+
 def make_config(raw: Mapping[str, Any]) -> tuple[B.Config, H.LaneConfig, str]:
     """(bridge Config, lane config, live_ok_path). Fail closed: ValueError on any pin that does not hold. All FLOOR pins of F.make_config apply (bot arm, frozen sha, hold)."""
     mode = raw.get("mode", B.DRY)
     if mode not in (B.DRY, B.LIVE):
         raise ValueError("config mode must be 'dry' or 'live'")
     parse_rpc_rps(raw)
+    parse_presend_batch(raw)
     if mode == B.LIVE and not LIVE_BUILT:
         raise ValueError("live_not_built")
     if mode == B.LIVE and any(raw.get(k) for k in ("stop_file", "halt_file")):
@@ -285,6 +295,15 @@ class FloorLanePort(B.OrderPort):
 
     def balance(self) -> int | None:
         return self.inner.balance()
+
+    def prefetch_presend(self, pool: str, meta: Mapping[str, Any]) -> None:
+        self.inner.prefetch_presend(pool, meta)
+
+    def presend_balance(self) -> int | None:
+        return self.inner.presend_balance()
+
+    def stage_stamps(self, mint: str) -> dict[str, Any]:
+        return self.inner.stage_stamps(mint)
 
     def buy(self, order: Mapping[str, Any]) -> tuple[bool, str | None]:
         if self.pre_buy is None:
@@ -679,7 +698,7 @@ class FloorLaneBridge(F.FloorBridge):
 # --- run ------------------------------------------------------------------------------------------------------------------------------------------------
 
 
-def build_live_port(cfg: B.Config, rpc_rps: float = RPC_RPS_DEFAULT) -> FloorLanePort:
+def build_live_port(cfg: B.Config, rpc_rps: float = RPC_RPS_DEFAULT, presend_batch: bool = False) -> FloorLanePort:
     """The LIVE port (only `run --live` with a live config reaches this). The key comes ONLY from the systemd credential (probe_live.load_probe_key reads $CREDENTIALS_DIRECTORY; no path
     argument); no Claude session reads it. Imports are local: a DRY run never imports the solana stack."""
     from tools import probe_executor as pe
@@ -691,7 +710,10 @@ def build_live_port(cfg: B.Config, rpc_rps: float = RPC_RPS_DEFAULT) -> FloorLan
     pl.harden_process()
     kp = pl.load_probe_key()
     rpc = pe.LimitedRpc(pe.ProbeRpc(sim.load_rpc_url(None, None, use_env_file=False)), rps=float(rpc_rps), max_rps=pl.LIVE_MAX_RPS)
-    return FloorLanePort(B.make_live_port(cfg, rpc, kp), cfg)
+    inner = B.make_live_port(cfg, rpc, kp)
+    if presend_batch:
+        inner.enable_presend_batch()
+    return FloorLanePort(inner, cfg)
 
 
 def start_refusal(cfg: B.Config, live_ok_path: str, *, live: bool, root_checks: bool = True) -> str | None:
@@ -737,7 +759,7 @@ def run(raw: Mapping[str, Any], *, live_flag: bool, once: bool = False, root_che
         except SystemExit as exc:
             print(f"floor_lane_executor ALERT startup_refused {exc}", flush=True)
             return 2
-    port = (port_factory or functools.partial(build_live_port, rpc_rps=rpc_rps))(cfg) if live_flag else B.DryPort(cfg.dry_balance_lamports)
+    port = (port_factory or functools.partial(build_live_port, rpc_rps=rpc_rps, **({"presend_batch": True} if parse_presend_batch(raw) else {})))(cfg) if live_flag else B.DryPort(cfg.dry_balance_lamports)
     br = FloorLaneBridge(cfg, port, lane, now_ms=now_ms, live_ok_path=live_ok, root_checks=root_checks, a3_record_file=a3_file, bot_lock=lock, a3_floor_flag_list=a3_fl)
     print(f"floor_lane_executor mode={cfg.mode} lane_bot={LANE_BOT_ID} book={cfg.bot_id} stake={cfg.stake_lamports} rpc_rps={rpc_rps}", flush=True)
     kw = {"sleep": sleep} if sleep is not None else {}

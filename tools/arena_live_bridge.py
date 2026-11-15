@@ -226,6 +226,18 @@ class OrderPort:
     def balance(self) -> int | None:
         raise NotImplementedError
 
+    def prefetch_presend(self, pool: str, meta: Mapping[str, Any]) -> None:
+        """Optional: batch the independent pre-send reads (pool account, mint account, wallet) into ONE call. A no-op by default; the consumers below
+        (mint_for_pool, universe_problem, presend_balance, mint_screen_problem) run exactly the same checks on the batched values, and fall back to their own read."""
+
+    def presend_balance(self) -> int | None:
+        """The balance the wallet-floor check reads (the batched value when prefetch_presend ran just now, else balance())."""
+        return self.balance()
+
+    def stage_stamps(self, mint: str) -> dict[str, Any]:
+        """Logging only: the executor's own stage stamps of this mint's buy (state_ms, built_ms, first_send_ms, ...). Empty for a port without an executor."""
+        return {}
+
     def buy(self, order: Mapping[str, Any]) -> tuple[bool, str | None]:
         """Send (live) or log (dry) the buy. (True, None) when sent; (False, label) when the port refused before sending."""
         raise NotImplementedError
@@ -959,6 +971,13 @@ class Bridge:
         why = self.entry_refusal(row, now, lim, scope)
         pool = str(row.get("pool"))
         meta = row.get("meta") or {}
+        t_checked = self.now_ms()  # stage stamp: the local checks (entry_refusal) are done
+        if not why:
+            try:
+                self.port.prefetch_presend(pool, meta)  # one batched read; never raises, never decides
+            except Exception:  # noqa: BLE001 - the consumers below fall back to their own reads
+                pass
+        t_prefetch = self.now_ms()
         mint = self.port.mint_for_pool(pool, meta) if not why else None
         if not why and not mint:
             why = "no_mint"
@@ -991,7 +1010,7 @@ class Bridge:
         if not why and self.gates is not None:
             why = self.gate_refusal(now)
         if not why:
-            why = self.floor_problem(stake, self.port.balance(), scope)
+            why = self.floor_problem(stake, self.port.presend_balance(), scope)
         if not why:
             why = self.mint_screen_refusal(mint)  # type: ignore[arg-type]
         if why and self.cfg.profile == c0.PROFILE and why in c0.SKIP_UNIVERSE_LABELS:
@@ -1001,6 +1020,7 @@ class Bridge:
             return
         if why:
             return self._refuse(row, why, tier=tier, tier_problem=tier_prob)
+        t_reads = self.now_ms()
         # Write-ahead: the order exists on disk BEFORE the first send, so a crash cannot produce a second buy.
         order = {"order_id": oid, "pool": pool, "mint": mint, "status": "buy_sending", "stake_lamports": stake, "paper_stake_sol": row.get("stake_sol"),
                  "decision_ms": int(row["ms"]), "decision_slot": row.get("decision_slot"), "entry_seq": row["seq"], "live": live, "tier": tier,
@@ -1014,6 +1034,7 @@ class Bridge:
         d["trades" if scope else "dry_trades"] = d.get("trades" if scope else "dry_trades", 0) + 1
         order["last_action_ms"] = now
         self._save()
+        t_wa = self.now_ms()
         late = self._presend_refusal(row)  # end_ms, STOP/HALT and decision age again, after the RPCs above
         if late:
             order["status"] = "refused"
@@ -1024,6 +1045,7 @@ class Bridge:
             return
         order["send_ms"] = self.now_ms()
         ok, label = (self.port if order["live"] else self.dry_port).buy(order)
+        t_buy_done = self.now_ms()
         order["status"] = "buy_sent" if ok else "refused"
         if not ok:
             order["refused"] = label
@@ -1031,8 +1053,19 @@ class Bridge:
         self._log("buy_sent" if ok else "buy_port_refused", order_id=oid, mint=mint, stake_lamports=stake, paper_stake_sol=row.get("stake_sol"),
                   decision_ms=order["decision_ms"], send_ms=order["send_ms"], decision_to_send_ms=order["send_ms"] - order["decision_ms"],
                   decision_slot=order["decision_slot"], would_send=not order["live"], dry_reason=why_dry, tier=tier, label=label,
-                  **({"decision_seq": row["seq"]} if self.cfg.profile == c0.PROFILE else {}))  # hv4_c0: the decision row's seq, so orders can be tied back to rows (tools/hv4_c0_orders_proof.py)
+                  **({"decision_seq": row["seq"]} if self.cfg.profile == c0.PROFILE else self._stage_row(order, now, t_checked, t_prefetch, t_reads, t_wa, t_buy_done)))  # hv4_c0: the decision row's seq, so orders can be tied back to rows (tools/hv4_c0_orders_proof.py)
         self._save()
+
+    def _stage_row(self, order: Mapping[str, Any], t_entry: int, t_checked: int, t_prefetch: int, t_reads: int, t_wa: int, t_buy_done: int) -> dict[str, Any]:
+        """Logging only (never read by a decision): per-stage instants of this entry, so a slow decision-to-send can be split by stage. `stage_ms` are the bridge's
+        stages (entry_ms = handle_entry start, checked = local checks done, prefetch = batched read done, reads = every pre-send read and check done, writeahead = order
+        saved, send_call = just before port.buy, buy_return = port.buy returned); `exec_stage_ms` are the executor's own (state_ms, built_ms, first_send_ms, state_slot)."""
+        try:
+            ex = self.port.stage_stamps(str(order["mint"])) if order.get("live") else {}
+        except Exception:  # noqa: BLE001
+            ex = {}
+        return {"stage_ms": {"entry_ms": t_entry, "checked": t_checked, "prefetch": t_prefetch, "reads": t_reads, "writeahead": t_wa, "send_call": order.get("send_ms"),
+                             "buy_return": t_buy_done}, "exec_stage_ms": ex}
 
     def mint_screen_refusal(self, mint: str) -> str | None:
         """DEC-032 s3 "Venue" pre-send refusal (strand class = total loss). Called last before the write-ahead, so the mint read costs a call only when every
@@ -1326,6 +1359,26 @@ def signed_priority_lamports(tx_b64: Any) -> int | None:
         return None
 
 
+PRESEND_BATCH_MAX_AGE_MS = 3_000  # a batched pre-send read older than this is not used: the consumer reads for itself
+
+
+class _OneShotRpc:
+    """Serves ONE already-fetched response for (method, params), then everything else goes to the real limiter-gated rpc. Used so the pool account read inside
+    fetch_snapshot is the batched value; the vault read that follows still goes through the limiter."""
+
+    def __init__(self, rpc: Callable[[str, list], Any], method: str, params: list, result: Any) -> None:
+        self._rpc, self._key, self._result = rpc, (method, params), result
+
+    def __call__(self, method: str, params: list) -> Any:
+        if self._result is not None and (method, params) == self._key:
+            out, self._result = self._result, None
+            return out
+        return self._rpc(method, params)
+
+    def __getattr__(self, name: str) -> Any:  # priority(), calls, idle_hook: the limiter's own surface
+        return getattr(self._rpc, name)
+
+
 def make_live_port(cfg: Config, rpc: Callable[[str, list], Any], keypair: Any, *, now_ms: Callable[[], int] | None = None) -> OrderPort:
     """LiveExecutorPort over a `probe_live.LiveExecutor` subclass. Imported here so a dry bridge never imports the solana stack or sees a key."""
     from tools import h5_executor as h5
@@ -1520,13 +1573,74 @@ def make_live_port(cfg: Config, rpc: Callable[[str, list], Any], keypair: Any, *
             self.ex = BridgeExecutor(rpc, pcfg, keypair, now_ms, cfg.end_ms)
             self.now = self.ex.now_ms
 
+        batch_presend = False  # opt-in (the FLOOR lane sets it from its config); off = the serial reads, byte for byte
+        _pf: dict[str, Any] | None = None
+
+        def enable_presend_batch(self) -> None:
+            self.batch_presend = True
+
+        def prefetch_presend(self, pool: str, meta: Mapping[str, Any]) -> None:
+            """ONE getMultipleAccounts [pool, (mint from the row's meta), wallet] through the same limiter, in place of three or four serial calls. The values are only
+            stored here; every check still runs in its own consumer, in the old order, and a failed or short answer makes every consumer fail closed."""
+            self._pf = None
+            if not self.batch_presend:
+                return
+            commitment = self.ex.commitment
+            hint = meta.get("mint") or meta.get("base_mint")
+            keys = [pool]
+            if isinstance(hint, str) and hint and commitment == "confirmed":  # the mint screen reads at "confirmed"; one commitment per batched call
+                keys.append(hint)
+            wallet = str(self.ex.user)
+            keys.append(wallet)
+            pf: dict[str, Any] = {"pool": pool, "mint": keys[1] if len(keys) == 3 else None, "wallet": wallet, "commitment": commitment, "t": self.now(), "err": None}
+            try:
+                res = self.ex.rpc("getMultipleAccounts", [keys, {"encoding": "base64", "commitment": commitment}])
+                vals = list(res["value"])
+                if len(vals) != len(keys):
+                    raise ValueError("bad_value_count")
+                pf["slot"] = (res.get("context") or {}).get("slot")
+                pf["pool_value"], pf["wallet_value"] = vals[0], vals[-1]
+                pf["mint_value"] = vals[1] if len(keys) == 3 else None
+            except (Exception, SystemExit) as exc:  # fail closed: every consumer refuses on this label; no second round of reads
+                pf["err"] = pe.error_label(exc)
+            self._pf = pf
+
+        def _pf_fresh(self, pool: str | None = None) -> dict[str, Any] | None:
+            pf = self._pf
+            if pf is None or self.now() - pf["t"] > PRESEND_BATCH_MAX_AGE_MS or (pool is not None and pf["pool"] != pool):
+                return None
+            return pf
+
+        def presend_balance(self) -> int | None:
+            pf = self._pf_fresh() if self.batch_presend else None
+            if pf is None or pf.get("wallet_used"):
+                return self.balance()
+            pf["wallet_used"] = True  # one use: the floor check reads once per entry
+            if pf["err"]:
+                return None
+            v = pf["wallet_value"]
+            try:
+                return 0 if v is None else int(v["lamports"])  # getBalance of an account that does not exist is 0
+            except (Exception, SystemExit):
+                return None
+
+        def stage_stamps(self, mint: str) -> dict[str, Any]:
+            p = self.ex.state.pending.get(mint) or self.ex.state.open.get(mint) or {}
+            return {k: p.get(k) for k in ("state_ms", "built_ms", "first_send_ms", "state_slot", "seen_ms") if k in p} | {"rpc_calls": getattr(self.ex.rpc, "calls", None)}
+
         def mint_for_pool(self, pool: str, meta: Mapping[str, Any]) -> str | None:
             """Always the pool account's own base mint; a mint in the row's meta is only compared with it by the Bridge."""
             try:  # the pool account's base mint (one read; the executor's canonical-pool check re-verifies it before any buy)
                 from tools import pumpswap_simulate as sim_
                 from tools import pumpswap_tx as tx_
 
-                res = self.ex.rpc("getAccountInfo", [pool, {"encoding": "base64", "commitment": self.ex.commitment}])
+                pf = self._pf_fresh(pool) if self.batch_presend else None
+                if pf is not None:
+                    if pf["err"]:
+                        return None
+                    res = {"value": pf["pool_value"]}
+                else:
+                    res = self.ex.rpc("getAccountInfo", [pool, {"encoding": "base64", "commitment": self.ex.commitment}])
                 info = res.get("value")
                 if not info or info.get("owner") != str(tx_.PUMPSWAP_PROGRAM):
                     return None
@@ -1535,7 +1649,19 @@ def make_live_port(cfg: Config, rpc: Callable[[str, list], Any], keypair: Any, *
                 return None
 
         def universe_problem(self, pool: str, mint: str) -> str | None:
-            snap, _pool, err = self.ex._snapshot(mint)
+            pf = self._pf_fresh(pool) if self.batch_presend else None
+            if pf is not None and pf["err"]:
+                return f"pool_unreadable:{pf['err']}"
+            if pf is not None and not pf.get("pool_used"):
+                pf["pool_used"] = True  # the batched pool account stands in for fetch_snapshot's first read only; the vault read after it is its own limiter-gated call
+                real = self.ex.rpc
+                self.ex.rpc = _OneShotRpc(real, "getAccountInfo", [pool, {"encoding": "base64", "commitment": pf["commitment"]}], {"context": {"slot": pf.get("slot")}, "value": pf["pool_value"]})
+                try:
+                    snap, _pool, err = self.ex._snapshot(mint)
+                finally:
+                    self.ex.rpc = real
+            else:
+                snap, _pool, err = self.ex._snapshot(mint)
             if snap is None:
                 return f"pool_unreadable:{err}"
             if cfg.profile == c0.PROFILE:
@@ -1548,7 +1674,18 @@ def make_live_port(cfg: Config, rpc: Callable[[str, list], Any], keypair: Any, *
 
         def mint_screen_problem(self, mint: str) -> str | None:
             """A fresh read of the mint account before every buy (one getAccountInfo, never a cache), screened by the Q50/H5 executor's own functions."""
-            why = classify_record(mint_screen_record(self.ex.rpc, mint))
+            pf = self._pf_fresh() if self.batch_presend else None
+            if pf is not None and pf["mint"] == mint and not pf.get("mint_used"):
+                pf["mint_used"] = True  # the same record function and classifier over the batched mint account; an error or a missing account is fetch_ok false (denied)
+
+                def served(_m: str, _p: list) -> Any:
+                    if pf["err"]:
+                        raise RuntimeError(pf["err"])
+                    return {"value": pf["mint_value"]}
+
+                why = classify_record(mint_screen_record(served, mint))
+            else:
+                why = classify_record(mint_screen_record(self.ex.rpc, mint))
             return None if why is None else f"{MINT_SCREEN_LABEL}:{why}"
 
         def balance(self) -> int | None:
