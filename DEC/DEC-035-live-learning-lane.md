@@ -1104,13 +1104,13 @@ Written 2026-11-15T20:4xZ (`date -u`) by the manager, after the resume; records 
 No book has cleared the promotion gate. Nothing here says FLOOR makes money.
 
 ## Amendment 11 (2026-11-15): floor-lane-1 stake step 0.10 to 0.25 SOL at closed trade 10 instead of 20 (config only; DRAFT)
-**Status: DRAFT until merge. NOT installed. It authorises nothing until QP OK and REVIEWER APPROVE at the exact head, the merge, every precondition below met and recorded, and a Helm install.** Drafted 2026-11-15 (host clock `date -u` 21:30Z at drafting) for manager23, at main 5220509b. Records only: no code, host, config or live file is touched. Nothing here says FLOOR makes money. No promotion-gate threshold, seal or clock changes, and floor-lane-1 has not cleared the promotion gate.
+**Status: DRAFT until merge. NOT installed. It authorises nothing until QP OK and REVIEWER APPROVE at the exact head, the merge, every precondition below met and recorded, and a Helm install.** Drafted 2026-11-15 (host clock `date -u` 21:30Z at drafting) for manager24 (manager23 stood down 2026-11-15T21:18Z), at main 5220509b. Records only: no code, host, config or live file is touched. Nothing here says FLOOR makes money. No promotion-gate threshold, seal or clock changes, and floor-lane-1 has not cleared the promotion gate.
 
 **Decider.** Vaan (owner).
 
 **Earlier owner text (Amendment 6, restated, not changed).** Amendment 6 records the owner's chat answer of 2026-11-12 ~06:4xZ, "Your recommendations look good and I accept the loss budget ...", read there as: step up to 0.25 SOL after 20 closed trades at 0.10 SOL (conditional on those trades being net positive and the fills continuing to match the model), lifetime budget 2.10 SOL, daily stop 0.50 SOL.
 
-**The early step, as offered and answered.** The manager offered an early step: 0.25 at trade 10 if the fills look clean and the sim matches live. The owner answered in chat, 2026-11-15 ~21:4xZ (instant as relayed by the manager; not re-read from the chat by the drafter), in these exact words:
+**The early step, as offered and answered.** The manager offered an early step: 0.25 at trade 10 if the fills look clean and the sim matches live. The owner answered in chat, 2026-11-15 ~21:2xZ (manager24 recorded it in `ops/manager24/state-manager24.md`, line stamped 2026-11-15T21:29Z, written on receipt), in these exact words:
 > "Good stuff, I can approve the early step."
 
 **What this amendment changes, and only this.** In Amendment 6, "20 closed trades at 0.10" becomes **10 closed trades at 0.10** for the one decision of the step-up. Stake 0.25, lifetime budget 2.10 SOL, daily stop 0.50 SOL, every other Am.6 limit, the Am.6 counting rules (Errata 1 and 4), the post-install check, "Scaling past this step", and everything under Am.6 "Unchanged" stand as written. Amendment 6's own 20-trade path is kept: if the decision at 10 is "no", the stake stays 0.10 and Amendment 6 (b) and (c) apply at trade 20 exactly as written (no new look is created; the Am.6 (c) check was already at the 10th and the 20th trade). It overrides §6 for this step and floor-lane-1 only, as Amendments 4 to 6 did.
