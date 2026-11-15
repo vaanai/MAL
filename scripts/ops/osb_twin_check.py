@@ -61,10 +61,17 @@ Choices where the wording leaves a detail open (each follows the text literally 
   * The manifests: --strict-manifest and --twin-manifest are required; each must hash (osb_follow.manifest_sha256) to its run's manifest.sha256. For latency the twin must be a twin of the strict by
     osb_follow.twin_manifest_diff; for gap-hold by the same key rule with gap_exclusion "hold" (gap_twin_manifest_diff). Otherwise refused.
 
+--snapshot DIR (the manager's daily re-check of RUNNING books, QP conditions of 2026-11-15 on PR #1401): each given run dir (--strict-run, --on-copy-run if given, --twin-run) is copied (regular files; a symlink that
+leaves the run dir is refused; the source is only read) into DIR/<role>/ (DIR must be absent or empty; created 0700, no ACL). BEFORE the copy and AFTER it, from the SOURCE, the sha256 of md5-by-hour.jsonl, the last completed
+hour and the content of decisions.md5 are recorded; any difference (an hour step during the copy) deletes the snapshot, prints RETRY and exits 4, with no verdict. The checks run on the copies only and only C3/C4/C5
+(gap-hold) or L3/L4/L5 (latency) are evaluated; C1/C2/C2r (L1/L2/L2r) are printed `not part of the daily re-check`. The summary is `C3/C4/C5 PASS (daily re-check on a snapshot; C2r/L2r not part of it)` (`L3/L4/L5` for the
+latency kind), or FAIL naming the failing check, or NOT_PASS naming a PENDING / NO_DATA one; the key and the word for the whole-run result are never printed in this mode. Afterwards the snapshot tree is made read-only.
+Without the flag everything behaves exactly as before.
+
 Exit codes: 0 every requested condition PASS; 3 any condition FAIL, PENDING or NO_DATA; 2 refused (missing or unreadable file, manifest not a twin, windows differ, output file exists). Output: JSON to stdout and
 to --out (created O_EXCL). Usage: osb_twin_check.py --kind gap-hold|latency --strict-run DIR --twin-run DIR [--on-copy-run DIR] --strict-manifest F --twin-manifest F --out FILE
 """
-import argparse, collections, fcntl, hashlib, json, os, re, sys
+import argparse, collections, fcntl, hashlib, json, os, re, shutil, stat, subprocess, sys
 from datetime import datetime, timedelta
 from pathlib import Path
 
@@ -481,6 +488,160 @@ def write_out(path, text):
         fh.write(text)
 
 
+# ------------------------------------------------------------------------------------------------------------------------------ --snapshot mode
+EXIT_RETRY = 4
+_COPY_HOOK = None  # tests only: called as hook(role, source_dir) right after a run dir has been copied
+
+
+def book_state(src):
+    """the three things recorded before and after the copy, from the SOURCE (read only): sha256 of md5-by-hour.jsonl, its last completed hour, and the content of decisions.md5 (None when absent)"""
+    src = Path(src)
+    try:
+        raw = (src / "md5-by-hour.jsonl").read_bytes()
+    except OSError:
+        raw = None
+    last = None
+    if raw is not None:
+        for ln in raw.decode(errors="replace").splitlines():
+            try:
+                d = json.loads(ln)
+            except ValueError:
+                continue
+            if isinstance(d, dict) and isinstance(d.get("hour"), str):
+                last = d["hour"] if last is None or d["hour"] > last else last
+    try:
+        dm = (src / "decisions.md5").read_text().strip()
+    except (OSError, UnicodeDecodeError):
+        dm = None
+    return {"md5_by_hour_sha256": None if raw is None else hashlib.sha256(raw).hexdigest(), "last_hour": last, "decisions_md5": dm}
+
+
+def copy_run(src, dst):
+    """copy a run dir: directories, regular files, and symlinks that stay inside the run dir (recreated relative). Anything else, or a symlink leaving the run dir, is refused. Never writes into src."""
+    src = Path(src)
+    root = Path(os.path.realpath(src))
+    os.mkdir(dst, 0o700)
+    for cur, dirs, files in os.walk(src, followlinks=False):
+        rel = Path(cur).relative_to(src)
+        for name in sorted(dirs + files):
+            sp = Path(cur) / name
+            dp = Path(dst) / rel / name
+            st = os.lstat(sp)
+            if stat.S_ISLNK(st.st_mode):
+                tgt = Path(os.path.realpath(sp))
+                if tgt != root and root not in tgt.parents:
+                    raise Refused("a symlink in %s leaves the run dir: %s" % (src.name, name))
+                os.symlink(os.path.relpath(tgt, os.path.realpath(sp.parent)), dp)
+                if name in dirs:
+                    dirs.remove(name)  # a linked directory is copied once, through its real path
+            elif stat.S_ISDIR(st.st_mode):
+                os.mkdir(dp, 0o700)
+            elif stat.S_ISREG(st.st_mode):
+                fd = os.open(str(sp), os.O_RDONLY | os.O_NOFOLLOW)
+                with os.fdopen(fd, "rb") as fi, open(dp, "wb") as fo:
+                    shutil.copyfileobj(fi, fo)
+                os.chmod(dp, 0o600)
+            else:
+                raise Refused("%s holds a file that is neither a regular file, a directory nor an inside symlink: %s" % (src.name, name))
+
+
+def make_tree_read_only(d):
+    for cur, dirs, files in os.walk(d, followlinks=False, topdown=False):
+        for name in files:
+            p = os.path.join(cur, name)
+            if not os.path.islink(p):
+                os.chmod(p, 0o400)
+        os.chmod(cur, 0o500)
+
+
+def remove_tree(d):
+    for cur, dirs, files in os.walk(d, followlinks=False):
+        os.chmod(cur, 0o700)
+    shutil.rmtree(d, ignore_errors=True)
+
+
+def prepare_snapshot_dir(d, sources):
+    d = Path(d)
+    if d.exists() or d.is_symlink():
+        if d.is_symlink() or not d.is_dir() or any(d.iterdir()):
+            raise Refused("--snapshot dir exists and is not an empty directory: %s" % d.name)
+    rd = Path(os.path.realpath(d.parent)) / d.name
+    for s in sources:
+        r = Path(os.path.realpath(s))
+        if rd == r or r in rd.parents:
+            raise Refused("--snapshot dir is inside a source run dir")
+    d.mkdir(mode=0o700, exist_ok=True)
+    os.chmod(d, 0o700)
+    if shutil.which("setfacl"):
+        subprocess.run(["setfacl", "-b", "-k", str(d)], check=False, capture_output=True)
+
+
+def take_snapshot(snap, runs):
+    """runs: {role: source dir}. -> (copies {role: dir}, before, after) or None on RETRY (the snapshot is deleted)"""
+    prepare_snapshot_dir(snap, runs.values())
+    snap = Path(snap)
+    before = {r: book_state(d) for r, d in runs.items()}
+    copies = {}
+    try:
+        for role, d in runs.items():
+            copy_run(d, snap / role)
+            copies[role] = snap / role
+            if _COPY_HOOK is not None:
+                _COPY_HOOK(role, d)
+        after = {r: book_state(d) for r, d in runs.items()}
+    except BaseException:
+        remove_tree(snap)
+        raise
+    if before != after:
+        remove_tree(snap)
+        return None
+    return copies, before, after
+
+
+def snapshot_summary(kind, conds):
+    names = ("C3", "C4", "C5") if kind == "gap-hold" else ("L3", "L4", "L5")
+    label = "/".join(names)
+    bad = [(n, conds[n]["status"]) for n in names if conds[n]["status"] != "PASS"]
+    if not bad:
+        return "%s PASS (daily re-check on a snapshot; %s not part of it)" % (label, "C2r/L2r")
+    fails = [n for n, st in bad if st == "FAIL"]
+    if fails:
+        return "%s FAIL (%s)" % (label, ", ".join(fails))
+    return "%s NOT_PASS (%s)" % (label, ", ".join("%s %s" % x for x in bad))
+
+
+def run_snapshot(a, must):
+    runs = {"strict": a.strict_run, "twin": a.twin_run}
+    if a.on_copy_run:
+        runs["on_copy"] = a.on_copy_run
+    snapped = take_snapshot(a.snapshot, runs)
+    if snapped is None:
+        print("osb_twin_check: RETRY: a source book moved (an hour step) during the copy; the snapshot was deleted and nothing was checked", file=sys.stderr)
+        return EXIT_RETRY
+    copies, before, after = snapped
+    try:
+        res = run_check(a.kind, copies["strict"], copies["twin"], None, a.strict_manifest, a.twin_manifest, must)
+    except BaseException:
+        make_tree_read_only(a.snapshot)
+        raise
+    names = ("C1", "C2", "C2r") if a.kind == "gap-hold" else ("L1", "L2", "L2r")
+    res.pop("overall", None)
+    res["runs"]["on_copy"] = None if "on_copy" not in copies else str(copies["on_copy"])
+    res["conditions"][names[2]] = {"status": "not part of the daily re-check"}
+    res["conditions"].pop(names[1], None)
+    summary = snapshot_summary(a.kind, res["conditions"])
+    res["snapshot"] = {"dir": str(a.snapshot), "mode": "daily re-check on a snapshot", "sources": {r: str(d) for r, d in runs.items()}, "before_copy": before, "after_copy": after, "equal": True,
+                       "not_part_of_daily_recheck": {n: "not part of the daily re-check" for n in names}, "summary": summary}
+    make_tree_read_only(a.snapshot)
+    text = json.dumps(res, indent=1, sort_keys=True) + "\n"
+    write_out(a.out, text)
+    sys.stdout.write(text)
+    for n in names:
+        print("%s: not part of the daily re-check" % n)
+    print(summary)
+    return EXIT_PASS if summary.split(" ")[1] == "PASS" else EXIT_NOT_MET
+
+
 def main(argv=None):
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     ap.add_argument("--kind", required=True, choices=("gap-hold", "latency"))
@@ -492,6 +653,7 @@ def main(argv=None):
     ap.add_argument("--out", required=True)
     ap.add_argument("--must-cover-from", default=None, help="YYYY-MM-DDTHH: refuse unless the compared window contains --must-cover-hours hours from here (job #2632: 2026-11-11T12, 48)")
     ap.add_argument("--must-cover-hours", type=int, default=None)
+    ap.add_argument("--snapshot", default=None, metavar="DIR", help="daily re-check of RUNNING books: copy the run dirs into DIR (absent or empty), check the copies, C3/C4/C5 or L3/L4/L5 only")
     a = ap.parse_args(argv)
     try:
         must = None
@@ -503,6 +665,8 @@ def main(argv=None):
             must = (a.must_cover_from, a.must_cover_hours)
         if os.path.lexists(a.out):
             raise Refused("--out exists (O_EXCL): %s" % Path(a.out).name)
+        if a.snapshot is not None:
+            return run_snapshot(a, must)
         res = run_check(a.kind, a.strict_run, a.twin_run, a.on_copy_run, a.strict_manifest, a.twin_manifest, must)
         text = json.dumps(res, indent=1, sort_keys=True) + "\n"
         write_out(a.out, text)
