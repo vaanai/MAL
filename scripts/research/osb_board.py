@@ -532,7 +532,7 @@ def fail_detail(r, block):
     c = block["counts"]
     parts, passing = [], []
     for k in ("h1", "h2", "h3"):
-        b = r.get(k) or {}
+        b = r.get(k) if isinstance(r.get(k), dict) else {}
         st = str(b.get("status"))
         if st == "PASS":
             passing.append(k.upper() + " PASS")
@@ -543,7 +543,7 @@ def fail_detail(r, block):
             f = "unexplained sim-only per UTC day %s (max %s per day; executor-unlisted %s, duplicate keys %s)" % (json.dumps(b.get("unexplained_by_day"), sort_keys=True), b.get("max_per_day"), b.get("executor_unlisted"), b.get("duplicate_keys"))
         else:
             net = b.get("nonrule_net_live_sol")
-            f = "live non-rule exit %s of %d matched (cap: %s; uncoded exit mismatches %s; live net %s SOL)" % (
+            f = "live non-rule exit %s of %d matched (cap: %s; live_nonrule_exit code and cap coded post hoc 2026-11-14; uncoded exit mismatches %s; live net %s SOL)" % (
                 b.get("n_live_nonrule_exit"), c["matched"], b.get("nonrule_cap"), b.get("n_mismatch_uncoded"), ", ".join(repr(x) for x in net) if isinstance(net, list) and net else "n/a")
         parts.append("%s %s: %s" % (k.upper(), st, f))
     if passing:
@@ -551,7 +551,7 @@ def fail_detail(r, block):
     by = [(str(k).split(":", 1)[1], int(v)) for k, v in sorted(r["counts_by_reason"].items()) if str(k).startswith("sim_only:")]
     parts.append("sim-only %d%s" % (c["sim_only"], (": " + ", ".join("%s %d%s" % (w, n, " (explained, not counted)" if w in EXPLAINED_REASONS else "") for w, n in by)) if by else ""))
     for k in ("s1", "s2", "s3", "s4"):
-        b = r.get(k) or {}
+        b = r.get(k) if isinstance(r.get(k), dict) else {}
         st = str(b.get("status"))
         if st == "INSUFFICIENT":
             parts.append("%s INSUFFICIENT (n %s < %s)" % (k.upper(), b.get("n"), b.get("min")))
@@ -585,19 +585,19 @@ def recon_state(live, now_ms, control_id=None):
         block = {"status": r["status"], "window": {"from_utc": str(r["window"].get("from_utc")), "to_utc": str(r["window"].get("to_utc"))}, "generated_utc": str(r.get("generated_utc")),
                  "counts": {k: int(c[k]) for k in ("matched", "live_only", "sim_only")},
                  "counts_by_reason": {str(k): int(v) for k, v in sorted(r["counts_by_reason"].items())},
-                 "bands": {k: str((r.get(k) or {}).get("status")) for k in ("h1", "h2", "h3", "s1", "s2", "s3", "s4")}}
+                 "bands": {k: str((r.get(k) if isinstance(r.get(k), dict) else {}).get("status")) for k in ("h1", "h2", "h3", "s1", "s2", "s3", "s4")}}
         check_forbidden(block, "")
     except (KeyError, TypeError, ValueError, Refusal):
         return default
     head = "%s (book A against the live bot, %s to %s)" % (r["status"], block["window"]["from_utc"], block["window"]["to_utc"])
+    plain = "%s: matched %d, live-only %d, sim-only %d; by reason %s" % (head, block["counts"]["matched"], block["counts"]["live_only"], block["counts"]["sim_only"], json.dumps(block["counts_by_reason"], sort_keys=True))
+    line = plain
     if r["status"] == "FAIL":
         try:
             line = head + ": " + fail_detail(r, block) + ". " + SIM_OFF
             check_forbidden(line, "")
-        except (KeyError, TypeError, ValueError, Refusal):
-            return default
-    else:
-        line = "%s: matched %d, live-only %d, sim-only %d; by reason %s" % (head, block["counts"]["matched"], block["counts"]["live_only"], block["counts"]["sim_only"], json.dumps(block["counts_by_reason"], sort_keys=True))
+        except (KeyError, TypeError, ValueError, AttributeError, Refusal):
+            line = plain + ". " + SIM_OFF  # a FAIL never falls back to NOT COMPARABLE: the old counts line, SIM OFF kept
     return block, line, rest, r["status"] == "FAIL"
 
 

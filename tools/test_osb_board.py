@@ -638,7 +638,7 @@ def _fail_over(band):
 
 
 @pytest.mark.parametrize("band,needle", [("h1", "H1 FAIL: live-only entries 2 (max 0)"), ("h2", "H2 FAIL: unexplained sim-only per UTC day {\"2026-11-15\": 1}"),
-                                         ("h3", "H3 FAIL: live non-rule exit 1 of 4 matched (cap: max 1 and 10% of matched trades; uncoded exit mismatches 0; live net -0.000633034 SOL)")])
+                                         ("h3", "H3 FAIL: live non-rule exit 1 of 4 matched (cap: max 1 and 10% of matched trades; live_nonrule_exit code and cap coded post hoc 2026-11-14; uncoded exit mismatches 0; live net -0.000633034 SOL)")])
 def test_recon_fail_line_names_the_failing_band(tmp_path, band, needle):
     res, md = board_with(tmp_path, {"recon": str(recon_file(tmp_path, "FAIL", **_fail_over(band)))})
     line = res["recon_line"]
@@ -656,3 +656,19 @@ def test_recon_fail_line_keeps_host_down_no_row_as_its_own_word(tmp_path):
     over["counts_by_reason"] = {"sim_only:restart_lockout": 2, "sim_only:host_down_no_row": 1}
     res, _ = board_with(tmp_path, {"recon": str(recon_file(tmp_path, "FAIL", **over))})
     assert "host_down_no_row 1 (explained, not counted), restart_lockout 2 (explained, not counted)" in res["recon_line"]
+
+
+def test_recon_fail_line_builder_error_keeps_sim_off_and_old_counts_line(tmp_path):
+    over = _fail_over("h3")
+    over["h3"]["nonrule_cap"] = "slot cap"  # a forbidden word in a band field: the new line is refused
+    res, md = board_with(tmp_path, {"recon": str(recon_file(tmp_path, "FAIL", **over))})
+    assert res["sim_off"] == "SIM OFF: not decision-grade" and res["recon"]["status"] == "FAIL" and "NOT COMPARABLE" not in res["recon_line"]
+    assert res["recon_line"].startswith("FAIL (book A against the live bot, ") and "matched 4, live-only 0, sim-only 3; by reason" in res["recon_line"] and res["recon_line"].endswith("SIM OFF: not decision-grade")
+    assert "a recon band FAILs (see the Recon line)" in md
+
+
+def test_recon_fail_malformed_band_keeps_sim_off(tmp_path):
+    over = _fail_over("h3")
+    over["h1"] = "FAIL"
+    res, _ = board_with(tmp_path, {"recon": str(recon_file(tmp_path, "FAIL", **over))})
+    assert res["sim_off"] == "SIM OFF: not decision-grade" and "NOT COMPARABLE" not in res["recon_line"]
