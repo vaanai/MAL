@@ -36,7 +36,7 @@ Constants: `D_pump` = 469811025 (2026-11-15T17:20:10Z), `D_swap` = 469811067 (20
 - **Instruction shape (ruling (c1), stage 5):** from A1, M and P, every successful WSOL PumpSwap `buy`, `buy_exact_quote_in`, `sell` instruction (top-level or inner): 8-byte discriminator, data length, account count, and the owner program of each account position (one `getMultipleAccounts` pass over up to 200 instructions per side, at most 100 accounts per call). The executor's shape at e5fd255b (disc, length, account count, fixed addresses, PDA derivations) is compared; at least 20 successful WSOL buy_exact_quote_in and 20 sell post are required. Failed txs with these discriminators are counted by error word, post and pre.
 - **(c3) pool accounts:** the 24 pool accounts of the 1114 review plus 10 pools created after `D` (from CreatePoolEvents of A1/M), read with `getMultipleAccounts`: owner, data length, 8-byte discriminator, and the `pumpswap_tx` pool-state offsets.
 - **Mint/pool state (Token-2022):** one `getMultipleAccounts` read of the base mints of M (post) and M_pre, plus the WSOL mint owner: owner program and extension types.
-- **(c2) keyless simulation** is not this builder's: a manager job. Section 11 holds the placeholder.
+- **(c2) keyless simulation** is not this builder's: a manager job; its outputs are in section 11.
 
 ### 3-supp. Supplementary rules (QP ADD1, 2026-11-15), declared before any fetch of the CompleteEvent sample (`program-upgrade-1115/s22_complete_events.py` committed in the commit just before this one; no CompleteEvent transaction had been fetched at either commit)
 
@@ -101,7 +101,12 @@ Route (a): `s07_upgrade_history.py` on public RPC, 0 credits, 177 RPC attempts (
 
 ## 9. Pins diff (item 11, ruling (e))
 
-(Filled after the re-pin step, see the end of this section's text in the commit that changes the pins.)
+Re-pin read (`s02`, the monitor's own `--write-pins` path) at slot 469856995, 2026-11-15T20:04:51Z, after the last stage-1 sample block (A1 469850404; the s22 CompleteEvent fetches were at slots up to the M range 469811457 to 469813250, fetched about 20:0xZ). It shows exactly the two deploy slots and hashes of the Verdict and no other (no newer write). Changes in this PR, three files in `tools/` and nothing else:
+- `tools/pump_structure_pins.json`: `pinned_utc` 2026-11-15T20:04:51Z, `pinned_at_slot` 469856995, `programs.pump` deploy_slot 469811025, deploy_utc 2026-11-15T17:20:10Z, sha256 `bfd2a2bd4a062f03f2c389bb836fb63c1b9b7983e255e4f84a826287ef31b8be`, data_len 10485760; `programs.pumpswap` deploy_slot 469811067, deploy_utc 2026-11-15T17:20:20Z, sha256 `78046072fdf83eee2ac366c9da0bee22cdb030a2d7b194aa9ab81a14ea13671e`, data_len 10485760. The git diff shows only those lines; accounts, fees and boost byte-identical.
+- `tools/fixtures/pump_structure_monitor/programdata.json`: re-recorded by `s15_rerecord_fixture.py` (context slot 469857017; decodes to [469811025, 469811067, 456132171]; the pump and pumpswap headers change, the fees entry decodes to the same slot).
+- `tools/test_pump_structure_monitor.py`: the line-354 list `[469811025, 469811067, 456132171]` and its comment.
+
+Tests (`MAL_ARENA_TEST=1 /data/mal/venv/bin/python -m pytest -q tools/test_pump_structure_monitor.py tools/test_a3_redeploy_check.py tools/test_a3_halt.py tools/test_h5_shadow_synthetic.py`, research-0 venv): **346 passed, 1 skipped, 0 failed**. (The ruling's baseline 345 passed / 2 skipped is for `/usr/bin/python3` on mal-fast-0; that run is the manager's.)
 
 ## 10. Binary diff (item 7, report-only) (s04)
 
