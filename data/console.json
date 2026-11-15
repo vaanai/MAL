@@ -1,8 +1,40 @@
 {
  "schema_version": "console.v1",
- "updated_utc": "2026-11-14T15:38:00Z",
+ "updated_utc": "2026-11-15T08:31:00Z",
  "review_windows": [],
  "events": [
+  {
+   "id": "latency-twins-started-1115",
+   "kind": "job",
+   "atUtc": "2026-11-15T03:37:00Z",
+   "approx": false,
+   "title": "Latency twin books A-lt-a (#2772) and A-lt-c (#2791) started; all four twin pairs read pair",
+   "detail": "Proof #2725 passed and twin check #2790 passed (notebook n_KDLhMJkiXiDdLg) before the A-lt-c start. A-lt-a left the memory queue at about 03:34Z. The board is one job, #2792, with 10 books; at 05:31Z all four twin pairs read pair. Daily twin re-check on a snapshot: C3/C4/C5 PASS (daily re-check on a snapshot; C2r/L2r not part of it). Evidence is thin (3 priced positions per stake). The recon still reads FAIL only by the non-rule cap (matched 2, live-only 0, sim-only 3), so the books are not decision-grade. These are paper simulations. No book has cleared the promotion gate."
+  },
+  {
+   "id": "forward-ab-1115",
+   "kind": "result",
+   "atUtc": "2026-11-15T07:24:00Z",
+   "approx": false,
+   "title": "Nightly forward A/B run ending 2026-11-15T01 done (paper, one day, no conclusion)",
+   "detail": "Job #2784 passed (notebook n_Zi6ev38wx5Zccw). Forward complete days: 2 of 3 (11-12 and 11-13). Pooled forward base: 5 entries, 3 closed, total 0.023793 SOL. Vault1.0: 7 entries, 3 closed, total 0.023793 (paper; all 3 closed positions are on 11-13, one day). Like-for-like delta +0.000000 on 3 pairs. 11-14 is incomplete. No conclusion: the vault1.0 decision comes only after at least 7 complete forward days (about 11-20). No book has cleared the promotion gate."
+  },
+  {
+   "id": "floor-reset-scheduled-1115",
+   "kind": "decision",
+   "atUtc": "2026-11-15T06:10:00Z",
+   "approx": false,
+   "title": "FLOOR 14-day window reset: you approved it, Helm scheduled it for 2026-11-16T17:00Z",
+   "detail": "HELM-REPLY-1108-1-YES: the owner said in the Helm chat at 2026-11-14T22:49Z: \"claude tells me I need to give me yes for the FLOOR reset otherwise it stops after 11-22 so yes to that\". Helm scheduled the reset for Mon 2026-11-16T17:00Z (executor only, pin e5fd255b, config 32991fe5, no host restart). Question q_fiwloTyG5CQFQw is closed. Not yet run. A window reset record follows after HELM-REPLY-1108-1. No executor change has happened since 2026-11-14T22:14:45Z. No book has cleared the promotion gate."
+  },
+  {
+   "id": "tip-handoff-1115",
+   "kind": "record",
+   "atUtc": "2026-11-15T06:26:00Z",
+   "approx": false,
+   "title": "Tip writer and push hand-off done (planned); hour 2026-11-15T06 is an excluded price-path hour",
+   "detail": "Writer #2033 stopped at its 335 h limit (last step 06:08:19.236Z). Gate #2501 RELEASE 06:10:33Z. Successor writer #2503 started 06:10:35Z (resumed, caught up, REFUSED 0). Writer downtime 137.3 s. Push #2039 stopped at its limit. Gate #2502 RELEASE 06:25:48Z. Successor push #2504 started 06:25:53Z (REFUSED 0, MISMATCH 0). Push pause about 2.5 min. Hour 2026-11-15T06 fails writer_hour_complete for every covered tip-source window that holds it (runbook section 0), so it is excluded. Check jobs #2795 to #2797. No book has cleared the promotion gate."
+  },
   {
    "id": "am8a-host-installed-1114",
    "kind": "record",
@@ -2147,9 +2179,15 @@
  ],
  "for_you": [
   {
+   "id": "fy-20261115-no-open-items",
+   "from": "claude",
+   "text": "Nothing is waiting on you. The FLOOR reset you approved is scheduled by Helm for Nov 16, 9:00 AM PST (17:00 UTC). FLOOR has not traded since Nov 13: there has been no entry candidate since entries were re-allowed on Nov 14, and the open simulation of the same rule also shows none. The wallet holds 3.155784860 SOL. No book has cleared the promotion gate.",
+   "atUtc": "2026-11-15T08:31:00Z"
+  },
+  {
    "id": "fy-20261114-am10-rpc-rps",
    "from": "claude",
-   "text": "One question, decide by 2026-11-15T12:00Z (q_9XkUow_sEaMEvw): the live buys wait about 2.05 s before they are sent because the lane's RPC limiter is 2 per second (12 buys measured). DEC-035 Am.10 sets it to 4; it is merged but NOT installed. Pick one: yes at the next Helm visit, yes only together with the 11-16..11-21 reset, or no. It needs your word and a Helm executor restart; no limit, stake or fund changes. No book has cleared the promotion gate.",
+   "text": "Answered and done (no action needed): you said yes on 2026-11-14T20:36Z and Helm installed it at 22:14:45Z. FLOOR now sends its buys with the chain connection cap raised from 2 to 4 calls a second (DEC-035 Am.10). No buy has happened yet, so there is no speed figure. No book has cleared the promotion gate.",
    "atUtc": "2026-11-14T10:22:00Z"
   },
   {
@@ -2562,6 +2600,14 @@
   }
  ],
  "stream": [
+  {
+   "id": "s-20261115-floor-state",
+   "from": "claude",
+   "kind": "status",
+   "atUtc": "2026-11-15T08:31:00Z",
+   "approx": false,
+   "text": "FLOOR at 08:31Z on Nov 15: executor 3992781 (buy-speed cap raised to 4) and host 3750092 are running; 0 open; no sends; no entry candidate since about 14:47:40Z on Nov 14; wallet 3,155,784,860 lamports; 2 of 20 trades toward the Am.6 gate. Lane cost-capped pnl +0.010363342 SOL over 12 round trips; it rests on one take-profit of 0.018778152 SOL, and without it the 12 closed trades sum to -0.008414810 SOL. The reset you approved is scheduled for Nov 16 17:00Z. Tip hand-off done at 06:10Z and 06:26Z; hour 06 is excluded from price-path windows. Ten simulation books run, four twin pairs read pair, and the recon is a formal FAIL by the non-rule cap, so they are not decision-grade. No book has cleared the promotion gate."
+  },
   {
    "id": "s-20261114-floor-open-sims",
    "from": "claude",
