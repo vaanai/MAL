@@ -226,6 +226,18 @@ class OrderPort:
     def balance(self) -> int | None:
         raise NotImplementedError
 
+    def prefetch_presend(self, pool: str, meta: Mapping[str, Any]) -> None:
+        """Optional: batch the independent pre-send reads (pool account, mint account, wallet) into ONE call. A no-op by default; the consumers below
+        (mint_for_pool, universe_problem, presend_balance, mint_screen_problem) run exactly the same checks on the batched values, and fall back to their own read."""
+
+    def presend_balance(self) -> int | None:
+        """The balance the wallet-floor check reads (the batched value when prefetch_presend ran just now, else balance())."""
+        return self.balance()
+
+    def stage_stamps(self, mint: str) -> dict[str, Any]:
+        """Logging only: the executor's own stage stamps of this mint's buy (state_ms, built_ms, first_send_ms, ...). Empty for a port without an executor."""
+        return {}
+
     def buy(self, order: Mapping[str, Any]) -> tuple[bool, str | None]:
         """Send (live) or log (dry) the buy. (True, None) when sent; (False, label) when the port refused before sending."""
         raise NotImplementedError
@@ -959,6 +971,13 @@ class Bridge:
         why = self.entry_refusal(row, now, lim, scope)
         pool = str(row.get("pool"))
         meta = row.get("meta") or {}
+        t_checked = self.now_ms()  # stage stamp: the local checks (entry_refusal) are done
+        if not why:
+            try:
+                self.port.prefetch_presend(pool, meta)  # one batched read; never raises, never decides
+            except Exception:  # noqa: BLE001 - the consumers below fall back to their own reads
+                pass
+        t_prefetch = self.now_ms()
         mint = self.port.mint_for_pool(pool, meta) if not why else None
         if not why and not mint:
             why = "no_mint"
@@ -991,7 +1010,7 @@ class Bridge:
         if not why and self.gates is not None:
             why = self.gate_refusal(now)
         if not why:
-            why = self.floor_problem(stake, self.port.balance(), scope)
+            why = self.floor_problem(stake, self.port.presend_balance(), scope)
         if not why:
             why = self.mint_screen_refusal(mint)  # type: ignore[arg-type]
         if why and self.cfg.profile == c0.PROFILE and why in c0.SKIP_UNIVERSE_LABELS:
@@ -1001,6 +1020,7 @@ class Bridge:
             return
         if why:
             return self._refuse(row, why, tier=tier, tier_problem=tier_prob)
+        t_reads = self.now_ms()
         # Write-ahead: the order exists on disk BEFORE the first send, so a crash cannot produce a second buy.
         order = {"order_id": oid, "pool": pool, "mint": mint, "status": "buy_sending", "stake_lamports": stake, "paper_stake_sol": row.get("stake_sol"),
                  "decision_ms": int(row["ms"]), "decision_slot": row.get("decision_slot"), "entry_seq": row["seq"], "live": live, "tier": tier,
@@ -1014,6 +1034,7 @@ class Bridge:
         d["trades" if scope else "dry_trades"] = d.get("trades" if scope else "dry_trades", 0) + 1
         order["last_action_ms"] = now
         self._save()
+        t_wa = self.now_ms()
         late = self._presend_refusal(row)  # end_ms, STOP/HALT and decision age again, after the RPCs above
         if late:
             order["status"] = "refused"
@@ -1024,6 +1045,7 @@ class Bridge:
             return
         order["send_ms"] = self.now_ms()
         ok, label = (self.port if order["live"] else self.dry_port).buy(order)
+        t_buy_done = self.now_ms()
         order["status"] = "buy_sent" if ok else "refused"
         if not ok:
             order["refused"] = label
@@ -1031,8 +1053,19 @@ class Bridge:
         self._log("buy_sent" if ok else "buy_port_refused", order_id=oid, mint=mint, stake_lamports=stake, paper_stake_sol=row.get("stake_sol"),
                   decision_ms=order["decision_ms"], send_ms=order["send_ms"], decision_to_send_ms=order["send_ms"] - order["decision_ms"],
                   decision_slot=order["decision_slot"], would_send=not order["live"], dry_reason=why_dry, tier=tier, label=label,
-                  **({"decision_seq": row["seq"]} if self.cfg.profile == c0.PROFILE else {}))  # hv4_c0: the decision row's seq, so orders can be tied back to rows (tools/hv4_c0_orders_proof.py)
+                  **({"decision_seq": row["seq"]} if self.cfg.profile == c0.PROFILE else self._stage_row(order, now, t_checked, t_prefetch, t_reads, t_wa, t_buy_done)))  # hv4_c0: the decision row's seq, so orders can be tied back to rows (tools/hv4_c0_orders_proof.py)
         self._save()
+
+    def _stage_row(self, order: Mapping[str, Any], t_entry: int, t_checked: int, t_prefetch: int, t_reads: int, t_wa: int, t_buy_done: int) -> dict[str, Any]:
+        """Logging only (never read by a decision): per-stage instants of this entry, so a slow decision-to-send can be split by stage. `stage_ms` are the bridge's
+        stages (entry_ms = handle_entry start, checked = local checks done, prefetch = batched read done, reads = every pre-send read and check done, writeahead = order
+        saved, send_call = just before port.buy, buy_return = port.buy returned); `exec_stage_ms` are the executor's own (state_ms, built_ms, first_send_ms, state_slot)."""
+        try:
+            ex = self.port.stage_stamps(str(order["mint"])) if order.get("live") else {}
+        except Exception:  # noqa: BLE001
+            ex = {}
+        return {"stage_ms": {"entry_ms": t_entry, "checked": t_checked, "prefetch": t_prefetch, "reads": t_reads, "writeahead": t_wa, "send_call": order.get("send_ms"),
+                             "buy_return": t_buy_done}, "exec_stage_ms": ex}
 
     def mint_screen_refusal(self, mint: str) -> str | None:
         """DEC-032 s3 "Venue" pre-send refusal (strand class = total loss). Called last before the write-ahead, so the mint read costs a call only when every
