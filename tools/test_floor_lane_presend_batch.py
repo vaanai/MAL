@@ -69,7 +69,7 @@ def make_rpc(clock, mint, wallet, mints, balance=500_000_000, pool_b64=None, fai
 class Run:
     """One entry through the Bridge over the real live port, old (batch False) or new (batch True), on a fake clock that the 4 rps limiter sleeps on."""
 
-    def __init__(self, tmp, batch, *, mint_val=None, balance=500_000_000, pool_b64=None, fail=(), hint=True):
+    def __init__(self, tmp, batch, *, mint_val=None, balance=500_000_000, pool_b64=None, fail=(), hint=True, no_mint_account=False):
         Keypair, Pubkey, tx, MINT, _, _ = _stack()
         self.e = Env(str(tmp), live=True)
         e = self.e
@@ -77,6 +77,8 @@ class Run:
         pool = str(tx.canonical_pool(Pubkey.from_string(MINT)))
         kp = Keypair.from_seed(bytes(range(32)))  # one key for both runs: the signed bytes are comparable
         mints = {MINT: mint_val if mint_val is not None else mint_value(mf.TOKEN_2022_PROGRAM, ext_types=ALLOW)}
+        if no_mint_account:
+            mints = {}
         self.rpc = make_rpc(e.clock, MINT, str(kp.pubkey()), mints, balance, pool_b64, fail)
 
         def sleep(s):
@@ -91,7 +93,7 @@ class Run:
         e.port = self.port
         e.live_ok.write_text("ok")  # root_checks is off in the test Bridge: the file's presence is LIVE_OK
         e.start()
-        e.entry("o1", pool=pool, **({"mint": MINT} if hint else {}))
+        e.entry("o1", pool=pool, **({"mint": hint if isinstance(hint, str) else MINT} if hint else {}))
         self.bridge = e.bridge()
         self.bridge.tick()
 
@@ -172,6 +174,81 @@ class EquivalenceTests(TmpCase):
         self.assertIsNone(port.presend_balance())
         self.assertTrue(port.universe_problem("P", _stack()[3]).startswith("pool_unreadable:"))
         self.assertTrue(port.mint_screen_problem(_stack()[3]).startswith(alb.MINT_SCREEN_LABEL + ":"))
+
+    def test_a_batch_that_fails_alone_refuses_without_serial_rereads(self):
+        # only getMultipleAccounts fails (after the limiter's retries, > 3 s): the serial reads would have passed, the batch error still refuses the entry and nothing re-reads
+        d = Path(self.tmp) / "batchonly"
+        d.mkdir()
+        r = Run(d, True, fail=("getMultipleAccounts",))
+        self.assertEqual(r.outcome()["sent"], [])
+        self.assertEqual(r.outcome()["refused"], ["no_mint"])
+        self.assertEqual(r.rpc.reads().count("getAccountInfo"), 0)
+        self.assertEqual(set(r.rpc.reads()), {"getMultipleAccounts"})  # only the retried batch attempts: no per-account reads, no vault read
+
+    def test_a_missing_wallet_account_in_the_batch_refuses(self):
+        d = Path(self.tmp) / "nowallet"
+        d.mkdir()
+        r = Run(d, True, balance=None)
+        self.assertEqual(r.outcome()["sent"], [])
+        self.assertEqual(r.outcome()["refused"], ["wallet_floor"])
+
+    def test_a_missing_mint_account_in_the_batch_refuses(self):
+        d = Path(self.tmp) / "nomintacct"
+        d.mkdir()
+        r = Run(d, True, no_mint_account=True)
+        self.assertEqual(r.outcome()["sent"], [])
+        self.assertEqual(len(r.outcome()["refused"]), 1)
+        self.assertTrue(r.outcome()["refused"][0].startswith(alb.MINT_SCREEN_LABEL + ":"), r.outcome()["refused"])
+
+    def test_a_hint_that_differs_from_the_pool_base_mint_refuses_with_the_same_label(self):
+        other = str(_stack()[1].from_string("11111111111111111111111111111112"))
+        old, new = self.both("hintdiff", hint=other)
+        self.assertEqual(old.outcome(), new.outcome())
+        self.assertEqual(new.outcome()["sent"], [])
+        self.assertEqual(new.outcome()["refused"], ["mint_pool_mismatch"])
+
+    def test_a_row_pool_that_is_not_the_canonical_pool_does_not_consume_the_batched_pool(self):
+        d = Path(self.tmp) / "noncanon"
+        d.mkdir()
+        port = Run(d, False).port
+        port.enable_presend_batch()
+        calls: list = []
+
+        def rpc(m, p):
+            calls.append((m, p))
+            if m == "getMultipleAccounts":
+                return {"context": {"slot": 1}, "value": [None, None]}
+            raise pe.RpcError("timeout")
+
+        port.ex.rpc = rpc
+        port.prefetch_presend("NotCanonical", {})
+        self.assertEqual(len(calls), 1)
+        port.universe_problem("NotCanonical", _stack()[3])
+        # the one-shot answers only the exact (getAccountInfo, [canonical pool, ...]) call; the snapshot makes its own read, which here fails
+        self.assertGreater(len(calls), 1)
+        self.assertEqual(calls[1][0], "getAccountInfo")
+
+    def test_a_batch_older_than_3_seconds_is_not_used(self):
+        d = Path(self.tmp) / "stale"
+        d.mkdir()
+        r = Run(d, False)
+        port = r.port
+        port.enable_presend_batch()
+        calls: list = []
+
+        def rpc(m, p):
+            calls.append(m)
+            if m == "getMultipleAccounts":
+                return {"context": {"slot": 1}, "value": [None, None]}
+            return {"context": {"slot": 1}, "value": None}
+
+        port.ex.rpc = rpc
+        port.prefetch_presend("P", {})
+        port.mint_for_pool("P", {})
+        self.assertEqual(calls, ["getMultipleAccounts"])  # fresh: served from the batch
+        r.e.clock.t += alb.PRESEND_BATCH_MAX_AGE_MS + 1
+        port.mint_for_pool("P", {})
+        self.assertEqual(calls, ["getMultipleAccounts", "getAccountInfo"])  # stale: its own read
 
 
 class RateAndTimingTests(TmpCase):
