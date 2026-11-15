@@ -655,4 +655,4 @@ def test_recon_fail_line_keeps_host_down_no_row_as_its_own_word(tmp_path):
     over = _fail_over("h3")
     over["counts_by_reason"] = {"sim_only:restart_lockout": 2, "sim_only:host_down_no_row": 1}
     res, _ = board_with(tmp_path, {"recon": str(recon_file(tmp_path, "FAIL", **over))})
-    assert "restart_lockout 2 (explained, not counted), host_down_no_row 1 (explained, not counted)" in res["recon_line"]
+    assert "host_down_no_row 1 (explained, not counted), restart_lockout 2 (explained, not counted)" in res["recon_line"]
