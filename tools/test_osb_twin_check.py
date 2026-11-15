@@ -541,3 +541,140 @@ def test_a_symlinked_plain_file_is_refused(tmp_path, capsys):
     p.unlink()
     p.symlink_to(real)
     refused(a, capsys, "unreadable")
+
+
+# ---- --snapshot mode (QP conditions of 2026-11-15, PR #1401): the daily re-check of running books on a copy
+import os  # noqa: E402
+import stat  # noqa: E402
+
+
+@pytest.fixture
+def snapdir(tmp_path):
+    d = tmp_path / "snap"
+    yield d
+    if d.exists():
+        for cur, dirs, files in os.walk(d):
+            os.chmod(cur, 0o700)
+            for f in files:
+                if not os.path.islink(os.path.join(cur, f)):
+                    os.chmod(os.path.join(cur, f), 0o600)
+
+
+def tree_state(root):
+    """{relative path: (mtime_ns, sha-ish content)} of every file and dir under root, symlinks by target"""
+    out = {}
+    for cur, dirs, files in os.walk(root):
+        for n in dirs + files:
+            p = os.path.join(cur, n)
+            st = os.lstat(p)
+            out[os.path.relpath(p, root)] = (st.st_mtime_ns, os.readlink(p) if os.path.islink(p) else (open(p, "rb").read() if os.path.isfile(p) else None))
+    return out
+
+
+def snap_args(tmp, kind, snap, **kw):
+    return setup(tmp, kind, with_oncopy=False, **kw) + ["--snapshot", str(snap)]
+
+
+def text_run(args, capsys):
+    code = T.main(args)
+    cap = capsys.readouterr()
+    return code, cap.out, cap.err
+
+
+def test_flag_absent_output_is_identical_to_run_check(tmp_path, capsys):
+    args = setup(tmp_path, "gap-hold")
+    code, out, err = text_run(args, capsys)
+    ref = T.run_check("gap-hold", args[args.index("--strict-run") + 1], args[args.index("--twin-run") + 1], args[args.index("--on-copy-run") + 1], args[args.index("--strict-manifest") + 1],
+                      args[args.index("--twin-manifest") + 1])
+    assert out == json.dumps(ref, indent=1, sort_keys=True) + "\n" and code == 0 and '"overall": "PASS"' in out and "snapshot" not in out
+    assert (tmp_path / "out.json").read_text() == out
+
+
+@pytest.mark.parametrize("kind", KINDS)
+def test_clean_snapshot_gives_the_pass_line_and_a_read_only_tree(tmp_path, capsys, snapdir, kind):
+    code, out, err = text_run(snap_args(tmp_path, kind, snapdir), capsys)
+    names = "C3/C4/C5" if kind == "gap-hold" else "L3/L4/L5"
+    assert code == 0, err
+    assert out.splitlines()[-1] == "%s PASS (daily re-check on a snapshot; C2r/L2r not part of it)" % names
+    first = "C1: not part of the daily re-check" if kind == "gap-hold" else "L1: not part of the daily re-check"
+    assert first in out and "overall" not in out and "NOT_MET" not in out
+    res = json.loads((tmp_path / "out.json").read_text())
+    assert "overall" not in res and res["snapshot"]["equal"] is True and set(res["snapshot"]["before_copy"]) == {"strict", "twin"} and res["snapshot"]["before_copy"] == res["snapshot"]["after_copy"]
+    assert res["snapshot"]["before_copy"]["twin"]["last_hour"] == max(HOURS) and res["snapshot"]["before_copy"]["twin"]["decisions_md5"] == "d" * 32
+    assert res["runs"]["strict"] == str(snapdir / "strict") and res["conditions"][NAMES[kind][0]]["status"] == "not part of the daily re-check"
+    assert stat.S_IMODE(os.stat(snapdir).st_mode) == 0o500
+    for cur, dirs, files in os.walk(snapdir):
+        for n in files:
+            p = os.path.join(cur, n)
+            assert os.path.islink(p) or not (os.stat(p).st_mode & 0o222), p
+        assert not (os.stat(cur).st_mode & 0o222), cur
+    assert os.path.islink(snapdir / "strict" / "book") and os.readlink(snapdir / "strict" / "book") == "runs/0001"
+
+
+def test_snapshot_with_a_failing_condition_names_it_and_is_not_met(tmp_path, capsys, snapdir):
+    bad = [r for r in GAP_TWIN]
+    bad[0] = trade("p1", 0.1, exit_reason="tampered")
+    code, out, err = text_run(snap_args(tmp_path, "gap-hold", snapdir, trows=bad), capsys)
+    assert code == 3 and out.splitlines()[-1] == "C3/C4/C5 FAIL (C4)" and "overall" not in out
+
+
+def test_source_that_changes_between_the_before_and_after_reads_gives_retry_and_no_snapshot(tmp_path, capsys, snapdir, monkeypatch):
+    args = snap_args(tmp_path, "gap-hold", snapdir)
+
+    def step(role, d):  # an hour step lands on the twin during the copy
+        if role == "twin":
+            with open(Path(d) / "md5-by-hour.jsonl", "a") as fh:
+                fh.write(json.dumps({"hour": "2026-11-05T06", "end_ms": 0, "ledger_md5": "x", "decision_md5": "y"}) + "\n")
+    monkeypatch.setattr(T, "_COPY_HOOK", step)
+    code, out, err = text_run(args, capsys)
+    assert code == T.EXIT_RETRY == 4 and "RETRY" in err and out == "" and not snapdir.exists() and not (tmp_path / "out.json").exists()
+
+
+def test_decisions_md5_change_alone_is_a_retry(tmp_path, capsys, snapdir, monkeypatch):
+    monkeypatch.setattr(T, "_COPY_HOOK", lambda role, d: (Path(d) / "decisions.md5").write_text("e" * 32 + "\n") if role == "strict" else None)
+    code, out, err = text_run(snap_args(tmp_path, "latency", snapdir), capsys)
+    assert code == 4 and "RETRY" in err and not snapdir.exists()
+
+
+def test_an_existing_non_empty_dir_is_refused_and_an_empty_one_is_used(tmp_path, capsys, snapdir):
+    snapdir.mkdir()
+    (snapdir / "x").write_text("keep")
+    code, out, err = text_run(snap_args(tmp_path, "gap-hold", snapdir), capsys)
+    assert code == 2 and "not an empty directory" in err and (snapdir / "x").read_text() == "keep" and not (snapdir / "strict").exists()
+    (snapdir / "x").unlink()
+    (tmp_path / "again").mkdir()
+    code, out, err = text_run(setup(tmp_path / "again", "gap-hold", with_oncopy=False) + ["--snapshot", str(snapdir)], capsys)
+    assert code == 0 and out.splitlines()[-1].startswith("C3/C4/C5 PASS")
+
+
+def test_a_symlink_leaving_the_run_dir_is_refused_and_nothing_is_left(tmp_path, capsys, snapdir):
+    args = snap_args(tmp_path, "gap-hold", snapdir)
+    outside = tmp_path / "outside.txt"
+    outside.write_text("x")
+    (tmp_path / "twin" / "leak").symlink_to(outside)
+    code, out, err = text_run(args, capsys)
+    assert code == 2 and "leaves the run dir" in err and not snapdir.exists()
+
+
+def test_the_snapshot_dir_may_not_be_inside_a_source_run(tmp_path, capsys):
+    args = setup(tmp_path, "gap-hold", with_oncopy=False) + ["--snapshot", str(tmp_path / "strict" / "snap")]
+    code, out, err = text_run(args, capsys)
+    assert code == 2 and "inside a source run dir" in err and not (tmp_path / "strict" / "snap").exists()
+
+
+def test_the_summary_and_output_never_contain_overall_and_sources_are_untouched(tmp_path, capsys, snapdir):
+    args = snap_args(tmp_path, "latency", snapdir)
+    before = {n: tree_state(tmp_path / n) for n in ("strict", "twin")}
+    code, out, err = text_run(args, capsys)
+    assert code == 0 and "overall" not in out and "overall" not in (tmp_path / "out.json").read_text()
+    assert {n: tree_state(tmp_path / n) for n in ("strict", "twin")} == before  # contents and mtimes unchanged, no file added
+
+
+def test_snapshot_keeps_must_cover_working_on_the_copy(tmp_path, capsys, snapdir):
+    code, out, err = text_run(snap_args(tmp_path, "gap-hold", snapdir) + ["--must-cover-from", "2026-11-05T00", "--must-cover-hours", "6"], capsys)
+    assert code == 0 and "PASS" in out.splitlines()[-1]
+    (tmp_path / "s2").mkdir()
+    code, out, err = text_run(setup(tmp_path / "s2", "gap-hold", with_oncopy=False) + ["--snapshot", str(tmp_path / "snap2"), "--must-cover-from", "2026-11-05T00", "--must-cover-hours", "7"], capsys)
+    assert code == 2 and "does not contain" in err
+    for cur, dirs, files in os.walk(tmp_path / "snap2"):
+        os.chmod(cur, 0o700)
