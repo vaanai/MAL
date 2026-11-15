@@ -101,7 +101,7 @@ def collect_sells(rpc: Rpc, n_blocks: int, step: int) -> tuple[dict[str, list[st
     slot = tip
     while read < n_blocks and slot > D_SWAP + 150:
         blk = rpc("getBlock", [slot, {"encoding": "json", "transactionDetails": "full", "rewards": False,
-                                      "maxSupportedTransactionVersion": 0, "commitment": "finalized"}])
+                                      "maxSupportedTransactionVersion": 1, "commitment": "finalized"}])
         slot -= step
         if not blk:
             continue
