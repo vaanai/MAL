@@ -48,7 +48,7 @@ def make_run(tmp, name, manifest_dict, rows, hours=HOURS, md5s=None, dmd5="d" * 
     (led / "rows.jsonl").write_text("".join(json.dumps(r) + "\n" for r in ident + list(rows)))
     (out / "book").symlink_to("runs/0001")
     md5s = md5s or {h: ("L" + h, "D" + h) for h in hours}
-    (out / "md5-by-hour.jsonl").write_text("".join(json.dumps({"hour": h, "end_ms": 0, "ledger_md5": md5s[h][0], "decision_md5": md5s[h][1]}) + "\n" for h in hours))
+    (out / "md5-by-hour.jsonl").write_text("".join(json.dumps({"hour": h, "end_ms": 10**13, "ledger_md5": md5s[h][0], "decision_md5": md5s[h][1]}) + "\n" for h in hours))
     (out / "status.json").write_text(json.dumps({"last_hour": last or max(hours)}))
     (out / "decisions.md5").write_text(dmd5 + "\n")
     (out / "manifest.sha256").write_text(O.manifest_sha256(manifest_dict) + "\n")
@@ -541,3 +541,267 @@ def test_a_symlinked_plain_file_is_refused(tmp_path, capsys):
     p.unlink()
     p.symlink_to(real)
     refused(a, capsys, "unreadable")
+
+
+# ---- --snapshot mode (QP conditions of 2026-11-15, PR #1401): the daily re-check of running books on a copy
+import os  # noqa: E402
+import stat  # noqa: E402
+
+
+@pytest.fixture
+def snapdir(tmp_path):
+    d = tmp_path / "snap"
+    yield d
+    if d.exists():
+        for cur, dirs, files in os.walk(d):
+            os.chmod(cur, 0o700)
+            for f in files:
+                if not os.path.islink(os.path.join(cur, f)):
+                    os.chmod(os.path.join(cur, f), 0o600)
+
+
+def tree_state(root):
+    """{relative path: (mtime_ns, sha-ish content)} of every file and dir under root, symlinks by target"""
+    out = {}
+    for cur, dirs, files in os.walk(root):
+        for n in dirs + files:
+            p = os.path.join(cur, n)
+            st = os.lstat(p)
+            out[os.path.relpath(p, root)] = (st.st_mtime_ns, os.readlink(p) if os.path.islink(p) else (open(p, "rb").read() if os.path.isfile(p) else None))
+    return out
+
+
+def snapfix(args):
+    """snapshot fixtures: the last md5-by-hour line of the strict and twin runs carries the REAL osb_follow.tree_md5 of the run's ledger (as the driver writes it right after the hour ran)"""
+    for flag in ("--strict-run", "--twin-run"):
+        d = Path(args[args.index(flag) + 1])
+        f = d / "md5-by-hour.jsonl"
+        lines = [json.loads(ln) for ln in f.read_text().splitlines() if ln.strip()]
+        lines[-1]["ledger_md5"] = O.tree_md5(d / "runs" / "0001" / "ledger")
+        f.write_text("".join(json.dumps(r) + "\n" for r in lines))
+    return args
+
+
+def setup_s(*a, **k):
+    return snapfix(setup(*a, **k))
+
+
+def snap_args(tmp, kind, snap, **kw):
+    return setup_s(tmp, kind, with_oncopy=False, **kw) + ["--snapshot", str(snap)]
+
+
+def text_run(args, capsys):
+    code = T.main(args)
+    cap = capsys.readouterr()
+    return code, cap.out, cap.err
+
+
+def test_flag_absent_output_is_identical_to_run_check(tmp_path, capsys):
+    args = setup(tmp_path, "gap-hold")
+    code, out, err = text_run(args, capsys)
+    ref = T.run_check("gap-hold", args[args.index("--strict-run") + 1], args[args.index("--twin-run") + 1], args[args.index("--on-copy-run") + 1], args[args.index("--strict-manifest") + 1],
+                      args[args.index("--twin-manifest") + 1])
+    assert out == json.dumps(ref, indent=1, sort_keys=True) + "\n" and code == 0 and '"overall": "PASS"' in out and "snapshot" not in out
+    assert (tmp_path / "out.json").read_text() == out
+
+
+@pytest.mark.parametrize("kind", KINDS)
+def test_clean_snapshot_gives_the_pass_line_and_a_read_only_tree(tmp_path, capsys, snapdir, kind):
+    code, out, err = text_run(snap_args(tmp_path, kind, snapdir), capsys)
+    names = "C3/C4/C5" if kind == "gap-hold" else "L3/L4/L5"
+    assert code == 0, err
+    assert out.splitlines()[-1] == "%s PASS (daily re-check on a snapshot; C2r/L2r not part of it)" % names
+    first = "C1: not part of the daily re-check" if kind == "gap-hold" else "L1: not part of the daily re-check"
+    assert first in out and "overall" not in out and "NOT_MET" not in out
+    res = json.loads((tmp_path / "out.json").read_text())
+    assert "overall" not in res and res["snapshot"]["equal"] is True and set(res["snapshot"]["before_copy"]) == {"strict", "twin"} and res["snapshot"]["before_copy"] == res["snapshot"]["after_copy"]
+    assert res["snapshot"]["before_copy"]["twin"]["last_hour"] == max(HOURS) and res["snapshot"]["before_copy"]["twin"]["decisions_md5"] == "d" * 32
+    assert res["runs"]["strict"] == str(snapdir / "strict") and res["conditions"][NAMES[kind][0]]["status"] == "not part of the daily re-check"
+    assert stat.S_IMODE(os.stat(snapdir).st_mode) == 0o500
+    for cur, dirs, files in os.walk(snapdir):
+        for n in files:
+            p = os.path.join(cur, n)
+            assert os.path.islink(p) or not (os.stat(p).st_mode & 0o222), p
+        assert not (os.stat(cur).st_mode & 0o222), cur
+    assert os.path.islink(snapdir / "strict" / "book") and os.readlink(snapdir / "strict" / "book") == "runs/0001"
+
+
+def test_snapshot_with_a_failing_condition_names_it_and_is_not_met(tmp_path, capsys, snapdir):
+    bad = [r for r in GAP_TWIN]
+    bad[0] = trade("p1", 0.1, exit_reason="tampered")
+    code, out, err = text_run(snap_args(tmp_path, "gap-hold", snapdir, trows=bad), capsys)
+    assert code == 3 and out.splitlines()[-1] == "C3/C4/C5 FAIL (C4)" and "overall" not in out
+
+
+def test_source_that_changes_between_the_before_and_after_reads_gives_retry_and_no_snapshot(tmp_path, capsys, snapdir, monkeypatch):
+    args = snap_args(tmp_path, "gap-hold", snapdir)
+
+    def step(role, d):  # an hour step lands on the twin during the copy
+        if role == "twin":
+            with open(Path(d) / "md5-by-hour.jsonl", "a") as fh:
+                fh.write(json.dumps({"hour": "2026-11-05T06", "end_ms": 0, "ledger_md5": "x", "decision_md5": "y"}) + "\n")
+    monkeypatch.setattr(T, "_COPY_HOOK", step)
+    code, out, err = text_run(args, capsys)
+    assert code == T.EXIT_RETRY == 4 and "RETRY" in err and out == "" and not snapdir.exists() and not (tmp_path / "out.json").exists()
+
+
+def test_decisions_md5_change_alone_is_a_retry(tmp_path, capsys, snapdir, monkeypatch):
+    monkeypatch.setattr(T, "_COPY_HOOK", lambda role, d: (Path(d) / "decisions.md5").write_text("e" * 32 + "\n") if role == "strict" else None)
+    code, out, err = text_run(snap_args(tmp_path, "latency", snapdir), capsys)
+    assert code == 4 and "RETRY" in err and not snapdir.exists()
+
+
+def test_an_existing_non_empty_dir_is_refused_and_an_empty_one_is_used(tmp_path, capsys, snapdir):
+    snapdir.mkdir()
+    (snapdir / "x").write_text("keep")
+    code, out, err = text_run(snap_args(tmp_path, "gap-hold", snapdir), capsys)
+    assert code == 2 and "not an empty directory" in err and (snapdir / "x").read_text() == "keep" and not (snapdir / "strict").exists()
+    (snapdir / "x").unlink()
+    (tmp_path / "again").mkdir()
+    code, out, err = text_run(setup_s(tmp_path / "again", "gap-hold", with_oncopy=False) + ["--snapshot", str(snapdir)], capsys)
+    assert code == 0 and out.splitlines()[-1].startswith("C3/C4/C5 PASS")
+
+
+def test_a_symlink_leaving_the_run_dir_is_refused_and_nothing_is_left(tmp_path, capsys, snapdir):
+    args = snap_args(tmp_path, "gap-hold", snapdir)
+    outside = tmp_path / "outside.txt"
+    outside.write_text("x")
+    (tmp_path / "twin" / "leak").symlink_to(outside)
+    code, out, err = text_run(args, capsys)
+    assert code == 2 and "leaves the run dir" in err and not snapdir.exists()
+
+
+def test_the_snapshot_dir_may_not_be_inside_a_source_run(tmp_path, capsys):
+    args = setup_s(tmp_path, "gap-hold", with_oncopy=False) + ["--snapshot", str(tmp_path / "strict" / "snap")]
+    code, out, err = text_run(args, capsys)
+    assert code == 2 and "inside a source run dir" in err and not (tmp_path / "strict" / "snap").exists()
+
+
+def test_the_summary_and_output_never_contain_overall_and_sources_are_untouched(tmp_path, capsys, snapdir):
+    args = snap_args(tmp_path, "latency", snapdir)
+    before = {n: tree_state(tmp_path / n) for n in ("strict", "twin")}
+    code, out, err = text_run(args, capsys)
+    assert code == 0 and "overall" not in out and "overall" not in (tmp_path / "out.json").read_text()
+    assert {n: tree_state(tmp_path / n) for n in ("strict", "twin")} == before  # contents and mtimes unchanged, no file added
+
+
+def test_snapshot_keeps_must_cover_working_on_the_copy(tmp_path, capsys, snapdir):
+    code, out, err = text_run(snap_args(tmp_path, "gap-hold", snapdir) + ["--must-cover-from", "2026-11-05T00", "--must-cover-hours", "6"], capsys)
+    assert code == 0, err
+    assert "PASS" in out.splitlines()[-1]
+    (tmp_path / "s2").mkdir()
+    code, out, err = text_run(setup_s(tmp_path / "s2", "gap-hold", with_oncopy=False) + ["--snapshot", str(tmp_path / "snap2"), "--must-cover-from", "2026-11-05T00", "--must-cover-hours", "7"], capsys)
+    assert code == 2 and "does not contain" in err
+    for cur, dirs, files in os.walk(tmp_path / "snap2"):
+        os.chmod(cur, 0o700)
+
+
+# ---- --snapshot: an hour in progress (ledger rows land BEFORE the hour's md5 line) is RETRY, never a verdict or a refusal
+def ledger_file(tmp, name):
+    return tmp / name / "runs" / "0001" / "ledger" / "botA" / "rows.jsonl"
+
+
+def test_a_trade_row_appended_between_the_two_reads_is_retry(tmp_path, capsys, snapdir, monkeypatch):
+    args = snap_args(tmp_path, "gap-hold", snapdir)
+
+    def append(role, d):  # a complete trade row of the hour in progress; no md5-by-hour line yet
+        if role == "strict":
+            with open(ledger_file(tmp_path, "twin"), "a") as fh:
+                fh.write(json.dumps(trade("p9", 0.1)) + "\n")
+    monkeypatch.setattr(T, "_COPY_HOOK", append)
+    code, out, err = text_run(args, capsys)
+    assert code == 4 and "RETRY" in err and out == "" and not snapdir.exists() and not (tmp_path / "out.json").exists()
+
+
+def test_a_row_written_after_the_last_verified_hour_is_retry(tmp_path, capsys, snapdir):
+    args = snap_args(tmp_path, "gap-hold", snapdir)
+    with open(ledger_file(tmp_path, "twin"), "a") as fh:  # written_ms is the engine clock; the last verified hour ends at end_ms 10**13
+        fh.write(json.dumps(trade("p9", 0.1, written_ms=10**13 + 1)) + "\n")
+    code, out, err = text_run(args, capsys)
+    assert code == 4 and "RETRY" in err and out == "" and not snapdir.exists()
+
+
+def test_a_row_written_exactly_at_the_end_of_the_last_hour_is_not_retry(tmp_path, capsys, snapdir):
+    args = snap_args(tmp_path, "gap-hold", snapdir, trows=GAP_TWIN + [trade("p1", 0.1, written_ms=10**13)])
+    code, out, err = text_run(args, capsys)
+    assert code != 4 and "RETRY" not in err
+
+
+def test_a_half_written_last_line_is_retry_not_a_refusal(tmp_path, capsys, snapdir):
+    args = snap_args(tmp_path, "gap-hold", snapdir)
+    with open(ledger_file(tmp_path, "twin"), "a") as fh:
+        fh.write('{"kind": "trade", "position_id": "p9", "sta')
+    code, out, err = text_run(args, capsys)
+    assert code == 4 and "RETRY" in err and "refused" not in err and out == "" and not snapdir.exists()
+    assert not (tmp_path / "out.json").exists()
+
+
+def test_a_clean_hour_boundary_still_passes_with_row_times_inside_the_last_hour(tmp_path, capsys, snapdir):
+    code, out, err = text_run(snap_args(tmp_path, "latency", snapdir), capsys)
+    assert code == 0 and out.splitlines()[-1].startswith("L3/L4/L5 PASS")
+
+
+def test_only_the_active_run_and_the_files_the_checks_read_are_copied(tmp_path, capsys, snapdir):
+    args = snap_args(tmp_path, "gap-hold", snapdir)
+    old = tmp_path / "twin" / "runs" / "0000" / "ledger" / "botA"
+    old.mkdir(parents=True)
+    (old / "rows.jsonl").write_text("old\n")
+    (tmp_path / "twin" / "scratch.tmp").write_text("x")
+    code, out, err = text_run(args, capsys)
+    assert code == 0, err
+    assert not (snapdir / "twin" / "runs" / "0000").exists() and not (snapdir / "twin" / "scratch.tmp").exists() and (snapdir / "twin" / "runs" / "0001" / "ledger" / "botA" / "rows.jsonl").is_file()
+    res = json.loads((tmp_path / "out.json").read_text())
+    assert "ledger dir of the active run" in res["snapshot"]["copied"] and "md5-by-hour.jsonl" in res["snapshot"]["copied"]
+
+
+def test_a_failing_snapshot_is_kept_read_only_and_says_so_a_refusal_removes_it(tmp_path, capsys, snapdir):
+    bad = list(GAP_TWIN)
+    bad[0] = trade("p1", 0.1, exit_reason="tampered")
+    code, out, err = text_run(snap_args(tmp_path, "gap-hold", snapdir, trows=bad), capsys)
+    res = json.loads((tmp_path / "out.json").read_text())
+    assert code == 3 and snapdir.is_dir() and res["snapshot"]["kept_read_only_as_evidence"] is True and not (os.stat(snapdir).st_mode & 0o222)
+    (tmp_path / "r").mkdir()
+    code, out, err = text_run(setup_s(tmp_path / "r", "gap-hold", with_oncopy=False) + ["--snapshot", str(tmp_path / "snapr"), "--must-cover-from", "2026-11-05T00", "--must-cover-hours", "7"], capsys)
+    assert code == 2 and not (tmp_path / "snapr").exists()
+
+
+def test_setfacl_failure_refuses_before_any_copy_and_its_absence_is_noted(tmp_path, capsys, snapdir, monkeypatch):
+    args = snap_args(tmp_path, "gap-hold", snapdir)
+    monkeypatch.setattr(T.shutil, "which", lambda n: "/bin/setfacl")
+    monkeypatch.setattr(T.subprocess, "run", lambda *a, **k: type("R", (), {"returncode": 1})())
+    code, out, err = text_run(args, capsys)
+    assert code == 2 and "setfacl" in err and not snapdir.exists()
+    monkeypatch.setattr(T.shutil, "which", lambda n: None)
+    code, out, err = text_run(args, capsys)
+    assert code == 0 and "setfacl is not installed" in err
+
+
+def test_on_copy_run_is_ignored_with_a_note_in_snapshot_mode(tmp_path, capsys, snapdir):
+    args = setup_s(tmp_path, "gap-hold") + ["--snapshot", str(snapdir)]
+    code, out, err = text_run(args, capsys)
+    assert code == 0 and "--on-copy-run is ignored" in err and not (snapdir / "on_copy").exists()
+    assert json.loads((tmp_path / "out.json").read_text())["snapshot"]["on_copy_run_ignored"] is True
+
+
+def test_a_last_second_row_of_the_next_hour_is_retry_by_the_tree_md5_and_the_message_names_it(tmp_path, capsys, snapdir):
+    """a trade row stamped BEFORE the end of the last verified hour (written_ms = end_ms - 500, as a row of the last second written by the next hour's run) appended after the last md5 line: the written_ms
+    rule cannot see it, the ledger_md5 of the last md5-by-hour line can"""
+    args = snap_args(tmp_path, "gap-hold", snapdir)
+    with open(ledger_file(tmp_path, "twin"), "a") as fh:
+        fh.write(json.dumps(trade("p9", 0.1, written_ms=10**13 - 500)) + "\n")
+    code, out, err = text_run(args, capsys)
+    assert code == 4 and "RETRY" in err and "ledger's md5 differs from the ledger_md5 of the last md5-by-hour line" in err and out == "" and not snapdir.exists()
+    assert not (tmp_path / "out.json").exists()
+
+
+def test_retry_messages_name_their_cause(tmp_path, capsys, snapdir, monkeypatch):
+    args = snap_args(tmp_path, "gap-hold", snapdir)
+
+    def step(role, d):
+        if role == "twin":
+            with open(Path(d) / "md5-by-hour.jsonl", "a") as fh:
+                fh.write(json.dumps({"hour": "2026-11-05T06", "end_ms": 0, "ledger_md5": "x", "decision_md5": "y"}) + "\n")
+    monkeypatch.setattr(T, "_COPY_HOOK", step)
+    assert text_run(args, capsys)[2].count("an hour step landed during the copy (twin)") == 1
+    monkeypatch.setattr(T, "_COPY_HOOK", lambda role, d: open(ledger_file(tmp_path, "strict"), "a").write(json.dumps(trade("p9", 0.1)) + "\n") if role == "twin" else None)
+    assert "the ledger changed during the copy (strict)" in text_run(args, capsys)[2]
