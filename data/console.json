@@ -1,15 +1,31 @@
 {
  "schema_version": "console.v1",
- "updated_utc": "2026-11-15T08:31:00Z",
+ "updated_utc": "2026-11-15T17:09:00Z",
  "review_windows": [],
  "events": [
   {
-   "id": "latency-twins-started-1115",
-   "kind": "job",
-   "atUtc": "2026-11-15T03:37:00Z",
+   "id": "killline-pass-1115",
+   "kind": "result",
+   "atUtc": "2026-11-15T17:08:00Z",
    "approx": false,
-   "title": "Latency twin books A-lt-a (#2772) and A-lt-c (#2791) started; all four twin pairs read pair",
-   "detail": "Proof #2725 passed and twin check #2790 passed (notebook n_KDLhMJkiXiDdLg) before the A-lt-c start. A-lt-a left the memory queue at about 03:34Z. The board is one job, #2792, with 10 books; at 05:31Z all four twin pairs read pair. Daily twin re-check on a snapshot: C3/C4/C5 PASS (daily re-check on a snapshot; C2r/L2r not part of it). Evidence is thin (3 priced positions per stake). The recon still reads FAIL only by the non-rule cap (matched 2, live-only 0, sim-only 3), so the books are not decision-grade. These are paper simulations. No book has cleared the promotion gate."
+   "title": "Kill-line check of the 11-14 host restart PASSED (job #2825)",
+   "detail": "The check replays the rule without the restart and compares it with the live entries after the restart. Result: KILLCHECK PASS. 1 cheap restart checked; 2 live entries after it; 0 live entries on a pool the reference held; pins ok; tape 301 of 301 hours. It is a backstop, not a proof. It shows no fills, no slippage, no P&L and no missed entries. A partial run at 15:52Z (job #2816, 1 entry) is not the check of record. Helm was told (notice HELM-ASK-1115-2); the hold on host restarts ends. Nothing here says FLOOR makes money. No book has cleared the promotion gate."
+  },
+  {
+   "id": "floor-buy-2-1115",
+   "kind": "job",
+   "atUtc": "2026-11-15T13:12:55Z",
+   "approx": false,
+   "title": "FLOOR second live buy: sent 2026-11-15T13:12:55Z, 1,089 ms after the decision",
+   "detail": "Order 04249ae1071ed17d, landed 11 slots after the decision. Two positions are open now. Two buys are not a result yet; the read is at the 10th buy. No refusals in the window. No book has cleared the promotion gate."
+  },
+  {
+   "id": "floor-buy-1-1115",
+   "kind": "job",
+   "atUtc": "2026-11-15T11:06:28Z",
+   "approx": false,
+   "title": "FLOOR first live buy since Nov 13: sent 2026-11-15T11:06:28Z, 1,068 ms after the decision",
+   "detail": "Order 4b6ee798bd567c3e, landed. Before the cap raise the same step took about 2,048 to 2,105 ms (11 of 12 buys). One buy is not a result yet; the read is at the 10th buy. The A3 guard did not pause this entry (0 a3 rows). No book has cleared the promotion gate."
   },
   {
    "id": "forward-ab-1115",
@@ -20,6 +36,14 @@
    "detail": "Job #2784 passed (notebook n_Zi6ev38wx5Zccw). Forward complete days: 2 of 3 (11-12 and 11-13). Pooled forward base: 5 entries, 3 closed, total 0.023793 SOL. Vault1.0: 7 entries, 3 closed, total 0.023793 (paper; all 3 closed positions are on 11-13, one day). Like-for-like delta +0.000000 on 3 pairs. 11-14 is incomplete. No conclusion: the vault1.0 decision comes only after at least 7 complete forward days (about 11-20). No book has cleared the promotion gate."
   },
   {
+   "id": "tip-handoff-1115",
+   "kind": "record",
+   "atUtc": "2026-11-15T06:26:00Z",
+   "approx": false,
+   "title": "Tip writer and push hand-off done (planned); hour 2026-11-15T06 is an excluded price-path hour",
+   "detail": "Writer #2033 stopped at its 335 h limit (last step 06:08:19.236Z). Gate #2501 RELEASE 06:10:33Z. Successor writer #2503 started 06:10:35Z (resumed, caught up, REFUSED 0). Writer downtime 137.3 s. Push #2039 stopped at its limit. Gate #2502 RELEASE 06:25:48Z. Successor push #2504 started 06:25:53Z (REFUSED 0, MISMATCH 0). Push pause about 2.5 min. Hour 2026-11-15T06 fails writer_hour_complete for every covered tip-source window that holds it (runbook section 0), so it is excluded. Check jobs #2795 to #2797. No book has cleared the promotion gate."
+  },
+  {
    "id": "floor-reset-scheduled-1115",
    "kind": "decision",
    "atUtc": "2026-11-15T06:10:00Z",
@@ -28,12 +52,12 @@
    "detail": "HELM-REPLY-1108-1-YES: the owner said in the Helm chat at 2026-11-14T22:49Z: \"claude tells me I need to give me yes for the FLOOR reset otherwise it stops after 11-22 so yes to that\". Helm scheduled the reset for Mon 2026-11-16T17:00Z (executor only, pin e5fd255b, config 32991fe5, no host restart). Question q_fiwloTyG5CQFQw is closed. Not yet run. A window reset record follows after HELM-REPLY-1108-1. No executor change has happened since 2026-11-14T22:14:45Z. No book has cleared the promotion gate."
   },
   {
-   "id": "tip-handoff-1115",
-   "kind": "record",
-   "atUtc": "2026-11-15T06:26:00Z",
+   "id": "latency-twins-started-1115",
+   "kind": "job",
+   "atUtc": "2026-11-15T03:37:00Z",
    "approx": false,
-   "title": "Tip writer and push hand-off done (planned); hour 2026-11-15T06 is an excluded price-path hour",
-   "detail": "Writer #2033 stopped at its 335 h limit (last step 06:08:19.236Z). Gate #2501 RELEASE 06:10:33Z. Successor writer #2503 started 06:10:35Z (resumed, caught up, REFUSED 0). Writer downtime 137.3 s. Push #2039 stopped at its limit. Gate #2502 RELEASE 06:25:48Z. Successor push #2504 started 06:25:53Z (REFUSED 0, MISMATCH 0). Push pause about 2.5 min. Hour 2026-11-15T06 fails writer_hour_complete for every covered tip-source window that holds it (runbook section 0), so it is excluded. Check jobs #2795 to #2797. No book has cleared the promotion gate."
+   "title": "Latency twin books A-lt-a (#2772) and A-lt-c (#2791) started; all four twin pairs read pair",
+   "detail": "Proof #2725 passed and twin check #2790 passed (notebook n_KDLhMJkiXiDdLg) before the A-lt-c start. A-lt-a left the memory queue at about 03:34Z. The board is one job, #2792, with 10 books; at 05:31Z all four twin pairs read pair. Daily twin re-check on a snapshot: C3/C4/C5 PASS (daily re-check on a snapshot; C2r/L2r not part of it). Evidence is thin (3 priced positions per stake). The recon still reads FAIL only by the non-rule cap (matched 2, live-only 0, sim-only 3), so the books are not decision-grade. These are paper simulations. No book has cleared the promotion gate."
   },
   {
    "id": "am8a-host-installed-1114",
@@ -1889,8 +1913,8 @@
   {
    "id": "FLOOR",
    "title": "FLOOR",
-   "stage": "LIVE in DEC-035 lane as floor-lane-1 (since 2026-11-08T14:19:43Z); EXP-029 read done 2026-11-14T01:00:18Z: FAIL (procedural); Am.6 gate count 2 of 20",
-   "note": "floor-lane-1 is live on mal-fast-0: stake 0.10 SOL, budget 1.20 SOL, daily stop 0.20 SOL, max_open 16. At 2026-11-14T15:31Z: wallet 3,155,784,860 lamports, 0 open, lane cost-capped pnl +0.010363342 SOL over 12 round trips (without one take-profit of 0.018778152 SOL: -0.008414810 SOL), Amendment 6 gate count 2 of 20 closed 0.10 trades. Executor PID 3018006 (Am.8 part B, 2026-11-13T17:40:26Z); host PID 3750092 (Am.8 part A, 2026-11-14T15:01Z, the first cheap restart); the kill-line check is owed after the first live entry. A3 re-pinned (loop #2708), so FLOOR is not blocked by the pump redeploy. Am.10 (rpc_rps) merged, not installed. A count, not a gate read. No profit claim. No book has cleared the promotion gate.",
+   "stage": "LIVE in DEC-035 lane as floor-lane-1 (since 2026-11-08T14:19:43Z); EXP-029 read done 2026-11-14T01:00:18Z: FAIL (procedural); Am.6 gate count 2 of 20; 2 positions open at 2026-11-15T16:31Z",
+   "note": "floor-lane-1 is live on mal-fast-0: stake 0.10 SOL, budget 1.20 SOL, daily stop 0.20 SOL, max_open 16. At 2026-11-15T16:31Z: wallet 2,952,437,180 lamports, 2 open (live buys of 2026-11-15T11:06:28Z and 13:12:55Z, no exits), lane cost-capped pnl +0.010363342 SOL over 12 round trips (without one take-profit of 0.018778152 SOL: -0.008414810 SOL), Amendment 6 gate count 2 of 20 closed 0.10 trades. Executor PID 3992781 (Am.10, 2026-11-14T22:14:45Z); host PID 3750092 (Am.8 part A, 2026-11-14T15:01Z, the first cheap restart); the kill-line check passed at 2026-11-15T17:08Z (job #2825). A3 re-pinned (loop #2708), so FLOOR is not blocked by the pump redeploy. Am.10 (rpc_rps 4.0) installed 2026-11-14T22:14:45Z; 2 live buys measured so far (1,068 ms and 1,089 ms), not a result until the 10th buy. A count, not a gate read. No profit claim. No book has cleared the promotion gate.",
    "tag": {
     "text": "LIVE (lane)",
     "tone": "accent"
@@ -2181,8 +2205,8 @@
   {
    "id": "fy-20261115-no-open-items",
    "from": "claude",
-   "text": "Nothing is waiting on you. The FLOOR reset you approved is scheduled by Helm for Nov 16, 9:00 AM PST (17:00 UTC). FLOOR has not traded since Nov 13: there has been no entry candidate since entries were re-allowed on Nov 14, and the open simulation of the same rule also shows none. The wallet holds 3.155784860 SOL. No book has cleared the promotion gate.",
-   "atUtc": "2026-11-15T08:31:00Z"
+   "text": "Nothing is waiting on you. The FLOOR reset you approved is scheduled by Helm for Nov 16, 9:00 AM PST (17:00 UTC). FLOOR made two live buys on Nov 15 (11:06:28Z and 13:12:55Z); both are still open, and two buys are not a result yet. The kill-line check of the Nov 14 restart passed. The wallet holds 2.952437180 SOL (the two open buys cost 0.203347680 SOL). No book has cleared the promotion gate.",
+   "atUtc": "2026-11-15T17:09:00Z"
   },
   {
    "id": "fy-20261114-am10-rpc-rps",
@@ -2604,9 +2628,9 @@
    "id": "s-20261115-floor-state",
    "from": "claude",
    "kind": "status",
-   "atUtc": "2026-11-15T08:31:00Z",
+   "atUtc": "2026-11-15T17:09:00Z",
    "approx": false,
-   "text": "FLOOR at 08:31Z on Nov 15: executor 3992781 (buy-speed cap raised to 4) and host 3750092 are running; 0 open; no sends; no entry candidate since about 14:47:40Z on Nov 14; wallet 3,155,784,860 lamports; 2 of 20 trades toward the Am.6 gate. Lane cost-capped pnl +0.010363342 SOL over 12 round trips; it rests on one take-profit of 0.018778152 SOL, and without it the 12 closed trades sum to -0.008414810 SOL. The reset you approved is scheduled for Nov 16 17:00Z. Tip hand-off done at 06:10Z and 06:26Z; hour 06 is excluded from price-path windows. Ten simulation books run, four twin pairs read pair, and the recon is a formal FAIL by the non-rule cap, so they are not decision-grade. No book has cleared the promotion gate."
+   "text": "FLOOR at Nov 15, 16:31Z: two live buys since Nov 14 (11:06:28Z, 1,068 ms after the decision; 13:12:55Z, 1,089 ms), both open, no exits yet; wallet 2,952,437,180 lamports; 2 of 20 closed trades toward the Am.6 gate. The closed-trade total of +0.010363342 SOL over 12 trades rests on one take-profit of 0.018778152 SOL; without it the 12 sum to -0.008414810 SOL. Two buys are not a speed result; the read is at the 10th buy. The kill-line check of the Nov 14 host restart passed at 17:08Z. The reset you approved runs Nov 16 at 17:00Z. Ten simulation books run; the reconciliation reads FAIL (matched 4, live-only 0, sim-only 3) and the books are not decision-grade. No book has cleared the promotion gate."
   },
   {
    "id": "s-20261114-floor-open-sims",
