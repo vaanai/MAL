@@ -1592,7 +1592,7 @@ def make_live_port(cfg: Config, rpc: Callable[[str, list], Any], keypair: Any, *
                 keys.append(hint)
             wallet = str(self.ex.user)
             keys.append(wallet)
-            pf: dict[str, Any] = {"pool": pool, "mint": keys[1] if len(keys) == 3 else None, "wallet": wallet, "commitment": commitment, "t": self.now(), "err": None}
+            pf: dict[str, Any] = {"pool": pool, "mint": keys[1] if len(keys) == 3 else None, "wallet": wallet, "commitment": commitment, "t": 0, "err": None}
             try:
                 res = self.ex.rpc("getMultipleAccounts", [keys, {"encoding": "base64", "commitment": commitment}])
                 vals = list(res["value"])
@@ -1603,11 +1603,16 @@ def make_live_port(cfg: Config, rpc: Callable[[str, list], Any], keypair: Any, *
                 pf["mint_value"] = vals[1] if len(keys) == 3 else None
             except (Exception, SystemExit) as exc:  # fail closed: every consumer refuses on this label; no second round of reads
                 pf["err"] = pe.error_label(exc)
+            pf["t"] = self.now()  # stamped after the call returns (retries and backoff included), so a slow failure is not read as stale
             self._pf = pf
 
         def _pf_fresh(self, pool: str | None = None) -> dict[str, Any] | None:
             pf = self._pf
-            if pf is None or self.now() - pf["t"] > PRESEND_BATCH_MAX_AGE_MS or (pool is not None and pf["pool"] != pool):
+            if pf is None or (pool is not None and pf["pool"] != pool):
+                return None
+            if pf["err"]:
+                return pf  # a failed batch is honoured for this entry whatever its age: every consumer refuses, none re-reads serially
+            if self.now() - pf["t"] > PRESEND_BATCH_MAX_AGE_MS:
                 return None
             return pf
 

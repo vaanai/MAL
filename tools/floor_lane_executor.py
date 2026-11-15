@@ -761,7 +761,7 @@ def run(raw: Mapping[str, Any], *, live_flag: bool, once: bool = False, root_che
             return 2
     port = (port_factory or functools.partial(build_live_port, rpc_rps=rpc_rps, **({"presend_batch": True} if parse_presend_batch(raw) else {})))(cfg) if live_flag else B.DryPort(cfg.dry_balance_lamports)
     br = FloorLaneBridge(cfg, port, lane, now_ms=now_ms, live_ok_path=live_ok, root_checks=root_checks, a3_record_file=a3_file, bot_lock=lock, a3_floor_flag_list=a3_fl)
-    print(f"floor_lane_executor mode={cfg.mode} lane_bot={LANE_BOT_ID} book={cfg.bot_id} stake={cfg.stake_lamports} rpc_rps={rpc_rps}", flush=True)
+    print(f"floor_lane_executor mode={cfg.mode} lane_bot={LANE_BOT_ID} book={cfg.bot_id} stake={cfg.stake_lamports} rpc_rps={rpc_rps} presend_batch={str(parse_presend_batch(raw)).lower()}", flush=True)
     kw = {"sleep": sleep} if sleep is not None else {}
     br.run(once=once, **kw)
     return 0
