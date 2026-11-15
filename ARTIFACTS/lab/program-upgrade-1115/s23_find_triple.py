@@ -2,6 +2,7 @@
 import collections, json, sys
 sys.argv = [sys.argv[0]]
 exec(open("s17_pumpswap_events.py").read().split("res = {}")[0])
+IDX_A = json.load(open(BASE / "raw" / "sample_index.json"))["a"]
 hits = []
 for tx in txs(BASE / "raw", "post"):
     meta = tx.get("meta") or {}
@@ -12,10 +13,14 @@ for tx in txs(BASE / "raw", "post"):
         nm = EV_BY_PROG[pid].get(blob[:8])
         if nm in ("BuyEvent", "SellEvent") and qm == {WSOL}:
             ev, _ = parse_event("pump_amm", nm, blob)
-            if (ev["lp_fee_basis_points"], ev["protocol_fee_basis_points"], ev["coin_creator_fee_basis_points"]) == (20, 0, 5): hits.append({"event": nm, "slot": tx.get("slot"), "sig": tx["transaction"]["signatures"][0]})
+            if (ev["lp_fee_basis_points"], ev["protocol_fee_basis_points"], ev["coin_creator_fee_basis_points"]) == (20, 0, 5): hits.append({"event": nm, "slot": IDX_A[tx["transaction"]["signatures"][0]]["slot"], "sig": tx["transaction"]["signatures"][0]})
 names = {}
 for k in ("pump_amm", "pump"):
     for e in IDL[k].get("errors", []): names[(k, e["code"])] = e["name"]
-codes = {"buy_post_only": [6000, 6036, 3005, 2052, 15], "sell_post_only": [6014, 6002, 6006, 7, 1000, 259, 1771, 6001, 2052]}
-out = {"triple_20_0_5_events": hits, "error_names_pump_amm": {k: [(c, names.get(("pump_amm", c), "(not an IDL error of pump_amm)")) for c in v] for k, v in codes.items()}}
+s20 = json.load(open("out/s20_failed_shape_txs.json")); post_only = {}
+for side in ("buy_exact_quote_in", "sell"):
+    po, pr = s20["post"][side]["words"], s20["pre"][side]["words"]
+    post_only[side] = [{"word": w, "count_post": n, "code": int(w.split("=")[-1]) if "=" in w else None,
+                        "idl_name_pump_amm": names.get(("pump_amm", int(w.split("=")[-1])), "(not a pump_amm IDL error)") if "=" in w else None} for w, n in sorted(po.items(), key=lambda x: -x[1]) if w not in pr]
+out = {"triple_20_0_5_events": hits, "post_only_error_words_from_s20_report_only": post_only}
 Path("out/s23_triple_and_errors.json").write_text(json.dumps(out, indent=1)); print(json.dumps(out, indent=1))
