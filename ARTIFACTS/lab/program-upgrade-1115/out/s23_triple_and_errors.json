@@ -1,0 +1,123 @@
+{
+ "triple_20_0_5_events": [
+  {
+   "event": "SellEvent",
+   "slot": 469828253,
+   "sig": "4GfrqsjS9jnFewzkeJgyW3AdLCctNSFZiiAVWr35WKgy4Nnd3WaDmHLZUUd5Yxa5uHazT4dqhT2V1yCHfV5KqhB4"
+  }
+ ],
+ "post_only_error_words_from_s20_report_only": {
+  "buy_exact_quote_in": [
+   {
+    "word": "InstructionError:Custom=15",
+    "count_post": 9,
+    "code": 15,
+    "idl_name_pump_amm": "(not a pump_amm IDL error)"
+   },
+   {
+    "word": "InstructionError:Custom=3",
+    "count_post": 2,
+    "code": 3,
+    "idl_name_pump_amm": "(not a pump_amm IDL error)"
+   },
+   {
+    "word": "InstructionError:Custom=2052",
+    "count_post": 1,
+    "code": 2052,
+    "idl_name_pump_amm": "(not a pump_amm IDL error)"
+   },
+   {
+    "word": "InstructionError:Custom=3005",
+    "count_post": 1,
+    "code": 3005,
+    "idl_name_pump_amm": "(not a pump_amm IDL error)"
+   },
+   {
+    "word": "InstructionError:Custom=6000",
+    "count_post": 1,
+    "code": 6000,
+    "idl_name_pump_amm": "FeeBasisPointsExceedsMaximum"
+   },
+   {
+    "word": "InstructionError:Custom=6036",
+    "count_post": 1,
+    "code": 6036,
+    "idl_name_pump_amm": "DayIndexAfterEndIndex"
+   }
+  ],
+  "sell": [
+   {
+    "word": "InstructionError:Custom=6001",
+    "count_post": 26,
+    "code": 6001,
+    "idl_name_pump_amm": "ZeroBaseAmount"
+   },
+   {
+    "word": "InstructionError:Custom=6014",
+    "count_post": 10,
+    "code": 6014,
+    "idl_name_pump_amm": "InvalidPoolBaseTokenAccount"
+   },
+   {
+    "word": "InstructionError:Custom=15",
+    "count_post": 7,
+    "code": 15,
+    "idl_name_pump_amm": "(not a pump_amm IDL error)"
+   },
+   {
+    "word": "InstructionError:Custom=2052",
+    "count_post": 7,
+    "code": 2052,
+    "idl_name_pump_amm": "(not a pump_amm IDL error)"
+   },
+   {
+    "word": "InstructionError:Custom=6000",
+    "count_post": 5,
+    "code": 6000,
+    "idl_name_pump_amm": "FeeBasisPointsExceedsMaximum"
+   },
+   {
+    "word": "InstructionError:Custom=7",
+    "count_post": 3,
+    "code": 7,
+    "idl_name_pump_amm": "(not a pump_amm IDL error)"
+   },
+   {
+    "word": "InstructionError:Custom=3",
+    "count_post": 2,
+    "code": 3,
+    "idl_name_pump_amm": "(not a pump_amm IDL error)"
+   },
+   {
+    "word": "InstructionError:Custom=6006",
+    "count_post": 2,
+    "code": 6006,
+    "idl_name_pump_amm": "UnsupportedBaseMint"
+   },
+   {
+    "word": "InstructionError:Custom=1771",
+    "count_post": 1,
+    "code": 1771,
+    "idl_name_pump_amm": "(not a pump_amm IDL error)"
+   },
+   {
+    "word": "InstructionError:Custom=6002",
+    "count_post": 1,
+    "code": 6002,
+    "idl_name_pump_amm": "ZeroQuoteAmount"
+   },
+   {
+    "word": "InstructionError:Custom=1000",
+    "count_post": 1,
+    "code": 1000,
+    "idl_name_pump_amm": "(not a pump_amm IDL error)"
+   },
+   {
+    "word": "InstructionError:Custom=259",
+    "count_post": 1,
+    "code": 259,
+    "idl_name_pump_amm": "(not a pump_amm IDL error)"
+   }
+  ]
+ }
+}

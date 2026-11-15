@@ -1,0 +1,614 @@
+{
+ "executor_expectation": {
+  "buy_exact_quote_in": {
+   "accounts": 26,
+   "data_len": 25,
+   "disc": "c62e1552b4d9e870"
+  },
+  "sell": {
+   "accounts": 24,
+   "data_len": 24,
+   "disc": "33e685a4017f83ad"
+  }
+ },
+ "owner_programs_now": {
+  "post|buy": {
+   "n_available": 916,
+   "n_instructions": 200,
+   "owner_by_position": {
+    "0": {
+     "pAMMBay6oceH9fJKBRHGP5D4bD4sWpmSwMn52FMfXEA": 200
+    },
+    "1": {
+     "(closed or absent now)": 39,
+     "11111111111111111111111111111111": 161
+    },
+    "10": {
+     "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA": 200
+    },
+    "11": {
+     "BPFLoaderUpgradeab1e11111111111111111111111": 200
+    },
+    "12": {
+     "BPFLoaderUpgradeab1e11111111111111111111111": 200
+    },
+    "13": {
+     "NativeLoader1111111111111111111111111111111": 200
+    },
+    "14": {
+     "BPFLoader2111111111111111111111111111111111": 200
+    },
+    "15": {
+     "11111111111111111111111111111111": 200
+    },
+    "16": {
+     "BPFLoaderUpgradeab1e11111111111111111111111": 200
+    },
+    "17": {
+     "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA": 200
+    },
+    "18": {
+     "(closed or absent now)": 200
+    },
+    "19": {
+     "pAMMBay6oceH9fJKBRHGP5D4bD4sWpmSwMn52FMfXEA": 200
+    },
+    "2": {
+     "pAMMBay6oceH9fJKBRHGP5D4bD4sWpmSwMn52FMfXEA": 200
+    },
+    "20": {
+     "(closed or absent now)": 59,
+     "pAMMBay6oceH9fJKBRHGP5D4bD4sWpmSwMn52FMfXEA": 141
+    },
+    "21": {
+     "pfeeUxB6jkeY1Hxd7CsFCAjcbHA9rWtchMGdZ6VojVZ": 200
+    },
+    "22": {
+     "BPFLoaderUpgradeab1e11111111111111111111111": 200
+    },
+    "23": {
+     "(closed or absent now)": 199,
+     "11111111111111111111111111111111": 1
+    },
+    "24": {
+     "pfeeUxB6jkeY1Hxd7CsFCAjcbHA9rWtchMGdZ6VojVZ": 200
+    },
+    "25": {
+     "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA": 200
+    },
+    "3": {
+     "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA": 3,
+     "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb": 197
+    },
+    "4": {
+     "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA": 200
+    },
+    "5": {
+     "(closed or absent now)": 107,
+     "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA": 2,
+     "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb": 91
+    },
+    "6": {
+     "(closed or absent now)": 189,
+     "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA": 11
+    },
+    "7": {
+     "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA": 3,
+     "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb": 197
+    },
+    "8": {
+     "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA": 200
+    },
+    "9": {
+     "11111111111111111111111111111111": 197,
+     "MAyhSmzXzV1pTf7LsNkrNwkWKTo4ougAJ1PPg47MD4e": 3
+    }
+   }
+  },
+  "post|sell": {
+   "n_available": 558,
+   "n_instructions": 200,
+   "owner_by_position": {
+    "0": {
+     "pAMMBay6oceH9fJKBRHGP5D4bD4sWpmSwMn52FMfXEA": 200
+    },
+    "1": {
+     "(closed or absent now)": 25,
+     "11111111111111111111111111111111": 175
+    },
+    "10": {
+     "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA": 200
+    },
+    "11": {
+     "BPFLoaderUpgradeab1e11111111111111111111111": 200
+    },
+    "12": {
+     "BPFLoaderUpgradeab1e11111111111111111111111": 200
+    },
+    "13": {
+     "NativeLoader1111111111111111111111111111111": 200
+    },
+    "14": {
+     "BPFLoader2111111111111111111111111111111111": 200
+    },
+    "15": {
+     "11111111111111111111111111111111": 200
+    },
+    "16": {
+     "BPFLoaderUpgradeab1e11111111111111111111111": 200
+    },
+    "17": {
+     "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA": 200
+    },
+    "18": {
+     "(closed or absent now)": 200
+    },
+    "19": {
+     "pfeeUxB6jkeY1Hxd7CsFCAjcbHA9rWtchMGdZ6VojVZ": 200
+    },
+    "2": {
+     "pAMMBay6oceH9fJKBRHGP5D4bD4sWpmSwMn52FMfXEA": 200
+    },
+    "20": {
+     "BPFLoaderUpgradeab1e11111111111111111111111": 200
+    },
+    "21": {
+     "(closed or absent now)": 200
+    },
+    "22": {
+     "pfeeUxB6jkeY1Hxd7CsFCAjcbHA9rWtchMGdZ6VojVZ": 200
+    },
+    "23": {
+     "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA": 200
+    },
+    "3": {
+     "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA": 5,
+     "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb": 195
+    },
+    "4": {
+     "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA": 200
+    },
+    "5": {
+     "(closed or absent now)": 152,
+     "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA": 3,
+     "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb": 45
+    },
+    "6": {
+     "(closed or absent now)": 177,
+     "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA": 23
+    },
+    "7": {
+     "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA": 5,
+     "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb": 195
+    },
+    "8": {
+     "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA": 200
+    },
+    "9": {
+     "11111111111111111111111111111111": 194,
+     "MAyhSmzXzV1pTf7LsNkrNwkWKTo4ougAJ1PPg47MD4e": 6
+    }
+   }
+  },
+  "pre|buy": {
+   "n_available": 487,
+   "n_instructions": 200,
+   "owner_by_position": {
+    "0": {
+     "pAMMBay6oceH9fJKBRHGP5D4bD4sWpmSwMn52FMfXEA": 200
+    },
+    "1": {
+     "(closed or absent now)": 69,
+     "11111111111111111111111111111111": 131
+    },
+    "10": {
+     "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA": 200
+    },
+    "11": {
+     "BPFLoaderUpgradeab1e11111111111111111111111": 200
+    },
+    "12": {
+     "BPFLoaderUpgradeab1e11111111111111111111111": 200
+    },
+    "13": {
+     "NativeLoader1111111111111111111111111111111": 200
+    },
+    "14": {
+     "BPFLoader2111111111111111111111111111111111": 200
+    },
+    "15": {
+     "11111111111111111111111111111111": 200
+    },
+    "16": {
+     "BPFLoaderUpgradeab1e11111111111111111111111": 200
+    },
+    "17": {
+     "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA": 200
+    },
+    "18": {
+     "(closed or absent now)": 200
+    },
+    "19": {
+     "pAMMBay6oceH9fJKBRHGP5D4bD4sWpmSwMn52FMfXEA": 200
+    },
+    "2": {
+     "pAMMBay6oceH9fJKBRHGP5D4bD4sWpmSwMn52FMfXEA": 200
+    },
+    "20": {
+     "(closed or absent now)": 97,
+     "pAMMBay6oceH9fJKBRHGP5D4bD4sWpmSwMn52FMfXEA": 103
+    },
+    "21": {
+     "pfeeUxB6jkeY1Hxd7CsFCAjcbHA9rWtchMGdZ6VojVZ": 200
+    },
+    "22": {
+     "BPFLoaderUpgradeab1e11111111111111111111111": 200
+    },
+    "23": {
+     "(closed or absent now)": 198,
+     "11111111111111111111111111111111": 2
+    },
+    "24": {
+     "pfeeUxB6jkeY1Hxd7CsFCAjcbHA9rWtchMGdZ6VojVZ": 200
+    },
+    "25": {
+     "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA": 200
+    },
+    "3": {
+     "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA": 3,
+     "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb": 197
+    },
+    "4": {
+     "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA": 200
+    },
+    "5": {
+     "(closed or absent now)": 135,
+     "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA": 3,
+     "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb": 62
+    },
+    "6": {
+     "(closed or absent now)": 187,
+     "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA": 13
+    },
+    "7": {
+     "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA": 3,
+     "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb": 197
+    },
+    "8": {
+     "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA": 200
+    },
+    "9": {
+     "11111111111111111111111111111111": 200
+    }
+   }
+  },
+  "pre|sell": {
+   "n_available": 184,
+   "n_instructions": 184,
+   "owner_by_position": {
+    "0": {
+     "pAMMBay6oceH9fJKBRHGP5D4bD4sWpmSwMn52FMfXEA": 184
+    },
+    "1": {
+     "(closed or absent now)": 55,
+     "11111111111111111111111111111111": 129
+    },
+    "10": {
+     "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA": 184
+    },
+    "11": {
+     "BPFLoaderUpgradeab1e11111111111111111111111": 184
+    },
+    "12": {
+     "BPFLoaderUpgradeab1e11111111111111111111111": 184
+    },
+    "13": {
+     "NativeLoader1111111111111111111111111111111": 184
+    },
+    "14": {
+     "BPFLoader2111111111111111111111111111111111": 184
+    },
+    "15": {
+     "11111111111111111111111111111111": 184
+    },
+    "16": {
+     "BPFLoaderUpgradeab1e11111111111111111111111": 184
+    },
+    "17": {
+     "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA": 184
+    },
+    "18": {
+     "(closed or absent now)": 184
+    },
+    "19": {
+     "pfeeUxB6jkeY1Hxd7CsFCAjcbHA9rWtchMGdZ6VojVZ": 184
+    },
+    "2": {
+     "pAMMBay6oceH9fJKBRHGP5D4bD4sWpmSwMn52FMfXEA": 184
+    },
+    "20": {
+     "BPFLoaderUpgradeab1e11111111111111111111111": 184
+    },
+    "21": {
+     "(closed or absent now)": 178,
+     "11111111111111111111111111111111": 6
+    },
+    "22": {
+     "pfeeUxB6jkeY1Hxd7CsFCAjcbHA9rWtchMGdZ6VojVZ": 184
+    },
+    "23": {
+     "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA": 184
+    },
+    "3": {
+     "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA": 6,
+     "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb": 178
+    },
+    "4": {
+     "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA": 184
+    },
+    "5": {
+     "(closed or absent now)": 139,
+     "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA": 5,
+     "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb": 40
+    },
+    "6": {
+     "(closed or absent now)": 163,
+     "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA": 21
+    },
+    "7": {
+     "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA": 6,
+     "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb": 178
+    },
+    "8": {
+     "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA": 184
+    },
+    "9": {
+     "11111111111111111111111111111111": 183,
+     "MAyhSmzXzV1pTf7LsNkrNwkWKTo4ougAJ1PPg47MD4e": 1
+    }
+   }
+  }
+ },
+ "post": {
+  "failed_by_error_word": {},
+  "position_checks": {
+   "buy": {
+    "derive_error": 12,
+    "have_creator": 274,
+    "n": 274,
+    "pda_buyback_recipient_ata_eq": 261,
+    "pda_buyback_recipient_ata_n": 262,
+    "pda_creator_vault_ata_eq": 262,
+    "pda_creator_vault_ata_n": 262,
+    "pda_creator_vault_authority_eq": 262,
+    "pda_creator_vault_authority_n": 262,
+    "pda_fee_recipient_ata_eq": 262,
+    "pda_fee_recipient_ata_n": 262,
+    "pda_pool_base_vault_eq": 262,
+    "pda_pool_base_vault_n": 262,
+    "pda_pool_quote_vault_eq": 262,
+    "pda_pool_quote_vault_n": 262,
+    "pda_pool_v2_eq": 261,
+    "pda_pool_v2_n": 262,
+    "pda_user_base_ata_eq": 262,
+    "pda_user_base_ata_n": 262,
+    "pda_user_quote_ata_eq": 257,
+    "pda_user_quote_ata_n": 262,
+    "pda_user_volume_accumulator_eq": 262,
+    "pda_user_volume_accumulator_n": 262,
+    "pos13": 274,
+    "pos14": 274,
+    "pos15": 274,
+    "pos16": 274,
+    "pos19": 274,
+    "pos2": 274,
+    "pos21": 274,
+    "pos22": 274,
+    "pos4": 274
+   },
+   "buy_exact_quote_in": {
+    "derive_error": 3,
+    "have_creator": 660,
+    "n": 660,
+    "pda_buyback_recipient_ata_eq": 655,
+    "pda_buyback_recipient_ata_n": 657,
+    "pda_creator_vault_ata_eq": 657,
+    "pda_creator_vault_ata_n": 657,
+    "pda_creator_vault_authority_eq": 657,
+    "pda_creator_vault_authority_n": 657,
+    "pda_fee_recipient_ata_eq": 657,
+    "pda_fee_recipient_ata_n": 657,
+    "pda_pool_base_vault_eq": 657,
+    "pda_pool_base_vault_n": 657,
+    "pda_pool_quote_vault_eq": 657,
+    "pda_pool_quote_vault_n": 657,
+    "pda_pool_v2_eq": 655,
+    "pda_pool_v2_n": 657,
+    "pda_user_base_ata_eq": 650,
+    "pda_user_base_ata_n": 657,
+    "pda_user_quote_ata_eq": 643,
+    "pda_user_quote_ata_n": 657,
+    "pda_user_volume_accumulator_eq": 657,
+    "pda_user_volume_accumulator_n": 657,
+    "pos13": 660,
+    "pos14": 660,
+    "pos15": 660,
+    "pos16": 660,
+    "pos19": 660,
+    "pos2": 660,
+    "pos21": 660,
+    "pos22": 660,
+    "pos4": 660
+   },
+   "sell": {
+    "derive_error": 17,
+    "have_creator": 576,
+    "n": 576,
+    "pda_buyback_recipient_ata_eq": 558,
+    "pda_buyback_recipient_ata_n": 559,
+    "pda_creator_vault_ata_eq": 559,
+    "pda_creator_vault_ata_n": 559,
+    "pda_creator_vault_authority_eq": 559,
+    "pda_creator_vault_authority_n": 559,
+    "pda_fee_recipient_ata_eq": 559,
+    "pda_fee_recipient_ata_n": 559,
+    "pda_pool_base_vault_eq": 559,
+    "pda_pool_base_vault_n": 559,
+    "pda_pool_quote_vault_eq": 559,
+    "pda_pool_quote_vault_n": 559,
+    "pda_pool_v2_eq": 558,
+    "pda_pool_v2_n": 559,
+    "pda_user_base_ata_eq": 544,
+    "pda_user_base_ata_n": 559,
+    "pda_user_quote_ata_eq": 549,
+    "pda_user_quote_ata_n": 559,
+    "pos13": 576,
+    "pos14": 576,
+    "pos15": 576,
+    "pos16": 576,
+    "pos19": 576,
+    "pos2": 576,
+    "pos20": 576,
+    "pos4": 576
+   }
+  },
+  "shape_counts": {
+   "buy_exact_quote_in|c62e1552b4d9e870|len=24|accts=25": 2,
+   "buy_exact_quote_in|c62e1552b4d9e870|len=24|accts=26": 275,
+   "buy_exact_quote_in|c62e1552b4d9e870|len=24|accts=27": 1,
+   "buy_exact_quote_in|c62e1552b4d9e870|len=25|accts=25": 1,
+   "buy_exact_quote_in|c62e1552b4d9e870|len=25|accts=26": 375,
+   "buy_exact_quote_in|c62e1552b4d9e870|len=25|accts=27": 1,
+   "buy_exact_quote_in|c62e1552b4d9e870|len=26|accts=26": 5,
+   "buy|66063d1201daebea|len=24|accts=25": 1,
+   "buy|66063d1201daebea|len=24|accts=26": 9,
+   "buy|66063d1201daebea|len=24|accts=27": 1,
+   "buy|66063d1201daebea|len=25|accts=25": 11,
+   "buy|66063d1201daebea|len=25|accts=26": 247,
+   "buy|66063d1201daebea|len=26|accts=26": 5,
+   "sell|33e685a4017f83ad|len=24|accts=23": 17,
+   "sell|33e685a4017f83ad|len=24|accts=24": 557,
+   "sell|33e685a4017f83ad|len=24|accts=26": 1,
+   "sell|33e685a4017f83ad|len=26|accts=24": 1
+  }
+ },
+ "pre": {
+  "failed_by_error_word": {},
+  "position_checks": {
+   "buy": {
+    "derive_error": 3,
+    "have_creator": 151,
+    "n": 151,
+    "pda_buyback_recipient_ata_eq": 144,
+    "pda_buyback_recipient_ata_n": 148,
+    "pda_creator_vault_ata_eq": 148,
+    "pda_creator_vault_ata_n": 148,
+    "pda_creator_vault_authority_eq": 148,
+    "pda_creator_vault_authority_n": 148,
+    "pda_fee_recipient_ata_eq": 148,
+    "pda_fee_recipient_ata_n": 148,
+    "pda_pool_base_vault_eq": 148,
+    "pda_pool_base_vault_n": 148,
+    "pda_pool_quote_vault_eq": 148,
+    "pda_pool_quote_vault_n": 148,
+    "pda_pool_v2_eq": 144,
+    "pda_pool_v2_n": 148,
+    "pda_user_base_ata_eq": 145,
+    "pda_user_base_ata_n": 148,
+    "pda_user_quote_ata_eq": 148,
+    "pda_user_quote_ata_n": 148,
+    "pda_user_volume_accumulator_eq": 148,
+    "pda_user_volume_accumulator_n": 148,
+    "pos13": 151,
+    "pos14": 151,
+    "pos15": 151,
+    "pos16": 151,
+    "pos19": 151,
+    "pos2": 151,
+    "pos21": 151,
+    "pos22": 151,
+    "pos4": 151
+   },
+   "buy_exact_quote_in": {
+    "derive_error": 3,
+    "have_creator": 348,
+    "n": 348,
+    "pda_buyback_recipient_ata_eq": 342,
+    "pda_buyback_recipient_ata_n": 345,
+    "pda_creator_vault_ata_eq": 345,
+    "pda_creator_vault_ata_n": 345,
+    "pda_creator_vault_authority_eq": 345,
+    "pda_creator_vault_authority_n": 345,
+    "pda_fee_recipient_ata_eq": 345,
+    "pda_fee_recipient_ata_n": 345,
+    "pda_pool_base_vault_eq": 345,
+    "pda_pool_base_vault_n": 345,
+    "pda_pool_quote_vault_eq": 345,
+    "pda_pool_quote_vault_n": 345,
+    "pda_pool_v2_eq": 342,
+    "pda_pool_v2_n": 345,
+    "pda_user_base_ata_eq": 340,
+    "pda_user_base_ata_n": 345,
+    "pda_user_quote_ata_eq": 341,
+    "pda_user_quote_ata_n": 345,
+    "pda_user_volume_accumulator_eq": 345,
+    "pda_user_volume_accumulator_n": 345,
+    "pos13": 348,
+    "pos14": 348,
+    "pos15": 348,
+    "pos16": 348,
+    "pos19": 348,
+    "pos2": 348,
+    "pos21": 348,
+    "pos22": 348,
+    "pos4": 348
+   },
+   "sell": {
+    "derive_error": 8,
+    "have_creator": 192,
+    "n": 192,
+    "pda_buyback_recipient_ata_eq": 184,
+    "pda_buyback_recipient_ata_n": 184,
+    "pda_creator_vault_ata_eq": 184,
+    "pda_creator_vault_ata_n": 184,
+    "pda_creator_vault_authority_eq": 184,
+    "pda_creator_vault_authority_n": 184,
+    "pda_fee_recipient_ata_eq": 184,
+    "pda_fee_recipient_ata_n": 184,
+    "pda_pool_base_vault_eq": 184,
+    "pda_pool_base_vault_n": 184,
+    "pda_pool_quote_vault_eq": 184,
+    "pda_pool_quote_vault_n": 184,
+    "pda_pool_v2_eq": 184,
+    "pda_pool_v2_n": 184,
+    "pda_user_base_ata_eq": 181,
+    "pda_user_base_ata_n": 184,
+    "pda_user_quote_ata_eq": 177,
+    "pda_user_quote_ata_n": 184,
+    "pos13": 192,
+    "pos14": 192,
+    "pos15": 192,
+    "pos16": 192,
+    "pos19": 192,
+    "pos2": 192,
+    "pos20": 192,
+    "pos4": 192
+   }
+  },
+  "shape_counts": {
+   "buy_exact_quote_in|c62e1552b4d9e870|len=24|accts=26": 174,
+   "buy_exact_quote_in|c62e1552b4d9e870|len=24|accts=27": 1,
+   "buy_exact_quote_in|c62e1552b4d9e870|len=25|accts=25": 3,
+   "buy_exact_quote_in|c62e1552b4d9e870|len=25|accts=26": 168,
+   "buy_exact_quote_in|c62e1552b4d9e870|len=25|accts=27": 1,
+   "buy_exact_quote_in|c62e1552b4d9e870|len=26|accts=26": 1,
+   "buy|66063d1201daebea|len=24|accts=26": 5,
+   "buy|66063d1201daebea|len=24|accts=27": 4,
+   "buy|66063d1201daebea|len=25|accts=25": 3,
+   "buy|66063d1201daebea|len=25|accts=26": 139,
+   "sell|33e685a4017f83ad|len=24|accts=23": 8,
+   "sell|33e685a4017f83ad|len=24|accts=24": 184
+  }
+ },
+ "rpc_attempts": 44
+}

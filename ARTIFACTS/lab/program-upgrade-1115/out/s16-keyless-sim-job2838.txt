@@ -1,0 +1,22 @@
+[miscusi] job #2838 role=ops (MISCUSI_JOB_ROLE)
+2026-11-15T19:43:21Z
+HEAD=e5fd255b43ddfda09eb7cf49f6477cda0bf08797 dirty=0
+script_sha256=fe2c7ba00dbacc9e127f3b9da6bb2932eaf4afd0dd3e269efd5507decfd00fa4
+run_utc 2026-11-15T19:43:22Z rpc public
+buyer holds at least 0.05 SOL: True
+blocks read 80; pools with a matching top-level WSOL sell 19
+age-checked 19; aged 24-200 h 4
+SIM sell 1 pool_age_h 38.2 shape [disc 33e685a4017f83ad data_bytes 24 accounts 24] err null units 85561 error_log_lines 0
+SIM buy 1 pool_age_h 42.7 shape [disc c62e1552b4d9e870 data_bytes 25 accounts 26] err {"InstructionError": [6, {"Custom": 6001}]} units 89400 error_log_lines 2
+   log: Program log: AnchorError thrown in programs/pump-amm/src/instructions/swap/buy.rs:636. Error Code: ZeroBaseAmount. Error Number: 6001. Error Message: ZeroBaseAmount.
+   log: Program pAMMBay6oceH9fJKBRHGP5D4bD4sWpmSwMn52FMfXEA failed: custom program error: 0x1771
+SIM buy 2 pool_age_h 69.4 shape [disc c62e1552b4d9e870 data_bytes 25 accounts 26] err {"InstructionError": [6, {"Custom": 6001}]} units 89400 error_log_lines 2
+   log: Program log: AnchorError thrown in programs/pump-amm/src/instructions/swap/buy.rs:636. Error Code: ZeroBaseAmount. Error Number: 6001. Error Message: ZeroBaseAmount.
+   log: Program pAMMBay6oceH9fJKBRHGP5D4bD4sWpmSwMn52FMfXEA failed: custom program error: 0x1771
+SIM buy 3 pool_age_h 38.2 shape [disc c62e1552b4d9e870 data_bytes 25 accounts 26] err {"InstructionError": [6, {"Custom": 6001}]} units 78900 error_log_lines 2
+   log: Program log: AnchorError thrown in programs/pump-amm/src/instructions/swap/buy.rs:636. Error Code: ZeroBaseAmount. Error Number: 6001. Error Message: ZeroBaseAmount.
+   log: Program pAMMBay6oceH9fJKBRHGP5D4bD4sWpmSwMn52FMfXEA failed: custom program error: 0x1771
+KEYLESS-SIM sells 1 of 3 buys 3 of 3 err_null 1 of 6 rpc_calls 256 distinct_sell_pools 1 -> NOT MET
+SIM_RC_NOTE done
+2026-11-15T19:48:45Z
+(last lines kept by MiScusi; the full log is on mal-fast-0: miscusi-agent job log 2838 there)

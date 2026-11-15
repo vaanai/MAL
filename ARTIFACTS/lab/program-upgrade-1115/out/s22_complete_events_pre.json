@@ -1,0 +1,187 @@
+{
+ "mode": "pre",
+ "K": 5,
+ "n_kept": 5,
+ "n_candidates_tried": 5,
+ "kept": [
+  {
+   "migration_slot": 469809953,
+   "bc_sigs_listed": 100,
+   "fetched": 1,
+   "found": true,
+   "slot": 469809951,
+   "sig": "5GtrQCNU9wCeEZ6FVZG9Xn4BCwtachAL3ufA4N5cuAdfXqWpkW5CEko7Jfv7q2d5MBeeeGinLxQyKVbU7v9M6C1x",
+   "slot_ok": true,
+   "blob_len": [
+    144
+   ],
+   "trailing": [
+    0
+   ],
+   "unmatched": [],
+   "unknown_disc": 0
+  },
+  {
+   "migration_slot": 469808672,
+   "bc_sigs_listed": 100,
+   "fetched": 1,
+   "found": true,
+   "slot": 469808669,
+   "sig": "2SkL6nvAWGd3YL6bzPhv2ecuTeqpZsxZ7SynBNi4Vj6YJXAwxLwHPej1ho1gu39EmFT8sTvS8UjxXiiVuvoBJTEn",
+   "slot_ok": true,
+   "blob_len": [
+    144
+   ],
+   "trailing": [
+    0
+   ],
+   "unmatched": [],
+   "unknown_disc": 0
+  },
+  {
+   "migration_slot": 469808246,
+   "bc_sigs_listed": 100,
+   "fetched": 1,
+   "found": true,
+   "slot": 469808244,
+   "sig": "34ekGbmpLyF3Lniu8SWahWhDTKfcazn4PT9kDvdiWGZqdGfb2qZyKfMA4szXP7LdTeyc5ooi6e4p7EdCwLpL553H",
+   "slot_ok": true,
+   "blob_len": [
+    144
+   ],
+   "trailing": [
+    0
+   ],
+   "unmatched": [],
+   "unknown_disc": 0
+  },
+  {
+   "migration_slot": 469808011,
+   "bc_sigs_listed": 100,
+   "fetched": 1,
+   "found": true,
+   "slot": 469808008,
+   "sig": "4iGpFJeWePUjMs6DCyWAHY9zoQ8QJFj6KtHgBFJuDCVLMo7egC2Lm1e3p3cmtVY79B6GpEDdsFrY4tDbxEDr718x",
+   "slot_ok": true,
+   "blob_len": [
+    144
+   ],
+   "trailing": [
+    0
+   ],
+   "unmatched": [],
+   "unknown_disc": 0
+  },
+  {
+   "migration_slot": 469807883,
+   "bc_sigs_listed": 100,
+   "fetched": 1,
+   "found": true,
+   "slot": 469807880,
+   "sig": "2e9VmtLktob6iobvNHXcopzSBhCzQpgqsrZu4M6qspEShdr3VRSyEpSQoMKE7pm7yvdJvcbL4L47HU7E3wJvo7sz",
+   "slot_ok": true,
+   "blob_len": [
+    144
+   ],
+   "trailing": [
+    0
+   ],
+   "unmatched": [],
+   "unknown_disc": 0
+  }
+ ],
+ "tried": [
+  {
+   "migration_slot": 469809953,
+   "bc_sigs_listed": 100,
+   "fetched": 1,
+   "found": true,
+   "slot": 469809951,
+   "sig": "5GtrQCNU9wCeEZ6FVZG9Xn4BCwtachAL3ufA4N5cuAdfXqWpkW5CEko7Jfv7q2d5MBeeeGinLxQyKVbU7v9M6C1x",
+   "slot_ok": true,
+   "blob_len": [
+    144
+   ],
+   "trailing": [
+    0
+   ],
+   "unmatched": [],
+   "unknown_disc": 0
+  },
+  {
+   "migration_slot": 469808672,
+   "bc_sigs_listed": 100,
+   "fetched": 1,
+   "found": true,
+   "slot": 469808669,
+   "sig": "2SkL6nvAWGd3YL6bzPhv2ecuTeqpZsxZ7SynBNi4Vj6YJXAwxLwHPej1ho1gu39EmFT8sTvS8UjxXiiVuvoBJTEn",
+   "slot_ok": true,
+   "blob_len": [
+    144
+   ],
+   "trailing": [
+    0
+   ],
+   "unmatched": [],
+   "unknown_disc": 0
+  },
+  {
+   "migration_slot": 469808246,
+   "bc_sigs_listed": 100,
+   "fetched": 1,
+   "found": true,
+   "slot": 469808244,
+   "sig": "34ekGbmpLyF3Lniu8SWahWhDTKfcazn4PT9kDvdiWGZqdGfb2qZyKfMA4szXP7LdTeyc5ooi6e4p7EdCwLpL553H",
+   "slot_ok": true,
+   "blob_len": [
+    144
+   ],
+   "trailing": [
+    0
+   ],
+   "unmatched": [],
+   "unknown_disc": 0
+  },
+  {
+   "migration_slot": 469808011,
+   "bc_sigs_listed": 100,
+   "fetched": 1,
+   "found": true,
+   "slot": 469808008,
+   "sig": "4iGpFJeWePUjMs6DCyWAHY9zoQ8QJFj6KtHgBFJuDCVLMo7egC2Lm1e3p3cmtVY79B6GpEDdsFrY4tDbxEDr718x",
+   "slot_ok": true,
+   "blob_len": [
+    144
+   ],
+   "trailing": [
+    0
+   ],
+   "unmatched": [],
+   "unknown_disc": 0
+  },
+  {
+   "migration_slot": 469807883,
+   "bc_sigs_listed": 100,
+   "fetched": 1,
+   "found": true,
+   "slot": 469807880,
+   "sig": "2e9VmtLktob6iobvNHXcopzSBhCzQpgqsrZu4M6qspEShdr3VRSyEpSQoMKE7pm7yvdJvcbL4L47HU7E3wJvo7sz",
+   "slot_ok": true,
+   "blob_len": [
+    144
+   ],
+   "trailing": [
+    0
+   ],
+   "unmatched": [],
+   "unknown_disc": 0
+  }
+ ],
+ "bars": {
+  "field_inequalities": 0,
+  "blob_len_not_144": 0,
+  "trailing_nonzero": 0,
+  "unknown_disc": 0
+ },
+ "rpc_attempts": 10
+}
