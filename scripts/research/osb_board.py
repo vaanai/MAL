@@ -524,6 +524,42 @@ def withheld(idx, b, why):
             "last_hour": None, "last_hour_end_utc": None, "gap_guard_note": None, "start_instant_utc": None, "code_sha256": None, "manifest_sha256": None, "stakes_sol": None, "today_day": None}
 
 
+EXPLAINED_REASONS = ("restart_lockout", "host_down_no_row")  # explained by design in osb_recon.py, never counted toward H2; two different words, never merged (QP-RULING-1115 section 3c)
+
+
+def fail_detail(r, block):
+    """Wording only (QP-RULING-1115 section 6): the failing band(s) with their own fields from recon.json, the passing H bands, sim-only rows by reason, S bands below their minimum n. No figure is computed here."""
+    c = block["counts"]
+    parts, passing = [], []
+    for k in ("h1", "h2", "h3"):
+        b = r.get(k) if isinstance(r.get(k), dict) else {}
+        st = str(b.get("status"))
+        if st == "PASS":
+            passing.append(k.upper() + " PASS")
+            continue
+        if k == "h1":
+            f = "live-only entries %s (max %s)" % (b.get("n_live_only"), b.get("max"))
+        elif k == "h2":
+            f = "unexplained sim-only per UTC day %s (max %s per day; executor-unlisted %s, duplicate keys %s)" % (json.dumps(b.get("unexplained_by_day"), sort_keys=True), b.get("max_per_day"), b.get("executor_unlisted"), b.get("duplicate_keys"))
+        else:
+            net = b.get("nonrule_net_live_sol")
+            f = "live non-rule exit %s of %d matched (cap: %s; live_nonrule_exit code and cap coded post hoc 2026-11-14; uncoded exit mismatches %s; live net %s SOL)" % (
+                b.get("n_live_nonrule_exit"), c["matched"], b.get("nonrule_cap"), b.get("n_mismatch_uncoded"), ", ".join(repr(x) for x in net) if isinstance(net, list) and net else "n/a")
+        parts.append("%s %s: %s" % (k.upper(), st, f))
+    if passing:
+        parts.append(", ".join(passing))
+    by = [(str(k).split(":", 1)[1], int(v)) for k, v in sorted(r["counts_by_reason"].items()) if str(k).startswith("sim_only:")]
+    parts.append("sim-only %d%s" % (c["sim_only"], (": " + ", ".join("%s %d%s" % (w, n, " (explained, not counted)" if w in EXPLAINED_REASONS else "") for w, n in by)) if by else ""))
+    for k in ("s1", "s2", "s3", "s4"):
+        b = r.get(k) if isinstance(r.get(k), dict) else {}
+        st = str(b.get("status"))
+        if st == "INSUFFICIENT":
+            parts.append("%s INSUFFICIENT (n %s < %s)" % (k.upper(), b.get("n"), b.get("min")))
+        else:
+            parts.append("%s %s (n %s)" % (k.upper(), st, b.get("n")))
+    return "; ".join(parts)
+
+
 def recon_state(live, now_ms, control_id=None):
     """-> (recon block, recon_line, live without the recon path, sim_off). `live` may carry {"recon": "<path to recon.json>"} (osb_recon.py). Only a valid, fresh (at most STALE_MS old) PASS or FAIL
     changes the default; INSUFFICIENT, a missing, unreadable, invalid or stale file keeps the NOT COMPARABLE wording. FAIL: every book is marked SIM OFF."""
@@ -549,14 +585,19 @@ def recon_state(live, now_ms, control_id=None):
         block = {"status": r["status"], "window": {"from_utc": str(r["window"].get("from_utc")), "to_utc": str(r["window"].get("to_utc"))}, "generated_utc": str(r.get("generated_utc")),
                  "counts": {k: int(c[k]) for k in ("matched", "live_only", "sim_only")},
                  "counts_by_reason": {str(k): int(v) for k, v in sorted(r["counts_by_reason"].items())},
-                 "bands": {k: str((r.get(k) or {}).get("status")) for k in ("h1", "h2", "h3", "s1", "s2", "s3", "s4")}}
+                 "bands": {k: str((r.get(k) if isinstance(r.get(k), dict) else {}).get("status")) for k in ("h1", "h2", "h3", "s1", "s2", "s3", "s4")}}
         check_forbidden(block, "")
     except (KeyError, TypeError, ValueError, Refusal):
         return default
-    line = "%s (book A against the live bot, %s to %s): matched %d, live-only %d, sim-only %d; by reason %s" % (
-        r["status"], block["window"]["from_utc"], block["window"]["to_utc"], block["counts"]["matched"], block["counts"]["live_only"], block["counts"]["sim_only"], json.dumps(block["counts_by_reason"], sort_keys=True))
+    head = "%s (book A against the live bot, %s to %s)" % (r["status"], block["window"]["from_utc"], block["window"]["to_utc"])
+    plain = "%s: matched %d, live-only %d, sim-only %d; by reason %s" % (head, block["counts"]["matched"], block["counts"]["live_only"], block["counts"]["sim_only"], json.dumps(block["counts_by_reason"], sort_keys=True))
+    line = plain
     if r["status"] == "FAIL":
-        line += ". " + SIM_OFF
+        try:
+            line = head + ": " + fail_detail(r, block) + ". " + SIM_OFF
+            check_forbidden(line, "")
+        except (KeyError, TypeError, ValueError, AttributeError, Refusal):
+            line = plain + ". " + SIM_OFF  # a FAIL never falls back to NOT COMPARABLE: the old counts line, SIM OFF kept
     return block, line, rest, r["status"] == "FAIL"
 
 
@@ -821,7 +862,7 @@ def board_md(res):
     md = ["# Open sim board (FLOOR open simulation books, paper)", "", "> " + res["banner"], "",
           "- Generated %s; tape through %s (the slowest book with data); board_version %s." % (res["generated_utc"], res["tape_through_utc"] or "n/a (no book has a completed hour)", res["board_version"])] + (
           ["- catching up (pending twins only; a STALE book is shown by its own state): %s." % ", ".join(res["catching_up"])] if res.get("catching_up") else []) + [
-          "- Recon: %s." % res["recon_line"]] + (["- " + SIM_OFF + ": the live bot and book A disagree outside the bands; every figure below is greyed and no live step rests on it."] if res.get("sim_off") else []) + [
+          "- Recon: %s." % res["recon_line"]] + (["- " + SIM_OFF + ": a recon band FAILs (see the Recon line); every figure below is greyed and no live step rests on it."] if res.get("sim_off") else []) + [
           "- Net SOL is flat 15% fail leg / pressure leg, booked on the EXIT (close) UTC day. Complete UTC days only (tape at least 90 min past the day's end) in today, 7-day, forward and all; "
           "day in progress is a PARTIAL day (trades closed after the newest complete day), shown so trades are visible as they happen.",
           "- Forward = entry instant at or after the book's start instant; earlier entries are in-sample (IS), also when they close later. Forward days = complete UTC days from the day holding the start instant.",

@@ -624,3 +624,51 @@ def test_header_has_one_percent_sign_and_tp_override_book_shows_its_own_label(tm
     assert "tp_1.3x" in sec["E1"] and "tp_1.5x" not in sec["E1"]
     assert "tp_1.5x" in sec["A"] and "tp_1.3x" not in sec["A"]
     assert B.exit_label("time_24h", {"params": {"rule_overrides": {"TP": 1.3}}}) == "time_24h"
+
+
+# ------------------------------------------------------------------------------------------------------------------------------ recon FAIL line names the band (QP-RULING-1115 section 6)
+def _fail_over(band):
+    ok = {k: {"status": "PASS"} for k in ("h1", "h2", "h3")}
+    ins = {k: {"status": "INSUFFICIENT", "n": n, "min": 10} for k, n in (("s1", 1), ("s2", 0), ("s3", 2), ("s4", 4))}
+    bad = {"h1": {"status": "FAIL", "n_live_only": 2, "max": 0},
+           "h2": {"status": "FAIL", "unexplained_by_day": {"2026-11-15": 1}, "max_per_day": 0, "executor_unlisted": 0, "duplicate_keys": 0},
+           "h3": {"status": "FAIL", "n_compared": 2, "n_mismatch_uncoded": 0, "n_live_nonrule_exit": 1, "nonrule_cap_exceeded": True, "nonrule_cap": "max 1 and 10% of matched trades", "nonrule_net_live_sol": [-0.000633034]}}
+    ok[band] = bad[band]
+    return dict(ok, **ins, counts={"matched": 4, "live_only": 0, "sim_only": 3}, counts_by_reason={"sim_only:restart_lockout": 3})
+
+
+@pytest.mark.parametrize("band,needle", [("h1", "H1 FAIL: live-only entries 2 (max 0)"), ("h2", "H2 FAIL: unexplained sim-only per UTC day {\"2026-11-15\": 1}"),
+                                         ("h3", "H3 FAIL: live non-rule exit 1 of 4 matched (cap: max 1 and 10% of matched trades; live_nonrule_exit code and cap coded post hoc 2026-11-14; uncoded exit mismatches 0; live net -0.000633034 SOL)")])
+def test_recon_fail_line_names_the_failing_band(tmp_path, band, needle):
+    res, md = board_with(tmp_path, {"recon": str(recon_file(tmp_path, "FAIL", **_fail_over(band)))})
+    line = res["recon_line"]
+    assert needle in line
+    others = [b for b in ("h1", "h2", "h3") if b != band]
+    assert all(b.upper() + " PASS" in line for b in others) and band.upper() + " PASS" not in line
+    assert "sim-only 3: restart_lockout 3 (explained, not counted)" in line
+    assert "S1 INSUFFICIENT (n 1 < 10)" in line and "S4 INSUFFICIENT (n 4 < 10)" in line
+    assert line.endswith("SIM OFF: not decision-grade") and "Recon: " + line + "." in md
+    assert "a recon band FAILs (see the Recon line)" in md and "disagree outside the bands" not in md
+
+
+def test_recon_fail_line_keeps_host_down_no_row_as_its_own_word(tmp_path):
+    over = _fail_over("h3")
+    over["counts_by_reason"] = {"sim_only:restart_lockout": 2, "sim_only:host_down_no_row": 1}
+    res, _ = board_with(tmp_path, {"recon": str(recon_file(tmp_path, "FAIL", **over))})
+    assert "host_down_no_row 1 (explained, not counted), restart_lockout 2 (explained, not counted)" in res["recon_line"]
+
+
+def test_recon_fail_line_builder_error_keeps_sim_off_and_old_counts_line(tmp_path):
+    over = _fail_over("h3")
+    over["h3"]["nonrule_cap"] = "slot cap"  # a forbidden word in a band field: the new line is refused
+    res, md = board_with(tmp_path, {"recon": str(recon_file(tmp_path, "FAIL", **over))})
+    assert res["sim_off"] == "SIM OFF: not decision-grade" and res["recon"]["status"] == "FAIL" and "NOT COMPARABLE" not in res["recon_line"]
+    assert res["recon_line"].startswith("FAIL (book A against the live bot, ") and "matched 4, live-only 0, sim-only 3; by reason" in res["recon_line"] and res["recon_line"].endswith("SIM OFF: not decision-grade")
+    assert "a recon band FAILs (see the Recon line)" in md
+
+
+def test_recon_fail_malformed_band_keeps_sim_off(tmp_path):
+    over = _fail_over("h3")
+    over["h1"] = "FAIL"
+    res, _ = board_with(tmp_path, {"recon": str(recon_file(tmp_path, "FAIL", **over))})
+    assert res["sim_off"] == "SIM OFF: not decision-grade" and "NOT COMPARABLE" not in res["recon_line"]
