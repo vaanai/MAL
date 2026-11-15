@@ -1,12 +1,15 @@
 """MIGRATE sample (QP ruling 384d99f3 Q1 items 3 and 4), declared in the review file section 3b before this ran. CHAIN-ONLY, public RPC, 0 credits.
 Candidates: getSignaturesForAddress(mon.MIGRATION_FEE_ACCOUNT) paged back from now (the MIGRATE_K rule of tools/a3_redeploy_check.py migrate_sample).
-  post (M):    the first 40 SETTLED (blockTime <= now - 480 s) successful candidates with slot >= 469055660+150, oldest first, each fetched whole
+  post (M):    the first 40 SETTLED (blockTime <= now - 480 s) successful candidates with slot >= 469811067+150, oldest first, each fetched whole
                (getTransaction json v1: logs + inner instructions) and kept when mon.parse_migrate_tx reads a CompletePumpAmmMigrationEvent.
-  pre  (M_pre): the LAST 40 successful candidates with slot <= 469055660-150 (newest of them first, walking backwards), same keep rule.
+  pre  (M_pre): the LAST 40 successful candidates with slot <= 469811025-150 (newest of them first, walking backwards), same keep rule.
 Writes RAW/txs/<sig>.json.gz (shared cache layout) and RAW/migrate_index.json. Structure only."""
 import gzip, json, time
 from common import RAW, OUT, LClient, m
-DEPLOY = 469055660
+import os
+D_PUMP, D_SWAP = 469811025, 469811067
+MODE = os.environ.get("SAMPLE", "m")   # m (stage 1: M + M_pre) or m2 (stage 2: next 40 after M_LAST_SLOT; no pre)
+DEPLOY = D_SWAP
 K = 40
 (RAW / "txs").mkdir(parents=True, exist_ok=True)
 c = LClient(max_calls=3000, min_interval=0.5)
@@ -22,10 +25,10 @@ while pages < 40:
         if s.get("err") is None and s.get("blockTime") is not None:
             cands.append(s)
     # enough pre candidates once at least 400 signatures are older than the pre cutoff (fee-account sigs include non-migrate txs)
-    if len(sigs) < 1000 or sum(1 for s in cands if s["slot"] <= DEPLOY - 150) >= 400:
+    if len(sigs) < 1000 or sum(1 for s in cands if s["slot"] <= D_PUMP - 150) >= 400:
         break
-post = sorted([s for s in cands if s["slot"] >= DEPLOY + 150 and s["blockTime"] <= cutoff], key=lambda s: s["slot"])
-pre = sorted([s for s in cands if s["slot"] <= DEPLOY - 150], key=lambda s: -s["slot"])
+post = sorted([s for s in cands if s["slot"] >= (DEPLOY + 150 if MODE == "m" else int(os.environ["M_LAST_SLOT"]) + 1) and s["blockTime"] <= cutoff], key=lambda s: s["slot"])
+pre = sorted([s for s in cands if s["slot"] <= D_PUMP - 150], key=lambda s: -s["slot"])
 
 
 def fetch(sig):
@@ -50,8 +53,8 @@ def take(lst):
 
 
 M, sk_post = take(post)
-P, sk_pre = take(pre)
+P, sk_pre = take(pre) if MODE == "m" else ([], {})
 idx = {"post": M, "pre": P, "skipped_post": sk_post, "skipped_pre": sk_pre, "n_cands": len(cands), "pages": pages, "cutoff_bt": cutoff}
 (RAW / "migrate_index.json").write_text(json.dumps(idx))
-(OUT / "s10_migrate_sample.json").write_text(json.dumps({**idx, "rpc_attempts": c.total_calls}, indent=1))
+(OUT / f"s10_migrate_sample_{MODE}.json").write_text(json.dumps({**idx, "rpc_attempts": c.total_calls}, indent=1))
 print("post", len(M), "wsol", sum(1 for x in M if x["quote_wsol"]), "pre", len(P), "wsol", sum(1 for x in P if x["quote_wsol"]), sk_post, sk_pre, "rpc", c.total_calls)
