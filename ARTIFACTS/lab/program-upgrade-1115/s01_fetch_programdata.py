@@ -2,7 +2,7 @@
 Programdata address comes from each program account (UpgradeableLoaderState::Program tag 2). Raw bytes of the programdata go off-repo
 (/data2/mal/scratch/a3-repin-1115/pd/*.bin); the config accounts are only hashed. Structure only.
 Run from this directory: python3 -I s01_fetch_programdata.py"""
-import base64, hashlib, json, struct, time, urllib.request
+import base64, hashlib, json, os, struct, time, urllib.request
 from pathlib import Path
 RPC = "https://api.mainnet-beta.solana.com"
 PROG = {"pump": "6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P", "pumpswap": "pAMMBay6oceH9fJKBRHGP5D4bD4sWpmSwMn52FMfXEA", "fees": "pfeeUxB6jkeY1Hxd7CsFCAjcbHA9rWtchMGdZ6VojVZ"}
@@ -17,7 +17,7 @@ def b58(b):
     return "1" * (len(b) - len(b.lstrip(b"\0"))) + s
 
 
-out = Path("/data2/mal/scratch/a3-repin-1115/pd"); out.mkdir(parents=True, exist_ok=True)
+out = Path(os.environ.get("A3_BASE", "/data2/mal/scratch/a3-repin-1115")) / "pd"; out.mkdir(parents=True, exist_ok=True)
 
 
 def get(addr):
@@ -50,4 +50,4 @@ for name, d in res["programdata"].items():
 for name, d in res["config"].items():
     p = pins["accounts"][name]; d["pin_sha256"] = p["sha256"]; d["equals_pin"] = (p["sha256"] == d["sha256"] and p["len"] == d["len"])
 print(json.dumps(res, indent=1))
-Path("out/s01_programdata.json").write_text(json.dumps(res, indent=1, sort_keys=True) + "\n")
+Path(os.environ.get("UPGRADE_OUT", "out") + "/s01_programdata.json").write_text(json.dumps(res, indent=1, sort_keys=True) + "\n")
