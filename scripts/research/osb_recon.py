@@ -786,7 +786,7 @@ def recon_lt_md(res):
             "- Twin trades left out by the twin (counted as no_sim, outside S1 and S2) by reason: %s." % json.dumps(res.get("excluded_reason_counts", {}), sort_keys=True), ""]
     if res.get("schema") == LT_W2_SCHEMA:  # S window 2 (QP-RULING-1116-recon-latency-twin-ADD1): the 0.25 rung only
         head[0] = "# Open sim recon against latency twin %s, S window 2 (0.25 SOL install): book A against the live FLOOR bot (paper)" % res["twin_book_id"]
-        head[5:5] = ["- S window 2 from the 0.25 install start line %s; S1..S4-twin use matched filled live trades at the %g SOL stake only, priced by the twin's %g column; no pooling with window 1 or with other stakes. "
+        head[5:5] = ["- S window 2 from the 0.25 install start line %s; S1..S4-twin use matched filled live trades at the %g SOL stake only, valued by the twin's %g column; no merging with window 1 or with other stakes. "
                      "Live buys in the window at another stake: %d (any makes this status FAIL), by stake %s." % (
                          LT_W2_START_UTC, res["s_stake_sol"], res["s_stake_sol"], res["off_stake_live_buys"]["n"], json.dumps(res["off_stake_live_buys"]["by_stake_sol"], sort_keys=True))]
     body = recon_md(res).split("\n")
