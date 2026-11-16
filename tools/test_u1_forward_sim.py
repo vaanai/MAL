@@ -356,7 +356,7 @@ def u1_manifest(tmp_path, decider="u1", **extra):
     ta = tmp_path / "a.jsonl"
     ta.write_text(json.dumps({"launcher": "A", "funder": "F", "funding_slot": 1, "status": "resolved"}) + "\n")
     m = {"book_id": "u1-test", "title": "t", "decider": decider, "stakes_sol": [0.1, 0.25, 0.5], "send_lamports": 505_000, "start_hour": START,
-         "tape_dir": S.KEEP_ROOT, "out_root": S.SIM_ROOT + "/u1-test", "u1": {"table_a": str(ta)}}
+         "tape_dir": S.KEEP_ROOT, "out_root": S.SIM_ROOT + "/u1-test", "u1": {"table_a": str(ta), "hr_exclusion": True}}
     m.update(extra)
     return m
 
@@ -385,3 +385,87 @@ def test_runner_refuses_an_entry_decided_before_S_for_u1_too(tmp_path, monkeypat
     book = S.Book(S.check_manifest(u1_manifest(tmp_path, out_root=str(tmp_path / "o"))), tmp_path / "run", "0" * 64)
     with pytest.raises(S.Refused):
         book.buy(e)
+
+
+# ---------------------------------------------------------------------------------------------------------------------------- QP ADD1
+def test_cap_open_open_count_never_below_exact_and_refuses_at_ten():
+    # exact count at D is 10 (open_fn reports 10): refusal
+    entries, st = flow(new_decider(open_fn=lambda: 10), history_rows("A", 3), candidate("A"))
+    assert entries == [] and st.counts["cap_open"] == 1
+    # the hour-start count over-counts positions that close inside the hour: exact 9, reported 10 -> refused (over-count only), flagged stale by the exact hook
+    dec = new_decider(open_fn=lambda: 10, exact_open_fn=lambda d_ms: 9)
+    entries, st = flow(dec, history_rows("A", 3), candidate("A"))
+    assert entries == [] and st.counts["cap_open_stale"] == 1 and U.board_disclosures(st.counts) == [U.STALE_DISCLOSURE % 1]
+    # exact also 10: not stale
+    entries, st = flow(new_decider(open_fn=lambda: 10, exact_open_fn=lambda d_ms: 10), history_rows("A", 3), candidate("A"))
+    assert st.counts["cap_open"] == 1 and st.counts["cap_open_stale"] == 0 and U.board_disclosures(st.counts) == []
+
+
+def test_own_count_without_open_fn_is_an_upper_bound_of_the_true_count():
+    dec = new_decider()
+    dec.own_entries = [(S_S + 3600 + 361) * 1000 - 3 * 3600 * 1000] * 10  # 10 own entries, timed end (6 h) still ahead: counted even if a stop closed them
+    entries, st = flow(dec, history_rows("A", 3), candidate("A"))
+    assert entries == [] and st.counts["cap_open"] == 1
+    dec = new_decider()
+    dec.own_entries = [0] * 10  # all past their 6 h timed end: none open
+    assert len(flow(dec, history_rows("A", 3), candidate("A"))[0]) == 1
+
+
+def test_placebo_one_entry_per_pool_ever_and_summary_not_evaluable_below_five():
+    uni = [{"pool": "p%d" % i, "mint": "m%d" % i, "pc_s": 1000 + i} for i in range(4)]
+    plan, c = U.build_placebo_plan(uni, [uni[0], uni[1], uni[2]], {"m0", "m1", "m2"})
+    assert list(plan) == ["p3"] and c["placebo_no_candidate"] == 2
+    r = U.placebo_summary(30, 4)
+    assert r["condition_6_evaluable"] is False and r["verdict"].startswith("NO-GO") and r["placebo_n"] == 4 and r["book_n"] == 30
+    assert U.placebo_summary(30, 5)["condition_6_evaluable"] is True and U.placebo_summary(30, 5)["verdict"] is None
+
+
+def test_placebo_plan_written_hashed_before_pricing_and_never_rebuilt(tmp_path):
+    plan = {"PNEW": {"for": "Pother", "pc_s": 5}}
+    path = tmp_path / "plan.json"
+    sha = U.write_placebo_plan(plan, {"placebo_drawn": 1}, path)
+    assert oct(path.stat().st_mode & 0o777) == "0o440"
+    assert U.load_placebo_plan(path, sha) == plan
+    with pytest.raises(FileExistsError):
+        U.write_placebo_plan({}, {}, path)  # never rebuilt
+    with pytest.raises(ValueError):
+        U.load_placebo_plan(path, "0" * 64)  # a differing plan: the second pass refuses
+    with pytest.raises(ValueError):
+        U.load_placebo_plan(path, None)  # no pinned hash: refused
+    m = u1_manifest(tmp_path, "u1_placebo")
+    m["u1"].update(placebo_plan=str(path), placebo_plan_sha256=sha)
+    assert S.default_decider(S.check_manifest(m)).plan == plan
+    m["u1"]["placebo_plan_sha256"] = "1" * 64
+    with pytest.raises(ValueError):
+        S.default_decider(S.check_manifest(m))
+    m2 = u1_manifest(tmp_path, "u1_placebo")
+    m2["u1"]["placebo_plan"] = str(path)
+    with pytest.raises(S.Refused):
+        S.check_manifest(m2)  # no sha key
+
+
+@pytest.mark.parametrize("val", [False, None, "yes", 1])
+def test_runner_refuses_without_hr_exclusion_on(tmp_path, val):
+    m = u1_manifest(tmp_path)
+    m["u1"]["hr_exclusion"] = val
+    with pytest.raises(S.Refused):
+        S.check_manifest(m)
+    m = u1_manifest(tmp_path)
+    del m["u1"]["hr_exclusion"]
+    with pytest.raises(S.Refused):
+        S.check_manifest(m)
+
+
+def test_default_hr_predicate_matches_the_pda_creator():
+    from solders.pubkey import Pubkey
+    mint = str(Pubkey.new_unique())
+    pda = U.hr_pda(mint)
+    assert U.hr_coin({"mint": mint, "creator": pda}) is True
+    assert U.hr_coin({"mint": mint, "creator": str(Pubkey.new_unique())}) is False
+    assert U.hr_coin({"mint": "not-base58!", "creator": "x"}) is False
+    # the default decider excludes it
+    dec = new_decider()
+    run(dec, sorted(history_rows("A", 3), key=lambda r: r["t_recv_ms"]), warmup=True)
+    c = [create(mint, "A", S_S + 3000, creator=pda)] + [pool_create(mint, S_S + 3600), print_("P" + mint, S_S + 4000)]
+    entries, st = run(dec, c)
+    assert entries == [] and st.counts["hr_coin_excluded"] == 1
