@@ -52,7 +52,10 @@ EXIT_OK, EXIT_REFUSED, EXIT_FATAL, EXIT_MISMATCH = 0, 2, 3, 4
 MANIFEST_KEYS = {"book_id", "title", "decider", "stakes_sol", "send_lamports", "start_hour", "warmup_hours", "tape_dir", "out_root", "exit_s", "pricing_lat_entry_s",
                  "pick_oracle", "feed_delay_slots", "wallet_ledger_root", "model_manifest", "duckdb_pin"}
 REQUIRED_KEYS = {"book_id", "title", "decider", "stakes_sol", "send_lamports", "start_hour", "tape_dir", "out_root"}
-DECIDERS = ("c1nf",)
+DECIDERS = ("c1nf", "u4", "u2")
+WARMUP_MIN_BY_DECIDER = {"u4": 168, "u2": 192}      # QP-RULING-1116-u4-u2-p81-forward-specs 0.3: W >= 168 h (U4), >= 192 h (U2); otherwise S moves later
+EXIT_S_MAX = {"c1nf": 3600, "u4": 259_200, "u2": 259_200}  # ruling 0.2 item 2: exit_s up to 72 h for the mark-clock books; c1nf stays at 3600
+PLACEBO_DECIDERS = ("u4", "u2")                      # ruling 0.7: a second bot_id whose entries the decider draws; it never enters the decider's view of the deciding book
 
 
 class Refused(Exception):
@@ -171,6 +174,28 @@ class Entry:
     decision_slot: int
     exit_after_s: float = EXIT_S_DEFAULT
     meta: dict = dataclasses.field(default_factory=dict)
+    bot: str = "main"                 # "main" (the deciding book) | "placebo" (ruling 0.7)
+    exit_from_decision: bool = False  # True: the timed exit is decision instant + exit_after_s (ruling U4 1.3, U2 2.3); False: entry landing + exit_after_s (C1-NF)
+
+    def as_dict(self):
+        d = dataclasses.asdict(self)
+        if d["bot"] == "main":
+            del d["bot"]  # the C1-NF decision md5 stays byte-identical to the pre-extension runner
+        if not d["exit_from_decision"]:
+            del d["exit_from_decision"]
+        return d
+
+
+@dataclasses.dataclass
+class SellReq:
+    """A decider-requested sell (ruling 0.2 item 3): position = the open (bot, pool) position. at_row: the sell is handed to the engine just BEFORE that row, like an Entry.
+    decision_ms / decision_slot: the stream instant of the trigger (the print, or the mark's last row). The engine prices it at the exit lag after decision_slot."""
+    pool: str
+    at_row: int
+    decision_ms: int
+    decision_slot: int
+    reason: str
+    bot: str = "main"
 
     def as_dict(self):
         return dataclasses.asdict(self)
@@ -320,8 +345,9 @@ def check_manifest(m):
     if m["send_lamports"] not in SENDS:
         raise Refused("send_lamports must be one of %s (505,000 deciding, 160,000 beside)" % (list(SENDS),))
     es = m.get("exit_s", EXIT_S_DEFAULT)
-    if isinstance(es, bool) or not isinstance(es, (int, float)) or not 1 <= es <= 3600:
-        raise Refused("exit_s must be a number of seconds in [1, 3600]")
+    es_max = EXIT_S_MAX[m["decider"]]
+    if isinstance(es, bool) or not isinstance(es, (int, float)) or not 1 <= es <= es_max:
+        raise Refused("exit_s must be a number of seconds in [1, %d] for decider %s" % (es_max, m["decider"]))
     m.setdefault("pricing_lat_entry_s", LAT_DECIDING_S)
     if True:
         v = m["pricing_lat_entry_s"]
@@ -349,8 +375,9 @@ def hours_needed(m):
     start = parse_hour(m["start_hour"])
     avail = (start - parse_hour(WARMUP_START_MIN)) // HOUR_MS
     w = min(WARMUP_MAX_H, avail) if m.get("warmup_hours") is None else m["warmup_hours"]
-    if w > avail or w < MIN_WARMUP_H:
-        raise Refused("warm-up window: %d h wanted, %d h available from %s (minimum %d): S moves later" % (w, avail, WARMUP_START_MIN, MIN_WARMUP_H))
+    need = max(MIN_WARMUP_H, WARMUP_MIN_BY_DECIDER.get(m["decider"], 0))
+    if w > avail or w < need:
+        raise Refused("warm-up window: %d h wanted, %d h available from %s (minimum %d for decider %s): S moves later" % (w, avail, WARMUP_START_MIN, need, m["decider"]))
     return [hour_key(start - (w - i) * HOUR_MS) for i in range(w)], start
 
 
@@ -450,20 +477,30 @@ class Book:
         self.engine = GapRangeEngine(ledger, registry, cfg=cfg, **kw)
         self.sells = []  # heap of (exit_ms, position_id)
         self.c = collections.Counter()
+        self.bots = {"main": self.bot}
+        if m["decider"] in PLACEBO_DECIDERS:  # ruling 0.2 item 4 / 0.7: the placebo is a second bot_id priced by the same engine; the decider's view never includes it
+            self.bots["placebo"] = self.bot + "-plc"
+            self._register(registry, code_sha, start_ms, self.bots["placebo"])
+        self.pid_bot = {}    # position_id -> engine bot id
+        self.open = {}       # (bot key, pool) -> position_id of the open position
+        self.sold = set()    # position ids that already have a sell (timed or requested)
 
-    def _register(self, registry, code_sha, start_ms):
+    def _register(self, registry, code_sha, start_ms, bot=None):
         os.environ[AP.TEST_ENV] = "1"  # scratch registry under the output root only (as osb_follow's scratch_register): a replay cannot register in the real clock's past
         try:
-            AP.register_bot(self.bot, code_sha[:40], start_ms, registry, deciding_stake=AP.STAKES_SOL[0], model_ids=[], now_ms=start_ms - 1, verify_sha=False)
+            AP.register_bot(bot or self.bot, code_sha[:40], start_ms, registry, deciding_stake=AP.STAKES_SOL[0], model_ids=[], now_ms=start_ms - 1, verify_sha=False)
         finally:
             os.environ.pop(AP.TEST_ENV, None)
 
     def _due_sells(self, until_ms):
         while self.sells and self.sells[0][0] <= until_ms:
             ems, pid = heapq.heappop(self.sells)
+            if pid in self.sold:  # a requested sell (stop / take / share fall) already closed it
+                continue
             self.clock = ems
+            self.sold.add(pid)
             try:
-                self.engine.sell(self.bot, pid, 1.0, ems, max(self.engine.hw_slot, 0), "time_exit")
+                self.engine.sell(self.pid_bot[pid], pid, 1.0, ems, max(self.engine.hw_slot, 0), "time_exit")
                 self.c["sells"] += 1
             except AP.ArenaRefused as e:
                 self.c["sell_refused_" + str(e).split(":")[0][:30].replace(" ", "_")] += 1
@@ -473,29 +510,66 @@ class Book:
             raise Refused("entry decided before S (%d): refused" % e.decision_ms)
         self._due_sells(e.decision_ms)
         self.clock = e.decision_ms
+        if e.bot not in self.bots:
+            raise Refused("entry for bot %r but this book has only %s" % (e.bot, sorted(self.bots)))
+        if (e.bot, e.pool) in self.open and self.open[(e.bot, e.pool)] not in self.sold:  # one open position per pool per bot (ruling 0.4)
+            self.c["buy_refused_open_position"] += 1
+            return None
         try:
-            pid = self.engine.buy(self.bot, e.pool, float(self.m["stakes_sol"][0]), e.decision_ms, e.decision_slot, e.meta)
+            pid = self.engine.buy(self.bots[e.bot], e.pool, float(self.m["stakes_sol"][0]), e.decision_ms, e.decision_slot, e.meta)
         except AP.ArenaRefused as exc:
             self.c["buy_refused_" + str(exc).split(":")[0][:30].replace(" ", "_")] += 1
             return None
-        self.c["buys"] += 1
-        land_ms = int(round(float(self.m["pricing_lat_entry_s"]) * 1000))  # ruling 2.3: the sell is decided at entry landing + exit_s
+        self.c["buys" if e.bot == "main" else "buys_" + e.bot] += 1
+        self.pid_bot[pid] = self.bots[e.bot]
+        self.open[(e.bot, e.pool)] = pid
+        # C1-NF (ruling 2.3): the sell is decided at entry landing + exit_s. U4 / U2 (ruling 1.3, 2.3): decision instant + exit_s
+        land_ms = 0 if e.exit_from_decision else int(round(float(self.m["pricing_lat_entry_s"]) * 1000))
         heapq.heappush(self.sells, (e.decision_ms + land_ms + int(round(e.exit_after_s * 1000)), pid))
         return pid
 
-    def run_hour(self, rows, entries):
+    def sell_req(self, s):
+        """a decider-requested sell of the open (bot, pool) position (ruling 0.2 item 3); nothing is decided before S"""
+        if s.decision_ms < parse_hour(self.m["start_hour"]):
+            raise Refused("sell decided before S (%d): refused" % s.decision_ms)
+        if s.bot not in self.bots:
+            raise Refused("sell for bot %r but this book has only %s" % (s.bot, sorted(self.bots)))
+        pid = self.open.get((s.bot, s.pool))
+        if pid is None or pid in self.sold:
+            self.c["sell_req_no_open_position"] += 1
+            return
+        self._due_sells(s.decision_ms)
+        if pid in self.sold:
+            return
+        self.clock = s.decision_ms
+        try:
+            self.engine.sell(self.bots[s.bot], pid, 1.0, s.decision_ms, s.decision_slot, s.reason)
+        except AP.ArenaRefused as e:  # e.g. decided before the slower entry leg lands: the timed exit stays
+            self.c["sell_req_refused_" + str(e).split(":")[0][:30].replace(" ", "_")] += 1
+            return
+        self.sold.add(pid)
+        self.c["sell_req_" + re.sub(r"[^a-z_]", "", s.reason)[:12]] += 1
+
+    def run_hour(self, rows, entries, sells=()):
         by_row = collections.defaultdict(list)
         for e in entries:
             by_row[e.at_row].append(e)
+        sells_by_row = collections.defaultdict(list)
+        for s in sells:
+            sells_by_row[s.at_row].append(s)
         for i, row in enumerate(rows):
             t = row.get("t_recv_ms")
             if _isint(t):
                 self._due_sells(t)
+            for s in sells_by_row.get(i, ()):
+                self.sell_req(s)
             for e in by_row.get(i, ()):
                 self.buy(e)
             self.engine.on_row(row)
             if _isint(t):
                 self.clock = t
+        for s in sells_by_row.get(len(rows), ()):  # a trigger on the hour's last row: handed over at the hour end
+            self.sell_req(s)
         self.engine.prune()
         self.engine.trim_history()
 
@@ -505,6 +579,9 @@ class Book:
 
 # ------------------------------------------------------------------------------------------------------------------------------ follow
 def default_decider(m, ledger_provider=None):
+    if m["decider"] in PLACEBO_DECIDERS:
+        import u4_u2_deciders as UD
+        return UD.make_decider(m, hour_to_ms=parse_hour)
     from tools import c1nf_shadow as CS
     mm = m.get("model_manifest") or str(REPO / "ARTIFACTS" / "c1nf_model" / "manifest.json")
     models = CS.ModelSet.from_manifest(mm)
@@ -601,6 +678,7 @@ def _locked(m, out_root, once, max_hours, sleep_fn, decider_factory, ledger_buil
         rows = read_hour_rows(f)
         st = RunState(hour=key, warmup=is_warm, day=key[:10])
         entries = decider.decide(rows, st)
+        sells = decider.take_sells() if hasattr(decider, "take_sells") else []
         for r in rows:
             if r.get("pool"):
                 pools_seen.add(r["pool"])
@@ -609,13 +687,14 @@ def _locked(m, out_root, once, max_hours, sleep_fn, decider_factory, ledger_buil
         st.counts["rows"], st.counts["pools_seen_total"], st.counts["creators_seen_total"] = len(rows), len(pools_seen), len(creators_seen)
         if is_warm:
             warm_pools = len(pools_seen)
-        if is_warm and entries:
-            raise Refused("a decider returned entries in a warm-up hour (%s): refused" % key)
+        if is_warm and (entries or sells):
+            raise Refused("a decider returned entries or sells in a warm-up hour (%s): refused" % key)
         if not is_warm:
-            book.run_hour(rows, entries)
-        trades = [a[1] for a in (arena_row_to_c1nf(r) for r in rows) if a is not None and a[0] == "trades"]
-        lstep.note_hour(key, trades)
-        dmd5 = hashlib.md5(canon([e.as_dict() for e in entries]).encode()).hexdigest()
+            book.run_hour(rows, entries, sells)
+        if m["decider"] == "c1nf":  # the U4 / U2 books never build or read the C1-NF wallet ledger (ruling 0.1)
+            trades = [a[1] for a in (arena_row_to_c1nf(r) for r in rows) if a is not None and a[0] == "trades"]
+            lstep.note_hour(key, trades)
+        dmd5 = hashlib.md5(canon([e.as_dict() for e in entries] + [s.as_dict() for s in sells]).encode()).hexdigest()
         lmd5 = O.tree_md5(run_dir / "ledger") if (run_dir / "ledger").exists() else hashlib.md5(b"").hexdigest()
         if key in stored:
             for fld, got in (("decision_md5", dmd5), ("ledger_md5", lmd5)):
