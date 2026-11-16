@@ -1,9 +1,9 @@
 """Offline summary of the parity outputs and the sample coverage bars (QP ruling 384d99f3 item 2). Writes out/s13_summary.json. Structure only."""
 import collections, json, os, time
-B = "/data2/mal/scratch/a3-repin-1115/"
+B = os.environ.get("A3_BASE", "/data2/mal/scratch/a3-repin-1115").rstrip("/") + "/"
 res = {"parity": {}, "coverage": {}}
 for n, lab in (("", "post"), ("_pre", "pre_P"), ("_premig", "pre_Mpre")):
-    d = json.load(open(f"out/s06_parity{n}.json"))
+    d = json.load(open(f"{os.environ.get('UPGRADE_OUT', 'out')}/s06_parity{n}.json"))
     nd = collections.Counter(f"{x['cat']}|cap={x.get('explained_by_cap')}|trunc={x.get('truncated')}|{x.get('why', '')[:30]}" for x in d["nondecode"])
     res["parity"][lab] = {"blocks": d["n_blocks_A"], "A_txs": d["n_A_txs_success_touching"], "tx_analysed": d["tx_analysed"], "log_truncated_txs": d["log_truncated_txs"],
         "fields_compared": d["compared_fields_ok_or_not"], "unknown_event_disc": d["unknown_disc"], "unknown_ix_disc": d["unknown_ix"], "trail8_nonzero": d["trail8_nonzero"],
@@ -17,7 +17,7 @@ for s in ("raw", "raw_pre"):
     sl = [v["slot"] for v in i.values()]
     res["coverage"][s] = {"txs": len(i), "distinct_utc_hours": len(hrs), "min_slot": min(sl), "max_slot": max(sl), "n_blocks_cached": len(os.listdir(B + s + "/blocks")),
                           "first_hour": min(hrs), "last_hour": max(hrs), "slots_after_deploy_min": min(sl) - 469811067}
-json.dump(res, open("out/s13_summary.json", "w"), indent=1, default=str)
+json.dump(res, open(os.environ.get("UPGRADE_OUT", "out") + "/s13_summary.json", "w"), indent=1, default=str)
 for k, v in res["parity"].items():
     print("==", k, {a: b for a, b in v.items() if a not in ("events", "ix_boost_create", "nontrade_value_unmatched", "walker_rows")})
     print("   nontrade", v["nontrade_value_unmatched"], "ix", v["ix_boost_create"])

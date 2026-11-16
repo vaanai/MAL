@@ -1,0 +1,5 @@
+wrote pins to /data2/mal/scratch/a3-repin-1115-s2/raw/pins_new.json from slot 469988021
+monitor rc 0 attempts 7 ok 7 retries 0 by_method {'getEpochInfo': 1, 'getRecentPerformanceSamples': 1, 'getMultipleAccounts': 2, 'getAccountInfo': 3}
+pinned_at_slot: 469856995 -> 469988021
+pinned_utc: 2026-11-15T20:04:51Z -> 2026-11-16T03:54:33Z
+UNEXPECTED DIFFS: []

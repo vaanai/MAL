@@ -1,0 +1,15 @@
+{
+ "fee_triples_post_subset_of_pre": false,
+ "fee_triples_new_in_post": [
+  "0,5,0",
+  "2,93,0",
+  "20,0,5",
+  "20,5,15",
+  "20,5,30",
+  "20,5,40",
+  "20,5,45"
+ ],
+ "notes_and_deviations": []
+}
+post 39168 {'BoostBuyAndBurnEvent': (24, {0: 24}), 'BuyEvent': (8497, {8: 8497}), 'ClaimCashbackEvent': (40, {0: 40}), 'CloseUserVolumeAccumulatorEvent': (853, {0: 853}), 'CollectCoinCreatorFeeEvent': (17, {0: 17}), 'CreatePoolEvent': (85, {0: 85}), 'ExtendAccountEvent': (3, {0: 3}), 'InitBoostEvent': (49, {0: 49}), 'InitUserVolumeAccumulatorEvent': (205, {0: 205}), 'SellEvent': (10855, {8: 10855}), 'SweepPoolFeeEvent': (4, {0: 4}), 'WithdrawEvent': (5, {8: 5})}
+pre 8304 {'BoostBuyAndBurnEvent': (3, {0: 3}), 'BuyEvent': (2055, {8: 2055}), 'ClaimCashbackEvent': (6, {0: 6}), 'CloseUserVolumeAccumulatorEvent': (210, {0: 210}), 'CollectCoinCreatorFeeEvent': (6, {0: 6}), 'CreatePoolEvent': (41, {0: 41}), 'ExtendAccountEvent': (1, {0: 1}), 'InitBoostEvent': (22, {0: 22}), 'InitUserVolumeAccumulatorEvent': (37, {0: 37}), 'SellEvent': (2461, {8: 2461}), 'SweepPoolFeeEvent': (1, {0: 1}), 'WithdrawEvent': (1, {8: 1})}

@@ -1,0 +1,20 @@
+{
+ "post": {
+  "counts": {
+   "CreateEvent": 50,
+   "mayhem_true_indep": 25,
+   "CreatePoolEvent": 6,
+   "pool_mayhem_true_indep": 0
+  },
+  "mismatching_sigs": []
+ },
+ "pre_P": {
+  "counts": {
+   "CreateEvent": 8,
+   "mayhem_true_indep": 3,
+   "CreatePoolEvent": 1,
+   "pool_mayhem_true_indep": 0
+  },
+  "mismatching_sigs": []
+ }
+}

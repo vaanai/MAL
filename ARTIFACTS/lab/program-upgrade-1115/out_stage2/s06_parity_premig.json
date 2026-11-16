@@ -1,0 +1,123 @@
+{
+ "blob_sha": {
+  "observe/trade_decode.py": {
+   "equal": true,
+   "expected_prefix": "238942a6",
+   "here": "238942a6b3c5425389eddfde4d11268c300acbec"
+  },
+  "observe/trade_store.py": {
+   "equal": true,
+   "expected_prefix": "ea4e11ed",
+   "here": "ea4e11eddf9f034e3bc7318ce8743337d753f350"
+  },
+  "tools/pump_history_backfill.py": {
+   "equal": true,
+   "expected_prefix": "9a8bebb3",
+   "here": "9a8bebb32adcf86de060b55f5a08110d11c0a550"
+  }
+ },
+ "compared_fields_ok_or_not": {
+  "BuyEvent": 2
+ },
+ "cpi_only": {},
+ "empty_tag_cpi": 0,
+ "events": {
+  "pump.CompletePumpAmmMigrationEvent": 40,
+  "pump_amm.BuyEvent": 2,
+  "pump_amm.CreatePoolEvent": 40,
+  "pump_amm.InitBoostEvent": 22
+ },
+ "failed_txs": 0,
+ "frozen_rows_records_from_logs": 2,
+ "idl_sha256": {
+  "pump": "7616681ea557975f9f623ac211080f22a93060781eaf4765b0a488d980997207",
+  "pump_amm": "b7d8c57a4d9c4dd0109a9ab893052352333252d4eedced10ac091d4d66cab89b",
+  "pump_fees": "6b9fa3eccc6e06273076a47b581f9fcb9e531bb7c3c88acbcd44db55a4002b29"
+ },
+ "indep_log_trade_events": 2,
+ "ix": {
+  "pump.migrate": 4,
+  "pump.migrate_v2": 36,
+  "pump_amm.buy": 1,
+  "pump_amm.buy_v2": 1,
+  "pump_amm.create_pool": 40,
+  "pump_amm.init_boost": 22,
+  "pump_fees.get_fees_with_quote_mint": 1
+ },
+ "layout_len": {
+  "pump.CompletePumpAmmMigrationEvent": {
+   "200": 40
+  },
+  "pump_amm.BuyEvent": {
+   "497": 1,
+   "500": 1
+  },
+  "pump_amm.CreatePoolEvent": {
+   "344": 40
+  },
+  "pump_amm.InitBoostEvent": {
+   "136": 22
+  }
+ },
+ "log_truncated_txs": 0,
+ "multihop_txs": 0,
+ "n_A_txs_success_touching": 39089,
+ "n_blocks_A": 0,
+ "nondecode": [],
+ "nondecode_by_cat": {},
+ "nontrade": {
+  "pump.CompletePumpAmmMigrationEvent|log": {
+   "equal": 40,
+   "frozen_none": 0,
+   "in_migrate_tx": 40,
+   "total": 40,
+   "value_unmatched": 0
+  },
+  "pump_amm.CreatePoolEvent|log": {
+   "equal": 40,
+   "frozen_none": 0,
+   "in_migrate_tx": 40,
+   "total": 40,
+   "value_unmatched": 0
+  },
+  "pump_amm.InitBoostEvent|log": {
+   "equal": 22,
+   "frozen_none": 0,
+   "in_migrate_tx": 22,
+   "total": 22,
+   "value_unmatched": 0
+  }
+ },
+ "read_events": {
+  "pump.CompletePumpAmmMigrationEvent": 40,
+  "pump_amm.BuyEvent": 2,
+  "pump_amm.CreatePoolEvent": 40,
+  "pump_amm.InitBoostEvent": 22
+ },
+ "refused": {},
+ "refused_quote": {},
+ "refused_rows": [],
+ "trade_ix_total": 2,
+ "trail8": {
+  "pump_amm.BuyEvent": 2
+ },
+ "trail8_first_last_slot": [
+  469806801,
+  469807206
+ ],
+ "trail8_nonzero": [],
+ "trail8_total": 2,
+ "trail8_values": {
+  "0": 2
+ },
+ "tx_analysed": {
+  "M": 40
+ },
+ "unknown_disc": {},
+ "unknown_ix": {},
+ "unresolved_mint_rows": 0,
+ "walker_bad_disc": {},
+ "walker_cpi_only_disc": {},
+ "walker_rows": {},
+ "walker_unknown_disc": {}
+}

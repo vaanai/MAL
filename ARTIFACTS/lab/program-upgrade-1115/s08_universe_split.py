@@ -12,7 +12,7 @@ exec(open("s06_parity.py").read().split("acc = dict(")[0])
 from common import LClient, OUT
 WSOL = td.WSOL_MINT
 ZERO = "11111111111111111111111111111111"
-BASE = Path("/data2/mal/scratch/a3-repin-1115")
+BASE = Path(os.environ.get("A3_BASE", "/data2/mal/scratch/a3-repin-1115"))
 ROOTS = {"post": BASE / "raw", "pre": BASE / "raw_pre"}
 MIG = json.load(open(BASE / "raw" / "migrate_index.json"))
 EPISODE_POOL = "34tiphuqXUgkH9c2KCrFqCiyuhz58HEbhQBk61ub46bU"

@@ -6,7 +6,7 @@ import collections, gzip, json, os, sys
 from pathlib import Path
 sys.argv = [sys.argv[0]]
 exec(open("s06_parity.py").read().split("acc = dict(")[0])
-BASE = Path("/data2/mal/scratch/a3-repin-1115")
+BASE = Path(os.environ.get("A3_BASE", "/data2/mal/scratch/a3-repin-1115"))
 res = {}
 for label, root in (("post", "raw"), ("pre_P", "raw_pre")):
     c = collections.Counter(); mism = []
@@ -30,5 +30,5 @@ for label, root in (("post", "raw"), ("pre_P", "raw_pre")):
                 elif nm == "CreatePoolEvent":
                     ev, _ = parse_event("pump_amm", nm, blob); c["CreatePoolEvent"] += 1; c["pool_mayhem_true_indep"] += bool(ev["is_mayhem_mode"])
     res[label] = {"counts": dict(c), "mismatching_sigs": mism[:10]}
-(Path("out") / "s14_mayhem_parity.json").write_text(json.dumps(res, indent=1))
+(Path(os.environ.get("UPGRADE_OUT", "out")) / "s14_mayhem_parity.json").write_text(json.dumps(res, indent=1))
 print(json.dumps(res, indent=1))

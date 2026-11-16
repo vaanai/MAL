@@ -1,0 +1,13 @@
+== post {'A': 39089, 'FAILED': 64049, 'M': 79, 'C': 8}
+   CompleteEvent n 8 frozen_none 0 compared 40 unequal 0
+   CompletePumpAmmMigrationEvent n 80 frozen_none 0 compared 720 unequal 0
+   CreatePoolEvent n 85 frozen_none 0 compared 255 unequal 0
+   undecodable successful {} failed {} lines {'successful_sampled': 29059, 'failed_same_blocks': 1987} other_prog 13751 nostack 0
+   deposit {'count': 0, 'trailing': {}, 'blob_len': {}}
+== pre {'A': 8264, 'FAILED': 9981, 'M': 40, 'C': 5}
+   CompleteEvent n 5 frozen_none 0 compared 25 unequal 0
+   CompletePumpAmmMigrationEvent n 40 frozen_none 0 compared 360 unequal 0
+   CreatePoolEvent n 41 frozen_none 0 compared 123 unequal 0
+   undecodable successful {} failed {} lines {'successful_sampled': 6622, 'failed_same_blocks': 239} other_prog 2625 nostack 0
+   deposit {'count': 0, 'trailing': {}, 'blob_len': {}}
+rule R MET [] n post 5970

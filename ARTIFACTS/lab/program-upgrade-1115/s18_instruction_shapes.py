@@ -11,7 +11,7 @@ from common import LClient, OUT
 spec = importlib.util.spec_from_file_location("pst", "/data2/mal/scratch/a3-repin-1115/pumpswap_tx_e5fd255b.py"); pst = importlib.util.module_from_spec(spec); sys.modules["pst"] = pst; spec.loader.exec_module(pst)
 from solders.pubkey import Pubkey
 P = Pubkey.from_string
-BASE = Path("/data2/mal/scratch/a3-repin-1115")
+BASE = Path(os.environ.get("A3_BASE", "/data2/mal/scratch/a3-repin-1115"))
 MIG = json.load(open(BASE / "raw" / "migrate_index.json"))
 AMM = PID["pump_amm"]; WSOL = td.WSOL_MINT
 DISC = {"c62e1552b4d9e870": "buy_exact_quote_in", "66063d1201daebea": "buy", "33e685a4017f83ad": "sell"}
@@ -115,5 +115,5 @@ for label, samples in own_inputs.items():
 res["owner_programs_now"] = own
 res["executor_expectation"] = {"buy_exact_quote_in": {"disc": "c62e1552b4d9e870", "data_len": 25, "accounts": 26}, "sell": {"disc": "33e685a4017f83ad", "data_len": 24, "accounts": 24}}
 res["rpc_attempts"] = c.total_calls
-Path("out/s18_instruction_shapes.json").write_text(json.dumps(res, indent=1, sort_keys=True))
+Path(os.environ.get("UPGRADE_OUT", "out") + "/s18_instruction_shapes.json").write_text(json.dumps(res, indent=1, sort_keys=True))
 for l in ("post", "pre"): print(l, json.dumps(res[l]["shape_counts"]), json.dumps(res[l]["failed_by_error_word"]))

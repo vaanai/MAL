@@ -1,8 +1,8 @@
 """Per-event-type table, post vs pre, against tools/a3_redeploy_pins.json: disc_len (observed blob lengths incl. trailing bytes) and trailing_bytes.
 Offline, from out/s06_parity*.json. Pre = P + P2 + M_pre (summed); post = A + M. Structure only."""
-import collections, json
+import collections, json, os
 from pathlib import Path
-O = Path("out"); PIN = json.load(open("../../../tools/a3_redeploy_pins.json")); DOCS = Path("/data2/mal/scratch/a3-repin-1115/docs")
+O = Path(os.environ.get("UPGRADE_OUT", "out")); PIN = json.load(open("../../../tools/a3_redeploy_pins.json")); DOCS = Path("/data2/mal/scratch/a3-repin-1115/docs")
 disc = {}
 for k in ("pump", "pump_amm", "pump_fees"):
     for e in json.load(open(DOCS / f"{k}.main.json"))["events"]:
