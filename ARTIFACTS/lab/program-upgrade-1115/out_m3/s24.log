@@ -1,0 +1,13 @@
+== post {'M': 40}
+   CompleteEvent n 0 frozen_none 0 compared 0 unequal 0
+   CompletePumpAmmMigrationEvent n 40 frozen_none 0 compared 360 unequal 0
+   CreatePoolEvent n 40 frozen_none 0 compared 120 unequal 0
+   undecodable successful {} failed {} lines {'successful_sampled': 40} other_prog 0 nostack 0
+   deposit {'count': 0, 'trailing': {}, 'blob_len': {}}
+== pre {}
+   CompleteEvent n 0 frozen_none 0 compared 0 unequal 0
+   CompletePumpAmmMigrationEvent n 0 frozen_none 0 compared 0 unequal 0
+   CreatePoolEvent n 0 frozen_none 0 compared 0 unequal 0
+   undecodable successful {} failed {} lines {} other_prog 0 nostack 0
+   deposit {'count': 0, 'trailing': {}, 'blob_len': {}}
+rule R MET [] n post 4

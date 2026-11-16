@@ -1,0 +1,25 @@
+post HQbh9Y8h2LtxUow6ptNd3JgVk6vqvDMQJwSTGyd72tg3 {'observed': False, 'why': "page budget (8 x 1000) exhausted before the pool's first signature"}
+post Jb9G2NRtftm9c2UcgDmq2hxgQaqmsKPMaALsvgyhTJa {'observed': True, 'slot': 469842719, 'event': 'BuyEvent', 'virtual_quote_reserves': 0}
+post Ehoq2qy7aeX9yjyPiK28sLfVhZppNwZ1S1qbCz2h46yb {'observed': False, 'why': "page budget (8 x 1000) exhausted before the pool's first signature"}
+post GjbimWQPFbf47bV9siURoc9TKkn8iSrpPmckbTfyTuNF {'observed': True, 'slot': 469843239, 'event': 'BuyEvent', 'virtual_quote_reserves': 17584506367}
+post 6dkdQdj3Qjgfo5q2HASxoqH5iYag7Uj9VY7bggDxssMm {'observed': True, 'slot': 469844191, 'event': 'BuyEvent', 'virtual_quote_reserves': 0}
+post 5W6HHNTtfgXmDfckvpzqeeehZntgcAJpE4ViSrHWetfW {'observed': True, 'slot': 469844572, 'event': 'BuyEvent', 'virtual_quote_reserves': 0}
+post 12sUVeDrgDNh35mvzgteocmEQbCkoznj9tKg9NpToDiu {'observed': True, 'slot': 469844586, 'event': 'BuyEvent', 'virtual_quote_reserves': 17584505288}
+post 6RHr9pcRE8rdFMtKiHV38iSF86XejSgPjWum1DMticHj {'observed': True, 'slot': 469845162, 'event': 'BuyEvent', 'virtual_quote_reserves': 0}
+post AShRFo8pr85Qgs7GJQZS18Fz9fjgnTBoH96yPiyqzB25 {'observed': True, 'slot': 469846222, 'event': 'BuyEvent', 'virtual_quote_reserves': 0}
+post AcGi7FZ6W7PMK36iz11jDPFjJZ8xC4ie7ukWaYmehWj1 {'observed': False, 'why': "page budget (8 x 1000) exhausted before the pool's first signature"}
+post EjYz6uRGK1zsurEw2dTEFTozmkLihfhkNK3ePbuwZ2WE {'observed': False, 'why': "page budget (8 x 1000) exhausted before the pool's first signature"}
+post CxV47wzz8j3pvC5zQ5836iemKvEdx7tyjYBC5c9qgBCX {'observed': True, 'slot': 469848571, 'event': 'BuyEvent', 'virtual_quote_reserves': 0}
+post 5KdeLoJ4Za4ZgYxscU48bipziUQ3FFS74yZmuFnZvxPo {'observed': True, 'slot': 469848823, 'event': 'BuyEvent', 'virtual_quote_reserves': 17584505475}
+post 8pN51LVxXFKvaoB3kUBdusrX8uzspVZeLWu7HNBPhGxP {'observed': False, 'why': "page budget (8 x 1000) exhausted before the pool's first signature"}
+post 4fdTYAq6DxAGfPehTkutsxdYDB3ve9iXdPBMWbRgVW6r {'observed': True, 'slot': 469850232, 'event': 'BuyEvent', 'virtual_quote_reserves': 0}
+post AJaN1juG8ZcTw2f7gjSxwGXDVVRu4PQNSqJfZkHVRyWL {'observed': False, 'why': "page budget (8 x 1000) exhausted before the pool's first signature"}
+post 49TUQUNJhRHSejWFc4xuWpVPgB33yiBFjAiGLfLtWjV2 {'observed': True, 'slot': 469850999, 'event': 'BuyEvent', 'virtual_quote_reserves': 17584505288}
+post 39rvA1h5ZTRtm5F2nxkjmmZckcmzMVuQDHcScaNokt64 {'observed': True, 'slot': 469851033, 'event': 'BuyEvent', 'virtual_quote_reserves': 0}
+post 5oB2w8o85HshRP7K8NutNQX3oZRR7j9HUkfCo6pnf2a7 {'observed': False, 'why': "page budget (8 x 1000) exhausted before the pool's first signature"}
+post DuJsrHq6zpAWoSieiBRPtzkNPD59JYfFZYyWD2b7oGr6 {'observed': True, 'slot': 469851344, 'event': 'BuyEvent', 'virtual_quote_reserves': 0}
+Traceback (most recent call last):
+  File "/data2/mal/wt/a3-repin-1115/ARTIFACTS/lab/program-upgrade-1115/s11_migration_economics.py", line 148, in <module>
+    print(json.dumps({k: v["summary"] for k, v in res.items()}, indent=1, default=str)); print("rpc", c.total_calls)
+                         ~^^^^^^^^^^^
+KeyError: 'summary'
