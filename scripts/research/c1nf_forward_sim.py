@@ -241,9 +241,13 @@ class C1nfDecider:
     """C1-NF through the pinned tools.c1nf_shadow.Shadow (decisions only). `engine` is the c1nf_features engine (production: tools.c1nf_shadow.build_engine(ledger, v_source="event")),
     `models` a ModelSet. The shadow's outcome code path is switched off (pending outcomes are never resolved or written): this class has no price, fill or P&L."""
 
-    def __init__(self, engine, models, *, oracle_bypass=False, exit_s=EXIT_S_DEFAULT, shadow_cls=None):
+    def __init__(self, engine, models, *, oracle_bypass=False, exit_s=EXIT_S_DEFAULT, shadow_cls=None, stream_expire_s="live", prune=True):
         from tools import c1nf_shadow as CS
         self.CS = CS
+        # stream_expire_s: the live shadow's own setting (run_live: EXPIRE_S = 600): engine.expire runs on the stream clock, which frees pools, windows prints and bounds every engine table. Without it a replay
+        # never expires anything (Shadow.tick is never called) and memory grows with the hours processed (job #2914: OOM at 131 warm-up hours). None = off (tests of old-vs-new equality only).
+        self.stream_expire_s = CS.EXPIRE_S if stream_expire_s == "live" else stream_expire_s
+        self.prune, self.pruned = prune, collections.Counter()
 
         class _NoOutcomeShadow(CS.Shadow):
             def _resolve_due(self):  # no outcome code path (decisions only)
@@ -252,11 +256,37 @@ class C1nfDecider:
         self.sink = CS.MemorySink()
         self.exit_s = float(exit_s)
         self._ms = 0
-        self.shadow = (shadow_cls or _NoOutcomeShadow)(engine, models, self.sink, replay=False, wall=lambda: self._ms, seal_start_ms=None if oracle_bypass else CS.SEAL_START_MS)
+        self.shadow = (shadow_cls or _NoOutcomeShadow)(engine, models, self.sink, replay=False, wall=lambda: self._ms, seal_start_ms=None if oracle_bypass else CS.SEAL_START_MS,
+                                                         stream_expire_s=self.stream_expire_s)
         self._resumed = False
         self._last = (None, None)  # (t_recv_ms, slot) of the last row fed
         self.counters_prev = collections.Counter()
         self.adapter_stats = collections.Counter()
+
+    PRUNE_FIRST_S = 26 * 3600  # a pool decides only from graduation + 10 min to + 24 h (c1nf_features GRID_START / GRID_END) and its first print is within seconds of the graduation: 26 h is past every decision
+
+    def prune_shadow(self):
+        """Drop the shadow's per-pool and per-mint tables for pools that can no longer be decided (first print older than PRUNE_FIRST_S) and for expired re-entry book entries. Only tables read at a decision of an ALIVE
+        pool are touched: first_ms (seal check, pick state), first_slot and v0_bad (v0-gap check of a pool's first prints), last_print and before_slot (decision state), book (re-entry block, REENTRY_S). Decisions are unchanged
+        (md5-equal on the long fixture in tools/test_c1nf_forward_sim.py). Returns the number of pools dropped."""
+        sh = self.shadow
+        bt = sh.hw_bt
+        if bt is None:
+            return 0
+        cut_ms = (bt - self.PRUNE_FIRST_S) * 1000
+        old = [p for p, t in sh.first_ms.items() if t < cut_ms]
+        for p in old:
+            sh.first_ms.pop(p, None)
+            sh.first_slot.pop(p, None)
+            sh.last_print.pop(p, None)
+            sh.before_slot.pop(p, None)
+            sh.v0_bad.discard(p)
+        stale = [mnt for mnt, t in sh.book.items() if t + self.CS.REENTRY_S + 120 < bt]
+        for mnt in stale:
+            del sh.book[mnt]
+        self.pruned["pools"] += len(old)
+        self.pruned["book"] += len(stale)
+        return len(old)
 
     def decide(self, hour_rows, state):
         sh = self.shadow
@@ -292,6 +322,8 @@ class C1nfDecider:
         state.counts.update(self.adapter_stats)
         self.adapter_stats.clear()
         self.counters_prev = cnt
+        if self.prune:
+            self.prune_shadow()
         return out
 
 
