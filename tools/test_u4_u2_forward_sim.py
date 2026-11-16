@@ -569,3 +569,73 @@ def test_hr_pda_default_matches_solders_find_program_address():
     mint = str(Pubkey.new_unique())
     want = Pubkey.find_program_address([b"holder-rewards", bytes(Pubkey.from_string(mint))], Pubkey.from_string(D.PUMP_PROGRAM))[0]
     assert D.hr_pda_default(mint) == str(want)
+
+
+# ============================================================================================================================ ADD1 (QP-RULING-1116-u4-u2-p81-forward-specs-ADD1, sha256 e5009a3c0e3ecb2716befc62ae6fc5b2aa7553fec18a2c9f7f055085f66d6665)
+def test_u4_supply_is_the_create_rows_token_raw_per_mint_with_a_counted_fallback():
+    # the create row's token_raw is the CreateEvent token_total_supply (tools/pump_history_backfill.py line 274): 5% of 100 = 5 unexplained tokens is the cut; no Mayhem exclusion
+    x_sell = [trade("M", "PM", -3000, "X", "sell", 6)]
+
+    def warm_rows(sup, **kw):
+        return [dict(r, token_raw=sup, **kw) if r.get("type") == "create" else r for r in u4_scenario(P1, [("E", "buy", 40)], x_sell)[0]]
+
+    for sup, mayhem, heavy in ((100, False, True), (100, True, True), (10 ** 6, False, False)):
+        dec = D.U4Decider(START_MS, hr_pda_fn=hr_pda)           # the fallback supply 1e15 is NOT what applies: the row's own supply does
+        feed(dec, warm_rows(sup, is_mayhem_mode=mayhem), warmup=True)
+        ents, _, st = feed(dec, u4_scenario(P1, [("E", "buy", 40)])[1])
+        assert (st.counts["transfer_heavy"] == 1) is heavy and bool([e for e in ents if e.bot == "main"]) is (not heavy) and st.counts["supply_fallback"] == 0
+    # no token_raw on the create row: fallback 1e15 (6 unexplained tokens are far below 5%), counted once per mint
+    dec = D.U4Decider(START_MS, hr_pda_fn=hr_pda)
+    _, _, wst = feed(dec, u4_scenario(P1, [("E", "buy", 40)], x_sell)[0], warmup=True)
+    ents, _, st = feed(dec, u4_scenario(P1, [("E", "buy", 40)])[1])
+    st.counts.update(wst.counts)
+    assert st.counts["supply_fallback"] == 1 and st.counts["transfer_heavy"] == 0 and len([e for e in ents if e.bot == "main"]) == 1
+
+
+def test_twins_14_and_26_slots_use_the_same_u2_entry_reference_and_the_same_sells(tmp_path):
+    rows, _ = u2_cohort(COHORT)
+    outs = []
+    for lat in (3.010, 4.085, 5.590):    # 14, 19 (deciding), 26 slots: pricing only, the decider never sees the latency
+        m = S.check_manifest(mf(tmp_path, "u2", exit_s=43_200, pricing_lat_entry_s=lat))
+        dec = D.make_decider(m, hour_to_ms=S.parse_hour, hr_pda_fn=hr_pda)
+        feed(dec, rows, warmup=True)
+        ents, _, _ = feed(dec, [trade("ZZ", "PZZ", 20, "w", "buy", 0)])
+        ent = next(e for e in ents if e.pool == "P10" and e.bot == "main")
+        ref = u2_print("P10", "MP10", 0, 1.0)
+        ref.update(slot=ent.decision_slot + D.LAT_SLOTS, t_recv_ms=(T0 + 25) * 1000, block_time=T0 + 25)
+        trig = u2_print("P10", "MP10", 100, 0.7)
+        trig.update(slot=ent.decision_slot + D.LAT_SLOTS + 1, t_recv_ms=(T0 + 100) * 1000, block_time=T0 + 100)
+        feed(dec, [ref, trig, trade("ZZ", "PZZ", 200, "w", "buy", 0)])
+        outs.append(([e.as_dict() for e in ents], [s.as_dict() for s in dec.take_sells()]))
+    assert outs[0] == outs[1] == outs[2] and outs[0][1] and outs[0][1][0]["reason"] == "stop"
+
+
+def test_gap_exclusions_are_split_by_the_deciders_exit_kind_and_carry_the_disclosure(tmp_path):
+    m = S.check_manifest(mf(tmp_path, "u2", exit_s=3000))
+    bk = S.Book(m, tmp_path / "run", "0" * 64, T1.SPS)
+    day = S.day_key(START_MS)
+    for pid, kind, bot in (("p1", "timed", "main"), ("p2", "requested", "main"), ("p3", "timed", "placebo"), ("p4", "requested", "main")):
+        bk.exit_kind[pid] = kind
+        bk.n_entries[(bot, day)] += 1
+    d = tmp_path / "run" / "ledger" / "x"
+    d.mkdir(parents=True)
+
+    def ex(pid, bot, reason="feed_gap"):
+        return {"kind": "excluded", "position_id": pid, "bot_id": bk.bots[bot], "exclusion_reason": reason, "decision_ms": {"entry": START_MS}}
+
+    rows = [ex("p1", "main"), ex("p1", "main"), ex("p2", "main"), ex("p3", "placebo"), ex("p4", "main", "missing_v"), {"kind": "trade", "position_id": "p4", "bot_id": bk.bots["main"]}]
+    (d / ("trades-%s.jsonl" % day)).write_text("".join(json.dumps(r) + "\n" for r in rows))
+    out = bk.gap_exclusion_split()
+    assert out["main"]["total"] == {"entries": 3, "feed_gap_timed": 1, "feed_gap_requested": 1}      # a position's per-stake rows count once; missing_v is not a gap exclusion
+    assert out["placebo"]["total"] == {"entries": 1, "feed_gap_timed": 1, "feed_gap_requested": 0}
+    assert out["main"]["by_day"][day]["excluded_share"] == round(2 / 3, 4)
+    assert out["disclosure"] == S.GAP_DISCLOSURE.format(n=3, N=4, timed=2, requested=1) and "excluded 3 of 4 entries (2/1)" in out["disclosure"]
+    assert out["disclosure"].startswith("Strict feed-gap exclusion: any data_loss gap between decision and exit removes the trade")
+
+
+def test_the_book_job_writes_gap_exclusions_json(tmp_path):
+    T1.write_keep(tmp_path, 3)
+    m = mf(tmp_path, "u2", exit_s=3000)
+    assert T1.run(tmp_path, m, TwoBotDecider()) == 0
+    g = json.loads((Path(m["out_root"]) / "gap_exclusions.json").read_text())
+    assert g["main"]["total"]["entries"] == 1 and g["placebo"]["total"]["entries"] == 1 and "Strict feed-gap exclusion" in g["disclosure"]

@@ -55,6 +55,8 @@ REQUIRED_KEYS = {"book_id", "title", "decider", "stakes_sol", "send_lamports", "
 DECIDERS = ("c1nf", "u4", "u2")
 WARMUP_MIN_BY_DECIDER = {"u4": 168, "u2": 192}      # QP-RULING-1116-u4-u2-p81-forward-specs 0.3: W >= 168 h (U4), >= 192 h (U2); otherwise S moves later
 EXIT_S_MAX = {"c1nf": 3600, "u4": 259_200, "u2": 259_200}  # ruling 0.2 item 2: exit_s up to 72 h for the mark-clock books; c1nf stays at 3600
+GAP_DISCLOSURE = ("Strict feed-gap exclusion: any data_loss gap between decision and exit removes the trade (engine default; gap-in-hold mode cannot be combined with the 19-slot latency). "
+                  "Exclusion odds rise with hold length, so early exits (stops, takes, share-fall) are over-represented among priced trades; excluded {n} of {N} entries ({timed}/{requested}).")  # ADD1 A1, verbatim
 PLACEBO_DECIDERS = ("u4", "u2")                      # ruling 0.7: a second bot_id whose entries the decider draws; it never enters the decider's view of the deciding book
 
 
@@ -482,6 +484,8 @@ class Book:
             self.bots["placebo"] = self.bot + "-plc"
             self._register(registry, code_sha, start_ms, self.bots["placebo"])
         self.pid_bot = {}    # position_id -> engine bot id
+        self.exit_kind = {}  # position_id -> "timed" | "requested" (the decider's own exit kind; known without pricing)
+        self.n_entries = collections.Counter()  # (bot key, decision day) -> entries handed to the engine
         self.open = {}       # (bot key, pool) -> position_id of the open position
         self.sold = set()    # position ids that already have a sell (timed or requested)
 
@@ -522,6 +526,8 @@ class Book:
             return None
         self.c["buys" if e.bot == "main" else "buys_" + e.bot] += 1
         self.pid_bot[pid] = self.bots[e.bot]
+        self.exit_kind[pid] = "timed"
+        self.n_entries[(e.bot, day_key(e.decision_ms))] += 1
         self.open[(e.bot, e.pool)] = pid
         # C1-NF (ruling 2.3): the sell is decided at entry landing + exit_s. U4 / U2 (ruling 1.3, 2.3): decision instant + exit_s
         land_ms = 0 if e.exit_from_decision else int(round(float(self.m["pricing_lat_entry_s"]) * 1000))
@@ -548,6 +554,7 @@ class Book:
             self.c["sell_req_refused_" + str(e).split(":")[0][:30].replace(" ", "_")] += 1
             return
         self.sold.add(pid)
+        self.exit_kind[pid] = "requested"
         self.c["sell_req_" + re.sub(r"[^a-z_]", "", s.reason)[:12]] += 1
 
     def run_hour(self, rows, entries, sells=()):
@@ -572,6 +579,36 @@ class Book:
             self.sell_req(s)
         self.engine.prune()
         self.engine.trim_history()
+
+    def gap_exclusion_split(self):
+        """QP-RULING-1116-u4-u2-p81-forward-specs-ADD1 A1 (counters only, no pricing): `feed_gap*` exclusions of the engine's strict exclusion, split by the decider's own exit kind of the position
+        (timed vs requested sell), and the excluded share of entries per decision day, per bot. Read from the engine's ledger `excluded` rows (one position = one row per stake: deduplicated)."""
+        key_of = {v: k for k, v in self.bots.items()}
+        seen, per = set(), collections.defaultdict(lambda: collections.Counter())
+        for f in sorted((self.run_dir / "ledger").rglob("trades-*.jsonl")):
+            for ln in f.read_text().splitlines():
+                r = json.loads(ln)
+                if r.get("kind") != "excluded" or not str(r.get("exclusion_reason", "")).startswith("feed_gap") or r["position_id"] in seen:
+                    continue
+                seen.add(r["position_id"])
+                dm = (r.get("decision_ms") or {}).get("entry")
+                k = key_of.get(r["bot_id"], r["bot_id"])
+                per[k][("feed_gap_" + self.exit_kind.get(r["position_id"], "timed"), day_key(dm) if _isint(dm) else "?")] += 1
+        out = {}
+        for k in sorted(set(per) | {b for b, _ in self.n_entries}):
+            days = sorted({d for (b, d) in self.n_entries if b == k} | {d for (_, d) in per.get(k, {})})
+            tot = collections.Counter()
+            rows = {}
+            for d in days:
+                t, q, n = per[k][("feed_gap_timed", d)], per[k][("feed_gap_requested", d)], self.n_entries.get((k, d), 0)
+                rows[d] = {"entries": n, "feed_gap_timed": t, "feed_gap_requested": q, "excluded_share": round((t + q) / n, 4) if n else None}
+                tot.update({"entries": n, "feed_gap_timed": t, "feed_gap_requested": q})
+            out[k] = {"total": dict(tot), "by_day": rows}
+        out["disclosure"] = GAP_DISCLOSURE.format(**{"n": sum(v["total"].get("feed_gap_timed", 0) + v["total"].get("feed_gap_requested", 0) for k, v in out.items() if k in self.bots),
+                                                     "N": sum(v["total"].get("entries", 0) for k, v in out.items() if k in self.bots),
+                                                     "timed": sum(v["total"].get("feed_gap_timed", 0) for k, v in out.items() if k in self.bots),
+                                                     "requested": sum(v["total"].get("feed_gap_requested", 0) for k, v in out.items() if k in self.bots)})
+        return out
 
     def open_positions(self):
         return len(self.engine.positions)
@@ -719,6 +756,8 @@ def _locked(m, out_root, once, max_hours, sleep_fn, decider_factory, ledger_buil
         status.update(last_hour=key, last_hour_end_ms=end, warmup_hour=is_warm, wall_time_utc=datetime.now(timezone.utc).isoformat(), active=verified, open_positions=book.open_positions(),
                       ledger_days_built=list(lstep.built), ledger_days_incomplete=list(lstep.incomplete), decision_md5=dmd5, ledger_md5=lmd5, book_counts=dict(book.c))
         O._atomic_json(out_root / "status.json", status)
+        if m["decider"] in PLACEBO_DECIDERS and not is_warm:
+            O._atomic_json(out_root / "gap_exclusions.json", book.gap_exclusion_split())
         if is_warm and end == start_ms:  # the last warm-up hour is done: the disclosure carries the count of pools first seen in W
             meta = json.loads((out_root / "meta.json").read_text())
             meta["pools_first_seen_in_warmup"] = warm_pools
