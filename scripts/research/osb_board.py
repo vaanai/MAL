@@ -772,6 +772,7 @@ def build(books, live, now_ms, roots=None, prev_since=None):
     here = os.path.dirname(os.path.abspath(__file__))
     ver = " ".join("%s=%s" % (n, AB._blob_id(os.path.join(here, n))) for n in ("osb_board.py", "floor_nov_pnl.py", "floor_forward_ab.py", "osb_follow.py"))
     lt_line = recon_lt_line(live, now_ms)
+    lt_w2_line = recon_lt_w2_line(live, now_ms)
     recon, recon_line, live, sim_off = recon_state(live, now_ms, next((b["m"]["book_id"] for b in books if b["role"] == "control"), None))
     try:
         check_forbidden(live, "")
@@ -783,6 +784,8 @@ def build(books, live, now_ms, roots=None, prev_since=None):
            "recon": recon, "recon_line": recon_line, "decision_grade": DECISION_GRADE, "limit_layer": "not applied", "live": live, "books": out_books}
     if lt_line is not None:
         res["recon_lt_line"] = lt_line
+    if lt_w2_line is not None:
+        res["recon_lt_w2_line"] = lt_w2_line
     if catching:
         res["catching_up"] = catching
     if pairs:
@@ -884,11 +887,31 @@ def recon_lt_line(live, now_ms):
         return RECON_LT_NONE
 
 
+def recon_lt_w2_line(live, now_ms):
+    """one line quoting recon-lt-a-w2.json (S window 2, QP-RULING-1116-recon-latency-twin-ADD1), only when that file exists, is fresh and valid (schema osb_recon_lt_w2.v1); else None (no line, no key). Wording only:
+    it changes no figure, no SIM OFF and not DECISION_GRADE."""
+    try:
+        rp = os.path.realpath(os.path.expanduser(live["recon"]))
+        roots = [os.path.realpath(os.path.expanduser(x)) for x in RECON_ROOTS]
+        if os.path.basename(rp) != "recon.json" or not any(rp.startswith(x + os.sep) for x in roots):
+            return None
+        r = read_json(os.path.join(os.path.dirname(rp), "recon-lt-a-w2.json"))
+        if not (isinstance(r, dict) and r.get("schema") == "osb_recon_lt_w2.v1" and r.get("status") in ("PASS", "FAIL", "INSUFFICIENT") and isinstance(r.get("generated_ms"), int)
+                and not isinstance(r.get("generated_ms"), bool) and 0 <= now_ms - r["generated_ms"] <= STALE_MS):
+            return None
+        line = "latency twin osb-a-lt-a recon, S window 2 (0.25 stake only): %s (bands %s); not decision-grade; window 1 and book A's own recon above are unchanged" % (
+            r["status"], ", ".join("%s %s" % (k.upper(), str((r.get(k) if isinstance(r.get(k), dict) else {}).get("status"))) for k in ("h1", "h2", "h3", "s1", "s2", "s3", "s4")))
+        check_forbidden(line, "")
+        return line
+    except (KeyError, TypeError, ValueError, AttributeError, OSError, Refusal):
+        return None
+
+
 def board_md(res):
     md = ["# Open sim board (FLOOR open simulation books, paper)", "", "> " + res["banner"], "",
           "- Generated %s; tape through %s (the slowest book with data); board_version %s." % (res["generated_utc"], res["tape_through_utc"] or "n/a (no book has a completed hour)", res["board_version"])] + (
           ["- catching up (pending twins only; a STALE book is shown by its own state): %s." % ", ".join(res["catching_up"])] if res.get("catching_up") else []) + [
-          "- Recon: %s." % res["recon_line"]] + (["- Recon, %s." % res["recon_lt_line"]] if res.get("recon_lt_line") else []) + (["- " + SIM_OFF + ": a recon band FAILs (see the Recon line); every figure below is greyed and no live step rests on it."] if res.get("sim_off") else []) + [
+          "- Recon: %s." % res["recon_line"]] + (["- Recon, %s." % res["recon_lt_line"]] if res.get("recon_lt_line") else []) + (["- Recon, %s." % res["recon_lt_w2_line"]] if res.get("recon_lt_w2_line") else []) + (["- " + SIM_OFF + ": a recon band FAILs (see the Recon line); every figure below is greyed and no live step rests on it."] if res.get("sim_off") else []) + [
           "- Net SOL is flat 15% fail leg / pressure leg, booked on the EXIT (close) UTC day. Complete UTC days only (tape at least 90 min past the day's end) in today, 7-day, forward and all; "
           "day in progress is a PARTIAL day (trades closed after the newest complete day), shown so trades are visible as they happen.",
           "- Forward = entry instant at or after the book's start instant; earlier entries are in-sample (IS), also when they close later. Forward days = complete UTC days from the day holding the start instant.",
