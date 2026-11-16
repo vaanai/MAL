@@ -1,0 +1,85 @@
+{
+ "n_wsol": 33,
+ "item1": {
+  "counts_n_of_n": {
+   "sol_amount==pool_quote_amount==quote_amount_in": 33,
+   "mint_amount==pool_base_amount==base_amount_in": 33,
+   "initial_liquidity==isqrt(pool_base*pool_quote)": 33,
+   "pool_migration_fee==15000001": 33,
+   "creator_fee_bps==0": 33
+  },
+  "n": 33,
+  "failing_sigs": [],
+  "verdict": "MET"
+ },
+ "item2": {
+  "CompletePumpAmmMigrationEvent": {
+   "n": 40,
+   "compared": 360,
+   "unequal": 0,
+   "frozen_none": 0
+  },
+  "CreatePoolEvent": {
+   "n": 40,
+   "compared": 120,
+   "unequal": 0,
+   "frozen_none": 0
+  },
+  "undecodable_lines_successful": 0,
+  "lines_checked": {
+   "successful_sampled": 40
+  },
+  "walker_short(layout_short)": 0,
+  "verdict": "MET"
+ },
+ "item3": {
+  "non_mayhem_sol_out_of_range": [],
+  "mayhem_sol_out_of_range": [],
+  "below_5SOL_not_mayhem": [],
+  "mint_out_of_range": [],
+  "liquidity_out_of_union": [],
+  "missing_mayhem_flag": [],
+  "union_initial_liquidity": [
+   51023626810,
+   4193388436247
+  ],
+  "verdict": "MET"
+ },
+ "item4": {
+  "readable": 33,
+  "unreadable_pools": [],
+  "mismatches": [],
+  "rpc_attempts": 1,
+  "verdict": "MET"
+ },
+ "report_only": {
+  "mayhem_share": 0.5757575757575758,
+  "n_mayhem": 19,
+  "all": {
+   "n": 33,
+   "median_sol_amount": 407973046,
+   "median_mint_amount": 206900000000000,
+   "median_initial_liquidity": 290533342694
+  },
+  "mayhem": {
+   "n": 19,
+   "median_sol_amount": 145117465,
+   "median_mint_amount": 206900000000000,
+   "median_initial_liquidity": 173276667524
+  },
+  "non_mayhem": {
+   "n": 14,
+   "median_sol_amount": 85002983628.0,
+   "median_mint_amount": 206869281489536.5,
+   "median_initial_liquidity": 4193388292941.0
+  },
+  "first_print_V": {
+   "n": 13,
+   "min": 0,
+   "median": 0,
+   "max": 17584506367
+  },
+  "first_print_not_observed": 7
+ },
+ "all_items": "MET"
+}
