@@ -94,24 +94,43 @@ def hour_file(tape_dir, ms):
     return None
 
 
-def read_hour_rows(path):
-    """rows of one closed hour file, in file order; a torn last line (no newline) is dropped"""
+def iter_hour_rows(path):
+    """STREAM the rows of one closed hour file in file order (one line in memory at a time); a torn last line (no newline) is dropped. A .zst file is decompressed by `zstd -dc` on its realpath
+    (zstd refuses a symlink; the caller, link_hour, has already refused any realpath outside the keeper dir) through a pipe; the exit code is checked at the end and a non-zero exit
+    (or a generator closed early) never passes silently: Refused. QP / memory fix after job #2912 (OOM)."""
     path = Path(path)
+    proc = None
     if path.name.endswith(".zst"):
-        # zstd refuses a symbolic link (rc 1) unless forced: decompress the realpath. The caller (link_hour) has already refused any file whose realpath is outside the keeper dir.
-        data = subprocess.run(["zstd", "-dc", os.path.realpath(path)], check=True, capture_output=True).stdout
+        proc = subprocess.Popen(["zstd", "-dc", os.path.realpath(path)], stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
+        fh = proc.stdout
     else:
-        data = path.read_bytes()
-    out = []
-    for ln in data[: data.rfind(b"\n") + 1].splitlines():
-        if ln.strip():
-            try:
-                r = json.loads(ln)
-            except ValueError:
-                continue
-            if isinstance(r, dict):
-                out.append(r)
-    return out
+        fh = open(path, "rb")
+    done = False
+    try:
+        for ln in fh:
+            if not ln.endswith(b"\n"):
+                continue  # torn last line
+            if ln.strip():
+                try:
+                    r = json.loads(ln)
+                except ValueError:
+                    continue
+                if isinstance(r, dict):
+                    yield r
+        done = True
+    finally:
+        fh.close()
+        if proc is not None:
+            if not done and proc.poll() is None:
+                proc.kill()
+            rc = proc.wait()
+            if done and rc != 0:
+                raise Refused("zstd -dc %s exited %d: hour file unreadable" % (path.name, rc))
+
+
+def read_hour_rows(path):
+    """all rows of one hour as a list (tests and small files only; the runner streams with iter_hour_rows)"""
+    return list(iter_hour_rows(path))
 
 
 # ------------------------------------------------------------------------------------------------------------------------------ adapter
@@ -316,31 +335,65 @@ class LedgerStep:
         self.built, self.incomplete = [], []
         self.md5s = {}  # day -> md5 of the wallet-ledger tree right after that day's build
 
-    def note_hour(self, hour, trade_rows):
+    TIP_FIELDS = ("venue", "mint", "trader", "side", "sol_lamports", "signature", "event_index")  # the columns c1nf_wallet_ledger's tip reader selects (TIP_JSON_COLUMNS); nothing else is stored
+
+    def open_hour(self, hour):
+        """a streaming writer for one hour's adapted trade rows: .write(row) one by one, .close() ends the hour (and closes the day after T23). Only TIP_FIELDS are written."""
         day = hour[:10]
         d = self.src_root / day
         d.mkdir(parents=True, exist_ok=True)
-        with open(d / ("trades-%s.jsonl" % hour), "w") as fh:
-            for r in trade_rows:
-                fh.write(json.dumps(r, sort_keys=True, separators=(",", ":")) + "\n")
-        self.hours[day].add(hour)
-        if hour.endswith("T23"):
-            self.close_day(day)
+        step = self
+
+        class _W:
+            def __init__(self):
+                self.fh = open(d / ("trades-%s.jsonl" % hour), "w")
+
+            def write(self, r):
+                self.fh.write(json.dumps({k: r.get(k) for k in step.TIP_FIELDS}, sort_keys=True, separators=(",", ":")) + "\n")
+
+            def close(self):
+                self.fh.close()
+                step.hours[day].add(hour)
+                if hour.endswith("T23"):
+                    step.close_day(day)
+        return _W()
+
+    def note_hour(self, hour, trade_rows):
+        w = self.open_hour(hour)
+        for r in trade_rows:
+            w.write(r)
+        w.close()
 
     def close_day(self, day):
-        if len(self.hours[day]) != 24:
-            self.incomplete.append(day)
-            return False
+        """build the day if all 24 hours were noted; then the day's scratch rows are deleted either way (they are not needed again) and its hour set is released"""
+        import shutil
+        try:
+            if len(self.hours[day]) != 24:
+                self.incomplete.append(day)
+                return False
+            self._build(day)
+            return True
+        finally:
+            shutil.rmtree(self.src_root / day, ignore_errors=True)
+            self.hours.pop(day, None)
+
+    def _build(self, day):
         self.builder(day, self.src_root / day, self.ledger_root)
         self.built.append(day)
         self.md5s[day] = tree_files_md5(self.ledger_root)
         return True
 
 
+DUCKDB_MEM_GB, DUCKDB_THREADS = 4.0, 2  # memory_limit and threads of the day build (job #2912 died OOM with the 6 GB / 3 thread default and no spill dir)
+
+
 def default_ledger_builder(day, src_dir, ledger_root):
     from tools import c1nf_wallet_ledger as W
-    W.build_day(day, "tip", Path(ledger_root), tip_dirs=[src_dir], allow_open_day=True)
+    tmp = Path(ledger_root).parent / "duckdb-tmp"  # duckdb spill under the book's out_root (wallet_ledger_root is guarded to sit there)
+    W.build_day(day, "tip", Path(ledger_root), tip_dirs=[src_dir], allow_open_day=True, threads=DUCKDB_THREADS, mem_gb=DUCKDB_MEM_GB, tmp_dir=tmp)
     W.build_asof(Path(ledger_root), W.next_day(day))
+    import shutil
+    shutil.rmtree(tmp, ignore_errors=True)
 
 
 # ------------------------------------------------------------------------------------------------------------------------------ manifest
@@ -649,7 +702,9 @@ class Book:
         sells_by_row = collections.defaultdict(list)
         for s in sells:
             sells_by_row[s.at_row].append(s)
+        n = 0
         for i, row in enumerate(rows):
+            n = i + 1
             t = row.get("t_recv_ms")
             if _isint(t):
                 self._due_sells(t)
@@ -660,7 +715,7 @@ class Book:
             self.engine.on_row(row)
             if _isint(t):
                 self.clock = t
-        for s in sells_by_row.get(len(rows), ()):  # a trigger on the hour's last row: handed over at the hour end
+        for s in sells_by_row.get(n, ()):  # a trigger on the hour's last row: handed over at the hour end
             self.sell_req(s)
         self.engine.prune()
         self.engine.trim_history()
@@ -750,6 +805,8 @@ def _follow(m, once, max_hours, sleep_fn, roots, decider_factory, ledger_builder
     try:
         return _locked(m, out_root, once, max_hours, sleep_fn, decider_factory, ledger_builder, engine_kw)
     finally:
+        import shutil
+        shutil.rmtree(out_root / "duckdb-tmp", ignore_errors=True)  # duckdb spill is tape-derived: deleted when the runner stops (QP ADD1 (c)1)
         lock.close()
 
 
@@ -800,26 +857,37 @@ def _locked(m, out_root, once, max_hours, sleep_fn, decider_factory, ledger_buil
         status.pop("waiting_since_utc", None)
         key, end = hour_key(cursor), cursor + HOUR_MS
         is_warm = cursor < start_ms
-        rows = read_hour_rows(f)
         st = RunState(hour=key, warmup=is_warm, day=key[:10])
-        entries = decider.decide(rows, st)
+        entries = decider.decide(iter_hour_rows(f), st)  # pass 1: the file is streamed, never held whole (a decider only enumerates its rows)
         sells = decider.take_sells() if hasattr(decider, "take_sells") else []
-        for r in rows:
-            if r.get("pool"):
-                pools_seen.add(r["pool"])
-            if r.get("type") == "create" and r.get("creator"):
-                creators_seen.add(r["creator"])
-        st.counts["rows"], st.counts["pools_seen_total"], st.counts["creators_seen_total"] = len(rows), len(pools_seen), len(creators_seen)
-        if is_warm:
-            warm_pools = len(pools_seen)
         if is_warm and (entries or sells):
             raise Refused("a decider returned entries or sells in a warm-up hour (%s): refused" % key)
-        if not is_warm:
-            book.run_hour(rows, entries, sells)
-        if m["decider"] == "c1nf":  # the U4 / U2 books never build or read the C1-NF wallet ledger (ruling 0.1)
-            trades = [a[1] for a in (arena_row_to_c1nf(r) for r in rows) if a is not None and a[0] == "trades"]
+        use_ledger = m["decider"] == "c1nf"  # the U4 / U2 books never build or read the C1-NF wallet ledger (ruling 0.1)
+        lw = lstep.open_hour(key) if use_ledger else None
+        seen = {"n": 0}
+
+        def observe(rows_iter):  # pass 2: counts, the scratch ledger rows and (forward hours) the pricing engine see each row once, one at a time
+            for r in rows_iter:
+                seen["n"] += 1
+                if r.get("pool"):
+                    pools_seen.add(r["pool"])
+                if r.get("type") == "create" and r.get("creator"):
+                    creators_seen.add(r["creator"])
+                if lw is not None:
+                    a = arena_row_to_c1nf(r)
+                    if a is not None and a[0] == "trades":
+                        lw.write(a[1])
+                yield r
+        if is_warm:
+            for _ in observe(iter_hour_rows(f)):
+                pass
+            warm_pools = len(pools_seen)
+        else:
+            book.run_hour(observe(iter_hour_rows(f)), entries, sells)
+        st.counts["rows"], st.counts["pools_seen_total"], st.counts["creators_seen_total"] = seen["n"], len(pools_seen), len(creators_seen)
+        if use_ledger:
             n_built = len(lstep.built)
-            lstep.note_hour(key, trades)
+            lw.close()
             if len(lstep.built) > n_built and verified and key not in stored:
                 with open(out_root / "wallet-ledger-md5.jsonl", "a") as fh:
                     fh.write(canon({"day": lstep.built[-1], "md5": lstep.md5s[lstep.built[-1]], "hour": key}) + "\n")

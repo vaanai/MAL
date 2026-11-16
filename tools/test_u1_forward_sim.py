@@ -370,9 +370,11 @@ class StopWrap:
         from tools import test_c1nf_forward_sim as T1m
         if state.warmup or state.hour != T1m.HOUR0:
             return []
+        rows = list(rows)
         prev = rows[99]
         self.u.pos["P1"] = {"land_slot": prev["slot"] + 19, "expiry_s": 10 ** 12, "ref": None}
         for i, r in enumerate(rows):
+            r = dict(r)  # the runner streams the file twice: the decider no longer shares row objects with the pricing engine, so the fixture's price lives in the tape itself (below)
             r["quote_reserve"], r["base_reserve"] = Q0, B0 * (3 if i >= 400 else 1)   # flat price, falling to a third from row 400 (the fixture's own reserves are not a price)
             self.u._check_stop(r, i)
         return [S.Entry(pool="P1", mint="MP1", at_row=100, decision_ms=prev["t_recv_ms"], decision_slot=prev["slot"], exit_after_s=21_600 - S.LAT_DECIDING_S)]
@@ -387,6 +389,15 @@ def test_stop_is_priced_by_the_runner_book_through_the_price_exit_mechanism(tmp_
     monkeypatch.setattr(S, "MIN_WARMUP_H", 1)
     monkeypatch.setattr(S, "WARMUP_MIN_BY_DECIDER", {})
     monkeypatch.setattr("tools.arena_paper.shutil.disk_usage", lambda path: C.namedtuple("Usage", "total used free")(1000, 500, 500))
+    orig_hour_rows = T1.hour_rows
+
+    def flat_then_falling(ms):  # the same reserves the old stub wrote into the shared row objects, now in the tape file of the first forward hour (price sees them too, as before)
+        rows = orig_hour_rows(ms)
+        if ms == T1.H0_MS:
+            for i, r in enumerate(rows):
+                r["quote_reserve"], r["base_reserve"] = Q0, B0 * (3 if i >= 400 else 1)
+        return rows
+    monkeypatch.setattr(T1, "hour_rows", flat_then_falling)
     T1.write_keep(tmp_path, 3)
     ta = tmp_path / "a.jsonl"
     ta.write_text("")
