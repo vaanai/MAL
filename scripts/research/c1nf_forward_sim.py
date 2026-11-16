@@ -679,6 +679,10 @@ def _locked(m, out_root, once, max_hours, sleep_fn, decider_factory, ledger_buil
                 fh.write(canon({"hour": key, "end_ms": end, "warmup": is_warm, "decision_md5": dmd5, "ledger_md5": lmd5}) + "\n")
                 fh.flush()
                 os.fsync(fh.fileno())
+            if hasattr(decider, "drain_marks"):  # board-safe per-mark records (universe size, buckets, breadth, gate, picks); no pool, mint, price or slot
+                with open(out_root / "marks.jsonl", "a") as fh:
+                    for rec in decider.drain_marks():
+                        fh.write(canon(dict(rec, hour=key)) + "\n")
             with open(out_root / "counts.jsonl", "a") as fh:
                 fh.write(canon({"hour": key, "warmup": is_warm, "entries": len(entries), "decider": dict(st.counts), "book": dict(book.c)}) + "\n")
         if verified and not is_warm:
