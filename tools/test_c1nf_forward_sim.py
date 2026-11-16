@@ -776,3 +776,104 @@ def test_the_duckdb_spill_dir_is_deleted_when_the_runner_stops(tmp_path):
     (spill / "y.tmp").write_text("left behind")
     assert S.follow(m, fixture=True, once=True, _roots=roots(tmp_path), decider_factory=lambda mm: StubDecider(), ledger_builder=builder, engine_kw=SPS) in (0, 4)
     assert not spill.exists()
+
+
+# ---------------------------------------------------------------------------------------------------------------------------------- bounded state (job #2914 OOM at 131 warm-up hours): engine.expire on the stream clock + dead-pool pruning
+# A long synthetic stream on the REAL FeatureEngine (event V, tools.test_c1nf_features generators): one pool graduates every `gap_s`, each with 80 prints over 2 h.
+def _long_rows(n_pools, gap_s, late_pool0_s=0):
+    import tools.test_c1nf_features as TF
+    G0, SPSX = TF.G0, TF.SPS
+    rows = []
+    for k in range(n_pools):
+        dt = k * gap_s
+        mint, pool, creator = "M%d" % k, "P%d" % k, "C%d" % (k % 7)
+
+        def base(typ, prog, bt, slot, **kw):
+            return dict(type=typ, prog=prog, slot=slot, block_time=bt, t_recv_ms=bt * 1000 + (slot % 7), signature="s%s%d" % (typ, slot), event_index=0, tx_index=1, **kw)
+        bt_c = G0 + dt - 600
+        s0 = int((bt_c - G0) * SPSX) + 100
+        rows.append(base("create", "pumpfun", bt_c, s0, mint=mint, creator=creator, name="n%d" % k, symbol="s", is_mayhem_mode=False, trader=creator))
+        for j, (tr, buy, sol) in enumerate((("A%d" % k, True, 10 ** 9), ("B%d" % k, False, 5 * 10 ** 8))):
+            rows.append(base("trade", "pumpfun", bt_c + 100 + 100 * j, s0 + 250 + 250 * j, mint=mint, trader=tr, side="buy" if buy else "sell", sol_lamports=sol, token_raw=10 ** 12,
+                             quote_reserve=31 * 10 ** 9, base_reserve=10 ** 15))
+        sg = int(dt * SPSX) + 2000
+        rows.append(base("complete", "pumpfun", G0 + dt, sg, mint=mint, trader="T", quote_mint=S.WSOL))
+        rows.append(base("pool_create", "pumpswap", G0 + dt, sg, mint=mint, pool=pool, quote_mint=S.WSOL))
+        pr = TF.make_event_prints(1000 + k, n=80, span_s=2 * 3600, n_traders=15)
+        for i, r in enumerate(pr):
+            rows.append(base("trade", "pumpswap", r["bt"] + dt, r["slot"] + int(dt * SPSX) + 2000 + i % 2, pool=pool, mint=mint, trader=r["trader"], side="buy" if r["isb"] else "sell",
+                             sol_lamports=int(r["sol"]), token_raw=int(r["tok"]), quote_reserve=r["vault"], base_reserve=r["b"], virtual_quote_reserves=r["v_event"]))
+        if k == 0 and late_pool0_s:  # an old pool that keeps printing after its engine life (graduation + 25 h) ended
+            for i in range(5):
+                r = pr[i]
+                rows.append(base("trade", "pumpswap", r["bt"] + dt + late_pool0_s + i * 60, r["slot"] + int(dt * SPSX) + int(late_pool0_s * SPSX) + 3000 + i * 150, pool=pool, mint=mint,
+                                 trader=r["trader"], side="buy", sol_lamports=int(r["sol"]), token_raw=int(r["tok"]), quote_reserve=r["vault"], base_reserve=r["b"], virtual_quote_reserves=r["v_event"]))
+    rows.sort(key=lambda r: (r["slot"], r["t_recv_ms"]))
+    return rows
+
+
+class _Spy:
+    """the REAL engine behind the shadow; every features_at answer is recorded per (pool, T) as an md5 of the vector, stage1, wallet_ok, h_top1"""
+
+    def __init__(self, eng):
+        import hashlib
+        self.eng, self.per, self._h = eng, {}, hashlib
+
+    def __getattr__(self, k):
+        return getattr(self.eng, k)
+
+    def features_at(self, pool, T, sd=None):
+        import numpy as np
+        r = self.eng.features_at(pool, T, sd)
+        self.per[(pool, T)] = None if r is None else self._h.md5(np.asarray(r.vec, dtype=np.float64).tobytes() + repr((r.stage1, r.wallet_ok, r.h_top1)).encode()).hexdigest()
+        return r
+
+
+class _Zero:
+    def predict(self, X):
+        import numpy as np
+        return np.zeros(len(X))
+
+
+def _run_long(rows, hours, stream_expire_s, prune, probes=()):
+    import hashlib
+    import tracemalloc
+    tracemalloc.start()
+    base = tracemalloc.get_traced_memory()[0]
+    eng = _Spy(cs.build_engine(None, v_source="event"))
+    models = cs.ModelSet([{"from_day": "0000-00-00", "file": __file__, "sha256": hashlib.sha256(Path(__file__).read_bytes()).hexdigest()}], loader=lambda p: _Zero())
+    d = S.C1nfDecider(eng, models, oracle_bypass=True, stream_expire_s=stream_expire_s, prune=prune)
+    t0 = (rows[0]["block_time"] // 3600) * 3600
+    probe = {}
+    try:
+        for h in range(hours):
+            d.decide(iter([r for r in rows if t0 + h * 3600 <= r["block_time"] < t0 + (h + 1) * 3600]), S.RunState(hour="h%d" % h, warmup=False, day="d"))
+            if h + 1 in probes:
+                probe[h + 1] = dict(mb=(tracemalloc.get_traced_memory()[0] - base) / 1e6, pools=len(eng.eng._pools), info=len(eng.eng._info), first_ms=len(d.shadow.first_ms),
+                                    last_print=len(d.shadow.last_print), rejected=len(eng.eng._rejected), mk=len(eng.eng._mk))
+    finally:
+        tracemalloc.stop()
+    return eng.per, probe, d
+
+
+def test_long_stream_features_are_identical_with_expiry_and_pruning_and_the_state_is_bounded():
+    """40 pools graduate one per hour; 70 hours. OLD = the previous decider (no expiry: nothing is ever freed). NEW = the live shadow's stream expiry + dead-pool pruning. Every (pool, T) feature answer (22,932 of
+    them) is md5-equal; the engine's pool / info / prints / market tables and the shadow's per-pool tables stop growing once the first pools age out, where the old ones grow with the hours."""
+    rows = _long_rows(40, 3600)
+    old, po, _ = _run_long(rows, 70, None, False, probes=(35, 70))
+    new, pn, d = _run_long(rows, 70, "live", True, probes=(35, 50, 70))
+    assert len(old) > 20_000 and old == new
+    assert d.pruned["pools"] > 0 and d.shadow.c["stream_expires"] > 0   # pruning and expiry really ran
+    assert po[70]["pools"] == 40 and pn[70]["pools"] <= 26 and pn[70]["first_ms"] <= 27 and pn[70]["mk"] < po[70]["mk"] / 5 and pn[70]["rejected"] > 0
+    assert abs(pn[70]["pools"] - pn[50]["pools"]) <= 2 and abs(pn[70]["first_ms"] - pn[50]["first_ms"]) <= 2 and pn[70]["mk"] <= pn[50]["mk"] + 5   # flat between hour 50 and 70
+    assert pn[70]["mb"] < 0.8 * po[70]["mb"] and pn[70]["mb"] <= 1.05 * pn[50]["mb"]                                                           # python memory flat once the window is full
+
+
+def test_known_deviation_prints_after_a_pools_engine_life_are_ignored_with_expiry():
+    """KNOWN DEVIATION, a question for QP (PR body): a pool older than graduation + 25 h that prints again is ignored by the expiring engine (documented in FeatureEngine.expire; this is what the live shadow always did)
+    but was counted into the engine's market tables by the old never-expiring decider. Everything else is equal; the differing answers are exactly the later pools whose market window the late prints touch."""
+    rows = _long_rows(40, 3600, late_pool0_s=30 * 3600)
+    old, _, _ = _run_long(rows, 60, None, False)
+    new, _, _ = _run_long(rows, 60, "live", True)
+    diff = [k for k in set(old) | set(new) if old.get(k, "x") != new.get(k, "x")]
+    assert 0 < len(diff) < 50 and {k[0] for k in diff} <= {"P%d" % i for i in range(30, 40)}
