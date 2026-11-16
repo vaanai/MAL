@@ -2,9 +2,8 @@
 """c1nf_forward_sim: FORWARD paper simulation of one strategy (first: C1-NF, the frozen C1 LAYA cascade + top-holder cap h_top1 <= 0.5, exit 300 s) on the arena tip feed
 (hv7 `tape-<hour>.jsonl[.zst]`, arena_tape_v1 rows). PAPER only; in-sample research, not a gate read. Nothing here says any book makes money.
 
-Design input: /data/mal/hunt-1008/ops/reports/2026-11-16/c1nf-count-feasibility.md (blockers 1-5, "Smallest fix" A-E). Entries are priced by tools/arena_paper.py through
-scripts/research/floor_gap_range_engine.GapRangeEngine (the FLOOR open-sim engine: virtual reserve V, feed delay d + k slots, fees and rent as the arena stack), at the strict
-book's d + k, or at a declared total chain time with pricing_lat_entry_s (the same LATENCY_VALUES_S as osb_follow). The book files have osb_follow's layout.
+Design input: /data/mal/hunt-1008/ops/reports/2026-11-16/c1nf-count-feasibility.md (blockers 1-5, "Smallest fix" A-E). Entries are priced (ruling 2.2-2.6: 19 slots = pricing_lat_entry_s 4.085 deciding; 3.010 and 5.590 twins; 505,000 per send deciding, 160,000 beside; both fail models are in every row's legs; exit at landing + 300 s) by tools/arena_paper.py through
+scripts/research/floor_gap_range_engine.GapRangeEngine (the FLOOR open-sim engine: virtual reserve V, feed delay d + k slots, fees and rent as the arena stack), at the total chain time pricing_lat_entry_s (osb_follow's LATENCY_VALUES_S). The book files have osb_follow's layout.
 
 Pieces
   adapter    arena_row_to_c1nf(row): hv7 arena row -> the (kind, row) shape tools.c1nf_shadow.Shadow.feed reads (blocker 1). Pure, no I/O.
@@ -13,13 +12,14 @@ Pieces
   ledger     the as-of wallet ledger is built FORWARD (blocker 3): a UTC day's ledger is built only once all 24 hours of that day were processed by this run (warm-up hours
              included, and listed), through tools/c1nf_wallet_ledger (the tip adapter over a scratch copy of the day's adapted trade rows). Until asof-<day> exists the
              engine answers wallet_ok False and the shadow never picks: those minutes are counted as `no_wallet_ledger` refusals, no pick is faked.
-  seal       oracle bypass (blocker 4) only behind --oracle-bypass-forward, which refuses (exit 2) any processed hour (start, warm-up included) before 2026-10-16T01Z.
-  warm-up    --warmup-hours N: the N hours before start_hour feed the decider's engine with decisions OFF; no buy, sell, ledger row or outcome code path runs for them.
-             They are listed in meta.json. Pricing history starts at start_hour.
+  seal       the pick-oracle skip is the manifest key `pick_oracle` ("none: EXP-022 withdrawn ..."), valid only from S (S >= 2026-10-16T01Z); never --no-seal.
+  warm-up    W = [max(2026-11-03T03Z, S - 336 h), S): the hours before S feed the decider's engine with decisions OFF in code; no buy, sell, ledger row or outcome code path runs for
+             them (an entry from a decider in a warm-up hour, or decided before S, is refused). W and the disclosure sentence are in meta.json. Pricing history starts at S.
+  input      only the osb keeper's hard links under /data2/mal/scratch/floor-open-sim/keep/, read through symlinks under out_root/tapelink (QP-RULING-1116-c1nf-forward-sim 1.1).
 Output (out_root): manifest.sha256, code.sha256, meta.json, status.json, md5-by-hour.jsonl, decisions.md5, counts.jsonl (per hour: decider counters), runs/NNNN/{ledger/<bot>/trades-DAY.jsonl,
 bots.json, variant.json}, `book` -> the active run. Restart: replays from the warm-up start into a new run and compares every stored hour's decision and ledger md5 (exit 4 on a difference).
 Exit codes: 0 ok; 2 refused; 3 ledger write fatal; 4 md5 mismatch.
-Usage: c1nf_forward_sim.py MANIFEST.json [--once] [--max-hours N] [--warmup-hours N] [--oracle-bypass-forward] [--pricing-lat-entry-s S]
+Usage: c1nf_forward_sim.py MANIFEST.json [--once] [--max-hours N]   (every parameter, including pick_oracle and pricing_lat_entry_s, is a pinned manifest key; QP-RULING-1116-c1nf-forward-sim)
 """
 import argparse, collections, dataclasses, fcntl, hashlib, heapq, json, os, re, subprocess, sys, time
 from datetime import datetime, timezone
@@ -36,8 +36,13 @@ import osb_follow as O  # noqa: E402
 from floor_gap_range_engine import GapRangeEngine  # noqa: E402
 
 REPO = Path(__file__).resolve().parent.parent.parent
-HV7_ROOT = "/data2/mal/arena-tip-feed/hv7"
-SIM_ROOT = "/data2/mal/scratch/c1nf-forward-sim"
+KEEP_ROOT = "/data2/mal/scratch/floor-open-sim/keep"  # QP-RULING-1116-c1nf-forward-sim 1.1: the osb keeper's hard links of closed hv7 hours; the only tape input
+SIM_ROOT = "/data2/mal/scratch/c1nf-open-sim"          # the only place this runner writes
+FORBIDDEN_PATH_WORDS = ("/var/lib/mal/sealed", "tip-tape-archive", "arena-mirror", "arena-tip-feed", "fast0-offload", "arena/tape", "/forward-", "r4b", "meta-capture", "laya-opt")
+WARMUP_MAX_H, WARMUP_START_MIN = 336, "2026-11-03T03"  # ruling 1.2: W = [max(2026-11-03T03Z, S - 336 h), S)
+MIN_WARMUP_H = 26                                    # run_live's bootstrap minimum; tests lower it
+SENDS = (505_000, 160_000)                           # deciding C1-NF send; FLOOR's live send shown beside (ruling 2.5)
+LAT_DECIDING_S = 4.085                               # 19 slots, deciding; 3.010 (14) and 5.590 (26) are twins (ruling 2.2)
 HOUR_MS = 3_600_000
 POLL_S = 60
 SEAL_FIRST_HOUR = "2026-10-16T01"  # EXP-022 s9: a pool whose first print is at or after this instant needs the pick oracle (tools.c1nf_shadow.SEAL_START_MS)
@@ -45,7 +50,7 @@ EXIT_S_DEFAULT = 300.0
 WSOL = "So11111111111111111111111111111111111111112"
 EXIT_OK, EXIT_REFUSED, EXIT_FATAL, EXIT_MISMATCH = 0, 2, 3, 4
 MANIFEST_KEYS = {"book_id", "title", "decider", "stakes_sol", "send_lamports", "start_hour", "warmup_hours", "tape_dir", "out_root", "exit_s", "pricing_lat_entry_s",
-                 "oracle_bypass_forward", "feed_delay_slots", "wallet_ledger_root", "model_manifest"}
+                 "pick_oracle", "feed_delay_slots", "wallet_ledger_root", "model_manifest"}
 REQUIRED_KEYS = {"book_id", "title", "decider", "stakes_sol", "send_lamports", "start_hour", "tape_dir", "out_root"}
 DECIDERS = ("c1nf",)
 
@@ -309,18 +314,22 @@ def check_manifest(m):
         if not isinstance(m[k], str) or not m[k]:
             raise Refused("%s must be a path string" % k)
     parse_hour(m["start_hour"])
-    w = m.get("warmup_hours", 0)
-    if not (_isint(w) and 0 <= w <= 72):
-        raise Refused("warmup_hours must be an integer in [0, 72]")
+    w = m.get("warmup_hours", None)
+    if w is not None and not (_isint(w) and MIN_WARMUP_H <= w <= WARMUP_MAX_H):
+        raise Refused("warmup_hours must be an integer in [%d, %d] (default: the whole window W)" % (MIN_WARMUP_H, WARMUP_MAX_H))
+    if m["send_lamports"] not in SENDS:
+        raise Refused("send_lamports must be one of %s (505,000 deciding, 160,000 beside)" % (list(SENDS),))
     es = m.get("exit_s", EXIT_S_DEFAULT)
     if isinstance(es, bool) or not isinstance(es, (int, float)) or not 1 <= es <= 3600:
         raise Refused("exit_s must be a number of seconds in [1, 3600]")
-    if "pricing_lat_entry_s" in m:
+    m.setdefault("pricing_lat_entry_s", LAT_DECIDING_S)
+    if True:
         v = m["pricing_lat_entry_s"]
         if isinstance(v, bool) or not isinstance(v, (int, float)) or v not in O.LATENCY_VALUES_S:
             raise Refused("pricing_lat_entry_s must be one of the declared values %s" % (list(O.LATENCY_VALUES_S),))
-    if not isinstance(m.get("oracle_bypass_forward", False), bool):
-        raise Refused("oracle_bypass_forward must be true or false")
+    po = m.get("pick_oracle")
+    if po is not None and not (isinstance(po, str) and po.startswith("none: EXP-022 withdrawn")):
+        raise Refused("pick_oracle must be a string starting 'none: EXP-022 withdrawn' (the runner never imports the oracle)")
     fd = m.get("feed_delay_slots", R.DEFAULT_FEED_DELAY_SLOTS)
     if not (_isint(fd) and 0 <= fd <= 100):
         raise Refused("feed_delay_slots must be a whole number of slots")
@@ -332,34 +341,54 @@ def manifest_sha256(m):
 
 
 def hours_needed(m):
-    """-> (warm-up hour keys, first forward hour ms)"""
+    """-> (warm-up hour keys, S in ms). W = [max(2026-11-03T03Z, S - 336 h), S); warmup_hours (a manifest key) may only shorten it, never below MIN_WARMUP_H. Refused when the window
+    before S holds less than MIN_WARMUP_H hours (S moves later)."""
     start = parse_hour(m["start_hour"])
-    w = m.get("warmup_hours", 0)
+    avail = (start - parse_hour(WARMUP_START_MIN)) // HOUR_MS
+    w = min(WARMUP_MAX_H, avail) if m.get("warmup_hours") is None else m["warmup_hours"]
+    if w > avail or w < MIN_WARMUP_H:
+        raise Refused("warm-up window: %d h wanted, %d h available from %s (minimum %d): S moves later" % (w, avail, WARMUP_START_MIN, MIN_WARMUP_H))
     return [hour_key(start - (w - i) * HOUR_MS) for i in range(w)], start
 
 
 def check_seal(m):
-    """--oracle-bypass-forward is for forward hours only: every processed hour (warm-up included) must be at or after SEAL_FIRST_HOUR"""
-    if not m.get("oracle_bypass_forward", False):
+    """the pick-oracle skip is a manifest key (pick_oracle), valid only from S: S itself must be at or after SEAL_FIRST_HOUR (warm-up hours take no decision, so the oracle never matters there).
+    Without the key the shadow keeps its seal and, with no oracle, withholds every pool first seen after 2026-10-16T01Z (fail closed). Never --no-seal."""
+    if m.get("pick_oracle") is None:
         return
-    warm, start = hours_needed(m)
-    first = warm[0] if warm else hour_key(start)
-    if parse_hour(first) < parse_hour(SEAL_FIRST_HOUR):
-        raise Refused("oracle_bypass_forward refused: hour %s is before %s (the bypass is for forward hours only)" % (first, SEAL_FIRST_HOUR))
+    if parse_hour(m["start_hour"]) < parse_hour(SEAL_FIRST_HOUR):
+        raise Refused("pick_oracle skip refused: S %s is before %s (the skip is for hours from S, EXP-022 withdrawn 2026-10-15)" % (m["start_hour"], SEAL_FIRST_HOUR))
 
 
 def guard_paths(m, roots):
-    """tape_dir under the hv7 root, out_root under the sim root (roots = (tape_root, out_roots)), disjoint, never inside the arena output root"""
-    tape_root, out_root_ok = roots
+    """tape_dir under the keeper root, out_root under the sim root (roots = (tape_root, sim_root)), disjoint, never a forbidden path word, never inside the arena output root"""
+    tape_root, sim_root = roots
     t, o = os.path.realpath(m["tape_dir"]), os.path.realpath(m["out_root"])
+    for k, pth in (("tape_dir", t), ("out_root", o), ("tape_dir", str(m["tape_dir"])), ("out_root", str(m["out_root"]))):
+        for w in FORBIDDEN_PATH_WORDS:
+            if w in pth.replace(tape_root, "").replace(sim_root, ""):
+                raise Refused("%s: forbidden path word %r" % (k, w))
     if not (t == tape_root or t.startswith(tape_root + os.sep)):
         raise Refused("tape_dir must be %s" % tape_root)
-    if not (o.startswith(out_root_ok + os.sep) or o == out_root_ok):
-        raise Refused("out_root must sit under %s" % out_root_ok)
+    if not (o.startswith(sim_root + os.sep) or o == sim_root):
+        raise Refused("out_root must sit under %s" % sim_root)
     if R._inside(m["out_root"], R.ARENA_OUTPUT_ROOT):
         raise Refused("refusing to write inside the arena output root")
     if o == t or o.startswith(t + os.sep) or t.startswith(o + os.sep):
         raise Refused("tape_dir and out_root must be disjoint")
+
+
+def link_hour(m, out_root, ms):
+    """the tape input of one hour: a symlink under out_root/tapelink to the keeper's file (the runner reads only through it). -> path or None when the keeper has no such hour"""
+    src = hour_file(m["tape_dir"], ms)
+    if src is None:
+        return None
+    d = Path(out_root) / "tapelink"
+    d.mkdir(parents=True, exist_ok=True)
+    dst = d / src.name
+    if not dst.is_symlink():
+        os.symlink(os.path.realpath(src), dst)
+    return dst
 
 
 def code_sha256(extra=()):
@@ -413,6 +442,8 @@ class Book:
                 self.c["sell_refused_" + str(e).split(":")[0][:30].replace(" ", "_")] += 1
 
     def buy(self, e):
+        if e.decision_ms < parse_hour(self.m["start_hour"]):  # nothing is decided or priced before S (ruling 1.2)
+            raise Refused("entry decided before S (%d): refused" % e.decision_ms)
         self._due_sells(e.decision_ms)
         self.clock = e.decision_ms
         try:
@@ -421,7 +452,8 @@ class Book:
             self.c["buy_refused_" + str(exc).split(":")[0][:30].replace(" ", "_")] += 1
             return None
         self.c["buys"] += 1
-        heapq.heappush(self.sells, (e.decision_ms + int(round(e.exit_after_s * 1000)), pid))
+        land_ms = int(round(float(self.m["pricing_lat_entry_s"]) * 1000))  # ruling 2.3: the sell is decided at entry landing + exit_s
+        heapq.heappush(self.sells, (e.decision_ms + land_ms + int(round(e.exit_after_s * 1000)), pid))
         return pid
 
     def run_hour(self, rows, entries):
@@ -452,14 +484,14 @@ def default_decider(m, ledger_provider=None):
     if ledger_provider is None:
         ledger_provider = CS.AsofDirLedger(m.get("wallet_ledger_root") or str(Path(m["out_root"]) / "wallet-ledger"))
     engine = CS.build_engine(ledger_provider, v_source="event")
-    return C1nfDecider(engine, models, oracle_bypass=m.get("oracle_bypass_forward", False), exit_s=m.get("exit_s", EXIT_S_DEFAULT))
+    return C1nfDecider(engine, models, oracle_bypass=m.get("pick_oracle") is not None, exit_s=m.get("exit_s", EXIT_S_DEFAULT))
 
 
 def follow(manifest_path_or_dict, once=False, max_hours=None, *, sleep_fn=time.sleep, _roots=None, decider_factory=None, ledger_builder=None, engine_kw=None):
     """-> exit code. _roots, decider_factory, ledger_builder, engine_kw are test seams (the CLI does not expose them)."""
     try:
         m = check_manifest(dict(manifest_path_or_dict)) if isinstance(manifest_path_or_dict, dict) else load_manifest(manifest_path_or_dict)
-        return _follow(m, once, max_hours, sleep_fn, _roots or (HV7_ROOT, SIM_ROOT), decider_factory, ledger_builder, engine_kw)
+        return _follow(m, once, max_hours, sleep_fn, _roots or (KEEP_ROOT, SIM_ROOT), decider_factory, ledger_builder, engine_kw)
     except Refused as e:
         print("c1nf_forward_sim: refused: %s" % e, file=sys.stderr)
         return EXIT_REFUSED
@@ -503,7 +535,7 @@ def _locked(m, out_root, once, max_hours, sleep_fn, decider_factory, ledger_buil
     else:
         cf.write_text(csha + "\n")
     warm, start_ms = hours_needed(m)
-    (out_root / "meta.json").write_text(json.dumps({"book_id": m["book_id"], "decider": m["decider"], "start_hour": m["start_hour"], "warmup_hours": warm, "oracle_bypass_forward": m.get("oracle_bypass_forward", False),
+    (out_root / "meta.json").write_text(json.dumps({"book_id": m["book_id"], "decider": m["decider"], "start_hour": m["start_hour"], "warmup_hours": warm, "pick_oracle": m.get("pick_oracle"), "pricing_lat_entry_s": m["pricing_lat_entry_s"], "send_lamports": m["send_lamports"],
                                                     "first_processed_hour": warm[0] if warm else m["start_hour"], "note": "warm-up hours feed the decider only: decisions off, no buy, sell, ledger row or outcome"},
                                                    indent=1, sort_keys=True) + "\n")
     stored = O.read_stored(out_root)
@@ -518,8 +550,10 @@ def _locked(m, out_root, once, max_hours, sleep_fn, decider_factory, ledger_buil
     cursor, done = parse_hour(warm[0]) if warm else start_ms, 0
     status = {"book_id": m["book_id"], "manifest_sha256": sha, "code_sha256": csha, "run": run_dir.name, "stakes_sol": list(m["stakes_sol"])}
     waiting_since = None
+    pools_seen, creators_seen, warm_pools = set(), set(), 0
     while True:
         f, nxt = hour_file(m["tape_dir"], cursor), hour_file(m["tape_dir"], cursor + HOUR_MS)
+        f = link_hour(m, out_root, cursor) if f is not None else None
         if f is None or nxt is None:  # an hour is closed once the next hour's file exists
             if once or (max_hours is not None and done >= max_hours):
                 break
@@ -536,6 +570,16 @@ def _locked(m, out_root, once, max_hours, sleep_fn, decider_factory, ledger_buil
         rows = read_hour_rows(f)
         st = RunState(hour=key, warmup=is_warm, day=key[:10])
         entries = decider.decide(rows, st)
+        for r in rows:
+            if r.get("pool"):
+                pools_seen.add(r["pool"])
+            elif r.get("type") == "pool_create" and r.get("pool"):
+                pools_seen.add(r["pool"])
+            if r.get("type") == "create" and r.get("creator"):
+                creators_seen.add(r["creator"])
+        st.counts["rows"], st.counts["pools_seen_total"], st.counts["creators_seen_total"] = len(rows), len(pools_seen), len(creators_seen)
+        if is_warm:
+            warm_pools = len(pools_seen)
         if is_warm and entries:
             raise Refused("a decider returned entries in a warm-up hour (%s): refused" % key)
         if not is_warm:
@@ -563,6 +607,12 @@ def _locked(m, out_root, once, max_hours, sleep_fn, decider_factory, ledger_buil
         status.update(last_hour=key, last_hour_end_ms=end, warmup_hour=is_warm, wall_time_utc=datetime.now(timezone.utc).isoformat(), active=verified, open_positions=book.open_positions(),
                       ledger_days_built=list(lstep.built), ledger_days_incomplete=list(lstep.incomplete), decision_md5=dmd5, ledger_md5=lmd5, book_counts=dict(book.c))
         O._atomic_json(out_root / "status.json", status)
+        if is_warm and end == start_ms:  # the last warm-up hour is done: the disclosure carries the count of pools first seen in W
+            meta = json.loads((out_root / "meta.json").read_text())
+            meta["pools_first_seen_in_warmup"] = warm_pools
+            meta["disclosure"] = ("warm-up W = [%s, S), decisions off, no outcome code path; creator and wallet history start at %s, not at tape start as in training; "
+                                  "pools first seen in warm-up: %d" % (warm[0], warm[0], warm_pools))
+            O._atomic_json(out_root / "meta.json", meta)
         cursor, done = end, done + 1
         if max_hours is not None and done >= max_hours:
             break
@@ -574,18 +624,9 @@ def main(argv=None):
     ap.add_argument("manifest")
     ap.add_argument("--once", action="store_true", help="process the closed hours present now, then exit")
     ap.add_argument("--max-hours", type=int, default=None)
-    ap.add_argument("--warmup-hours", type=int, default=None, help="N hours before start_hour with decisions OFF (listed in meta.json); part of the manifest pin")
-    ap.add_argument("--oracle-bypass-forward", action="store_true", help="no pick oracle (EXP-022 withdrawn); refuses any hour before 2026-10-16T01Z; part of the manifest pin")
-    ap.add_argument("--pricing-lat-entry-s", type=float, default=None, help="total decision-to-landing chain time in s (osb_follow LATENCY_VALUES_S); default: the strict d + k")
     a = ap.parse_args(argv)
     try:
         m = load_manifest(a.manifest)
-        if a.warmup_hours is not None:
-            m["warmup_hours"] = a.warmup_hours
-        if a.oracle_bypass_forward:
-            m["oracle_bypass_forward"] = True
-        if a.pricing_lat_entry_s is not None:
-            m["pricing_lat_entry_s"] = a.pricing_lat_entry_s
     except Refused as e:
         print("c1nf_forward_sim: refused: %s" % e, file=sys.stderr)
         return EXIT_REFUSED
