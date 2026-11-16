@@ -1110,6 +1110,64 @@ Written 2026-11-15T20:4xZ (`date -u`) by the manager, after the resume; records 
 
 No book has cleared the promotion gate. Nothing here says FLOOR makes money.
 
+## Section 4 resume record, 2026-11-15, Erratum 1 (2026-11-16): stage 2 FAILED, the lane STOP interval, its removal (QP-RULING-1116 section 4)
+
+Written 2026-11-16T07:2xZ (`date -u`) by the manager. Records only. It is in force only with QP OK on the exact head and a reviewer verdict.
+
+Sources:
+- the manager24 state file `/data/mal/hunt-1008/ops/manager24/state-manager24.md`, lines stamped 2026-11-16T03:56Z to 07:19:33.781Z;
+- the ruling `/data/mal/hunt-1008/ops/QP-RULING-1116-a3-stage2-addD.md`, sha256 `94db6cc7d778e9605eed9b4f1209bbd7fa25f611590325b5f29c4d32d5d90bc2`.
+
+This entry corrects the resume record's owed item (1) and its "Step to T1" paragraph. Item (1) named only lateness as the STOP trigger ("with QP OK by 2026-11-16T15:00:00Z; otherwise the manager creates the lane STOP file at once"); QP-RULING-1115-a3-repin-dual Q1 (a) also makes any failed stage-2 bar a STOP trigger, and that is the trigger that applied. "Step to T1" said the resume stands on a stage-1 sample "until stage 2 is merged with QP OK, or the lane STOP file is created". The STOP file was created first (2026-11-16T03:56:56.635Z). PR #1412 was merged after it (2026-11-16T04:10:40Z) as the record of a FAILED stage 2; its QP OK means a correct record, not a pass (QP-RULING-1116 section 5). The stage-1 basis therefore ended at the STOP creation.
+
+**Stage 2 FAILED.**
+- PR #1412 was merged as `9ced3eff` (QP OK and REVIEWER APPROVE at `3f935567`). The merge is a correct record of a FAILED stage 2. It is not a pass.
+- One bar was NOT MET: the median clause of QP-RULING-1115-a3-repin-dual-ADD1 section D, on M2 and on M + M2. On M2, the median `sol_amount` was 505,178,719 and the median `initial_liquidity` was 323,297,814,655. The pre values were 84,990,359,056 and 4,193,388,282,604.
+- Every other item 6, 7 and 9 bar on A1 + A2 + M + M2 was MET.
+- QP ruled (QP-RULING-1116 section 2) that the failure is a sample-mix statistic: 19 of the 31 M2 WSOL migrations are mayhem-mode pools. QP found no sign of a decode or semantic change that puts FLOOR's buys, sells or pricing at risk.
+- QP's section 2 checks were chosen after M2 was seen and are post hoc.
+- QP withdrew the median clause for future samples (section 3). This was post hoc, and the ruling says so. The NOT MET stays on record.
+
+**The lane STOP file `/var/lib/mal-live/h5-lane/STOP`.**
+- **Created 2026-11-16T03:56:56.635Z** (manager job #2873), at once on the builder's NOT MET report, under QP-RULING-1115-a3-repin-dual Q1 (a).
+- It stopped new entries only. The 3 open positions kept their exit rule throughout (orders `4b6ee798bd567c3e`, `04249ae1071ed17d`, `ab8888e97bbb29ca`; basis 0.305021520 SOL in all). No sell happened in the interval (exits 0 at hourly jobs #2876 to #2878 and job #2879), and no time stop fell in it.
+- **Removed 2026-11-16T07:19:33.781Z** (manager job #2881). The interval was 3 h 22 m 37 s.
+
+**What the removal rests on** (QP-RULING-1116 section 4: (i) read at 07:16:19Z by job #2879, 3 min 14 s before the rm; (ii) re-read by job #2881 just before the rm; (iii) by the clock):
+- **Check M3, bar D2: MET.** PR #1413, merge `881bb742`, QP OK and REVIEWER APPROVE at `aeac5e29`. 40 usable migrations, 33 of them WSOL. D2 item 2's "walker short 0" rests on QP's and the reviewer's raw self-CPI count (40 of 40 per type); s24's counter cannot count it (QP note (a) on #1413).
+- **(i) No open-position sell has failed.** No sell had happened yet (job #2879, 07:16:19Z): sends today 0, exits 0, failed 0, `entry_refused` {}, `buy_port_refused` {}.
+- **(ii) The A3 run of 2026-11-16T07:10:05Z on mal-fast-0 is not ERROR and not HALT** (job #2880, files only).
+  - Status ok, errors [], `halt.any` False.
+  - Every halt flag was evaluated and false (`pins_changed`, `boost_disabled`, `boost_share_low`, `boost_last_slice_early`, `boost_budget_or_slices_changed`, `synthetic_share_high`: six, as printed by job #2880).
+  - `pins_check.changed` [].
+  - `programs.pump` deploy_slot 469811025, sha256 `bfd2a2bd4a062f03…`; `programs.pumpswap` deploy_slot 469811067, sha256 `78046072fdf83eee…`. These slots and sha256 prefixes equal the pins in `tools/pump_structure_pins.json` at main 881bb742.
+  - Job #2881 re-read the newest record and checked these values before it ran `rm`.
+  - The verdict and applied lines of that run were not read; with every halt flag false and `pins_check.changed` [], `tools/a3_redeploy_check.triage` returns `none` except through its pooled synthetic flag, which FLOOR does not act on (Amendment 8 part B).
+- **(iii) Timing.** 07:19Z is outside 16:45Z to 17:30Z. The next due time stop is about 2026-11-16T11:06:28Z, more than 15 minutes later.
+
+**Owed items of the resume record, now done:**
+- **Item (1), stage 2:** done as above. It FAILED, the STOP file was created and later removed.
+- **Item (2), first candidate after the resume:**
+  - The first candidate seen on the bridge after the 2026-11-15T20:23:40Z dry decision (pause = None) produced `buy_sent` **2026-11-15T23:45:58Z**, order `ab8888e97bbb29ca`, **landed**. Its bridge `decision_to_send_ms` was 1,097.
+  - The live bridge log holds 0 rows of kind `a3_pause`, `a3_resume` or `a3_ignored`: hourly #2864 (2026-11-16T00:37Z, the first read after this buy: landed, 11 slots, a3 rows 0, `entry_refused` {}, `buy_port_refused` {}), then hourlies #2868 to #2878. Refusals were {} {} and there was no other `buy_sent` between 20:23:40Z and 23:45:58Z (hourlies #2861 and #2864).
+  - There was no layout error word.
+- **Item (4), research-0 monitor first run:** `/data/mal/structure-monitor/daily.jsonl` line 41 is clean.
+  - `run_utc` 2026-11-16T07:11:00Z, status ok, errors [], `halt.any` false.
+  - `pins_changed` false ("6 pinned items unchanged").
+  - `program_changed` warn false ("3 programdata hashes unchanged").
+
+**Still owed:**
+- item (3), the exit results of the open positions (counts and words); it now covers THREE positions, including `ab8888e97bbb29ca`, bought after the redeploy;
+- item (6) now carries the Disclosure line below;
+- items (5) to (7) as stated;
+- the s24 `walker_short` counter fix, raised as non-blocking on #1413, as a later T1 PR.
+
+**Disclosure.** Stage 2 FAILED, so the clean-review line of QP-RULING-1115-a3-repin-dual Q5 never applied. The resume record's "provisional" label stayed in force from the merge of #1412 (2026-11-16T04:10:40Z) to the merge of this entry (QP ruling on PR #1414). From the merge of this entry, sim figures and reports with any hour at or after 2026-11-15T17 carry this line instead of the label; it also replaces the line named in the resume record's owed item (6): "pump and PumpSwap program redeploys at 2026-11-15T17:20:10Z (slot 469811025) and 17:20:20Z (slot 469811067) (writes: pump `37aGknd9Jy8gHXPQXbDj6mg1ytSEWNJFqbT3Z7qCrzyjJ2Z5hvv4B7fAvf4nt4boSwKL5US7SKiqDfbpkbukCXgN`, PumpSwap `2uB6vN55cWe95KmCpk5FH7jkaFoXjLt3MLDyETiLfuQVJzcUt1FeES8W1NEwJufvyQMeaWZfVdB7R1C7RELp8uCS`); decode field parity 0 unequal on stage 1 and stage 2; stage 1 clean on bars as amended by QP-RULING-1115-a3-repin-dual-ADD1 (three bars amended post hoc); stage 2 FAILED one bar, the ADD1 D median clause (a sample-mix statistic, QP-RULING-1116-a3-stage2-addD sha256 94db6cc7d778e9605eed9b4f1209bbd7fa25f611590325b5f29c4d32d5d90bc2); its post-hoc replacement, check M3 (bar D2, declared before its fetch), MET (#1413, 881bb742); review `ARTIFACTS/lab/a3-repin-2026-11-15-pump-pumpswap-program-upgrade-review.md`@`e7249962dde2ee2a6e1568dc63ea3c043f72076061bfe9bdd476163f95996377`." A consumer may shorten the writes to "(writes: as in DEC-035 'Section 4 resume record, 2026-11-15')"; nothing else may be dropped or shortened.
+
+**Owner notice.** Entries were paused from 2026-11-16T03:56:56.635Z to 07:19:33.781Z. No money was at risk from the pause, and the open positions kept their exits. This is a notice, not an approval (parent Q6). It is in the MiScusi notebook (`n_nO7bBlXdmSELJw`) and was sent in the manager's hourly update of 2026-11-16T07:37Z (state-file line stamped 2026-11-16T07:37:35Z, hourly #2882).
+
+No book has cleared the promotion gate. Nothing here says FLOOR makes money.
+
 ## Amendment 11 (2026-11-15): floor-lane-1 stake step 0.10 to 0.25 SOL at closed trade 10 instead of 20 (config only; DRAFT)
 **Status: DRAFT until merge. NOT installed. It authorises nothing until QP OK and REVIEWER APPROVE at the exact head, the merge, every precondition below met and recorded, and a Helm install.** Drafted 2026-11-15 (host clock `date -u` 21:30Z at drafting) for manager24 (manager23 stood down 2026-11-15T21:18Z), at main 5220509b. Records only: no code, host, config or live file is touched. Nothing here says FLOOR makes money. No promotion-gate threshold, seal or clock changes, and floor-lane-1 has not cleared the promotion gate.
 

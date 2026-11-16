@@ -1,8 +1,24 @@
 {
  "schema_version": "console.v1",
- "updated_utc": "2026-11-15T20:25:00Z",
+ "updated_utc": "2026-11-16T07:20:00Z",
  "review_windows": [],
  "events": [
+  {
+   "id": "lane-stop-removed-1116",
+   "kind": "record",
+   "atUtc": "2026-11-16T07:19:33Z",
+   "approx": false,
+   "title": "FLOOR new entries allowed again at 07:19Z: the follow-up check passed and the guard run is clean",
+   "detail": "Quant-proof found the failure was a sample-mix statistic and found no sign of a decode change (QP-RULING-1116-a3-stage2-addD). It replaced the failed bar after the fact with a follow-up check, M3, declared before any fetch. M3 passed (PR #1413, merge 881bb742). At removal: no sell had failed, the guard's 2026-11-16T07:10:05Z run was clean with the pinned program versions, and the timing rules held. The manager removed the STOP file at 2026-11-16T07:19:33Z (job #2881). New entries were paused 3 h 22 m 37 s; no money was at risk from the pause, and the 3 open positions (basis 0.305021520 SOL) stayed open with their exits running. The research-0 monitor's first run after the re-pin (07:11:00Z) is clean too. No book has cleared the promotion gate; nothing here says FLOOR makes money."
+  },
+  {
+   "id": "lane-stop-created-1116",
+   "kind": "record",
+   "atUtc": "2026-11-16T03:56:56Z",
+   "approx": false,
+   "title": "FLOOR new entries paused: stage 2 of the program-change review failed one bar",
+   "detail": "The second-stage review of the 2026-11-15 pump and PumpSwap program upgrades (PR #1412) failed one bar: a median test on migration sizes, which moved because most sampled migrations were small mayhem-mode pools. By the rule set beforehand, the manager created the lane STOP file at 2026-11-16T03:56:56Z (job #2873). It stops new entries only; the 3 open positions kept their exits. No money was at risk from the pause. No book has cleared the promotion gate."
+  },
   {
    "id": "a3-guard-switch-resume-1115",
    "kind": "record",
