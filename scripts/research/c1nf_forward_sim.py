@@ -458,6 +458,11 @@ def check_production_pins(m, fixture=False):
     """pre-S guards (QP/reviewer on #1415). A production manifest MUST carry duckdb_pin and model_manifest_sha256; `fixture=True` (a test seam, not a CLI flag or manifest key) skips the
     requirement. Always: model_manifest sits inside ARTIFACTS/c1nf_model (fixture: anywhere) and its file sha256 equals the pinned value; wallet_ledger_root sits under out_root and carries
     no forbidden word."""
+    if m["decider"] in PLACEBO_DECIDERS:  # U4 / U2 load no model and build no wallet ledger (ruling 0.1): there is nothing to pin, and a model or ledger key is refused
+        for k in ("duckdb_pin", "model_manifest", "model_manifest_sha256", "wallet_ledger_root", "pick_oracle"):
+            if m.get(k) is not None:
+                raise Refused("%s is not allowed for decider %s (no model, no wallet ledger, no pick oracle)" % (k, m["decider"]))
+        return
     if not fixture:
         for k in ("duckdb_pin", "model_manifest_sha256"):
             if m.get(k) is None:
@@ -672,10 +677,9 @@ class Book:
                 rows[d] = {"entries": n, "feed_gap_timed": t, "feed_gap_requested": q, "excluded_share": round((t + q) / n, 4) if n else None}
                 tot.update({"entries": n, "feed_gap_timed": t, "feed_gap_requested": q})
             out[k] = {"total": dict(tot), "by_day": rows}
-        out["disclosure"] = GAP_DISCLOSURE.format(**{"n": sum(v["total"].get("feed_gap_timed", 0) + v["total"].get("feed_gap_requested", 0) for k, v in out.items() if k in self.bots),
-                                                     "N": sum(v["total"].get("entries", 0) for k, v in out.items() if k in self.bots),
-                                                     "timed": sum(v["total"].get("feed_gap_timed", 0) for k, v in out.items() if k in self.bots),
-                                                     "requested": sum(v["total"].get("feed_gap_requested", 0) for k, v in out.items() if k in self.bots)})
+        mt = out.get("main", {"total": {}})["total"]  # QP #1420: the disclosure counts the book's own trades only, never the placebo / random-pick trades
+        out["disclosure"] = GAP_DISCLOSURE.format(n=mt.get("feed_gap_timed", 0) + mt.get("feed_gap_requested", 0), N=mt.get("entries", 0), timed=mt.get("feed_gap_timed", 0),
+                                                  requested=mt.get("feed_gap_requested", 0))
         return out
 
     def open_positions(self):

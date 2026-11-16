@@ -111,7 +111,7 @@ def test_u4_fires_when_ns_up_and_top1_down_and_enters_once_per_mint():
     assert len(main) == 1 and main[0].pool == "PM" and main[0].mint == "M"
     e = main[0]
     assert e.exit_after_s == 4 * 3600 and e.exit_from_decision is True and e.meta["mark_s"] == T0
-    assert e.at_row == 0 and e.decision_ms == (T0 - 1800) * 1000 and e.decision_slot == slot_of(-1800)  # decided on the last row with block time <= M
+    assert e.at_row == 0 and e.decision_ms == T0 * 1000 and e.decision_slot == slot_of(-1800)  # decided on the last row with block time <= M
     assert e.meta["ns"] == pytest.approx(ns2) and e.meta["top1"] == pytest.approx(top1_2)
     assert e.meta["dns"] == pytest.approx(ns2 - ns1) and e.meta["dtop1"] == pytest.approx(top1_2 - top1_1)
     assert ns2 >= 0.5 and ns2 - ns1 >= 0.05 and top1_2 < top1_1
@@ -629,7 +629,7 @@ def test_gap_exclusions_are_split_by_the_deciders_exit_kind_and_carry_the_disclo
     assert out["main"]["total"] == {"entries": 3, "feed_gap_timed": 1, "feed_gap_requested": 1}      # a position's per-stake rows count once; missing_v is not a gap exclusion
     assert out["placebo"]["total"] == {"entries": 1, "feed_gap_timed": 1, "feed_gap_requested": 0}
     assert out["main"]["by_day"][day]["excluded_share"] == round(2 / 3, 4)
-    assert out["disclosure"] == S.GAP_DISCLOSURE.format(n=3, N=4, timed=2, requested=1) and "excluded 3 of 4 entries (2/1)" in out["disclosure"]
+    assert out["disclosure"] == S.GAP_DISCLOSURE.format(n=2, N=3, timed=1, requested=1) and "excluded 2 of 3 entries (1/1)" in out["disclosure"]   # the book's own trades only (placebo p3 not added)
     assert out["disclosure"].startswith("Strict feed-gap exclusion: any data_loss gap between decision and exit removes the trade")
 
 
@@ -665,3 +665,32 @@ def test_u2_entry_reference_equals_the_engines_pre_own_trade_fill_state_for_the_
                         v, np.array([sd]), np.array([sps]), lats=(4.085,))
     qe, be = ms["Qe"][4.085][0], ms["Be"][4.085][0]
     assert qe / be == pytest.approx(ref, rel=1e-12) and qe == prints[4][4] + v and be == prints[4][5]   # the fill state is the pre-trade state of the first print after SD + 19
+
+
+# ============================================================================================================================ QP #1420 fixes, pins, rent
+def test_decision_time_is_never_before_the_mark_so_the_first_mark_after_s_is_not_refused_as_decided_before_s():
+    d4, e4, _ = run_u4(P1, [("E", "buy", 40)])
+    rows, _ = u2_cohort(COHORT)
+    d2, e2, _, _ = run_u2(rows)
+    for ents in (e4, e2):
+        assert ents and all(e.decision_ms >= START_MS for e in ents)         # the last warm-up row was received before S; max(that time, mark) is not
+        assert all(e.decision_ms == e.meta["mark_s"] * 1000 for e in ents)
+    assert e4[0].decision_slot == slot_of(-1800)                             # the slot stays the last row's (SD = slot of the last row with block time <= M)
+    # an NS-fall sell decided at a mark also carries max(last row, mark)
+    feed(d4, [trade("M", "PM", 450, "A", "sell", 50), trade("M", "PM", 460, "E", "sell", 40), trade("Z", "PZ", 1000, "zz", "buy", 1)])
+    sells = d4.take_sells()
+    assert sells and all(s.decision_ms >= START_MS for s in sells)
+
+
+def test_u4_u2_manifests_take_no_model_or_ledger_pins_and_respect_rent_mode(tmp_path):
+    for dec in ("u4", "u2"):
+        m = S.check_manifest(mf(tmp_path, dec, exit_s=3600))
+        S.check_production_pins(m)                                         # production mode: no duckdb_pin / model_manifest_sha256 is required for these books
+        for k, v in (("duckdb_pin", {"version": "1", "sha256": "0" * 64}), ("model_manifest_sha256", "0" * 64), ("pick_oracle", "none: EXP-022 withdrawn x")):
+            with pytest.raises(S.Refused):
+                S.check_production_pins(S.check_manifest(mf(tmp_path, dec, exit_s=3600, **{k: v})))
+    with pytest.raises(S.Refused):
+        S.check_manifest(mf(tmp_path, "u2", exit_s=3600, rent_mode="free"))
+    stranded = S.Book(S.check_manifest(mf(tmp_path, "u2", exit_s=3600)), tmp_path / "r1", "0" * 64, T1.SPS)
+    refunded = S.Book(S.check_manifest(mf(tmp_path, "u2", exit_s=3600, rent_mode="refunded")), tmp_path / "r2", "0" * 64, T1.SPS)
+    assert stranded.engine.cfg.rent > 0 and refunded.engine.cfg.rent == 0

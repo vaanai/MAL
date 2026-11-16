@@ -128,10 +128,13 @@ class _Base:
 
     def _entry(self, pool, mint, bot, mark, exit_s, meta):
         ms, slot = self.last_row if self.last_row else (None, None)
+        ms = max(ms or 0, mark * 1000)  # QP #1420: the first mark at or after S can follow a warm-up row received before S; the decision instant is never before the mark
         return S.Entry(pool=pool, mint=mint, at_row=self.cur_i, decision_ms=ms, decision_slot=slot, exit_after_s=exit_s, meta=dict(meta, mark_s=mark), bot=bot, exit_from_decision=True)
 
-    def _sell(self, pool, bot, reason, at_row=None, ms=None, slot=None):
+    def _sell(self, pool, bot, reason, at_row=None, ms=None, slot=None, mark=None):
         lms, lslot = self.last_row if self.last_row else (None, None)
+        if mark is not None:
+            lms = max(lms or 0, mark * 1000)  # decision instant = max(last row's receive time, mark)
         self.sells.append(S.SellReq(pool=pool, at_row=self.cur_i if at_row is None else at_row, decision_ms=lms if ms is None else ms, decision_slot=lslot if slot is None else slot, reason=reason, bot=bot))
 
     # ---- ingest of non-trade rows (shared)
@@ -417,7 +420,7 @@ class U4Decider(_Base):
                     continue
                 r = self.ns_top1(mint, m, routers)
                 if r is not None and r[0] <= U4_NS_FALL * h["ns0"]:
-                    self._sell(h["pool"], bot, "ns_fall")
+                    self._sell(h["pool"], bot, "ns_fall", mark=m)
                     self._count("ns_fall_exits" if bot == "main" else "ns_fall_exits_placebo")
                     del self.held[bot][mint]
 
