@@ -92,7 +92,8 @@ def read_hour_rows(path):
     """rows of one closed hour file, in file order; a torn last line (no newline) is dropped"""
     path = Path(path)
     if path.name.endswith(".zst"):
-        data = subprocess.run(["zstd", "-dc", str(path)], check=True, capture_output=True).stdout
+        # zstd refuses a symbolic link (rc 1) unless forced: decompress the realpath. The caller (link_hour) has already refused any file whose realpath is outside the keeper dir.
+        data = subprocess.run(["zstd", "-dc", os.path.realpath(path)], check=True, capture_output=True).stdout
     else:
         data = path.read_bytes()
     out = []

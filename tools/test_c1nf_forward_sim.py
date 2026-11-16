@@ -597,3 +597,27 @@ def test_feature_overlap_file_is_the_generated_one_and_lists_names_only():
     assert "c1nf_features: 107" in text and "r4b_features: 63" in text
     assert FO.render(["a", "b", "c"], ["b", "z"]).split("## in both")[1].startswith("\nb\n")
     assert "r4b_subset_of_c1nf: yes" in FO.render(["a", "b"], ["b"])
+
+
+def test_a_real_zst_file_is_read_through_a_real_symlink_with_the_zstd_cli(tmp_path):
+    """no fakes: the keeper's .jsonl.zst made by the zstd CLI, the runner's tapelink symlink to it, read_hour_rows on the link (zstd itself refuses a symlink: rc 1)"""
+    import shutil
+    import subprocess
+    if shutil.which("zstd") is None:
+        pytest.skip("no zstd CLI")
+    keep = tmp_path / "keep"
+    keep.mkdir()
+    plain = tmp_path / "x.jsonl"
+    rows = hour_rows(H0_MS)[:50]
+    plain.write_text("".join(json.dumps(r) + "\n" for r in rows))
+    z = keep / ("tape-%s.jsonl.zst" % HOUR0)
+    subprocess.run(["zstd", "-q", str(plain), "-o", str(z)], check=True)
+    link = tmp_path / "link" / z.name
+    link.parent.mkdir()
+    link.symlink_to(z)
+    assert subprocess.run(["zstd", "-t", str(link)], capture_output=True).returncode != 0  # the failure this guards against
+    assert S.read_hour_rows(link) == rows
+    # and through the runner's own link_hour (guard first, then the read)
+    m = manifest(tmp_path)
+    got = S.link_hour(m, tmp_path / "out", H0_MS)
+    assert got.is_symlink() and S.read_hour_rows(got) == rows
