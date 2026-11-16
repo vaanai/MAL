@@ -639,3 +639,29 @@ def test_the_book_job_writes_gap_exclusions_json(tmp_path):
     assert T1.run(tmp_path, m, TwoBotDecider()) == 0
     g = json.loads((Path(m["out_root"]) / "gap_exclusions.json").read_text())
     assert g["main"]["total"]["entries"] == 1 and g["placebo"]["total"]["entries"] == 1 and "Strict feed-gap exclusion" in g["disclosure"]
+
+
+def test_u2_entry_reference_equals_the_engines_pre_own_trade_fill_state_for_the_deciding_leg():
+    """ADD1 A3: the stop / take reference (post-trade spot of the pool's last print at or before SD + 19) equals the state the engine's deciding leg fills against
+    (tools.arena_stack.mint_states: Qe / Be, PRE-trade of the first print after the landing slot x = sd + k, k = 19 slots for 4.085 s), on a tape whose reserves chain print to print."""
+    import numpy as np
+    from tools import arena_stack as AS
+    sps = 4.085 / 19                       # seconds per slot at which the deciding leg is 19 slots
+    sd = 5_000
+    L = sd + D.LAT_SLOTS
+    q, b, v = 200_000_000_000, 210_000_000_000, V
+    prints = []                            # (slot, side, sol, tok, q_pre, b_pre); each print's pre-trade state is the previous print's post-trade state (engine convention 0.99 / 1.01)
+    for slot, side, so, tk in ((sd - 40, "buy", 3_000_000_000, 5_000_000_000), (sd + 5, "sell", 2_000_000_000, 3_000_000_000), (L - 1, "buy", 4_000_000_000, 6_000_000_000),
+                               (L, "buy", 1_000_000_000, 2_000_000_000), (L + 1, "sell", 1_000_000_000, 1_500_000_000), (L + 9, "buy", 1_000_000_000, 1_000_000_000)):
+        prints.append((slot, side, so, tk, q, b))
+        q = q + so * 99 // 100 if side == "buy" else q - so * 101 // 100
+        b = b - tk if side == "buy" else b + tk
+    rows = [trade("MQ", "PQ", 0, "w", s_, tk, q=qq, b=bb, so=so, slot=sl) for sl, s_, so, tk, qq, bb in prints]
+    ref = None
+    for r in rows:                         # what the decider keeps as the reference: the post-trade spot of the last print with slot <= SD + 19
+        if r["slot"] <= L:
+            ref = D.post_spot(r)
+    ms = AS.mint_states([p[0] for p in prints], [p[1] == "buy" for p in prints], [p[2] for p in prints], [p[3] for p in prints], [p[4] for p in prints], [p[5] for p in prints],
+                        v, np.array([sd]), np.array([sps]), lats=(4.085,))
+    qe, be = ms["Qe"][4.085][0], ms["Be"][4.085][0]
+    assert qe / be == pytest.approx(ref, rel=1e-12) and qe == prints[4][4] + v and be == prints[4][5]   # the fill state is the pre-trade state of the first print after SD + 19
