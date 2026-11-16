@@ -1,0 +1,13 @@
+{
+ "book_id": "c1nf-fwd-sample",
+ "title": "C1-NF open sim on the keeper hours (SAMPLE, not a live manifest)",
+ "decider": "c1nf",
+ "stakes_sol": [0.1, 0.25, 0.5, 1.0],
+ "send_lamports": 505000,
+ "pricing_lat_entry_s": 4.085,
+ "exit_s": 300,
+ "start_hour": "2026-11-17T00",
+ "pick_oracle": "none: EXP-022 withdrawn 2026-10-15, DEC-031 section 3 item 5",
+ "tape_dir": "/data2/mal/scratch/floor-open-sim/keep",
+ "out_root": "/data2/mal/scratch/c1nf-open-sim/c1nf-fwd-sample"
+}
