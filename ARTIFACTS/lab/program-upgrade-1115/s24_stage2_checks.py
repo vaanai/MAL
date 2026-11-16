@@ -128,7 +128,8 @@ for label in ("post", "pre"):
             if hit:
                 und[cls][hit[0]] += 1; und["hits"].append(dict(cat=hit[0], cls=cls, sig=sg, program=PNAME[pid], src=src, **hit[1]))
         if failed: continue   # field equality and event tests are on successful txs only (as stage 1)
-        # CPI-only events (not in logs), as s17 events_of
+        # Events for the field-by-field and event tests are taken ONLY from the self-CPI instruction copy (inner instruction data after the event tag); `evs` is empty until here and the
+        # log lines are not added to it (they are used only by the undecodable-line count above). Counts match s06/s17 because each Anchor event has one such copy.
         ms = collections.Counter(b for _, _, b, _ in evs); keys = keys_of(tx)
         for g in meta.get("innerInstructions") or []:
             for ins in g["instructions"]:
