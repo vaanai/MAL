@@ -36,10 +36,11 @@ PYEOF
  s14) python3 s14_mayhem_parity.py > $UPGRADE_OUT/s14.log 2>&1 ;;
  s17) python3 s17_pumpswap_events.py > $UPGRADE_OUT/s17.log 2>&1 ;;
  s18) $PY s18_instruction_shapes.py > $UPGRADE_OUT/s18.log 2>&1 ;;
- s20) python3 s20_failed_shape_txs.py > $UPGRADE_OUT/s20.log 2>&1 ;;
+s20) $PY s20_failed_shape_txs.py > $UPGRADE_OUT/s20.log 2>&1 ;;
  s08) python3 s08_universe_split.py > $UPGRADE_OUT/s08.log 2>&1 ;;
  s11) python3 s11_migration_economics.py > $UPGRADE_OUT/s11.log 2>&1 ;;
  s21) python3 s21_n5_explain.py > $UPGRADE_OUT/s21.log 2>&1 ;;
+  s12) python3 s12_pins_table.py > $UPGRADE_OUT/s12.log 2>&1 ;;
  s13) python3 s13_summary.py > $UPGRADE_OUT/s13.log 2>&1 ;;
  s24) python3 s24_stage2_checks.py > $UPGRADE_OUT/s24.log 2>&1 ;;
  *) echo "unknown step $STEP"; exit 2 ;;

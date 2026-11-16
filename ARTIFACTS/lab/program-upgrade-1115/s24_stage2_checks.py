@@ -42,6 +42,30 @@ def strict_b64(line):
         return None, type(e).__name__
 
 
+
+def classify(pid, ln):
+    """None if the Program data line decodes to a whole event of pump / PumpSwap / fees, else (category, details)."""
+    blob, err = strict_b64(ln)
+    if blob is None: return ("bad_base64", {"err": err})
+    if len(blob) < 8: return ("shorter_than_8", {"len": len(blob)})
+    nm = EV_BY_PROG[pid].get(blob[:8])
+    if nm is None: return ("unknown_disc", {"disc": blob[:8].hex(), "len": len(blob)})
+    try:
+        ev, end = parse_event(PNAME[pid], nm, blob)
+    except Short: return ("layout_short", {"event": nm, "len": len(blob)})
+    if len(blob) - end not in (0, 8): return ("trailing_other", {"event": nm, "len": len(blob), "consumed": end})
+    return None
+
+
+def selftest():
+    """The classifier must flag each category on a synthetic line (and pass a real event) before its zero counts mean anything."""
+    pid = PID["pump"]; good = next(d for d, n in EV_BY_PROG[pid].items() if n == "CompleteEvent") + b"\0" * 136   # CompleteEvent disc + 136 zero bytes = 144
+    mk = lambda b: "Program data: " + base64.b64encode(b).decode()
+    cases = {"bad_base64": "Program data: !!!notbase64", "shorter_than_8": mk(b"abc"), "unknown_disc": mk(b"\xff" * 8 + b"\0" * 20), "layout_short": mk(good[:100]),
+             "trailing_other": mk(good + b"\0" * 3), "ok_complete_event": mk(good)}
+    return {k: (None if (r := classify(pid, v)) is None else r[0]) for k, v in cases.items()}
+
+
 def tx_sets(root, label):
     """yield (src, tx, in_index) for blocks of `root` (all txs) and the migrate / complete-event whole txs."""
     idx = json.load(open(root / "sample_index.json"))["a"]
@@ -83,10 +107,10 @@ def all_txs(label):
         seen.add(sg); yield src, tx
 
 
-res = {}
+res = {"classifier_selftest": selftest()}
 for label in ("post", "pre"):
     fbf = {t: {"n": 0, "frozen_none": 0, "walker_short": 0, "fields": {f: {"compared": 0, "equal": 0, "unequal": 0, "mapped_zero_to_wsol": 0} for f in m_}, "unequal_examples": []} for t, m_ in MAP.items()}
-    und = {"successful_sampled": collections.Counter(), "failed_same_blocks": collections.Counter(), "other_program_lines": 0, "no_stack_program_lines": 0, "lines_checked": collections.Counter(), "hits": []}
+    und = {"successful_sampled": collections.Counter(), "failed_same_blocks": collections.Counter(), "other_program_lines": 0, "other_program_ids": collections.Counter(), "no_stack_program_lines": 0, "lines_checked": collections.Counter(), "hits": []}
     deposit = {"count": 0, "trailing": collections.Counter(), "blob_len": collections.Counter()}
     ev_names = collections.Counter(); trail_by_type = collections.defaultdict(collections.Counter)
     trip = collections.Counter(); srcs = collections.Counter()
@@ -98,21 +122,9 @@ for label in ("post", "pre"):
         evs = []
         for ln, (pid, _b) in zip([l for l in logs if l.startswith("Program data: ")], log_events(logs)):
             if pid is None: und["no_stack_program_lines"] += 1; continue
-            if pid not in PNAME: und["other_program_lines"] += 1; continue
-            blob, err = strict_b64(ln)
+            if pid not in PNAME: und["other_program_lines"] += 1; und["other_program_ids"][pid] += 1; continue
+            hit = classify(pid, ln)
             und["lines_checked"][cls] += 1
-            hit = None
-            if blob is None: hit = ("bad_base64", {"err": err})
-            elif len(blob) < 8: hit = ("shorter_than_8", {"len": len(blob)})
-            else:
-                nm = EV_BY_PROG[pid].get(blob[:8])
-                if nm is None: hit = ("unknown_disc", {"disc": blob[:8].hex(), "len": len(blob)})
-                else:
-                    try:
-                        ev, end = parse_event(PNAME[pid], nm, blob)
-                        if len(blob) - end not in (0, 8): hit = ("trailing_other", {"event": nm, "len": len(blob), "consumed": end})
-                    except Short: hit = ("layout_short", {"event": nm, "len": len(blob)})
-                    evs.append((pid, nm, blob, "log"))
             if hit:
                 und[cls][hit[0]] += 1; und["hits"].append(dict(cat=hit[0], cls=cls, sig=sg, program=PNAME[pid], src=src, **hit[1]))
         if failed: continue   # field equality and event tests are on successful txs only (as stage 1)
@@ -157,7 +169,7 @@ for label in ("post", "pre"):
         R["total_unequal"] = sum(F["unequal"] for F in R["fields"].values())
         R["total_compared"] = sum(F["compared"] for F in R["fields"].values())
     und_out = {k: (dict(v) if isinstance(v, collections.Counter) else v) for k, v in und.items()}
-    und_out["total_hits_successful_sampled"] = sum(und["successful_sampled"].values()); und_out["total_hits_failed_same_blocks"] = sum(und["failed_same_blocks"].values())
+    und_out["other_program_ids"] = dict(und["other_program_ids"].most_common(12)); und_out["total_hits_successful_sampled"] = sum(und["successful_sampled"].values()); und_out["total_hits_failed_same_blocks"] = sum(und["failed_same_blocks"].values())
     res[label] = {"tx_sources": dict(srcs), "field_by_field": fbf, "undecodable_program_data": und_out, "deposit_event": {"count": deposit["count"], "trailing": dict(deposit["trailing"]), "blob_len": dict(deposit["blob_len"])},
                   "event_counts": dict(ev_names), "trailing_by_type": {k: dict(v) for k, v in trail_by_type.items()}, "wsol_only_fee_triples": dict(trip)}
 

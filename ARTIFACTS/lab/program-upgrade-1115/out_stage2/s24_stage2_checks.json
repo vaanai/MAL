@@ -1,0 +1,807 @@
+{
+ "classifier_selftest": {
+  "bad_base64": "bad_base64",
+  "layout_short": "layout_short",
+  "ok_complete_event": null,
+  "shorter_than_8": "shorter_than_8",
+  "trailing_other": "trailing_other",
+  "unknown_disc": "unknown_disc"
+ },
+ "fee_triple_rule_R": {
+  "R_n": 31,
+  "counts_per_triple_post": {
+   "0,0,0": 33,
+   "0,5,0": 2,
+   "2,93,0": 10,
+   "2,93,30": 1334,
+   "20,0,5": 1,
+   "20,5,0": 5,
+   "20,5,15": 2,
+   "20,5,20": 1,
+   "20,5,23": 13,
+   "20,5,25": 16,
+   "20,5,28": 2,
+   "20,5,30": 1,
+   "20,5,35": 7,
+   "20,5,40": 16,
+   "20,5,45": 17,
+   "20,5,5": 554,
+   "20,5,50": 19,
+   "20,5,55": 77,
+   "20,5,60": 34,
+   "20,5,65": 96,
+   "20,5,70": 96,
+   "20,5,75": 187,
+   "20,5,8": 11,
+   "20,5,80": 113,
+   "20,5,85": 384,
+   "20,5,90": 531,
+   "20,5,95": 2311,
+   "25,5,0": 97
+  },
+  "counts_per_triple_pre": {
+   "0,0,0": 4,
+   "2,93,30": 192,
+   "20,5,0": 6,
+   "20,5,10": 4,
+   "20,5,18": 3,
+   "20,5,20": 1,
+   "20,5,23": 3,
+   "20,5,25": 3,
+   "20,5,28": 3,
+   "20,5,35": 1,
+   "20,5,5": 135,
+   "20,5,50": 1,
+   "20,5,55": 2,
+   "20,5,60": 20,
+   "20,5,65": 25,
+   "20,5,70": 46,
+   "20,5,75": 46,
+   "20,5,8": 2,
+   "20,5,80": 29,
+   "20,5,85": 60,
+   "20,5,90": 114,
+   "20,5,95": 605,
+   "25,5,0": 11
+  },
+  "declared_pre_set_n": 23,
+  "ext_set_n": 30,
+  "in_R": [
+   "0,0,0",
+   "0,5,0",
+   "2,93,0",
+   "2,93,30",
+   "20,0,5",
+   "20,5,0",
+   "20,5,15",
+   "20,5,20",
+   "20,5,23",
+   "20,5,25",
+   "20,5,28",
+   "20,5,30",
+   "20,5,35",
+   "20,5,40",
+   "20,5,45",
+   "20,5,5",
+   "20,5,50",
+   "20,5,55",
+   "20,5,60",
+   "20,5,65",
+   "20,5,70",
+   "20,5,75",
+   "20,5,8",
+   "20,5,80",
+   "20,5,85",
+   "20,5,90",
+   "20,5,95",
+   "25,5,0"
+  ],
+  "n_post_wsol_only_buy_sell_events": 5970,
+  "outside_R": [],
+  "post_distinct": 28,
+  "post_in_R_but_not_declared_pre": [
+   "0,5,0",
+   "2,93,0",
+   "20,0,5",
+   "20,5,15",
+   "20,5,30",
+   "20,5,40",
+   "20,5,45"
+  ],
+  "post_minus_declared_pre": [
+   "0,5,0",
+   "2,93,0",
+   "20,0,5",
+   "20,5,15",
+   "20,5,30",
+   "20,5,40",
+   "20,5,45"
+  ],
+  "verdict": "MET"
+ },
+ "post": {
+  "deposit_event": {
+   "blob_len": {},
+   "count": 0,
+   "trailing": {}
+  },
+  "event_counts": {
+   "pump.ClaimCashbackEvent": 4,
+   "pump.CloseUserVolumeAccumulatorEvent": 498,
+   "pump.CollectCreatorFeeEvent": 77,
+   "pump.CompleteEvent": 8,
+   "pump.CompletePumpAmmMigrationEvent": 80,
+   "pump.CreateEvent": 52,
+   "pump.DistributeCreatorFeesEvent": 14,
+   "pump.DistributeFeeToHoldersEvent": 666,
+   "pump.ExtendAccountEvent": 1,
+   "pump.InitUserVolumeAccumulatorEvent": 58,
+   "pump.MigrateBondingCurveCreatorEvent": 2,
+   "pump.PostCompleteBuyEvent": 2,
+   "pump.SweepBondingCurveFeeEvent": 140,
+   "pump.TradeEvent": 6836,
+   "pump_amm.BoostBuyAndBurnEvent": 24,
+   "pump_amm.BuyEvent": 8497,
+   "pump_amm.ClaimCashbackEvent": 40,
+   "pump_amm.CloseUserVolumeAccumulatorEvent": 853,
+   "pump_amm.CollectCoinCreatorFeeEvent": 17,
+   "pump_amm.CreatePoolEvent": 85,
+   "pump_amm.ExtendAccountEvent": 3,
+   "pump_amm.InitBoostEvent": 49,
+   "pump_amm.InitUserVolumeAccumulatorEvent": 205,
+   "pump_amm.SellEvent": 10855,
+   "pump_amm.SweepPoolFeeEvent": 4,
+   "pump_amm.WithdrawEvent": 5,
+   "pump_fees.CreateFeeSharingConfigEvent": 2,
+   "pump_fees.DonationFeePdaCreated": 2,
+   "pump_fees.SweepBuybackEvent": 35,
+   "pump_fees.UpdateFeeSharesEvent": 2,
+   "pump_fees.WithdrawEvent": 7
+  },
+  "field_by_field": {
+   "CompleteEvent": {
+    "fields": {
+     "bonding_curve": {
+      "compared": 8,
+      "equal": 8,
+      "mapped_zero_to_wsol": 0,
+      "unequal": 0
+     },
+     "event_ts": {
+      "compared": 8,
+      "equal": 8,
+      "mapped_zero_to_wsol": 0,
+      "unequal": 0
+     },
+     "mint": {
+      "compared": 8,
+      "equal": 8,
+      "mapped_zero_to_wsol": 0,
+      "unequal": 0
+     },
+     "quote_mint": {
+      "compared": 8,
+      "equal": 8,
+      "mapped_zero_to_wsol": 8,
+      "unequal": 0
+     },
+     "trader": {
+      "compared": 8,
+      "equal": 8,
+      "mapped_zero_to_wsol": 0,
+      "unequal": 0
+     }
+    },
+    "frozen_none": 0,
+    "idl_fields_not_emitted_by_frozen": [],
+    "n": 8,
+    "total_compared": 40,
+    "total_unequal": 0,
+    "unequal_examples": [],
+    "walker_short": 0
+   },
+   "CompletePumpAmmMigrationEvent": {
+    "fields": {
+     "bonding_curve": {
+      "compared": 80,
+      "equal": 80,
+      "mapped_zero_to_wsol": 0,
+      "unequal": 0
+     },
+     "event_ts": {
+      "compared": 80,
+      "equal": 80,
+      "mapped_zero_to_wsol": 0,
+      "unequal": 0
+     },
+     "migration_fee": {
+      "compared": 80,
+      "equal": 80,
+      "mapped_zero_to_wsol": 0,
+      "unequal": 0
+     },
+     "mint": {
+      "compared": 80,
+      "equal": 80,
+      "mapped_zero_to_wsol": 0,
+      "unequal": 0
+     },
+     "pool": {
+      "compared": 80,
+      "equal": 80,
+      "mapped_zero_to_wsol": 0,
+      "unequal": 0
+     },
+     "quote_mint": {
+      "compared": 80,
+      "equal": 80,
+      "mapped_zero_to_wsol": 60,
+      "unequal": 0
+     },
+     "sol_lamports": {
+      "compared": 80,
+      "equal": 80,
+      "mapped_zero_to_wsol": 0,
+      "unequal": 0
+     },
+     "token_raw": {
+      "compared": 80,
+      "equal": 80,
+      "mapped_zero_to_wsol": 0,
+      "unequal": 0
+     },
+     "trader": {
+      "compared": 80,
+      "equal": 80,
+      "mapped_zero_to_wsol": 0,
+      "unequal": 0
+     }
+    },
+    "frozen_none": 0,
+    "idl_fields_not_emitted_by_frozen": [],
+    "n": 80,
+    "total_compared": 720,
+    "total_unequal": 0,
+    "unequal_examples": [],
+    "walker_short": 0
+   },
+   "CreatePoolEvent": {
+    "fields": {
+     "base_mint": {
+      "compared": 85,
+      "equal": 85,
+      "mapped_zero_to_wsol": 0,
+      "unequal": 0
+     },
+     "pool": {
+      "compared": 85,
+      "equal": 85,
+      "mapped_zero_to_wsol": 0,
+      "unequal": 0
+     },
+     "quote_mint": {
+      "compared": 85,
+      "equal": 85,
+      "mapped_zero_to_wsol": 0,
+      "unequal": 0
+     }
+    },
+    "frozen_none": 0,
+    "idl_fields_not_emitted_by_frozen": [
+     "timestamp",
+     "index",
+     "creator",
+     "base_mint_decimals",
+     "quote_mint_decimals",
+     "base_amount_in",
+     "quote_amount_in",
+     "pool_base_amount",
+     "pool_quote_amount",
+     "minimum_liquidity",
+     "initial_liquidity",
+     "lp_token_amount_out",
+     "pool_bump",
+     "lp_mint",
+     "user_base_token_account",
+     "user_quote_token_account",
+     "coin_creator",
+     "is_mayhem_mode",
+     "creator_fee_bps",
+     "can_edit_creator_fee",
+     "is_holder_reward"
+    ],
+    "n": 85,
+    "total_compared": 255,
+    "total_unequal": 0,
+    "unequal_examples": [],
+    "walker_short": 0
+   }
+  },
+  "trailing_by_type": {
+   "pump.ClaimCashbackEvent": {
+    "0": 4
+   },
+   "pump.CloseUserVolumeAccumulatorEvent": {
+    "0": 498
+   },
+   "pump.CollectCreatorFeeEvent": {
+    "0": 77
+   },
+   "pump.CompleteEvent": {
+    "0": 8
+   },
+   "pump.CompletePumpAmmMigrationEvent": {
+    "0": 80
+   },
+   "pump.CreateEvent": {
+    "0": 52
+   },
+   "pump.DistributeCreatorFeesEvent": {
+    "0": 14
+   },
+   "pump.DistributeFeeToHoldersEvent": {
+    "0": 666
+   },
+   "pump.ExtendAccountEvent": {
+    "0": 1
+   },
+   "pump.InitUserVolumeAccumulatorEvent": {
+    "0": 58
+   },
+   "pump.MigrateBondingCurveCreatorEvent": {
+    "0": 2
+   },
+   "pump.PostCompleteBuyEvent": {
+    "0": 2
+   },
+   "pump.SweepBondingCurveFeeEvent": {
+    "0": 140
+   },
+   "pump.TradeEvent": {
+    "8": 6836
+   },
+   "pump_amm.BoostBuyAndBurnEvent": {
+    "0": 24
+   },
+   "pump_amm.BuyEvent": {
+    "8": 8497
+   },
+   "pump_amm.ClaimCashbackEvent": {
+    "0": 40
+   },
+   "pump_amm.CloseUserVolumeAccumulatorEvent": {
+    "0": 853
+   },
+   "pump_amm.CollectCoinCreatorFeeEvent": {
+    "0": 17
+   },
+   "pump_amm.CreatePoolEvent": {
+    "0": 85
+   },
+   "pump_amm.ExtendAccountEvent": {
+    "0": 3
+   },
+   "pump_amm.InitBoostEvent": {
+    "0": 49
+   },
+   "pump_amm.InitUserVolumeAccumulatorEvent": {
+    "0": 205
+   },
+   "pump_amm.SellEvent": {
+    "8": 10855
+   },
+   "pump_amm.SweepPoolFeeEvent": {
+    "0": 4
+   },
+   "pump_amm.WithdrawEvent": {
+    "8": 5
+   },
+   "pump_fees.CreateFeeSharingConfigEvent": {
+    "0": 2
+   },
+   "pump_fees.DonationFeePdaCreated": {
+    "0": 2
+   },
+   "pump_fees.SweepBuybackEvent": {
+    "0": 35
+   },
+   "pump_fees.UpdateFeeSharesEvent": {
+    "0": 2
+   },
+   "pump_fees.WithdrawEvent": {
+    "0": 7
+   }
+  },
+  "tx_sources": {
+   "A": 39089,
+   "C": 8,
+   "FAILED": 64049,
+   "M": 79
+  },
+  "undecodable_program_data": {
+   "failed_same_blocks": {},
+   "hits": [],
+   "lines_checked": {
+    "failed_same_blocks": 1987,
+    "successful_sampled": 29059
+   },
+   "no_stack_program_lines": 0,
+   "other_program_ids": {
+    "3TK9D8aoBFYjYZtKCjciPrVrRStsnvo7KmpcJqDavpaU": 658,
+    "89vjF2eRiJuLExg3X7frN44w6P64cgqKb1H4rdZd5aYd": 2200,
+    "9y8Xmvt6hQZHNMDeEJHaUEJCPZGKPoVcbpp39P6m7uDz": 1229,
+    "BiSoNHVpsVZW2F7rx2eQ59yQwKxzU5NvBcmKshCSUypi": 569,
+    "CAMMCzo5YL8w4VFF8KVHrK22GGUsp5VTaW7grrKgrWqK": 2670,
+    "DRVSpZ2YUYYKgZP8XtLhAGtT1zYSCKzeHfb4DgRnrgqD": 583,
+    "GMGNreQcJFufBiCTLDBgKhYEfEe9B454UjpDr5CaSLA1": 283,
+    "MAyhSmzXzV1pTf7LsNkrNwkWKTo4ougAJ1PPg47MD4e": 1737,
+    "MNFSTqtC93rEfYHB6hF82sKdZpUDFWkViLByLd1k1Ms": 226,
+    "Prism8hsRo6Ww5jiN5Zeh3YDPLZHqHduCPSAV7JF7qv": 720,
+    "ZERor4xhbUycZ6gb9ntrhqscUcZmAbQDjEAtCf4hbZY": 498,
+    "whirLbMiicVdio4qvUfM5KAg6Ct8VwpYzGff3uctyCc": 1347
+   },
+   "other_program_lines": 13751,
+   "successful_sampled": {},
+   "total_hits_failed_same_blocks": 0,
+   "total_hits_successful_sampled": 0
+  },
+  "wsol_only_fee_triples": {
+   "0,0,0": 33,
+   "0,5,0": 2,
+   "2,93,0": 10,
+   "2,93,30": 1334,
+   "20,0,5": 1,
+   "20,5,0": 5,
+   "20,5,15": 2,
+   "20,5,20": 1,
+   "20,5,23": 13,
+   "20,5,25": 16,
+   "20,5,28": 2,
+   "20,5,30": 1,
+   "20,5,35": 7,
+   "20,5,40": 16,
+   "20,5,45": 17,
+   "20,5,5": 554,
+   "20,5,50": 19,
+   "20,5,55": 77,
+   "20,5,60": 34,
+   "20,5,65": 96,
+   "20,5,70": 96,
+   "20,5,75": 187,
+   "20,5,8": 11,
+   "20,5,80": 113,
+   "20,5,85": 384,
+   "20,5,90": 531,
+   "20,5,95": 2311,
+   "25,5,0": 97
+  }
+ },
+ "pre": {
+  "deposit_event": {
+   "blob_len": {},
+   "count": 0,
+   "trailing": {}
+  },
+  "event_counts": {
+   "pump.ClaimCashbackEvent": 2,
+   "pump.CloseUserVolumeAccumulatorEvent": 35,
+   "pump.CollectCreatorFeeEvent": 9,
+   "pump.CompleteEvent": 5,
+   "pump.CompletePumpAmmMigrationEvent": 40,
+   "pump.CreateEvent": 8,
+   "pump.DistributeCreatorFeesEvent": 5,
+   "pump.DistributeFeeToHoldersEvent": 50,
+   "pump.InitUserVolumeAccumulatorEvent": 18,
+   "pump.PostCompleteBuyEvent": 1,
+   "pump.SweepBondingCurveFeeEvent": 3,
+   "pump.TradeEvent": 1601,
+   "pump_amm.BoostBuyAndBurnEvent": 3,
+   "pump_amm.BuyEvent": 2055,
+   "pump_amm.ClaimCashbackEvent": 6,
+   "pump_amm.CloseUserVolumeAccumulatorEvent": 210,
+   "pump_amm.CollectCoinCreatorFeeEvent": 6,
+   "pump_amm.CreatePoolEvent": 41,
+   "pump_amm.ExtendAccountEvent": 1,
+   "pump_amm.InitBoostEvent": 22,
+   "pump_amm.InitUserVolumeAccumulatorEvent": 37,
+   "pump_amm.SellEvent": 2461,
+   "pump_amm.SweepPoolFeeEvent": 1,
+   "pump_amm.WithdrawEvent": 1,
+   "pump_fees.WithdrawEvent": 1
+  },
+  "field_by_field": {
+   "CompleteEvent": {
+    "fields": {
+     "bonding_curve": {
+      "compared": 5,
+      "equal": 5,
+      "mapped_zero_to_wsol": 0,
+      "unequal": 0
+     },
+     "event_ts": {
+      "compared": 5,
+      "equal": 5,
+      "mapped_zero_to_wsol": 0,
+      "unequal": 0
+     },
+     "mint": {
+      "compared": 5,
+      "equal": 5,
+      "mapped_zero_to_wsol": 0,
+      "unequal": 0
+     },
+     "quote_mint": {
+      "compared": 5,
+      "equal": 5,
+      "mapped_zero_to_wsol": 5,
+      "unequal": 0
+     },
+     "trader": {
+      "compared": 5,
+      "equal": 5,
+      "mapped_zero_to_wsol": 0,
+      "unequal": 0
+     }
+    },
+    "frozen_none": 0,
+    "idl_fields_not_emitted_by_frozen": [],
+    "n": 5,
+    "total_compared": 25,
+    "total_unequal": 0,
+    "unequal_examples": [],
+    "walker_short": 0
+   },
+   "CompletePumpAmmMigrationEvent": {
+    "fields": {
+     "bonding_curve": {
+      "compared": 40,
+      "equal": 40,
+      "mapped_zero_to_wsol": 0,
+      "unequal": 0
+     },
+     "event_ts": {
+      "compared": 40,
+      "equal": 40,
+      "mapped_zero_to_wsol": 0,
+      "unequal": 0
+     },
+     "migration_fee": {
+      "compared": 40,
+      "equal": 40,
+      "mapped_zero_to_wsol": 0,
+      "unequal": 0
+     },
+     "mint": {
+      "compared": 40,
+      "equal": 40,
+      "mapped_zero_to_wsol": 0,
+      "unequal": 0
+     },
+     "pool": {
+      "compared": 40,
+      "equal": 40,
+      "mapped_zero_to_wsol": 0,
+      "unequal": 0
+     },
+     "quote_mint": {
+      "compared": 40,
+      "equal": 40,
+      "mapped_zero_to_wsol": 33,
+      "unequal": 0
+     },
+     "sol_lamports": {
+      "compared": 40,
+      "equal": 40,
+      "mapped_zero_to_wsol": 0,
+      "unequal": 0
+     },
+     "token_raw": {
+      "compared": 40,
+      "equal": 40,
+      "mapped_zero_to_wsol": 0,
+      "unequal": 0
+     },
+     "trader": {
+      "compared": 40,
+      "equal": 40,
+      "mapped_zero_to_wsol": 0,
+      "unequal": 0
+     }
+    },
+    "frozen_none": 0,
+    "idl_fields_not_emitted_by_frozen": [],
+    "n": 40,
+    "total_compared": 360,
+    "total_unequal": 0,
+    "unequal_examples": [],
+    "walker_short": 0
+   },
+   "CreatePoolEvent": {
+    "fields": {
+     "base_mint": {
+      "compared": 41,
+      "equal": 41,
+      "mapped_zero_to_wsol": 0,
+      "unequal": 0
+     },
+     "pool": {
+      "compared": 41,
+      "equal": 41,
+      "mapped_zero_to_wsol": 0,
+      "unequal": 0
+     },
+     "quote_mint": {
+      "compared": 41,
+      "equal": 41,
+      "mapped_zero_to_wsol": 0,
+      "unequal": 0
+     }
+    },
+    "frozen_none": 0,
+    "idl_fields_not_emitted_by_frozen": [
+     "timestamp",
+     "index",
+     "creator",
+     "base_mint_decimals",
+     "quote_mint_decimals",
+     "base_amount_in",
+     "quote_amount_in",
+     "pool_base_amount",
+     "pool_quote_amount",
+     "minimum_liquidity",
+     "initial_liquidity",
+     "lp_token_amount_out",
+     "pool_bump",
+     "lp_mint",
+     "user_base_token_account",
+     "user_quote_token_account",
+     "coin_creator",
+     "is_mayhem_mode",
+     "creator_fee_bps",
+     "can_edit_creator_fee",
+     "is_holder_reward"
+    ],
+    "n": 41,
+    "total_compared": 123,
+    "total_unequal": 0,
+    "unequal_examples": [],
+    "walker_short": 0
+   }
+  },
+  "trailing_by_type": {
+   "pump.ClaimCashbackEvent": {
+    "0": 2
+   },
+   "pump.CloseUserVolumeAccumulatorEvent": {
+    "0": 35
+   },
+   "pump.CollectCreatorFeeEvent": {
+    "0": 9
+   },
+   "pump.CompleteEvent": {
+    "0": 5
+   },
+   "pump.CompletePumpAmmMigrationEvent": {
+    "0": 40
+   },
+   "pump.CreateEvent": {
+    "0": 8
+   },
+   "pump.DistributeCreatorFeesEvent": {
+    "0": 5
+   },
+   "pump.DistributeFeeToHoldersEvent": {
+    "0": 50
+   },
+   "pump.InitUserVolumeAccumulatorEvent": {
+    "0": 18
+   },
+   "pump.PostCompleteBuyEvent": {
+    "0": 1
+   },
+   "pump.SweepBondingCurveFeeEvent": {
+    "0": 3
+   },
+   "pump.TradeEvent": {
+    "8": 1601
+   },
+   "pump_amm.BoostBuyAndBurnEvent": {
+    "0": 3
+   },
+   "pump_amm.BuyEvent": {
+    "8": 2055
+   },
+   "pump_amm.ClaimCashbackEvent": {
+    "0": 6
+   },
+   "pump_amm.CloseUserVolumeAccumulatorEvent": {
+    "0": 210
+   },
+   "pump_amm.CollectCoinCreatorFeeEvent": {
+    "0": 6
+   },
+   "pump_amm.CreatePoolEvent": {
+    "0": 41
+   },
+   "pump_amm.ExtendAccountEvent": {
+    "0": 1
+   },
+   "pump_amm.InitBoostEvent": {
+    "0": 22
+   },
+   "pump_amm.InitUserVolumeAccumulatorEvent": {
+    "0": 37
+   },
+   "pump_amm.SellEvent": {
+    "8": 2461
+   },
+   "pump_amm.SweepPoolFeeEvent": {
+    "0": 1
+   },
+   "pump_amm.WithdrawEvent": {
+    "8": 1
+   },
+   "pump_fees.WithdrawEvent": {
+    "0": 1
+   }
+  },
+  "tx_sources": {
+   "A": 8264,
+   "C": 5,
+   "FAILED": 9981,
+   "M": 40
+  },
+  "undecodable_program_data": {
+   "failed_same_blocks": {},
+   "hits": [],
+   "lines_checked": {
+    "failed_same_blocks": 239,
+    "successful_sampled": 6622
+   },
+   "no_stack_program_lines": 0,
+   "other_program_ids": {
+    "3TK9D8aoBFYjYZtKCjciPrVrRStsnvo7KmpcJqDavpaU": 168,
+    "89vjF2eRiJuLExg3X7frN44w6P64cgqKb1H4rdZd5aYd": 460,
+    "9y8Xmvt6hQZHNMDeEJHaUEJCPZGKPoVcbpp39P6m7uDz": 184,
+    "BiSoNHVpsVZW2F7rx2eQ59yQwKxzU5NvBcmKshCSUypi": 145,
+    "CAMMCzo5YL8w4VFF8KVHrK22GGUsp5VTaW7grrKgrWqK": 250,
+    "DRVSpZ2YUYYKgZP8XtLhAGtT1zYSCKzeHfb4DgRnrgqD": 98,
+    "GMGNreQcJFufBiCTLDBgKhYEfEe9B454UjpDr5CaSLA1": 82,
+    "MAyhSmzXzV1pTf7LsNkrNwkWKTo4ougAJ1PPg47MD4e": 446,
+    "MNFSTqtC93rEfYHB6hF82sKdZpUDFWkViLByLd1k1Ms": 69,
+    "REALQqNEomY6cQGZJUGwywTBD2UmDT32rZcNnfxQ5N2": 39,
+    "ZERor4xhbUycZ6gb9ntrhqscUcZmAbQDjEAtCf4hbZY": 73,
+    "whirLbMiicVdio4qvUfM5KAg6Ct8VwpYzGff3uctyCc": 339
+   },
+   "other_program_lines": 2625,
+   "successful_sampled": {},
+   "total_hits_failed_same_blocks": 0,
+   "total_hits_successful_sampled": 0
+  },
+  "wsol_only_fee_triples": {
+   "0,0,0": 4,
+   "2,93,30": 192,
+   "20,5,0": 6,
+   "20,5,10": 4,
+   "20,5,18": 3,
+   "20,5,20": 1,
+   "20,5,23": 3,
+   "20,5,25": 3,
+   "20,5,28": 3,
+   "20,5,35": 1,
+   "20,5,5": 135,
+   "20,5,50": 1,
+   "20,5,55": 2,
+   "20,5,60": 20,
+   "20,5,65": 25,
+   "20,5,70": 46,
+   "20,5,75": 46,
+   "20,5,8": 2,
+   "20,5,80": 29,
+   "20,5,85": 60,
+   "20,5,90": 114,
+   "20,5,95": 605,
+   "25,5,0": 11
+  }
+ }
+}
