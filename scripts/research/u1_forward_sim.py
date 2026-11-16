@@ -8,13 +8,14 @@ book output are the runner's. Pieces
   Registry      fed row by row: creates (launcher L(m) = trader, else creator), pool_creates, per-graduate P0 / last print <= pc + 24 h, data_loss gaps
   U1Decider     mode "book" (entry gate), "low_rep" (shown-beside line), "placebo" (plan from build_placebo_plan); decision instant D = pool_create + 360 s, stamped at the crossing row
   scoring       alive(g) = P24 >= 0.5 x P0, scored at D only when pool_create(g) + 86,400 s <= D (the no-look-ahead rule is asserted in code)
-  build_placebo_plan / first_stop_print   pure helpers (random pick draw; the -25% stop rule)
+  build_placebo_plan   pure helper (random pick draw); the -25% stop is requested by the decider as a SellReq (price-exit mechanism of #1422, ruling 4b)
 Every constant below is the ruling's.
 """
 import collections, hashlib, json, os, random
 from pathlib import Path
 
 import c1nf_forward_sim as S
+from u4_u2_deciders import post_spot, hr_pda_default  # one definition across books (QP ADD1 item 7); no local copy
 
 WSOL = S.WSOL
 GATE_MIN_HIST = 3
@@ -30,7 +31,6 @@ MAX_OPEN = 10
 HUB_FUNDER_CHILDREN = 50
 HUB_LAUNCHER_GRADS = 50
 PLACEBO_WINDOW_S = 1800
-PUMP_PROGRAM = "6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P"
 PLACEBO_MIN_N = 5
 STALE_DISCLOSURE = "cap_open uses an hour-start open count; %d entries were refused that an exact count would have taken"
 PLACEBO_DISCLOSURE = "placebo built by a lagged plan pass; it trails the book by up to about 1 h plus the hold"
@@ -89,23 +89,6 @@ class FunderTable:
 
 
 # ------------------------------------------------------------------------------------------------------------------------------ registry
-# TODO(after rebase onto #1417): replace spot_after with the single shared post_spot of scripts/research/u4_u2_deciders.py (ruling ADD1 item 7: no separate copy).
-def spot_after(row):
-    """spot after the print's own trade, no own impact: (quote + V) / base. PumpSwap tape reserves are PRE-trade (memory: reserve convention), so the trade's own delta is applied here.
-    -> float or None. V = event virtual_quote_reserves."""
-    v, q, b = row.get("virtual_quote_reserves"), row.get("quote_reserve"), row.get("base_reserve")
-    sol, tok = row.get("sol_lamports"), row.get("token_raw")
-    if not all(S._isint(x) for x in (v, q, b, sol, tok)):
-        return None
-    if row.get("side") == "buy":
-        q2, b2 = q + sol, b - tok
-    elif row.get("side") == "sell":
-        q2, b2 = q - sol, b + tok
-    else:
-        return None
-    return (q2 + v) / b2 if b2 > 0 and q2 + v > 0 else None
-
-
 class Grad:
     __slots__ = ("mint", "pool", "launcher", "pc_s", "pc_ms", "quote_ok", "p0", "p24", "create_slot")
 
@@ -160,7 +143,7 @@ class Registry:
             if m is None:
                 return None
             g, bt = self.grads[m], S._bt(row)
-            sp = spot_after(row)
+            sp = post_spot(row)
             if bt is None or sp is None or bt < g.pc_s:
                 return None
             if g.p0 is None:
@@ -192,15 +175,6 @@ def cluster_id(key):
 
 
 # ------------------------------------------------------------------------------------------------------------------------------ pure helpers
-def first_stop_print(prints, entry_spot, landing_slot):
-    """hard stop (ruling 4): the first PumpSwap print AFTER the entry landing whose spot (no own impact) <= 0.75 x entry spot. prints: iterable of (slot, spot) in stream order.
-    -> (decide_slot, price_slot = decide_slot + 19) or None. Independent of stake."""
-    for slot, sp in prints:
-        if slot > landing_slot and sp <= STOP_FRAC * entry_spot:
-            return slot, slot + STOP_SELL_LAG_SLOTS
-    return None
-
-
 def build_placebo_plan(universe, entries, gate_passed_mints, seed_base=1):
     """random-pick comparison (ruling 5). universe: [{pool, mint, pc_s}] graduates of the universe; entries: [{pool, mint, pc_s}] the BOOK's entries; gate_passed_mints: every mint
     that passed the entry gate (entered or not). For each entry in pool_create order: draw one pool uniformly (random.Random(1 + P epoch s)) from universe graduates with
@@ -258,19 +232,13 @@ def board_disclosures(counts):
     return out
 
 
-def hr_pda(mint):
-    """holder-rewards PDA ["holder-rewards", mint] under the pump program. TODO(after rebase onto #1417): use u4_u2_deciders.hr_pda_default (one definition across books)."""
-    from solders.pubkey import Pubkey
-    return str(Pubkey.find_program_address([b"holder-rewards", bytes(Pubkey.from_string(mint))], Pubkey.from_string(PUMP_PROGRAM))[0])
-
-
 def hr_coin(create_row):
     """a mint whose create row creator is the holder-rewards PDA of the mint is excluded (tape cannot give its creator-fee rate)"""
     m, cr = create_row.get("mint"), create_row.get("creator")
     if not m or not cr:
         return False
     try:
-        return cr == hr_pda(m)
+        return cr == hr_pda_default(m)
     except Exception:  # noqa: BLE001 - a non-base58 mint cannot be a PDA owner mint
         return False
 
@@ -290,6 +258,9 @@ class U1Decider:
         self.start_ms, self.table, self.mode, self.labels = int(start_ms), table, mode, frozenset(labels)
         self.plan, self.fetch_fn, self.open_fn, self.hr_fn, self.max_open, self.lat_s = plan, fetch_fn, open_fn, hr_fn or hr_coin, max_open, lat_s
         self.exact_open_fn = exact_open_fn
+        self.pos = {}              # pool -> {"land_slot", "expiry_s", "ref"} open book positions watched for the stop
+        self.last_spot = {}        # pool -> spot of its last print (post_spot)
+        self.sell_reqs = []
         self.own_entries = []      # decision_ms of every entry this decider emitted (own timed upper bound for the open count)
         self.w_start_s = max(start_ms // 1000 - HIST_WINDOW_S, S.parse_hour(S.WARMUP_START_MIN) // 1000)
         self.reg = Registry()
@@ -415,7 +386,38 @@ class U1Decider:
         c["entries"] += 1
         if self.mode == "book":
             self.gate_log.append({"pool": g.pool, "mint": mint, "pc_s": g.pc_s, "entered": True})
+        self.pos[g.pool] = {"land_slot": int(sd_slot) + STOP_SELL_LAG_SLOTS, "expiry_s": d_ms // 1000 + HOLD_S, "ref": None}
         out.append(S.Entry(pool=g.pool, mint=mint, at_row=i, decision_ms=int(row["t_recv_ms"]), decision_slot=int(sd_slot), exit_after_s=HOLD_S - self.lat_s, meta=meta))
+
+    def _check_stop(self, row, i):
+        """hard stop (ruling 4b), same mechanism as U2: reference = the entry print's spot (post_spot, no own impact) = the pool's last print at or before the landing slot SD + 19;
+        trigger = the first PumpSwap print with slot > landing and spot <= 0.75 x reference; the sell is requested just after that print (at_row = i + 1) and the runner prices it at the
+        engine's exit lag after the print's slot. Independent of stake; the same code serves the book, the low-reputation line and the placebo."""
+        if row.get("type", "trade") != "trade" or row.get("prog") != "pumpswap" or not row.get("pool"):
+            return
+        pool, slot, spot = row["pool"], row.get("slot"), post_spot(row)
+        prev = self.last_spot.get(pool)
+        if spot is not None:
+            self.last_spot[pool] = spot
+        p = self.pos.get(pool)
+        if p is None or spot is None or not S._isint(slot):
+            return
+        bt = S._bt(row)
+        if bt is not None and bt >= p["expiry_s"]:
+            del self.pos[pool]  # past the timed exit: no stop is requested any more
+            return
+        if p["ref"] is None:
+            if slot <= p["land_slot"] or prev is None:
+                return
+            p["ref"] = prev
+        if spot <= STOP_FRAC * p["ref"]:
+            self.sell_reqs.append(S.SellReq(pool=pool, at_row=i + 1, decision_ms=int(row["t_recv_ms"]), decision_slot=int(slot), reason="stop", bot="main"))
+            self.c["stop_exits"] += 1
+            del self.pos[pool]
+
+    def take_sells(self):
+        out, self.sell_reqs = self.sell_reqs, []
+        return out
 
     def decide(self, hour_rows, state):
         out = []
@@ -429,6 +431,7 @@ class U1Decider:
                         self._evaluate(mint, d_ms, self.last_slot, out, row, i)
                     else:
                         self.c["decision_before_S"] += 1
+            self._check_stop(row, i)
             g = self.reg.feed(row)
             if g is not None:
                 self.c["graduates_seen"] += 1

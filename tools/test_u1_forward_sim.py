@@ -75,14 +75,14 @@ def flow(dec, hist, cand):
 
 
 # ---------------------------------------------------------------------------------------------------------------------------- spot, scoring, no look-ahead
-def test_spot_after_applies_the_trades_own_delta_to_pre_trade_reserves():
+def test_spot_and_hr_pda_are_the_u4_u2_functions_not_copies():
+    import u4_u2_deciders as UD
+    assert U.post_spot is UD.post_spot and U.hr_pda_default is UD.hr_pda_default
+    assert not hasattr(U, "spot_after") and not hasattr(U, "hr_pda")
     r = print_("P", 1)
     r.update(side="buy", sol_lamports=10 ** 9, token_raw=10 ** 12)
-    assert U.spot_after(r) == (Q0 + 10 ** 9 + V) / (B0 - 10 ** 12)
-    r["side"] = "sell"
-    assert U.spot_after(r) == (Q0 - 10 ** 9 + V) / (B0 + 10 ** 12)
-    r["side"] = "x"
-    assert U.spot_after(r) is None
+    assert U.post_spot(r) == (Q0 + 0.99 * 10 ** 9 + V) / (B0 - 10 ** 12)  # the engine's mint_states convention
+    assert U.post_spot(dict(r, virtual_quote_reserves=None)) is None
 
 
 def test_alive_is_p24_at_least_half_of_p0():
@@ -312,11 +312,91 @@ def test_forward_fetch_hook_traces_an_untraced_launcher():
 
 
 # ---------------------------------------------------------------------------------------------------------------------------- stop, placebo
-def test_stop_rule_first_print_after_landing_at_or_below_75_percent():
-    prints = [(100, 1.0), (110, 0.76), (120, 0.75), (130, 0.5)]
-    assert U.first_stop_print(prints, 1.0, 105) == (120, 139)
-    assert U.first_stop_print(prints, 1.0, 130) is None
-    assert U.first_stop_print([(100, 0.1)], 1.0, 100) is None  # a print AT the landing slot is not after it
+def stop_flow(mode="book", **kw):
+    dec = new_decider(mode=mode, **kw) if mode != "placebo" else new_decider(mode="placebo", plan={"PNEW": {"for": "x", "pc_s": 1}})
+    hist = history_rows("A", 0 if mode == "placebo" else (1 if mode == "low_rep" else 3), 3 if mode == "low_rep" else 0)
+    entries, _ = flow(dec, hist, candidate("A"))
+    assert len(entries) == 1
+    return dec
+
+
+@pytest.mark.parametrize("mode", ["book", "low_rep", "placebo"])
+def test_stop_fires_on_first_print_after_landing_at_or_below_75_percent_of_the_entry_print(mode):
+    dec = stop_flow(mode)
+    pc = S_S + 3600
+    # landing slot = SD + 19; SD = (pc + 359) * 2; the entry print = last print at or before landing = the crossing row (pc + 361)
+    assert dec.pos["PNEW"]["land_slot"] == (pc + 359) * 2 + 19
+    run(dec, [print_("PNEW", pc + 365, B0)])   # slot (pc+365)*2 <= landing: this print is the entry print (the reference), never a trigger
+    assert dec.take_sells() == []
+    ok, _ = run(dec, [print_("PNEW", pc + 400, int(1.2 * B0))])   # spot / 1.2 = 0.83: no stop
+    assert dec.take_sells() == []
+    run(dec, [print_("PNEW", pc + 500, int(1.5 * B0)), print_("PNEW", pc + 600, 5 * B0)])   # spot / 1.5 = 0.667 <= 0.75: stop on THIS print; later ones add nothing
+    sells = dec.take_sells()
+    assert len(sells) == 1 and sells[0].reason == "stop" and sells[0].decision_slot == (pc + 500) * 2 and sells[0].decision_ms == (pc + 500) * 1000 and sells[0].at_row == 1 and sells[0].bot == "main"
+    assert "PNEW" not in dec.pos
+
+
+def test_stop_boundary_is_inclusive_and_independent_of_stake():
+    dec = stop_flow()
+    pc = S_S + 3600
+    ref = U.post_spot(print_("PNEW", 1))
+    # base chosen so that spot = 0.75 x ref (within float error): find the base by inverting post_spot
+    row = print_("PNEW", pc + 500)
+    tgt = (Q0 + 0.99 + V) / (0.75 * ref)
+    row["base_reserve"] = int(tgt) + 1 + 1   # + the buy's token_raw=1 removed from base
+    assert U.post_spot(row) <= 0.75 * ref * (1 + 1e-12)
+    run(dec, [row])
+    assert len(dec.take_sells()) == 1
+    import inspect
+    assert list(inspect.signature(U.U1Decider._check_stop).parameters) == ["self", "row", "i"]   # no stake input: stop decisions never depend on stake
+
+
+def test_no_stop_after_the_timed_exit():
+    dec = stop_flow()
+    pc = S_S + 3600
+    run(dec, [print_("PNEW", pc + 400, B0)])
+    run(dec, [print_("PNEW", pc + 361 + 21_600 + 5, 9 * B0)])
+    assert dec.take_sells() == [] and "PNEW" not in dec.pos
+
+
+class StopWrap:
+    """the real U1 stop code behind the runner: one main-bot entry on the tape's pool P1 at row 100 of the first forward hour, then the decider's own SellReqs"""
+
+    def __init__(self):
+        self.u = new_decider()
+        self.done = False
+
+    def decide(self, rows, state):
+        from tools import test_c1nf_forward_sim as T1m
+        if state.warmup or state.hour != T1m.HOUR0:
+            return []
+        prev = rows[99]
+        self.u.pos["P1"] = {"land_slot": prev["slot"] + 19, "expiry_s": 10 ** 12, "ref": None}
+        for i, r in enumerate(rows):
+            r["quote_reserve"], r["base_reserve"] = Q0, B0 * (3 if i >= 400 else 1)   # flat price, falling to a third from row 400 (the fixture's own reserves are not a price)
+            self.u._check_stop(r, i)
+        return [S.Entry(pool="P1", mint="MP1", at_row=100, decision_ms=prev["t_recv_ms"], decision_slot=prev["slot"], exit_after_s=21_600 - S.LAT_DECIDING_S)]
+
+    def take_sells(self):
+        return self.u.take_sells()
+
+
+def test_stop_is_priced_by_the_runner_book_through_the_price_exit_mechanism(tmp_path, monkeypatch):
+    import collections as C
+    from tools import test_c1nf_forward_sim as T1
+    monkeypatch.setattr(S, "MIN_WARMUP_H", 1)
+    monkeypatch.setattr(S, "WARMUP_MIN_BY_DECIDER", {})
+    monkeypatch.setattr("tools.arena_paper.shutil.disk_usage", lambda path: C.namedtuple("Usage", "total used free")(1000, 500, 500))
+    T1.write_keep(tmp_path, 3)
+    ta = tmp_path / "a.jsonl"
+    ta.write_text("")
+    m = T1.manifest(tmp_path, decider="u1", warmup_hours=1, u1={"table_a": str(ta), "hr_exclusion": True})
+    m.pop("wallet_ledger_root", None)
+    assert T1.run(tmp_path, m, StopWrap()) == 0
+    st = json.loads((Path(m["out_root"]) / "status.json").read_text())
+    assert st["book_counts"].get("buys") == 1 and st["book_counts"].get("sell_req_stop") == 1, st["book_counts"]
+    tr = [r for r in T1.ledger_rows(m["out_root"]) if r["kind"] == "trade"]
+    assert tr and tr[0]["decision_ms"]["exit"] < tr[0]["decision_ms"]["entry"] + 21_600_000   # closed by the stop, not the 6 h timed exit
 
 
 def test_placebo_plan_draw_is_seeded_excludes_and_is_uniform_over_the_window():
@@ -459,7 +539,8 @@ def test_runner_refuses_without_hr_exclusion_on(tmp_path, val):
 def test_default_hr_predicate_matches_the_pda_creator():
     from solders.pubkey import Pubkey
     mint = str(Pubkey.new_unique())
-    pda = U.hr_pda(mint)
+    import u4_u2_deciders as UD
+    pda = UD.hr_pda_default(mint)
     assert U.hr_coin({"mint": mint, "creator": pda}) is True
     assert U.hr_coin({"mint": mint, "creator": str(Pubkey.new_unique())}) is False
     assert U.hr_coin({"mint": "not-base58!", "creator": "x"}) is False
