@@ -215,7 +215,7 @@ ORACLE = "none: EXP-022 withdrawn 2026-10-15, DEC-031 section 3 item 5"
 def test_pick_oracle_skip_is_a_manifest_key_valid_only_from_s(tmp_path):
     with pytest.raises(S.Refused):
         S.check_seal(manifest(tmp_path, start_hour="2026-10-16T00", pick_oracle=ORACLE))
-    assert S.follow(manifest(tmp_path, start_hour="2026-10-15T23", pick_oracle=ORACLE), once=True, _roots=roots(tmp_path), decider_factory=lambda m: None) == 2
+    assert S.follow(manifest(tmp_path, start_hour="2026-10-15T23", pick_oracle=ORACLE), fixture=True, once=True, _roots=roots(tmp_path), decider_factory=lambda m: None) == 2
     S.check_seal(manifest(tmp_path, start_hour="2026-10-16T01", pick_oracle=ORACLE))
     S.check_seal(manifest(tmp_path))  # no key: nothing to refuse (the shadow keeps its seal and withholds)
     with pytest.raises(S.Refused):
@@ -261,14 +261,14 @@ def test_manifest_checks(tmp_path):
 
 def test_path_guard(tmp_path):
     def f(**kw):
-        return S.follow(manifest(tmp_path, **kw), once=True, _roots=roots(tmp_path), decider_factory=lambda m: None)
+        return S.follow(manifest(tmp_path, **kw), fixture=True, once=True, _roots=roots(tmp_path), decider_factory=lambda m: None)
     assert f(tape_dir=str(tmp_path / "elsewhere")) == 2
     assert f(out_root=str(tmp_path / "keep" / "x")) == 2
     assert f(out_root=str(tmp_path / "other")) == 2
     for bad in ("/var/lib/mal/sealed/fast-trades-tip", "/data2/mal/arena-tip-feed/hv7", "/data2/mal/tip-tape-archive", "/home/claude/mal-data/arena-mirror/tape", "/data2/mal/fast0-offload-1113",
                 "/data/mal/blocks/forward-1016", "/data/mal/r4b", "/data/mal/meta-capture"):
-        assert S.follow(manifest(tmp_path, tape_dir=bad), once=True, decider_factory=lambda m: None) == 2  # default roots
-        assert S.follow(manifest(tmp_path, out_root=str(tmp_path / "sim") + bad), once=True, _roots=roots(tmp_path), decider_factory=lambda m: None) == 2
+        assert S.follow(manifest(tmp_path, tape_dir=bad), fixture=True, once=True, decider_factory=lambda m: None) == 2  # default roots
+        assert S.follow(manifest(tmp_path, out_root=str(tmp_path / "sim") + bad), fixture=True, once=True, _roots=roots(tmp_path), decider_factory=lambda m: None) == 2
 
 
 def test_default_roots_are_the_keeper_and_the_c1nf_open_sim_root():
@@ -311,7 +311,7 @@ class StubDecider:
 
 def run(tmp, m, dec, **kw):
     kw.setdefault("engine_kw", SPS)
-    return S.follow(m, once=True, _roots=roots(tmp), decider_factory=lambda mm: dec, ledger_builder=lambda *a: None, **kw)
+    return S.follow(m, fixture=True, once=True, _roots=roots(tmp), decider_factory=lambda mm: dec, ledger_builder=lambda *a: None, **kw)
 
 
 def ledger_rows(out_root):
@@ -401,7 +401,7 @@ def test_ledger_builder_sees_warmup_and_forward_hours_of_complete_days_only(tmp_
     write_hours(tmp_path / "keep", S.parse_hour("2026-11-16T00"), 26)  # all of 11-16, 11-17T00 and T01
     built = []
     m = manifest(tmp_path, warmup_hours=24)
-    assert S.follow(m, once=True, _roots=roots(tmp_path), decider_factory=lambda mm: StubDecider(), ledger_builder=lambda d, s, r: built.append(d), engine_kw=SPS) == 0
+    assert S.follow(m, fixture=True, once=True, _roots=roots(tmp_path), decider_factory=lambda mm: StubDecider(), ledger_builder=lambda d, s, r: built.append(d), engine_kw=SPS) == 0
     assert built == ["2026-11-16"]  # 24 warm-up hours = a complete past day, declared in meta.json; 11-17 is still open
 
 
@@ -502,3 +502,98 @@ def test_an_hour_file_that_resolves_outside_the_keeper_dir_is_refused(tmp_path):
         (keep / f.name).symlink_to(f)  # a symlink, not a hard link
     assert run(tmp_path, manifest(tmp_path), StubDecider()) == 2
     assert not Path(manifest(tmp_path)["out_root"], "tapelink").exists() or not list(Path(manifest(tmp_path)["out_root"], "tapelink").iterdir())
+
+
+# ---------------------------------------------------------------------------------------------------------------------------------- pre-S guards (follow-up to #1415)
+def prod(tmp, **kw):
+    """a production-shaped manifest: both pins present (model manifest = the repo's pinned one)"""
+    import hashlib
+    mm = S.MODEL_DIR / "manifest.json"
+    return manifest(tmp, duckdb_pin={"version": "1.5.6", "sha256": "ab" * 32}, model_manifest_sha256=hashlib.sha256(mm.read_bytes()).hexdigest(), **kw)
+
+
+def test_production_manifest_requires_the_duckdb_pin_and_the_model_manifest_pin(tmp_path):
+    for drop in ("duckdb_pin", "model_manifest_sha256"):
+        m = prod(tmp_path)
+        del m[drop]
+        with pytest.raises(S.Refused, match=drop):
+            S.check_production_pins(m)
+        S.check_production_pins(m, fixture=True)  # the fixture seam may skip the requirement
+    S.check_production_pins(prod(tmp_path))
+    assert S.follow(manifest(tmp_path), once=True, _roots=roots(tmp_path), decider_factory=lambda m: None) == 2  # a production start without pins is refused
+    sample = json.loads((Path(S.__file__).parent / "manifests-sample" / "c1nf-fwd-sample.manifest.json").read_text())
+    with pytest.raises(S.Refused):
+        S.check_production_pins(sample)  # the sample carries no pins on purpose
+
+
+def test_model_manifest_sha_mismatch_and_path_are_refused(tmp_path):
+    import hashlib
+    m = prod(tmp_path)
+    m["model_manifest_sha256"] = "0" * 64
+    with pytest.raises(S.Refused, match="pinned"):
+        S.check_production_pins(m)
+    other = tmp_path / "manifest.json"
+    other.write_text("{}")
+    m2 = prod(tmp_path, model_manifest=str(other))
+    m2["model_manifest_sha256"] = hashlib.sha256(b"{}").hexdigest()
+    with pytest.raises(S.Refused, match="inside"):
+        S.check_production_pins(m2)  # right sha, wrong place
+    S.check_production_pins(m2, fixture=True)
+
+
+def test_wallet_ledger_root_must_sit_under_out_root(tmp_path):
+    out = tmp_path / "sim" / "t-book"
+    S.check_production_pins(prod(tmp_path, wallet_ledger_root=str(out / "wallet-ledger")))
+    for bad in (str(tmp_path / "elsewhere"), str(out / ".." / "other"), str(out / "r4b-ledger")):
+        with pytest.raises(S.Refused):
+            S.check_production_pins(prod(tmp_path, wallet_ledger_root=bad))
+
+
+def test_rent_mode_defaults_to_stranded_and_reaches_the_rows(tmp_path):
+    write_keep(tmp_path, 2)
+    m = manifest(tmp_path)
+    assert run(tmp_path, m, StubDecider()) == 0
+    tr = next(r for r in ledger_rows(m["out_root"]) if r["kind"] == "trade")
+    assert tr["stack"]["rent"] == 2_039_280
+    m2 = manifest(tmp_path, rent_mode="refunded", book_id="t2", out_root=str(tmp_path / "sim" / "t2"))
+    assert run(tmp_path, m2, StubDecider()) == 0
+    assert next(r for r in ledger_rows(m2["out_root"]) if r["kind"] == "trade")["stack"]["rent"] == 0
+    with pytest.raises(S.Refused):
+        S.check_manifest(manifest(tmp_path, rent_mode="x"))
+
+
+def test_wallet_ledger_md5_per_day_and_twin_comparison(tmp_path):
+    first = S.parse_hour("2026-11-16T00")
+    outs = []
+    for i, content in enumerate(("same", "same", "other")):
+        d = tmp_path / ("t%d" % i)
+        write_hours(d / "keep", first, 26)
+        m = manifest(d, warmup_hours=24, tape_dir=str(d / "keep"), out_root=str(d / "sim" / "b"))
+        m["wallet_ledger_root"] = str(d / "sim" / "b" / "wallet-ledger")
+
+        def builder(day, src, root, c=content):
+            Path(root).mkdir(parents=True, exist_ok=True)
+            (Path(root) / ("asof-%s.txt" % day)).write_text(c)
+        assert S.follow(m, fixture=True, once=True, _roots=(str(d / "keep"), str(d / "sim")), decider_factory=lambda mm: StubDecider(), ledger_builder=builder, engine_kw=SPS) == 0
+        outs.append(d / "sim" / "b")
+    lines = [json.loads(ln) for ln in (outs[0] / "wallet-ledger-md5.jsonl").read_text().splitlines()]
+    assert [r["day"] for r in lines] == ["2026-11-16"] and re.fullmatch(r"[0-9a-f]{32}", lines[0]["md5"])
+    ok = S.compare_books(outs[0], outs[1])
+    assert ok["decision_md5_first_mismatch"] is None and ok["wallet_md5_first_mismatch"] is None and ok["days_compared"] == 1 and ok["hours_compared"] >= 2
+    bad = S.compare_books(outs[0], outs[2])
+    assert bad["wallet_md5_first_mismatch"] == "2026-11-16" and bad["decision_md5_first_mismatch"] is None
+    rows = [json.loads(ln) for ln in (outs[2] / "md5-by-hour.jsonl").read_text().splitlines()]
+    for r in rows:
+        if r["hour"] >= "2026-11-17T00":
+            r["decision_md5"] = "x"
+    (outs[2] / "md5-by-hour.jsonl").write_text("".join(json.dumps(r) + "\n" for r in rows))
+    assert S.compare_books(outs[0], outs[2])["decision_md5_first_mismatch"] == "2026-11-17T00"
+
+
+def test_feature_overlap_file_is_the_generated_one_and_lists_names_only():
+    import c1nf_feature_overlap as FO
+    text = (S.REPO / "ARTIFACTS" / "c1nf_model" / "feature_overlap_r4b.txt").read_text()
+    assert text == FO.render()
+    assert "c1nf_features: 107" in text and "r4b_features: 63" in text
+    assert FO.render(["a", "b", "c"], ["b", "z"]).split("## in both")[1].startswith("\nb\n")
+    assert "r4b_subset_of_c1nf: yes" in FO.render(["a", "b"], ["b"])
