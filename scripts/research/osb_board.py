@@ -780,7 +780,9 @@ def build(books, live, now_ms, roots=None, prev_since=None):
     res = {"schema": SCHEMA, "banner": BANNER, "generated_utc": utc(now_ms), "tape_through_utc": utc(min(ends)) if ends else None, "board_version": ver, "n_books_watched": n_watched,
            "caveat": "%s (every book x stake row counts, also rows of books still starting). Book start instants and parameters are fixed; a change is a new book. Entries before a book's start instant are in-sample, also when they close later." % (WATCH_SENTENCE % n_watched),
            "booking": "net SOL is booked on the exit (close) UTC day; the complete-day windows (today, d7, forward_all, incl_backfill) count only UTC days with the tape at least 90 min past the day's end; day_in_progress is a partial day",
-           "recon": recon, "recon_line": recon_line, "recon_lt_line": lt_line, "decision_grade": DECISION_GRADE, "limit_layer": "not applied", "live": live, "books": out_books}
+           "recon": recon, "recon_line": recon_line, "decision_grade": DECISION_GRADE, "limit_layer": "not applied", "live": live, "books": out_books}
+    if lt_line is not None:
+        res["recon_lt_line"] = lt_line
     if catching:
         res["catching_up"] = catching
     if pairs:
@@ -859,7 +861,7 @@ def exit_label(reason, bk):
     return reason
 
 
-RECON_LT_NONE = "latency twin osb-a-lt-a recon: none (no fresh recon-lt-a.json); not decision-grade"
+RECON_LT_NONE = None  # no fresh recon-lt-a.json: no line and no key, so a board without a twin recon is byte-identical to before
 
 
 def recon_lt_line(live, now_ms):
@@ -886,7 +888,7 @@ def board_md(res):
     md = ["# Open sim board (FLOOR open simulation books, paper)", "", "> " + res["banner"], "",
           "- Generated %s; tape through %s (the slowest book with data); board_version %s." % (res["generated_utc"], res["tape_through_utc"] or "n/a (no book has a completed hour)", res["board_version"])] + (
           ["- catching up (pending twins only; a STALE book is shown by its own state): %s." % ", ".join(res["catching_up"])] if res.get("catching_up") else []) + [
-          "- Recon: %s." % res["recon_line"], "- Recon, %s." % res["recon_lt_line"]] + (["- " + SIM_OFF + ": a recon band FAILs (see the Recon line); every figure below is greyed and no live step rests on it."] if res.get("sim_off") else []) + [
+          "- Recon: %s." % res["recon_line"]] + (["- Recon, %s." % res["recon_lt_line"]] if res.get("recon_lt_line") else []) + (["- " + SIM_OFF + ": a recon band FAILs (see the Recon line); every figure below is greyed and no live step rests on it."] if res.get("sim_off") else []) + [
           "- Net SOL is flat 15% fail leg / pressure leg, booked on the EXIT (close) UTC day. Complete UTC days only (tape at least 90 min past the day's end) in today, 7-day, forward and all; "
           "day in progress is a PARTIAL day (trades closed after the newest complete day), shown so trades are visible as they happen.",
           "- Forward = entry instant at or after the book's start instant; earlier entries are in-sample (IS), also when they close later. Forward days = complete UTC days from the day holding the start instant.",
