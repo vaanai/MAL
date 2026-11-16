@@ -25,7 +25,11 @@ import c1nf_forward_sim as S  # noqa: E402
 
 WSOL = S.WSOL
 PUMP_PROGRAM = "6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P"   # pump.fun program (holder-rewards PDA seed owner, ruling 3.1)
-TOTAL_SUPPLY_RAW = 1_000_000_000 * 10 ** 6                      # pump standard (ruling 3.1)
+TOTAL_SUPPLY_RAW = 1_000_000_000 * 10 ** 6                      # pump standard (ruling 3.1); fallback only (ADD1 A2)
+# ADD1 A2: the create row's `token_raw` is the CreateEvent `token_total_supply`: tools/arena_feed.py (create rows, via tools.pump_history_backfill.lifecycle_from_logs) -> the CreateEvent decoder in
+# tools/pump_history_backfill.py (`supply_b` read after real_token_reserves, stored as "token_raw": int.from_bytes(supply_b, "little"), line 274; the older fixed-offset layout at line 309 reads
+# raw[72:80], the same u64). So the per-mint supply is that field; 1e15 is used only when the row has no positive integer there (counted `supply_fallback`). Mayhem-mode mints are therefore
+# NOT excluded from U4 (the ADD1 A2 exclusion applies only if the field were not the supply).
 LAT_SLOTS = 19                                                  # deciding entry latency in slots after SD (ruling 0.4)
 GAP_PROGS = ("all", "pumpfun", "pumpswap")                      # ruling 1.1
 
@@ -135,7 +139,8 @@ class _Base:
         typ = row.get("type", "trade")
         bt = S._bt(row)
         if typ == "create" and row.get("mint") and bt is not None and _isint(row.get("slot")):
-            self.creates.setdefault(row["mint"], {"bt": bt, "slot": row["slot"], "creator": row.get("creator"), "trader": row.get("trader")})
+            self.creates.setdefault(row["mint"], {"bt": bt, "slot": row["slot"], "creator": row.get("creator"), "trader": row.get("trader"),
+                                                  "supply": row["token_raw"] if _isint(row.get("token_raw")) and row["token_raw"] > 0 else None})
             self.on_create(row["mint"])
             return True
         if typ == "pool_create" and row.get("pool") and row.get("mint") and bt is not None:
@@ -203,14 +208,14 @@ class _Base:
 
 # ====================================================================================================================================== U4
 class _MintU4:
-    __slots__ = ("bal", "sold", "first_buy_slot", "unexplained", "tainted", "heavy", "snaps", "last_swap_bt", "counted_taint", "counted_heavy")
+    __slots__ = ("bal", "sold", "first_buy_slot", "unexplained", "tainted", "heavy", "snaps", "last_swap_bt", "counted_taint", "counted_heavy", "counted_fallback")
 
     def __init__(self):
         self.bal, self.sold, self.first_buy_slot = {}, set(), {}
         self.unexplained, self.tainted, self.heavy = 0, False, False
         self.snaps = {}          # mark -> (NS, TOP1)
         self.last_swap_bt = None
-        self.counted_taint = self.counted_heavy = False
+        self.counted_taint = self.counted_heavy = self.counted_fallback = False
 
 
 class U4Decider(_Base):
@@ -278,7 +283,13 @@ class U4Decider(_Base):
             else:
                 ms.bal[w] = b - tok
             ms.sold.add(w)
-            if ms.unexplained > U4_TRANSFER_HEAVY * self.supply:
+            sup = self.creates[mint]["supply"]
+            if sup is None:
+                sup = self.supply
+                if not ms.counted_fallback:
+                    ms.counted_fallback = True
+                    self._count("supply_fallback")
+            if ms.unexplained > U4_TRANSFER_HEAVY * sup:
                 ms.heavy = True
 
     def _routers(self, m):
