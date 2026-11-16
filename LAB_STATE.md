@@ -5,10 +5,10 @@ Compact reload for managers. Hot file: current-state records, the decisions inde
 ## Now (2026-10-30)
 
 - **Now additions, 2026-11-16 morning (manager24; records only; no profit claim; no book has cleared the promotion gate).** Copied from `/data/mal/hunt-1008/ops/manager24/state-manager24.md` (lines stamped 2026-11-16T03:56Z to 07:19:33.781Z) and the DEC-035 entry "Erratum 1 to 'Section 4 resume record, 2026-11-15'" of this PR.
-  - **Mid-week lane change: lane STOP file created 2026-11-16T03:56:56.635Z (job #2873), removed 2026-11-16T07:19:33.781Z (job #2881).** No FLOOR unit was restarted. New entries were stopped for 3 h 22 m 37 s. The 3 open positions kept their exits, and no sell was due.
+  - **Mid-week lane change: lane STOP file created 2026-11-16T03:56:56.635Z (job #2873), removed 2026-11-16T07:19:33.781Z (job #2881).** No FLOOR unit was restarted. New entries were stopped for 3 h 22 m 37 s. The 3 open positions kept their exits; no sell happened in the interval and no time stop fell in it.
   - **Why it was created.** Stage 2 of the A3 re-pin (PR #1412, merge `9ced3eff`) FAILED on the ADD1 D median clause, under QP-RULING-1115-a3-repin-dual Q1 (a).
   - **Why it was removed.** QP-RULING-1116-a3-stage2-addD (sha256 `94db6cc7d778e9605eed9b4f1209bbd7fa25f611590325b5f29c4d32d5d90bc2`) section 4 was met:
-    - M3 bar D2 MET (PR #1413, merge `881bb742`);
+    - M3 bar D2 MET (a post-hoc replacement check, declared before its fetch; PR #1413, merge `881bb742`);
     - no sell failed;
     - the A3 run of 2026-11-16T07:10:05Z was clean, with the pins on main;
     - the timing was outside 16:45Z to 17:30Z and more than 15 minutes before a time stop.
