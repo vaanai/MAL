@@ -11,7 +11,7 @@ book output are the runner's. Pieces
   build_placebo_plan / first_stop_print   pure helpers (random pick draw; the -25% stop rule)
 Every constant below is the ruling's.
 """
-import collections, hashlib, random
+import collections, hashlib, json, os, random
 from pathlib import Path
 
 import c1nf_forward_sim as S
@@ -30,6 +30,11 @@ MAX_OPEN = 10
 HUB_FUNDER_CHILDREN = 50
 HUB_LAUNCHER_GRADS = 50
 PLACEBO_WINDOW_S = 1800
+PUMP_PROGRAM = "6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P"
+PLACEBO_MIN_N = 5
+STALE_DISCLOSURE = "cap_open uses an hour-start open count; %d entries were refused that an exact count would have taken"
+PLACEBO_DISCLOSURE = "placebo built by a lagged plan pass; it trails the book by up to about 1 h plus the hold"
+H4_DISCLOSURE = "H4 lacks pump fee/global accounts; H2 (> 50 children) removes any that fund many launchers"
 FEE_NOTE = "UR 0.4 pricing, fees, rent and fail legs are the runner's engine; unchanged"
 MODES = ("book", "low_rep", "placebo")
 # H4: program or protocol accounts (fixed list in code). Pump fee / global accounts are NOT listed (not verified by the builder): the manager adds them with a source before S.
@@ -84,6 +89,7 @@ class FunderTable:
 
 
 # ------------------------------------------------------------------------------------------------------------------------------ registry
+# TODO(after rebase onto #1417): replace spot_after with the single shared post_spot of scripts/research/u4_u2_deciders.py (ruling ADD1 item 7: no separate copy).
 def spot_after(row):
     """spot after the print's own trade, no own impact: (quote + V) / base. PumpSwap tape reserves are PRE-trade (memory: reserve convention), so the trade's own delta is applied here.
     -> float or None. V = event virtual_quote_reserves."""
@@ -198,23 +204,75 @@ def first_stop_print(prints, entry_spot, landing_slot):
 def build_placebo_plan(universe, entries, gate_passed_mints, seed_base=1):
     """random-pick comparison (ruling 5). universe: [{pool, mint, pc_s}] graduates of the universe; entries: [{pool, mint, pc_s}] the BOOK's entries; gate_passed_mints: every mint
     that passed the entry gate (entered or not). For each entry in pool_create order: draw one pool uniformly (random.Random(1 + P epoch s)) from universe graduates with
-    pool_create in [P - 1800, P + 1800], excluding the entry's mint, gate-passed mints and pools the placebo already holds (drawn, still inside their 6 h hold). Graduation and gate
+    pool_create in [P - 1800, P + 1800], excluding the entry's mint, gate-passed mints (cap_open refusals included) and any pool already in the plan (one placebo entry per pool, ever: QP ADD1 3). Graduation and gate
     membership only: no outcome is read. -> (plan {pool: {"for": entry pool, "pc_s": ...}}, counters)"""
     plan, c = {}, collections.Counter()
-    held = {}  # pool -> hold end (pc_s + 360 + 21600)
     uni = sorted(universe, key=lambda u: (u["pc_s"], u["pool"]))
     for e in sorted(entries, key=lambda x: (x["pc_s"], x["pool"])):
         P = e["pc_s"]
         cands = [u for u in uni if P - PLACEBO_WINDOW_S <= u["pc_s"] <= P + PLACEBO_WINDOW_S and u["mint"] != e["mint"] and u["mint"] not in gate_passed_mints
-                 and held.get(u["pool"], -1) < u["pc_s"] + DECISION_DELAY_S and u["pool"] not in plan]
+                 and u["pool"] not in plan]
         if not cands:
             c["placebo_no_candidate"] += 1
             continue
         pick = random.Random(seed_base + int(P)).choice(cands)
         plan[pick["pool"]] = {"for": e["pool"], "pc_s": pick["pc_s"]}
-        held[pick["pool"]] = pick["pc_s"] + DECISION_DELAY_S + HOLD_S
         c["placebo_drawn"] += 1
     return plan, c
+
+
+def write_placebo_plan(plan, counters, path):
+    """the plan, written (0440) with its sha256 BEFORE any placebo price is computed; never rebuilt: refuses to overwrite. -> sha256 of the file bytes"""
+    path = Path(path)
+    if path.exists():
+        raise FileExistsError("placebo plan exists: never rebuilt after a placebo price may exist")
+    data = (json.dumps({"plan": plan, "counters": dict(counters)}, sort_keys=True, separators=(",", ":")) + "\n").encode()
+    fd = os.open(str(path), os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    with os.fdopen(fd, "wb") as fh:
+        fh.write(data)
+    os.chmod(path, 0o440)
+    return hashlib.sha256(data).hexdigest()
+
+
+def load_placebo_plan(path, sha256):
+    """-> plan dict; refuses when the pinned sha256 is missing or differs (the plan is fixed before the second pass prices anything)"""
+    if not sha256:
+        raise ValueError("placebo plan sha256 not pinned")
+    data = Path(path).read_bytes()
+    if hashlib.sha256(data).hexdigest() != sha256:
+        raise ValueError("placebo plan sha256 differs from the pinned one")
+    return json.loads(data)["plan"]
+
+
+def placebo_summary(book_n, placebo_n):
+    """5-day look condition (6) input: placebo n beside book n; fewer than 5 placebo trades = not evaluable = NO-GO (ADD1 3)"""
+    ok = placebo_n >= PLACEBO_MIN_N
+    return {"book_n": book_n, "placebo_n": placebo_n, "condition_6_evaluable": ok, "verdict": None if ok else "NO-GO (placebo n < %d: condition 6 not evaluable)" % PLACEBO_MIN_N,
+            "disclosure": PLACEBO_DISCLOSURE}
+
+
+def board_disclosures(counts):
+    out = []
+    if counts.get("cap_open_stale", 0) > 0:
+        out.append(STALE_DISCLOSURE % counts["cap_open_stale"])
+    return out
+
+
+def hr_pda(mint):
+    """holder-rewards PDA ["holder-rewards", mint] under the pump program. TODO(after rebase onto #1417): use u4_u2_deciders.hr_pda_default (one definition across books)."""
+    from solders.pubkey import Pubkey
+    return str(Pubkey.find_program_address([b"holder-rewards", bytes(Pubkey.from_string(mint))], Pubkey.from_string(PUMP_PROGRAM))[0])
+
+
+def hr_coin(create_row):
+    """a mint whose create row creator is the holder-rewards PDA of the mint is excluded (tape cannot give its creator-fee rate)"""
+    m, cr = create_row.get("mint"), create_row.get("creator")
+    if not m or not cr:
+        return False
+    try:
+        return cr == hr_pda(m)
+    except Exception:  # noqa: BLE001 - a non-base58 mint cannot be a PDA owner mint
+        return False
 
 
 # ------------------------------------------------------------------------------------------------------------------------------ decider
@@ -224,13 +282,15 @@ class U1Decider:
     first_create_slot) -> Table A row, optional forward fetch when a launcher is untraced; open_fn() -> open positions of the book now; hr_fn(create_row) -> holder-rewards coin
     (injected: the UR 0.4 rule was not read by the builder; default off)."""
 
-    def __init__(self, start_ms, table, *, mode="book", labels=frozenset(), plan=None, fetch_fn=None, open_fn=None, hr_fn=None, max_open=MAX_OPEN, lat_s=S.LAT_DECIDING_S):
+    def __init__(self, start_ms, table, *, mode="book", labels=frozenset(), plan=None, fetch_fn=None, open_fn=None, exact_open_fn=None, hr_fn=None, max_open=MAX_OPEN, lat_s=S.LAT_DECIDING_S):
         if mode not in MODES:
             raise ValueError("mode must be one of %s" % (MODES,))
         if mode == "placebo" and plan is None:
             raise ValueError("placebo mode needs a plan (build_placebo_plan)")
         self.start_ms, self.table, self.mode, self.labels = int(start_ms), table, mode, frozenset(labels)
-        self.plan, self.fetch_fn, self.open_fn, self.hr_fn, self.max_open, self.lat_s = plan, fetch_fn, open_fn, hr_fn or (lambda r: False), max_open, lat_s
+        self.plan, self.fetch_fn, self.open_fn, self.hr_fn, self.max_open, self.lat_s = plan, fetch_fn, open_fn, hr_fn or hr_coin, max_open, lat_s
+        self.exact_open_fn = exact_open_fn
+        self.own_entries = []      # decision_ms of every entry this decider emitted (own timed upper bound for the open count)
         self.w_start_s = max(start_ms // 1000 - HIST_WINDOW_S, S.parse_hour(S.WARMUP_START_MIN) // 1000)
         self.reg = Registry()
         self.pending = []          # [(D_ms, mint)]
@@ -291,6 +351,15 @@ class U1Decider:
                     alive += bool(r)
         return n, alive, unsc, members, kind, hub
 
+    def open_count(self, row, n_batch):
+        """open positions for the cap: NEVER below the exact count (QP ADD1 2). With open_fn (the Book's hour-start count: every position decided before the hour start and not closed
+        by it) the batch entries are added; positions that close inside the hour stay counted (over-count only). Without open_fn: the decider's own entries whose 6 h timed end is
+        still ahead of the current time (ignores earlier stop exits: over-count only)."""
+        if self.open_fn is not None:
+            return self.open_fn() + n_batch
+        now = int(row["t_recv_ms"])
+        return sum(1 for ms in self.own_entries if ms + HOLD_S * 1000 > now)
+
     # -- one decision
     def _evaluate(self, mint, d_ms, sd_slot, out, row, i):
         g, cr = self.reg.grads[mint], self.reg.creates.get(mint)
@@ -333,13 +402,16 @@ class U1Decider:
             c["entry_hist_funder" if kind == "funder" else "entry_hist_own"] += 1
         if mint in self.entered:
             return
-        opened = (self.open_fn() if self.open_fn else 0) + len(out)
+        opened = self.open_count(row, len(out))
         if opened >= self.max_open:
             c["cap_open"] += 1  # a refusal before pricing, not an exclusion of a priced entry
+            if self.exact_open_fn is not None and self.exact_open_fn(d_ms) < self.max_open:
+                c["cap_open_stale"] += 1  # an exact count at D (after the fact, rows <= D) would have taken it; shown beside, not in the GO bar
             if self.mode == "book":
                 self.gate_log.append({"pool": g.pool, "mint": mint, "pc_s": g.pc_s, "entered": False})
             return
         self.entered.add(mint)
+        self.own_entries.append(int(row["t_recv_ms"]))
         c["entries"] += 1
         if self.mode == "book":
             self.gate_log.append({"pool": g.pool, "mint": mint, "pc_s": g.pc_s, "entered": True})
@@ -385,5 +457,5 @@ def build_decider(m, table=None, **kw):
         table = FunderTable.from_rows(a, b)
     labels = frozenset(Path(u1["labels"]).read_text().split()) if u1.get("labels") else frozenset()
     mode = {"u1": "book", "u1_lowrep": "low_rep", "u1_placebo": "placebo"}[m["decider"]]
-    plan = json.loads(Path(u1["placebo_plan"]).read_text()) if mode == "placebo" else None
+    plan = load_placebo_plan(u1["placebo_plan"], u1.get("placebo_plan_sha256")) if mode == "placebo" else None
     return U1Decider(S.parse_hour(m["start_hour"]), table, mode=mode, labels=labels, plan=plan, lat_s=float(m.get("pricing_lat_entry_s", S.LAT_DECIDING_S)), **kw)

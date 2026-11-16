@@ -325,10 +325,12 @@ def check_manifest(m):
     m.setdefault("pricing_lat_entry_s", LAT_DECIDING_S)
     if m["decider"] != "c1nf":
         u1 = m.get("u1")
-        if not (isinstance(u1, dict) and isinstance(u1.get("table_a"), str) and set(u1) <= {"table_a", "table_b", "labels", "placebo_plan"}):
+        if not (isinstance(u1, dict) and isinstance(u1.get("table_a"), str) and set(u1) <= {"table_a", "table_b", "labels", "placebo_plan", "placebo_plan_sha256", "hr_exclusion"}):
             raise Refused("decider %s needs manifest key u1 = {table_a, [table_b], [labels], [placebo_plan]} (file paths)" % m["decider"])
-        if m["decider"] == "u1_placebo" and not isinstance(u1.get("placebo_plan"), str):
-            raise Refused("decider u1_placebo needs u1.placebo_plan")
+        if u1.get("hr_exclusion") is not True:
+            raise Refused("u1.hr_exclusion must be true: the holder-rewards exclusion is required (QP ADD1 4); the runner does not start without it")
+        if m["decider"] == "u1_placebo" and not (isinstance(u1.get("placebo_plan"), str) and isinstance(u1.get("placebo_plan_sha256"), str)):
+            raise Refused("decider u1_placebo needs u1.placebo_plan and u1.placebo_plan_sha256 (the plan is written and hashed before any placebo price)")
     if True:
         v = m["pricing_lat_entry_s"]
         if isinstance(v, bool) or not isinstance(v, (int, float)) or v not in O.LATENCY_VALUES_S:
