@@ -302,6 +302,8 @@ class StubDecider:
         self.at, self.calls = at, []
 
     def decide(self, rows, state):
+
+        rows = list(rows)  # the runner streams: a decider gets an iterator
         self.calls.append((state.hour, state.warmup, len(rows)))
         if state.warmup or state.hour != HOUR0:
             return []
@@ -374,6 +376,7 @@ def test_a_decider_that_returns_entries_in_a_warmup_hour_is_refused(tmp_path):
 
     class Bad:
         def decide(self, rows, state):
+            rows = list(rows)  # the runner streams: a decider gets an iterator
             return [S.Entry("P1", "MP1", 5, rows[4]["t_recv_ms"], rows[4]["slot"])]
     assert run(tmp_path, manifest(tmp_path), Bad()) == 2
 
@@ -383,6 +386,7 @@ def test_an_entry_decided_before_s_is_refused(tmp_path):
 
     class Early:
         def decide(self, rows, state):
+            rows = list(rows)  # the runner streams: a decider gets an iterator
             if state.warmup or state.hour != HOUR0:
                 return []
             return [S.Entry("P1", "MP1", 5, H0_MS - 1000, rows[4]["slot"])]
@@ -457,6 +461,7 @@ def test_a_pick_at_minute_s_does_not_kill_the_runner_and_a_restart_repeats_it(tm
 
     class AtS(StubDecider):
         def decide(self, rows, state):
+            rows = list(rows)  # the runner streams: a decider gets an iterator
             self.calls.append((state.hour, state.warmup, len(rows)))
             if state.warmup or state.hour != HOUR0:
                 return []
@@ -473,6 +478,7 @@ def test_a_decision_before_s_that_reaches_the_book_stays_fatal(tmp_path):
 
     class Early(StubDecider):
         def decide(self, rows, state):
+            rows = list(rows)  # the runner streams: a decider gets an iterator
             return [S.Entry("P1", "MP1", 0, H0_MS - 1, rows[0]["slot"])] if state.hour == HOUR0 else []
     assert run(tmp_path, manifest(tmp_path), Early()) == 2
 
@@ -621,3 +627,152 @@ def test_a_real_zst_file_is_read_through_a_real_symlink_with_the_zstd_cli(tmp_pa
     m = manifest(tmp_path)
     got = S.link_hour(m, tmp_path / "out", H0_MS)
     assert got.is_symlink() and S.read_hour_rows(got) == rows
+
+
+# ---------------------------------------------------------------------------------------------------------------------------------- memory fix (job #2912 OOM): streaming, bounded memory, old-vs-new equality
+# GOLDEN values: produced by the pre-fix code (main 1d7695c7, whole-hour lists) on exactly these fixtures; the streaming code must reproduce them (QP ADD1 (c)1: decision md5, wallet-ledger md5, book ledger).
+GOLD_DECIDER_ENTRIES_MD5 = "8c2fd85a59dd283771df65cc4191502e"
+GOLD_RUN_HOURS = {"2026-11-16T23": "d751713988987e9331980363e24189ce", HOUR0: "92c8493f3d2c959af21425ec976d05e4", "2026-11-17T01": "d751713988987e9331980363e24189ce"}
+GOLD_RUN_DECISIONS_MD5, GOLD_RUN_TRADE_MD5 = "c7174b4aa2cface8569618b48862954d", "c65bc93c7436b71bd404fd9f2a585080"
+GOLD_MULTI = {"hour_md5s": "459eb481586a3288b1d80ac75f05e568", "wallet": [("2026-11-16", "2026-11-16T23", "0118f94670ff0e7f65ba0ce40a90c168")], "decisions": "d751713988987e9331980363e24189ce",
+              "ledger": "a40fe17099f8eeae795cfaf7bcabbc7b"}
+TIP_FIELDS = ("venue", "mint", "trader", "side", "sol_lamports", "signature", "event_index")
+
+
+def test_old_vs_new_decider_entries_md5_is_unchanged():
+    import hashlib
+    d, _ = mk_decider(T.only_minute(10, 20))
+    ents = d.decide(iter(t_rows(0.0, 1500.0)), S.RunState(hour="2026-09-04T12", warmup=False, day="2026-09-04"))  # an iterator, as the runner streams
+    assert len(ents) == 2 and hashlib.md5(S.canon([e.as_dict() for e in ents]).encode()).hexdigest() == GOLD_DECIDER_ENTRIES_MD5
+
+
+def test_old_vs_new_runner_decision_and_book_ledger_md5_on_the_fixture_hours(tmp_path):
+    import hashlib
+    write_keep(tmp_path, 3)
+    m = manifest(tmp_path)
+    assert run(tmp_path, m, StubDecider()) == 0
+    out = Path(m["out_root"])
+    got = {r["hour"]: r["decision_md5"] for r in map(json.loads, (out / "md5-by-hour.jsonl").read_text().splitlines())}
+    assert got == GOLD_RUN_HOURS and (out / "decisions.md5").read_text().strip() == GOLD_RUN_DECISIONS_MD5
+    tr = sorted([(r["stake_sol"], r["legs"], r["decision_ms"]) for r in ledger_rows(m["out_root"]) if r["kind"] == "trade"], key=lambda t: t[0])
+    assert hashlib.md5(S.canon(tr).encode()).hexdigest() == GOLD_RUN_TRADE_MD5
+
+
+def test_old_vs_new_multi_hour_day_boundary_minute_s_pick_wallet_ledger_and_book_ledger_md5(tmp_path):
+    import hashlib
+    write_hours(tmp_path / "keep", S.parse_hour("2026-11-16T00"), 27)
+
+    def builder(day, src, root):  # depends only on the columns the real tip reader selects, so old (all fields) and new (TIP_FIELDS only) scratch rows give the same ledger
+        h = hashlib.md5()
+        for f in sorted(Path(src).iterdir()):
+            for ln in f.read_text().splitlines():
+                r = json.loads(ln)
+                h.update(json.dumps({k: r.get(k) for k in TIP_FIELDS}, sort_keys=True).encode())
+        Path(root).mkdir(parents=True, exist_ok=True)
+        (Path(root) / ("asof-%s.txt" % day)).write_text(h.hexdigest())
+
+    class AtS(StubDecider):
+        def decide(self, rows, state):
+            rows = list(rows)
+            if state.warmup or state.hour != HOUR0:
+                return []
+            return [S.Entry(pool="P1", mint="MP1", at_row=0, decision_ms=rows[0]["t_recv_ms"], decision_slot=rows[0]["slot"])]  # a pick at minute S
+    m = manifest(tmp_path, warmup_hours=24)
+    m["wallet_ledger_root"] = str(Path(m["out_root"]) / "wallet-ledger")
+    assert S.follow(m, fixture=True, once=True, _roots=roots(tmp_path), decider_factory=lambda mm: AtS(), ledger_builder=builder, engine_kw=SPS) == 0
+    out = Path(m["out_root"])
+    assert hashlib.md5("".join(r["decision_md5"] for r in map(json.loads, (out / "md5-by-hour.jsonl").read_text().splitlines())).encode()).hexdigest() == GOLD_MULTI["hour_md5s"]
+    assert [(r["day"], r["hour"], r["md5"]) for r in map(json.loads, (out / "wallet-ledger-md5.jsonl").read_text().splitlines())] == GOLD_MULTI["wallet"]
+    assert (out / "decisions.md5").read_text().strip() == GOLD_MULTI["decisions"]
+    rows = [{k: v for k, v in r.items() if k not in ("code_head", "engine_id", "frozen_sha")} for r in ledger_rows(m["out_root"]) if r["kind"] != "start"]  # code_head and frozen_sha are the runner file's own hash
+    assert hashlib.md5(S.canon(sorted(rows, key=lambda r: r["trade_id"])).encode()).hexdigest() == GOLD_MULTI["ledger"]
+    assert not (out / "ledger-src" / "2026-11-16").exists()  # a built day's scratch rows are released
+
+
+def test_scratch_rows_hold_only_the_tip_columns_and_incomplete_days_are_released_too(tmp_path):
+    seen = {}
+
+    def builder(day, src, root):
+        seen["cols"] = {k for f in Path(src).iterdir() for ln in f.read_text().splitlines() for k in json.loads(ln)}
+    ls = S.LedgerStep(tmp_path / "src", tmp_path / "wl", builder=builder)
+    for h in range(24):
+        ls.note_hour("2026-11-16T%02d" % h, [dict(hv7_row(1, H0_MS), trader="w", extra_big_field="x" * 100)])
+    assert seen["cols"] == set(TIP_FIELDS)
+    for h in range(2, 24):
+        ls.note_hour("2026-11-17T%02d" % h, [{"trader": "w"}])
+    assert ls.incomplete == ["2026-11-17"] and not (tmp_path / "src" / "2026-11-17").exists() and "2026-11-17" not in ls.hours
+
+
+def test_a_large_hour_is_streamed_with_bounded_memory(tmp_path):
+    """150,000 rows (about 60 MB of plain jsonl, several hundred MB as Python dicts) pass through the whole runner loop (decoder pass, counting pass, scratch ledger rows) with a tracemalloc
+    peak under 30 MB: nothing holds the hour. The bound is the test's own; the runner's real peak RSS is the dry run's to record."""
+    import tracemalloc
+    keep = tmp_path / "keep"
+    keep.mkdir()
+    n = 150_000
+    for h, ms in enumerate((H0_MS - S.HOUR_MS, H0_MS)):
+        with open(keep / ("tape-%s.jsonl" % S.hour_key(ms)), "w") as fh:
+            for k in range(n if h == 0 else 10):
+                fh.write(json.dumps(hv7_row(k, ms + (k % 3_600_000))) + "\n")
+
+    class Count:
+        def __init__(self):
+            self.n = 0
+
+        def decide(self, rows, state):
+            for _ in rows:
+                self.n += 1
+            return []
+    dec = Count()
+    m = manifest(tmp_path)
+    tracemalloc.start()
+    try:
+        assert S.follow(m, fixture=True, once=True, _roots=roots(tmp_path), decider_factory=lambda mm: dec, ledger_builder=lambda *a: None, engine_kw=SPS) == 0
+        peak = tracemalloc.get_traced_memory()[1]
+    finally:
+        tracemalloc.stop()
+    assert dec.n == n and peak < 30_000_000, peak
+
+
+def test_zstd_failure_is_a_refusal_not_a_short_hour(tmp_path):
+    import shutil
+    if shutil.which("zstd") is None:
+        pytest.skip("no zstd CLI")
+    bad = tmp_path / "tape-x.jsonl.zst"
+    bad.write_bytes(b"not zstd data")
+    with pytest.raises(S.Refused, match="exited"):
+        list(S.iter_hour_rows(bad))
+    # a closed-early iterator leaves no process behind and raises nothing
+    import subprocess
+    plain, z = tmp_path / "p.jsonl", tmp_path / "tape-y.jsonl.zst"
+    plain.write_text("".join(json.dumps({"i": i}) + "\n" for i in range(1000)))
+    subprocess.run(["zstd", "-q", str(plain), "-o", str(z)], check=True)
+    it = S.iter_hour_rows(z)
+    assert next(it) == {"i": 0}
+    it.close()
+
+
+def test_duckdb_builder_gets_a_memory_limit_and_a_spill_dir_under_out_root(tmp_path, monkeypatch):
+    from tools import c1nf_wallet_ledger as W
+    calls = {}
+    monkeypatch.setattr(W, "build_day", lambda day, adapter, root, **kw: calls.update(kw=kw, day=day))
+    monkeypatch.setattr(W, "build_asof", lambda root, day, **kw: calls.update(asof=day))
+    out = tmp_path / "sim" / "b"
+    S.default_ledger_builder("2026-11-16", out / "ledger-src" / "2026-11-16", out / "wallet-ledger")
+    kw = calls["kw"]
+    assert kw["mem_gb"] <= 4.0 and kw["threads"] <= 2 and Path(kw["tmp_dir"]).parent == out and Path(kw["tmp_dir"]).name == "duckdb-tmp" and calls["asof"] == "2026-11-17"
+
+
+def test_the_duckdb_spill_dir_is_deleted_when_the_runner_stops(tmp_path):
+    write_keep(tmp_path, 2)
+    m = manifest(tmp_path)
+    spill = Path(m["out_root"]) / "duckdb-tmp"
+
+    def builder(*a):
+        spill.mkdir(parents=True, exist_ok=True)
+        (spill / "x.tmp").write_text("spill")
+    S.follow(m, fixture=True, once=True, _roots=roots(tmp_path), decider_factory=lambda mm: StubDecider(), ledger_builder=builder, engine_kw=SPS)
+    spill.mkdir(parents=True, exist_ok=True)
+    (spill / "y.tmp").write_text("left behind")
+    assert S.follow(m, fixture=True, once=True, _roots=roots(tmp_path), decider_factory=lambda mm: StubDecider(), ledger_builder=builder, engine_kw=SPS) in (0, 4)
+    assert not spill.exists()

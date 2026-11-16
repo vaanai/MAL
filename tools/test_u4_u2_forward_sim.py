@@ -491,6 +491,7 @@ class TwoBotDecider:
         self.at, self.sell_at, self.exit_s, self.pending = at, sell_at, exit_s, []
 
     def decide(self, rows, state):
+        rows = list(rows)  # the runner streams: a decider gets an iterator
         if state.warmup or state.hour != T1.HOUR0:
             return []
         prev = rows[self.at - 1]
