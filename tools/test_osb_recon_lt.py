@@ -254,3 +254,20 @@ def test_twin_outputs_carry_no_forbidden_word(tmp_path, capsys):
     _, rc, out = run_both(tmp_path, mp, tm, live)
     text = (out / "recon-lt-a.md").read_text() + capsys.readouterr().out  # the json is checked by check_output at write time (string values)
     assert rc == 0 and not any(w in text.lower() for w in B.FORBIDDEN)
+
+
+def test_board_quotes_the_twin_recon_status_in_one_line_and_changes_nothing_else(tmp_path, monkeypatch):
+    root = tmp_path / "reconroot"
+    root.mkdir()
+    monkeypatch.setattr(B, "RECON_ROOTS", (str(root),))
+    now = TB.END + 60_000
+    assert B.recon_lt_line({"recon": str(root / "recon.json")}, now) == B.RECON_LT_NONE  # no file
+    assert B.recon_lt_line(None, now) == B.RECON_LT_NONE and B.recon_lt_line({"recon": "/etc/recon.json"}, now) == B.RECON_LT_NONE
+    doc = {"schema": "osb_recon_lt.v1", "status": "INSUFFICIENT", "generated_ms": now - 1000, **{k: {"status": "INSUFFICIENT" if k == "s1" else "PASS"} for k in KEYS}}
+    (root / "recon-lt-a.json").write_text(json.dumps(doc))
+    line = B.recon_lt_line({"recon": str(root / "recon.json")}, now)
+    assert line.startswith("latency twin osb-a-lt-a recon: INSUFFICIENT") and "S1 INSUFFICIENT" in line and "not decision-grade" in line
+    doc["generated_ms"] = now - B.STALE_MS - 1
+    (root / "recon-lt-a.json").write_text(json.dumps(doc))
+    assert B.recon_lt_line({"recon": str(root / "recon.json")}, now) == B.RECON_LT_NONE  # stale
+    assert B.DECISION_GRADE is False
