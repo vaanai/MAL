@@ -50,9 +50,9 @@ EXIT_S_DEFAULT = 300.0
 WSOL = "So11111111111111111111111111111111111111112"
 EXIT_OK, EXIT_REFUSED, EXIT_FATAL, EXIT_MISMATCH = 0, 2, 3, 4
 MANIFEST_KEYS = {"book_id", "title", "decider", "stakes_sol", "send_lamports", "start_hour", "warmup_hours", "tape_dir", "out_root", "exit_s", "pricing_lat_entry_s",
-                 "pick_oracle", "feed_delay_slots", "wallet_ledger_root", "model_manifest", "duckdb_pin"}
+                 "pick_oracle", "feed_delay_slots", "wallet_ledger_root", "model_manifest", "duckdb_pin", "u1"}
 REQUIRED_KEYS = {"book_id", "title", "decider", "stakes_sol", "send_lamports", "start_hour", "tape_dir", "out_root"}
-DECIDERS = ("c1nf",)
+DECIDERS = ("c1nf", "u1", "u1_lowrep", "u1_placebo")  # u1*: scripts/research/u1_forward_sim.py (QP-RULING-1116-u1-forward-spec)
 
 
 class Refused(Exception):
@@ -323,6 +323,12 @@ def check_manifest(m):
     if isinstance(es, bool) or not isinstance(es, (int, float)) or not 1 <= es <= 3600:
         raise Refused("exit_s must be a number of seconds in [1, 3600]")
     m.setdefault("pricing_lat_entry_s", LAT_DECIDING_S)
+    if m["decider"] != "c1nf":
+        u1 = m.get("u1")
+        if not (isinstance(u1, dict) and isinstance(u1.get("table_a"), str) and set(u1) <= {"table_a", "table_b", "labels", "placebo_plan"}):
+            raise Refused("decider %s needs manifest key u1 = {table_a, [table_b], [labels], [placebo_plan]} (file paths)" % m["decider"])
+        if m["decider"] == "u1_placebo" and not isinstance(u1.get("placebo_plan"), str):
+            raise Refused("decider u1_placebo needs u1.placebo_plan")
     if True:
         v = m["pricing_lat_entry_s"]
         if isinstance(v, bool) or not isinstance(v, (int, float)) or v not in O.LATENCY_VALUES_S:
@@ -421,7 +427,7 @@ def link_hour(m, out_root, ms):
 def code_sha256(extra=()):
     files = {}
     for rel in ("scripts/research/c1nf_forward_sim.py", "scripts/research/osb_follow.py", "scripts/research/floor_gap_range_engine.py", "tools/arena_paper.py", "tools/c1nf_shadow.py",
-                "tools/c1nf_features.py", "tools/c1nf_wallet_ledger.py", "tools/arena_stack_v2.py"):
+                "tools/c1nf_features.py", "tools/c1nf_wallet_ledger.py", "tools/arena_stack_v2.py", "scripts/research/u1_forward_sim.py", "scripts/research/u1_funder_fetch.py"):
         files[rel] = hashlib.sha256((REPO / rel).read_bytes()).hexdigest()
     files.update(dict(extra))
     return hashlib.sha256(json.dumps(files, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
@@ -505,6 +511,9 @@ class Book:
 
 # ------------------------------------------------------------------------------------------------------------------------------ follow
 def default_decider(m, ledger_provider=None):
+    if m["decider"] != "c1nf":
+        import u1_forward_sim as U1
+        return U1.build_decider(m)
     from tools import c1nf_shadow as CS
     mm = m.get("model_manifest") or str(REPO / "ARTIFACTS" / "c1nf_model" / "manifest.json")
     models = CS.ModelSet.from_manifest(mm)
