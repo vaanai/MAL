@@ -50,11 +50,12 @@ EXIT_S_DEFAULT = 300.0
 WSOL = "So11111111111111111111111111111111111111112"
 EXIT_OK, EXIT_REFUSED, EXIT_FATAL, EXIT_MISMATCH = 0, 2, 3, 4
 MANIFEST_KEYS = {"book_id", "title", "decider", "stakes_sol", "send_lamports", "start_hour", "warmup_hours", "tape_dir", "out_root", "exit_s", "pricing_lat_entry_s",
-                 "pick_oracle", "feed_delay_slots", "wallet_ledger_root", "model_manifest", "model_manifest_sha256", "duckdb_pin", "rent_mode"}
+                 "pick_oracle", "feed_delay_slots", "wallet_ledger_root", "model_manifest", "model_manifest_sha256", "duckdb_pin", "rent_mode", "u1"}
 REQUIRED_KEYS = {"book_id", "title", "decider", "stakes_sol", "send_lamports", "start_hour", "tape_dir", "out_root"}
-DECIDERS = ("c1nf", "u4", "u2")
-WARMUP_MIN_BY_DECIDER = {"u4": 168, "u2": 192}      # QP-RULING-1116-u4-u2-p81-forward-specs 0.3: W >= 168 h (U4), >= 192 h (U2); otherwise S moves later
-EXIT_S_MAX = {"c1nf": 3600, "u4": 259_200, "u2": 259_200}  # ruling 0.2 item 2: exit_s up to 72 h for the mark-clock books; c1nf stays at 3600
+DECIDERS = ("c1nf", "u4", "u2", "u1", "u1_lowrep", "u1_placebo")
+U1_DECIDERS = ("u1", "u1_lowrep", "u1_placebo")      # scripts/research/u1_forward_sim.py (QP-RULING-1116-u1-forward-spec); no model, no wallet ledger; each is its own book run (bot "main")
+WARMUP_MIN_BY_DECIDER = {"u4": 168, "u2": 192, "u1": 168, "u1_lowrep": 168, "u1_placebo": 168}      # QP-RULING-1116-u4-u2-p81-forward-specs 0.3: W >= 168 h (U4), >= 192 h (U2); otherwise S moves later
+EXIT_S_MAX = {"c1nf": 3600, "u4": 259_200, "u2": 259_200, "u1": 3600, "u1_lowrep": 3600, "u1_placebo": 3600}  # ruling 0.2 item 2: exit_s up to 72 h for the mark-clock books; c1nf stays at 3600
 GAP_DISCLOSURE = ("Strict feed-gap exclusion: any data_loss gap between decision and exit removes the trade (engine default; gap-in-hold mode cannot be combined with the 19-slot latency). "
                   "Exclusion odds rise with hold length, so early exits (stops, takes, share-fall) are over-represented among priced trades; excluded {n} of {N} entries ({timed}/{requested}).")  # ADD1 A1, verbatim
 PLACEBO_DECIDERS = ("u4", "u2")                      # ruling 0.7: a second bot_id whose entries the decider draws; it never enters the decider's view of the deciding book
@@ -363,6 +364,16 @@ def check_manifest(m):
         raise Refused("title must be a string")
     if m["decider"] not in DECIDERS:
         raise Refused("decider must be one of %s" % (list(DECIDERS),))
+    if m["decider"] in U1_DECIDERS:
+        u1 = m.get("u1")
+        if not (isinstance(u1, dict) and isinstance(u1.get("table_a"), str) and set(u1) <= {"table_a", "table_b", "labels", "placebo_plan", "placebo_plan_sha256", "hr_exclusion"}):
+            raise Refused("decider %s needs manifest key u1 = {table_a, [table_b], [labels], [placebo_plan, placebo_plan_sha256], hr_exclusion} (file paths)" % m["decider"])
+        if u1.get("hr_exclusion") is not True:
+            raise Refused("u1.hr_exclusion must be true: the holder-rewards exclusion is required (QP ADD1 4); the runner does not start without it")
+        if m["decider"] == "u1_placebo" and not (isinstance(u1.get("placebo_plan"), str) and isinstance(u1.get("placebo_plan_sha256"), str)):
+            raise Refused("decider u1_placebo needs u1.placebo_plan and u1.placebo_plan_sha256 (the plan is written and hashed before any placebo price)")
+    elif "u1" in m:
+        raise Refused("manifest key u1 is only for the u1 deciders")
     st = m["stakes_sol"]
     if not (isinstance(st, list) and st and all(isinstance(x, (int, float)) and not isinstance(x, bool) and x > 0 for x in st)) or any(x > 2.0 for x in st) or any(b <= a for a, b in zip(st, st[1:])):
         raise Refused("stakes_sol: non-empty, each value in (0, 2.0], strictly ascending")
@@ -459,7 +470,7 @@ def check_production_pins(m, fixture=False):
     """pre-S guards (QP/reviewer on #1415). A production manifest MUST carry duckdb_pin and model_manifest_sha256; `fixture=True` (a test seam, not a CLI flag or manifest key) skips the
     requirement. Always: model_manifest sits inside ARTIFACTS/c1nf_model (fixture: anywhere) and its file sha256 equals the pinned value; wallet_ledger_root sits under out_root and carries
     no forbidden word."""
-    if m["decider"] in PLACEBO_DECIDERS:  # U4 / U2 load no model and build no wallet ledger (ruling 0.1): there is nothing to pin, and a model or ledger key is refused
+    if m["decider"] in PLACEBO_DECIDERS or m["decider"] in U1_DECIDERS:  # U4 / U2 / U1 load no model and build no wallet ledger (ruling 0.1): there is nothing to pin, and a model or ledger key is refused
         for k in ("duckdb_pin", "model_manifest", "model_manifest_sha256", "wallet_ledger_root", "pick_oracle"):
             if m.get(k) is not None:
                 raise Refused("%s is not allowed for decider %s (no model, no wallet ledger, no pick oracle)" % (k, m["decider"]))
@@ -523,7 +534,7 @@ def link_hour(m, out_root, ms):
 def code_sha256(extra=()):
     files = {}
     for rel in ("scripts/research/c1nf_forward_sim.py", "scripts/research/osb_follow.py", "scripts/research/floor_gap_range_engine.py", "tools/arena_paper.py", "tools/c1nf_shadow.py",
-                "tools/c1nf_features.py", "tools/c1nf_wallet_ledger.py", "tools/arena_stack_v2.py"):
+                "tools/c1nf_features.py", "tools/c1nf_wallet_ledger.py", "tools/arena_stack_v2.py", "scripts/research/u1_forward_sim.py", "scripts/research/u1_funder_fetch.py"):
         files[rel] = hashlib.sha256((REPO / rel).read_bytes()).hexdigest()
     files.update(dict(extra))
     return hashlib.sha256(json.dumps(files, sort_keys=True, separators=(",", ":")).encode()).hexdigest()
@@ -689,6 +700,9 @@ class Book:
 
 # ------------------------------------------------------------------------------------------------------------------------------ follow
 def default_decider(m, ledger_provider=None):
+    if m["decider"] in U1_DECIDERS:
+        import u1_forward_sim as U1
+        return U1.build_decider(m)
     if m["decider"] in PLACEBO_DECIDERS:
         import u4_u2_deciders as UD
         return UD.make_decider(m, hour_to_ms=parse_hour)
