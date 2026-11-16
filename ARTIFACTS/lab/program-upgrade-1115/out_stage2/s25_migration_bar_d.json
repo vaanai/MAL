@@ -1,0 +1,372 @@
+{
+ "n_pre_this_review": 33,
+ "n_1114_pre": 33,
+ "n_1114_M": 27,
+ "union_range": {
+  "sol_amount": [
+   12582941,
+   94846797684
+  ],
+  "mint_amount": [
+   185399044810855,
+   206900000000000
+  ],
+  "initial_liquidity": [
+   51023626810,
+   4193388436247
+  ],
+  "pool_migration_fee": [
+   15000001,
+   15000001
+  ]
+ },
+ "pre_median": {
+  "sol_amount": 84990359056,
+  "mint_amount": 206900000000000,
+  "initial_liquidity": 4193388282604,
+  "pool_migration_fee": 15000001
+ },
+ "pre_fee_values": [
+  15000001
+ ],
+ "M": {
+  "n_wsol": 29,
+  "median": {
+   "sol_amount": 84990359056,
+   "mint_amount": 206900000000000,
+   "initial_liquidity": 4193388282604,
+   "pool_migration_fee": 15000001
+  },
+  "min": {
+   "sol_amount": 14991574,
+   "mint_amount": 195275405814792,
+   "initial_liquidity": 55693416671,
+   "pool_migration_fee": 15000001
+  },
+  "max": {
+   "sol_amount": 90049772950,
+   "mint_amount": 206900000000000,
+   "initial_liquidity": 4193388399440,
+   "pool_migration_fee": 15000001
+  },
+  "fee_values": [
+   15000001
+  ],
+  "medians_equal_pre": {
+   "sol_amount": true,
+   "mint_amount": true,
+   "initial_liquidity": true
+  },
+  "fee_constant_and_equal_pre": true,
+  "outside_union": {
+   "sol_amount": [],
+   "mint_amount": [],
+   "initial_liquidity": [],
+   "pool_migration_fee": []
+  },
+  "verdict": "MET"
+ },
+ "M2": {
+  "n_wsol": 31,
+  "median": {
+   "sol_amount": 505178719,
+   "mint_amount": 206900000000000,
+   "initial_liquidity": 323297814655,
+   "pool_migration_fee": 15000001
+  },
+  "min": {
+   "sol_amount": 18777065,
+   "mint_amount": 199345825183716,
+   "initial_liquidity": 62329565604,
+   "pool_migration_fee": 15000001
+  },
+  "max": {
+   "sol_amount": 88211055730,
+   "mint_amount": 206900000000000,
+   "initial_liquidity": 4193388346351,
+   "pool_migration_fee": 15000001
+  },
+  "fee_values": [
+   15000001
+  ],
+  "medians_equal_pre": {
+   "sol_amount": false,
+   "mint_amount": true,
+   "initial_liquidity": false
+  },
+  "fee_constant_and_equal_pre": true,
+  "outside_union": {
+   "sol_amount": [],
+   "mint_amount": [],
+   "initial_liquidity": [],
+   "pool_migration_fee": []
+  },
+  "verdict": "NOT MET"
+ },
+ "M+M2": {
+  "n_wsol": 60,
+  "median": {
+   "sol_amount": 44788455109.5,
+   "mint_amount": 206900000000000.0,
+   "initial_liquidity": 2583766373015.0,
+   "pool_migration_fee": 15000001.0
+  },
+  "min": {
+   "sol_amount": 14991574,
+   "mint_amount": 195275405814792,
+   "initial_liquidity": 55693416671,
+   "pool_migration_fee": 15000001
+  },
+  "max": {
+   "sol_amount": 90049772950,
+   "mint_amount": 206900000000000,
+   "initial_liquidity": 4193388399440,
+   "pool_migration_fee": 15000001
+  },
+  "fee_values": [
+   15000001
+  ],
+  "medians_equal_pre": {
+   "sol_amount": false,
+   "mint_amount": true,
+   "initial_liquidity": false
+  },
+  "fee_constant_and_equal_pre": true,
+  "outside_union": {
+   "sol_amount": [],
+   "mint_amount": [],
+   "initial_liquidity": [],
+   "pool_migration_fee": []
+  },
+  "verdict": "NOT MET"
+ },
+ "first_print_V_post": {
+  "n": 13,
+  "min": 0,
+  "median": 0,
+  "max": 17584506268
+ },
+ "first_print_V_pre": {
+  "n": 6,
+  "min": 0,
+  "median": 8792252644.0,
+  "max": 17584505399
+ },
+ "post_hoc_split_by_mayhem_report_only": {
+  "M": {
+   "n": 29,
+   "n_sol_below_5_SOL": 11,
+   "share_below_5_SOL": 0.3793103448275862,
+   "n_mayhem_true": 11,
+   "mayhem_true_equals_below_5_SOL": true,
+   "mayhem_False": {
+    "n": 18,
+    "median": {
+     "sol_amount": 85056384257.5,
+     "mint_amount": 206739525952529.0,
+     "initial_liquidity": 4193388294865.0
+    },
+    "min": {
+     "sol_amount": 84990359056,
+     "mint_amount": 195275405814792,
+     "initial_liquidity": 4193388282604
+    },
+    "max": {
+     "sol_amount": 90049772950,
+     "mint_amount": 206900000000000,
+     "initial_liquidity": 4193388399440
+    }
+   },
+   "mayhem_True": {
+    "n": 11,
+    "median": {
+     "sol_amount": 107418812,
+     "mint_amount": 206900000000000,
+     "initial_liquidity": 149080354852
+    },
+    "min": {
+     "sol_amount": 14991574,
+     "mint_amount": 206900000000000,
+     "initial_liquidity": 55693416671
+    },
+    "max": {
+     "sol_amount": 460094776,
+     "mint_amount": 206900000000000,
+     "initial_liquidity": 308534615812
+    }
+   }
+  },
+  "M2": {
+   "n": 31,
+   "n_sol_below_5_SOL": 19,
+   "share_below_5_SOL": 0.6129032258064516,
+   "n_mayhem_true": 19,
+   "mayhem_true_equals_below_5_SOL": true,
+   "mayhem_False": {
+    "n": 12,
+    "median": {
+     "sol_amount": 85121321520.0,
+     "mint_amount": 206581677603331.5,
+     "initial_liquidity": 4193388296123.0
+    },
+    "min": {
+     "sol_amount": 84990359056,
+     "mint_amount": 199345825183716,
+     "initial_liquidity": 4193388282604
+    },
+    "max": {
+     "sol_amount": 88211055730,
+     "mint_amount": 206900000000000,
+     "initial_liquidity": 4193388346351
+    }
+   },
+   "mayhem_True": {
+    "n": 19,
+    "median": {
+     "sol_amount": 132127432,
+     "mint_amount": 206900000000000,
+     "initial_liquidity": 165339546632
+    },
+    "min": {
+     "sol_amount": 18777065,
+     "mint_amount": 206900000000000,
+     "initial_liquidity": 62329565604
+    },
+    "max": {
+     "sol_amount": 4586551163,
+     "mint_amount": 206900000000000,
+     "initial_liquidity": 974144463426
+    }
+   }
+  },
+  "pre_this_review": {
+   "n": 33,
+   "n_sol_below_5_SOL": 14,
+   "share_below_5_SOL": 0.42424242424242425,
+   "n_mayhem_true": 15,
+   "mayhem_true_equals_below_5_SOL": false,
+   "mayhem_False": {
+    "n": 18,
+    "median": {
+     "sol_amount": 85157001577.5,
+     "mint_amount": 206495128731760.5,
+     "initial_liquidity": 4193388313305.5
+    },
+    "min": {
+     "sol_amount": 84990359056,
+     "mint_amount": 201060921814347,
+     "initial_liquidity": 4193388282604
+    },
+    "max": {
+     "sol_amount": 87458594583,
+     "mint_amount": 206900000000000,
+     "initial_liquidity": 4193388436247
+    }
+   },
+   "mayhem_True": {
+    "n": 15,
+    "median": {
+     "sol_amount": 395616702,
+     "mint_amount": 206900000000000,
+     "initial_liquidity": 286099800146
+    },
+    "min": {
+     "sol_amount": 34744342,
+     "mint_amount": 206900000000000,
+     "initial_liquidity": 84785637697
+    },
+    "max": {
+     "sol_amount": 12563593233,
+     "mint_amount": 206900000000000,
+     "initial_liquidity": 1612267794104
+    }
+   }
+  },
+  "pre_1114_P": {
+   "n": 33,
+   "n_sol_below_5_SOL": 11,
+   "share_below_5_SOL": 0.3333333333333333,
+   "n_mayhem_true": 11,
+   "mayhem_true_equals_below_5_SOL": true,
+   "mayhem_False": {
+    "n": 22,
+    "median": {
+     "sol_amount": 84990359626.0,
+     "mint_amount": 206900000000000.0,
+     "initial_liquidity": 4193388295124.0
+    },
+    "min": {
+     "sol_amount": 84990359056,
+     "mint_amount": 185399044810855,
+     "initial_liquidity": 4193388282604
+    },
+    "max": {
+     "sol_amount": 94846797684,
+     "mint_amount": 206900000000000,
+     "initial_liquidity": 4193388381407
+    }
+   },
+   "mayhem_True": {
+    "n": 11,
+    "median": {
+     "sol_amount": 89442583,
+     "mint_amount": 206900000000000,
+     "initial_liquidity": 136035548378
+    },
+    "min": {
+     "sol_amount": 12582941,
+     "mint_amount": 206900000000000,
+     "initial_liquidity": 51023626810
+    },
+    "max": {
+     "sol_amount": 1107274447,
+     "mint_amount": 206900000000000,
+     "initial_liquidity": 478638781425
+    }
+   }
+  },
+  "M_1114": {
+   "n": 27,
+   "n_sol_below_5_SOL": 8,
+   "share_below_5_SOL": 0.2962962962962963,
+   "n_mayhem_true": 9,
+   "mayhem_true_equals_below_5_SOL": false,
+   "mayhem_False": {
+    "n": 18,
+    "median": {
+     "sol_amount": 85015051195.0,
+     "mint_amount": 206839926423660.5,
+     "initial_liquidity": 4193388300526.5
+    },
+    "min": {
+     "sol_amount": 84990359086,
+     "mint_amount": 204536028675450,
+     "initial_liquidity": 4193388282629
+    },
+    "max": {
+     "sol_amount": 85972654318,
+     "mint_amount": 206900000000000,
+     "initial_liquidity": 4193388373364
+    }
+   },
+   "mayhem_True": {
+    "n": 9,
+    "median": {
+     "sol_amount": 214042531,
+     "mint_amount": 206900000000000,
+     "initial_liquidity": 210440964795
+    },
+    "min": {
+     "sol_amount": 44262268,
+     "mint_amount": 206900000000000,
+     "initial_liquidity": 95696725383
+    },
+    "max": {
+     "sol_amount": 8405069980,
+     "mint_amount": 206900000000000,
+     "initial_liquidity": 1318714896731
+    }
+   }
+  }
+ }
+}
