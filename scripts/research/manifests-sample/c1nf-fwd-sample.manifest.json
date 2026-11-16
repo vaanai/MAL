@@ -1,0 +1,13 @@
+{
+ "book_id": "c1nf-fwd-sample",
+ "title": "C1-NF forward paper sim on hv7 (SAMPLE, not a live manifest)",
+ "decider": "c1nf",
+ "stakes_sol": [0.1, 0.25, 0.5, 1.0],
+ "send_lamports": 160000,
+ "start_hour": "2026-11-17T00",
+ "warmup_hours": 0,
+ "exit_s": 300,
+ "oracle_bypass_forward": true,
+ "tape_dir": "/data2/mal/arena-tip-feed/hv7",
+ "out_root": "/data2/mal/scratch/c1nf-forward-sim/c1nf-fwd-sample"
+}
