@@ -165,7 +165,7 @@ def test_parity_decisions_equal_the_tiptail_shadow_path_on_a_synthetic_tip_tape(
         w["signature"] = "sig%d" % slot  # the tip's cached singular `virtual_quote_reserve` stays on the raw row: the pinned adapter drops it, event mode never reads it
         raw.append(w)
     # (a) shadow path on the raw rows
-    eng_a = T.WalletEngine(T.only_minute(10, 15), True)
+    eng_a = T.WalletEngine(T.only_minute(10, 20), True)
     eng_a.v_source = "event"
     sink = cs.MemorySink()
     models = cs.ModelSet([{"from_day": "0000-00-00", "file": T.__file__, "sha256": T.sha_of(T.__file__)}], loader=lambda p: T.StubModel(0.05))
@@ -180,7 +180,7 @@ def test_parity_decisions_equal_the_tiptail_shadow_path_on_a_synthetic_tip_tape(
         a["prog"], a["type"] = "pumpswap", "trade"
         arena.append(a)
     assert all("virtual_quote_reserve" not in a for a in arena) and all(a["block_time"] == w["block_time"] for a, w in zip(arena, raw))
-    d, _ = mk_decider(T.only_minute(10, 15), oracle_bypass=True)
+    d, _ = mk_decider(T.only_minute(10, 20), oracle_bypass=True)
     ents = d.decide(arena, S.RunState(hour="2026-09-04T12", warmup=False, day="2026-09-04"))
     picks_b = [{"pool": e.pool, "decision_T_ms": e.meta["decision_T_ms"], "SD_slot": e.meta["SD_slot"], "pred": e.meta["pred"], "feature_hash": e.meta["feature_hash"], "model_sha": e.meta["model_sha"]}
                for e in ents]
@@ -258,7 +258,7 @@ def test_path_guard(tmp_path):
     assert f(out_root=str(tmp_path / "other")) == 2
     for bad in ("/var/lib/mal/sealed/fast-trades-tip", "/data2/mal/arena-tip-feed/hv7", "/data2/mal/tip-tape-archive", "/home/claude/mal-data/arena-mirror/tape", "/data2/mal/fast0-offload-1113",
                 "/data/mal/blocks/forward-1016", "/data/mal/r4b", "/data/mal/meta-capture"):
-        assert S.follow(manifest(tmp_path, tape_dir=bad), once=True, _roots=(bad, str(tmp_path / "sim")), decider_factory=lambda m: None) == 2
+        assert S.follow(manifest(tmp_path, tape_dir=bad), once=True, decider_factory=lambda m: None) == 2  # default roots
         assert S.follow(manifest(tmp_path, out_root=str(tmp_path / "sim") + bad), once=True, _roots=roots(tmp_path), decider_factory=lambda m: None) == 2
 
 
@@ -345,7 +345,7 @@ def test_latency_twin_and_fee_beside_reach_the_priced_rows(tmp_path):
 
 
 def test_warmup_hours_are_listed_feed_the_decider_and_write_no_ledger_rows(tmp_path):
-    write_keep(tmp_path, 2, warm=2)
+    write_keep(tmp_path, 3, warm=2)
     m = manifest(tmp_path, warmup_hours=2)
     dec = StubDecider()
     assert run(tmp_path, m, dec) == 0
@@ -415,7 +415,7 @@ def test_book_files_have_osb_follows_layout_and_the_board_readers_work(tmp_path)
     for f in ("bots.json", "variant.json"):
         assert (run_dir / f).is_file()
     assert list((run_dir / "ledger").glob("*/trades-2026-11-17.jsonl"))
-    assert (out / "manifest.sha256").read_text().strip() == S.manifest_sha256(m)
+    assert (out / "manifest.sha256").read_text().strip() == S.manifest_sha256(S.check_manifest(dict(m)))
     st = json.loads((out / "status.json").read_text())
     assert {"book_id", "manifest_sha256", "code_sha256", "run", "stakes_sol", "last_hour", "last_hour_end_ms", "active", "wall_time_utc"} <= set(st)
     assert st["stakes_sol"] == [0.1, 0.25, 0.5, 1.0] and st["last_hour"] == "2026-11-17T01" and st["active"] is True
