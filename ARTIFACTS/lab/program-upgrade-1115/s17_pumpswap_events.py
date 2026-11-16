@@ -7,7 +7,7 @@ from pathlib import Path
 sys.argv = [sys.argv[0]]
 exec(open("s06_parity.py").read().split("acc = dict(")[0])
 WSOL = td.WSOL_MINT
-BASE = Path("/data2/mal/scratch/a3-repin-1115")
+BASE = Path(os.environ.get("A3_BASE", "/data2/mal/scratch/a3-repin-1115"))
 MIG = json.load(open(BASE / "raw" / "migrate_index.json"))
 
 def txs(root, label):
@@ -70,6 +70,6 @@ for nm, v in res["post"]["types"].items():
 for nm in res["pre"]["types"]:
     if nm not in res["post"]["types"]: dev.append(f"{nm}: in pre, absent from post (named, not failed)")
 res["notes_and_deviations"] = dev
-Path("out/s17_pumpswap_events.json").write_text(json.dumps(res, indent=1, sort_keys=True))
+Path(os.environ.get("UPGRADE_OUT", "out") + "/s17_pumpswap_events.json").write_text(json.dumps(res, indent=1, sort_keys=True))
 print(json.dumps({k: v for k, v in res.items() if k not in ("post", "pre")}, indent=1)); 
 for l in ("post", "pre"): print(l, res[l]["n_tx"], {k: (v["n"], v["trailing"]) for k, v in res[l]["types"].items()})

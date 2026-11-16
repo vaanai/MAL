@@ -1,11 +1,11 @@
 """Explain the N5 cases 'trade event present, 0 recognised trade instruction' (post 14 of 19,044 txs, pre 3 of 8,264): for each, which instruction names of pump / PumpSwap / fees
 (top-level and inner) the tx carries and the program of the event. Offline from the cached blocks. Structure only."""
-import collections, gzip, json, sys
+import collections, gzip, json, sys, os
 from pathlib import Path
 sys.argv = [sys.argv[0]]
 exec(open("s06_parity.py").read().split("acc = dict(")[0])
-BASE = Path("/data2/mal/scratch/a3-repin-1115"); out = {}
-for label, root, f in (("post", "raw", "out/s06_parity.json"), ("pre", "raw_pre", "out/s06_parity_pre.json")):
+BASE = Path(os.environ.get("A3_BASE", "/data2/mal/scratch/a3-repin-1115")); out = {}
+for label, root, f in (("post", "raw", os.environ.get("UPGRADE_OUT", "out") + "/s06_parity.json"), ("pre", "raw_pre", os.environ.get("UPGRADE_OUT", "out") + "/s06_parity_pre.json")):
     d = json.load(open(f)); want = {(x["slot"]) for x in d["nondecode"] if x["cat"] == "N5" and not x.get("explained_by_cap") and x.get("trade_ix") == 0}
     rows = []
     for slot in sorted(want):
@@ -19,4 +19,4 @@ for label, root, f in (("post", "raw", "out/s06_parity.json"), ("pre", "raw_pre"
             if any(is_trade_ix(n.split('.', 1)[1]) for n in names if n.startswith(("pump.", "pump_amm."))): continue
             rows.append({"slot": slot, "events": sorted({f"{p}.{n}" for p, n in evs if n in ("TradeEvent", "BuyEvent", "SellEvent")}), "ix": sorted(set(names))})
     out[label] = {"n": len(rows), "by_ix_set": dict(collections.Counter(json.dumps(r["ix"]) + " <- " + json.dumps(r["events"]) for r in rows))}
-Path("out/s21_n5_explain.json").write_text(json.dumps(out, indent=1)); print(json.dumps(out, indent=1))
+Path(os.environ.get("UPGRADE_OUT", "out") + "/s21_n5_explain.json").write_text(json.dumps(out, indent=1)); print(json.dumps(out, indent=1))

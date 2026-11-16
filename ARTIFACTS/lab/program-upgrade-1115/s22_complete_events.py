@@ -11,7 +11,7 @@ from common import LClient, OUT, RAW
 from solders.pubkey import Pubkey
 MODE = os.environ.get("SAMPLE", "post"); K = 8 if MODE == "post" else 5
 D_PUMP = 469811025
-MIG = json.load(open("/data2/mal/scratch/a3-repin-1115/raw/migrate_index.json"))
+MIG = json.load(open(os.environ.get("A3_BASE", "/data2/mal/scratch/a3-repin-1115") + "/raw/migrate_index.json"))
 rows = [r for r in MIG["post" if MODE == "post" else "pre"] if r["quote_wsol"]]
 rows = sorted(rows, key=lambda r: r["slot"] if MODE == "post" else -r["slot"])
 c = LClient(max_calls=900, min_interval=0.5)

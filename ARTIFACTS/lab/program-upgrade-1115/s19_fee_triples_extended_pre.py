@@ -1,7 +1,7 @@
 """POST-HOC addition (declared here, after s17 found 5 post fee triples absent from the declared pre control P + M_pre; see review section 6c): the same triple count over the
 cached blocks of the 2026-11-14 review (chain blocks 469058660..469263564 and 469015660..469055069 and 468975660..469014669: PumpSwap at the pinned e3d3be22 binary the whole time,
 all before this redeploy; the earlier sample files are read-only here). Report-only: it does not replace the declared bar. Structure only."""
-import collections, gzip, json, sys
+import collections, gzip, json, sys, os
 from pathlib import Path
 sys.argv = [sys.argv[0]]
 src = open("s17_pumpswap_events.py").read()
@@ -28,10 +28,10 @@ for r in ("raw", "raw_pre", "raw_pre2"):
             except Short: continue
             trip[f"{ev['lp_fee_basis_points']},{ev['protocol_fee_basis_points']},{ev['coin_creator_fee_basis_points']}|{nm}"] += 1
     ntrig_by_root[r] = sum(trip.values()) - t0
-s17r = json.load(open("out/s17_pumpswap_events.json"))
+s17r = json.load(open(os.environ.get("UPGRADE_OUT", "out") + "/s17_pumpswap_events.json"))
 post_t = {k.split("|")[0] for k in s17r["post"]["wsol_only_fee_triples"]}; pre_t = {k.split("|")[0] for k in s17r["pre"]["wsol_only_fee_triples"]}
 ext_t = {k.split("|")[0] for k in trip}
 res = {"n_tx": n_tx, "wsol_only_events_by_root": ntrig_by_root, "triples": dict(sorted(trip.items())), "post_minus_pre": sorted(post_t - pre_t), "post_minus_pre_minus_ext": sorted(post_t - pre_t - ext_t),
        "post_minus_ext_only": sorted(post_t - ext_t), "n_distinct_pre_P": len(pre_t), "n_distinct_ext": len(ext_t), "n_distinct_post": len(post_t)}
-Path("out/s19_fee_triples_extended_pre.json").write_text(json.dumps(res, indent=1))
+Path(os.environ.get("UPGRADE_OUT", "out") + "/s19_fee_triples_extended_pre.json").write_text(json.dumps(res, indent=1))
 print(json.dumps({k: v for k, v in res.items() if k != "triples"}, indent=1))

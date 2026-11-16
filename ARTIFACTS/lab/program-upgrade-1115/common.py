@@ -18,7 +18,7 @@ sys.path.insert(0, str(REPO))
 import tools.pump_structure_monitor as m  # noqa: E402  (read-only import of the monitor)
 
 RAW = Path(os.environ.get("UPGRADE_RAW", "/data2/mal/scratch/a3-repin-1115/raw"))
-OUT = Path(__file__).resolve().parent / "out"
+OUT = Path(os.environ["UPGRADE_OUT"]).resolve() if os.environ.get("UPGRADE_OUT") else Path(__file__).resolve().parent / "out"
 RAW.mkdir(parents=True, exist_ok=True)
 OUT.mkdir(parents=True, exist_ok=True)
 CALL_LOG = RAW / "rpc_calls.log"

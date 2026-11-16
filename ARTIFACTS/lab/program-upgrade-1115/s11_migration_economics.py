@@ -12,7 +12,7 @@ sys.argv = [sys.argv[0]]
 os.environ.setdefault("UPGRADE_RAW", "/data2/mal/scratch/a3-repin-1115/raw")
 exec(open("s06_parity.py").read().split("acc = dict(")[0])
 from common import LClient, OUT
-BASE = Path("/data2/mal/scratch/a3-repin-1115")
+BASE = Path(os.environ.get("A3_BASE", "/data2/mal/scratch/a3-repin-1115"))
 MIG = json.load(open(BASE / "raw" / "migrate_index.json"))
 WSOL = td.WSOL_MINT
 c = LClient(max_calls=900, min_interval=0.5)
