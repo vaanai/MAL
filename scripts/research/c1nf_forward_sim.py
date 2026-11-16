@@ -50,7 +50,7 @@ EXIT_S_DEFAULT = 300.0
 WSOL = "So11111111111111111111111111111111111111112"
 EXIT_OK, EXIT_REFUSED, EXIT_FATAL, EXIT_MISMATCH = 0, 2, 3, 4
 MANIFEST_KEYS = {"book_id", "title", "decider", "stakes_sol", "send_lamports", "start_hour", "warmup_hours", "tape_dir", "out_root", "exit_s", "pricing_lat_entry_s",
-                 "pick_oracle", "feed_delay_slots", "wallet_ledger_root", "model_manifest", "duckdb_pin"}
+                 "pick_oracle", "feed_delay_slots", "wallet_ledger_root", "model_manifest", "model_manifest_sha256", "duckdb_pin", "rent_mode"}
 REQUIRED_KEYS = {"book_id", "title", "decider", "stakes_sol", "send_lamports", "start_hour", "tape_dir", "out_root"}
 DECIDERS = ("c1nf",)
 
@@ -248,6 +248,34 @@ class C1nfDecider:
 
 
 # ------------------------------------------------------------------------------------------------------------------------------ forward wallet ledger
+def tree_files_md5(root):
+    """md5 over (relative path, bytes) of every file under root (dot files skipped), sorted: the wallet-ledger state compared across the twin / fee-beside processes"""
+    h = hashlib.md5()
+    root = Path(root)
+    if not root.is_dir():
+        return h.hexdigest()
+    for f in sorted(p for p in root.rglob("*") if p.is_file() and not p.name.startswith(".")):
+        h.update(str(f.relative_to(root)).encode() + b"\0")
+        with open(f, "rb") as fh:
+            for chunk in iter(lambda: fh.read(1 << 20), b""):
+                h.update(chunk)
+    return h.hexdigest()
+
+
+def compare_books(out_a, out_b):
+    """twin / fee-beside comparison (QP condition on #1415): -> {"decision_md5_first_mismatch": hour | None, "wallet_md5_first_mismatch": day | None, "hours_compared": n, "days_compared": n}.
+    From the first mismatching hour (or day) the other book's columns are dropped; the deciding book alone stands. Reads only md5 files."""
+    def jl(p):
+        return [json.loads(ln) for ln in Path(p).read_text().splitlines() if ln.strip()] if Path(p).exists() else []
+    a, b = {r["hour"]: r["decision_md5"] for r in jl(Path(out_a) / "md5-by-hour.jsonl")}, {r["hour"]: r["decision_md5"] for r in jl(Path(out_b) / "md5-by-hour.jsonl")}
+    common = sorted(set(a) & set(b))
+    dm = next((h for h in common if a[h] != b[h]), None)
+    wa, wb = {r["day"]: r["md5"] for r in jl(Path(out_a) / "wallet-ledger-md5.jsonl")}, {r["day"]: r["md5"] for r in jl(Path(out_b) / "wallet-ledger-md5.jsonl")}
+    wcommon = sorted(set(wa) & set(wb))
+    wm = next((d for d in wcommon if wa[d] != wb[d]), None)
+    return {"decision_md5_first_mismatch": dm, "wallet_md5_first_mismatch": wm, "hours_compared": len(common), "days_compared": len(wcommon)}
+
+
 class LedgerStep:
     """Builds the as-of wallet ledger forward. note_hour(hour, adapted trade rows) after each processed hour (warm-up included); a day's ledger is built only when all 24 hours of that
     UTC day were noted (builder(day, src_dir, ledger_root)); otherwise `ledger_day_incomplete` counts it. `builder` is injectable: the default calls tools/c1nf_wallet_ledger
@@ -257,6 +285,7 @@ class LedgerStep:
         self.src_root, self.ledger_root, self.builder = Path(src_root), Path(ledger_root), builder or default_ledger_builder
         self.hours = collections.defaultdict(set)
         self.built, self.incomplete = [], []
+        self.md5s = {}  # day -> md5 of the wallet-ledger tree right after that day's build
 
     def note_hour(self, hour, trade_rows):
         day = hour[:10]
@@ -275,6 +304,7 @@ class LedgerStep:
             return False
         self.builder(day, self.src_root / day, self.ledger_root)
         self.built.append(day)
+        self.md5s[day] = tree_files_md5(self.ledger_root)
         return True
 
 
@@ -327,6 +357,11 @@ def check_manifest(m):
         v = m["pricing_lat_entry_s"]
         if isinstance(v, bool) or not isinstance(v, (int, float)) or v not in O.LATENCY_VALUES_S:
             raise Refused("pricing_lat_entry_s must be one of the declared values %s" % (list(O.LATENCY_VALUES_S),))
+    if m.get("rent_mode", "stranded") not in ("stranded", "refunded"):
+        raise Refused("rent_mode must be 'stranded' (2,039,280 lamports subtracted per fill: the deciding mode until C1-NF's live ATA close is verified, ruling 2.5) or 'refunded'")
+    mh = m.get("model_manifest_sha256")
+    if mh is not None and not (isinstance(mh, str) and re.fullmatch(r"[0-9a-f]{64}", mh)):
+        raise Refused("model_manifest_sha256 must be 64 hex")
     dp = m.get("duckdb_pin")
     if dp is not None and not (isinstance(dp, dict) and set(dp) == {"version", "sha256"} and isinstance(dp["version"], str) and re.fullmatch(r"[0-9a-f]{64}", str(dp["sha256"]))):
         raise Refused("duckdb_pin must be {version: str, sha256: 64 hex of the installed duckdb module file}")
@@ -387,6 +422,38 @@ def duckdb_identity():
     return duckdb.__version__, hashlib.sha256(Path(duckdb.__file__).read_bytes()).hexdigest()
 
 
+MODEL_DIR = REPO / "ARTIFACTS" / "c1nf_model"
+
+
+def check_production_pins(m, fixture=False):
+    """pre-S guards (QP/reviewer on #1415). A production manifest MUST carry duckdb_pin and model_manifest_sha256; `fixture=True` (a test seam, not a CLI flag or manifest key) skips the
+    requirement. Always: model_manifest sits inside ARTIFACTS/c1nf_model (fixture: anywhere) and its file sha256 equals the pinned value; wallet_ledger_root sits under out_root and carries
+    no forbidden word."""
+    if not fixture:
+        for k in ("duckdb_pin", "model_manifest_sha256"):
+            if m.get(k) is None:
+                raise Refused("%s is required in a production manifest" % k)
+    mm = Path(m.get("model_manifest") or MODEL_DIR / "manifest.json")
+    real = os.path.realpath(mm)
+    if not fixture and not real.startswith(os.path.realpath(MODEL_DIR) + os.sep):
+        raise Refused("model_manifest must sit inside %s" % MODEL_DIR)
+    if m.get("model_manifest_sha256") is not None:
+        try:
+            got = hashlib.sha256(Path(real).read_bytes()).hexdigest()
+        except OSError as e:
+            raise Refused("model_manifest unreadable: %s" % e)
+        if got != m["model_manifest_sha256"]:
+            raise Refused("model_manifest sha256 %s != pinned %s: refused" % (got, m["model_manifest_sha256"]))
+    wl = m.get("wallet_ledger_root")
+    if wl is not None:
+        wr, orr = os.path.realpath(wl), os.path.realpath(m["out_root"])
+        if not wr.startswith(orr + os.sep):
+            raise Refused("wallet_ledger_root must sit under out_root")
+        for w in FORBIDDEN_PATH_WORDS:
+            if w in wr.replace(orr, ""):
+                raise Refused("wallet_ledger_root: forbidden path word %r" % w)
+
+
 def check_duckdb_pin(m, probe=None):
     dp = m.get("duckdb_pin")
     if dp is None:
@@ -440,7 +507,8 @@ class Book:
         (self.run_dir / "variant.json").write_text(json.dumps({"book_id": m["book_id"], "decider": m["decider"], "exit_s": m.get("exit_s", EXIT_S_DEFAULT),
                                                                 "pricing_lat_entry_s": m.get("pricing_lat_entry_s"), "send": m["send_lamports"], "bot_id": self.bot}, indent=1, sort_keys=True) + "\n")
         self._register(registry, code_sha, start_ms)
-        cfg = dataclasses.replace(stack_config_for(2, m.get("feed_delay_slots", R.DEFAULT_FEED_DELAY_SLOTS)), send=m["send_lamports"], stakes_sol=tuple(float(x) for x in m["stakes_sol"]))
+        cfg = dataclasses.replace(stack_config_for(2, m.get("feed_delay_slots", R.DEFAULT_FEED_DELAY_SLOTS)), send=m["send_lamports"], rent=(0 if m.get("rent_mode", "stranded") == "refunded" else AP.RENT_LAMPORTS),
+                                  stakes_sol=tuple(float(x) for x in m["stakes_sol"]))
         self.clock = start_ms
         kw = dict(engine_kw or {})
         if "pricing_lat_entry_s" in m:
@@ -517,11 +585,11 @@ def default_decider(m, ledger_provider=None):
 _DUCKDB_PROBE = [None]  # test seam
 
 
-def follow(manifest_path_or_dict, once=False, max_hours=None, *, sleep_fn=time.sleep, _roots=None, decider_factory=None, ledger_builder=None, engine_kw=None):
+def follow(manifest_path_or_dict, once=False, max_hours=None, *, sleep_fn=time.sleep, _roots=None, decider_factory=None, ledger_builder=None, engine_kw=None, fixture=False):
     """-> exit code. _roots, decider_factory, ledger_builder, engine_kw are test seams (the CLI does not expose them)."""
     try:
         m = check_manifest(dict(manifest_path_or_dict)) if isinstance(manifest_path_or_dict, dict) else load_manifest(manifest_path_or_dict)
-        return _follow(m, once, max_hours, sleep_fn, _roots or (KEEP_ROOT, SIM_ROOT), decider_factory, ledger_builder, engine_kw)
+        return _follow(m, once, max_hours, sleep_fn, _roots or (KEEP_ROOT, SIM_ROOT), decider_factory, ledger_builder, engine_kw, fixture)
     except Refused as e:
         print("c1nf_forward_sim: refused: %s" % e, file=sys.stderr)
         return EXIT_REFUSED
@@ -533,8 +601,9 @@ def follow(manifest_path_or_dict, once=False, max_hours=None, *, sleep_fn=time.s
         return EXIT_FATAL
 
 
-def _follow(m, once, max_hours, sleep_fn, roots, decider_factory, ledger_builder, engine_kw):
+def _follow(m, once, max_hours, sleep_fn, roots, decider_factory, ledger_builder, engine_kw, fixture=False):
     check_seal(m)
+    check_production_pins(m, fixture)
     check_duckdb_pin(m, _DUCKDB_PROBE[0])
     guard_paths(m, roots)
     out_root = Path(m["out_root"])
@@ -614,7 +683,11 @@ def _locked(m, out_root, once, max_hours, sleep_fn, decider_factory, ledger_buil
         if not is_warm:
             book.run_hour(rows, entries)
         trades = [a[1] for a in (arena_row_to_c1nf(r) for r in rows) if a is not None and a[0] == "trades"]
+        n_built = len(lstep.built)
         lstep.note_hour(key, trades)
+        if len(lstep.built) > n_built and verified and key not in stored:
+            with open(out_root / "wallet-ledger-md5.jsonl", "a") as fh:
+                fh.write(canon({"day": lstep.built[-1], "md5": lstep.md5s[lstep.built[-1]], "hour": key}) + "\n")
         dmd5 = hashlib.md5(canon([e.as_dict() for e in entries]).encode()).hexdigest()
         lmd5 = O.tree_md5(run_dir / "ledger") if (run_dir / "ledger").exists() else hashlib.md5(b"").hexdigest()
         if key in stored:
@@ -649,6 +722,10 @@ def _locked(m, out_root, once, max_hours, sleep_fn, decider_factory, ledger_buil
 
 
 def main(argv=None):
+    argv = sys.argv[1:] if argv is None else argv
+    if argv and argv[0] == "--compare":  # c1nf_forward_sim.py --compare OUT_A OUT_B : md5 files only
+        print(json.dumps(compare_books(argv[1], argv[2]), sort_keys=True))
+        return EXIT_OK
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     ap.add_argument("manifest")
     ap.add_argument("--once", action="store_true", help="process the closed hours present now, then exit")
