@@ -104,16 +104,25 @@ def mk_decider(decide, wallet_ok=True, **kw):
     return d, eng
 
 
-def test_decider_returns_an_entry_decided_before_the_crossing_row_with_the_previous_rows_instant():
+def test_decider_stamps_the_entry_at_the_row_that_crossed_the_minute_never_the_row_before():
     d, eng = mk_decider(T.only_minute(10))
     rows = t_rows()
     ents = d.decide(rows, S.RunState(hour="2026-09-04T12", warmup=False, day="2026-09-04"))
     assert len(ents) == 1
     e = ents[0]
     assert e.pool == T.POOL and e.exit_after_s == S.EXIT_S_DEFAULT and 0 < e.at_row < len(rows)
-    assert (e.decision_ms, e.decision_slot) == (rows[e.at_row - 1]["t_recv_ms"], rows[e.at_row - 1]["slot"])
-    assert rows[e.at_row]["block_time"] // 60 * 60 == T.BT0 + 600  # the row that crossed into minute 10
+    cross = rows[e.at_row]
+    assert rows[e.at_row - 1]["block_time"] // 60 * 60 < T.BT0 + 600 <= cross["block_time"]  # the row that crossed into minute 10
+    assert (e.decision_ms, e.decision_slot) == (cross["t_recv_ms"], cross["slot"]) and e.meta["SD_slot"] == cross["slot"]
+    assert e.decision_ms > rows[e.at_row - 1]["t_recv_ms"]
     assert e.meta["pred"] == 0.05 and e.meta["h_top1"] == 0.1
+
+
+def test_a_pick_in_the_first_minute_of_the_first_forward_hour_is_stamped_at_or_after_s():
+    d, _ = mk_decider(T.only_minute(10))
+    assert d.decide(t_rows(0.0, 600.0), S.RunState(hour="w", warmup=True, day="d")) == []
+    ents = d.decide(t_rows(600.0, 700.0), S.RunState(hour="f", warmup=False, day="d"))  # the first forward row IS the crossing row
+    assert len(ents) == 1 and ents[0].at_row == 0 and ents[0].decision_ms >= (T.BT0 + 600) * 1000
 
 
 def test_warmup_hours_decide_nothing_and_run_no_outcome_path():
@@ -441,3 +450,55 @@ def test_changed_manifest_is_a_new_book(tmp_path):
     write_keep(tmp_path, 2)
     assert run(tmp_path, manifest(tmp_path), StubDecider()) == 0
     assert run(tmp_path, manifest(tmp_path, exit_s=299), StubDecider()) == 2
+
+
+def test_a_pick_at_minute_s_does_not_kill_the_runner_and_a_restart_repeats_it(tmp_path):
+    write_keep(tmp_path, 3)
+
+    class AtS(StubDecider):
+        def decide(self, rows, state):
+            self.calls.append((state.hour, state.warmup, len(rows)))
+            if state.warmup or state.hour != HOUR0:
+                return []
+            return [S.Entry(pool="P1", mint="MP1", at_row=0, decision_ms=rows[0]["t_recv_ms"], decision_slot=rows[0]["slot"])]
+    m = manifest(tmp_path)
+    assert run(tmp_path, m, AtS()) == 0
+    assert run(tmp_path, m, AtS()) == 0  # the restart replays the same hour without the same exit
+    rows = ledger_rows(m["out_root"])  # the pricing engine has no prints yet at row 0 of S: a counted, logged refusal (no_prints), not a crash and not an entry before S
+    assert [r["reason"] for r in rows if r["kind"] == "refused"] == ["no_prints"] and all(r["decision_ms"]["entry"] >= H0_MS for r in rows)
+
+
+def test_a_decision_before_s_that_reaches_the_book_stays_fatal(tmp_path):
+    write_keep(tmp_path, 2)
+
+    class Early(StubDecider):
+        def decide(self, rows, state):
+            return [S.Entry("P1", "MP1", 0, H0_MS - 1, rows[0]["slot"])] if state.hour == HOUR0 else []
+    assert run(tmp_path, manifest(tmp_path), Early()) == 2
+
+
+def test_duckdb_pin_key_is_checked_at_start(tmp_path):
+    write_keep(tmp_path, 2)
+    pin = {"version": "1.5.6", "sha256": "ab" * 32}
+    S._DUCKDB_PROBE[0] = lambda: ("1.5.6", "ab" * 32)
+    try:
+        assert run(tmp_path, manifest(tmp_path, duckdb_pin=pin), StubDecider()) == 0
+        S._DUCKDB_PROBE[0] = lambda: ("1.5.7", "ab" * 32)
+        assert run(tmp_path, manifest(tmp_path, duckdb_pin=pin, book_id="t2", out_root=str(tmp_path / "sim" / "t2")), StubDecider()) == 2
+        S._DUCKDB_PROBE[0] = lambda: ("1.5.6", "cd" * 32)
+        assert run(tmp_path, manifest(tmp_path, duckdb_pin=pin, book_id="t3", out_root=str(tmp_path / "sim" / "t3")), StubDecider()) == 2
+    finally:
+        S._DUCKDB_PROBE[0] = None
+    for bad in ({"version": "1"}, {"version": "1", "sha256": "xx"}, "1.5.6"):
+        with pytest.raises(S.Refused):
+            S.check_manifest(manifest(tmp_path, duckdb_pin=bad))
+
+
+def test_an_hour_file_that_resolves_outside_the_keeper_dir_is_refused(tmp_path):
+    write_hours(tmp_path / "elsewhere", H0_MS - S.HOUR_MS, 2)
+    keep = tmp_path / "keep"
+    keep.mkdir()
+    for f in (tmp_path / "elsewhere").iterdir():
+        (keep / f.name).symlink_to(f)  # a symlink, not a hard link
+    assert run(tmp_path, manifest(tmp_path), StubDecider()) == 2
+    assert not Path(manifest(tmp_path)["out_root"], "tapelink").exists() or not list(Path(manifest(tmp_path)["out_root"], "tapelink").iterdir())

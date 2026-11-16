@@ -50,7 +50,7 @@ EXIT_S_DEFAULT = 300.0
 WSOL = "So11111111111111111111111111111111111111112"
 EXIT_OK, EXIT_REFUSED, EXIT_FATAL, EXIT_MISMATCH = 0, 2, 3, 4
 MANIFEST_KEYS = {"book_id", "title", "decider", "stakes_sol", "send_lamports", "start_hour", "warmup_hours", "tape_dir", "out_root", "exit_s", "pricing_lat_entry_s",
-                 "pick_oracle", "feed_delay_slots", "wallet_ledger_root", "model_manifest"}
+                 "pick_oracle", "feed_delay_slots", "wallet_ledger_root", "model_manifest", "duckdb_pin"}
 REQUIRED_KEYS = {"book_id", "title", "decider", "stakes_sol", "send_lamports", "start_hour", "tape_dir", "out_root"}
 DECIDERS = ("c1nf",)
 
@@ -162,7 +162,8 @@ def arena_row_to_c1nf(row):
 @dataclasses.dataclass
 class Entry:
     """One entry decided by a Decider. at_row: index into the hour's rows; the runner buys just BEFORE that row is given to the pricing engine (the engine has then seen exactly the
-    rows the decider had seen). decision_ms / decision_slot: the stream instant of the decision (t_recv_ms and slot of the last row before at_row)."""
+    rows the decider had seen). decision_ms / decision_slot: the stream instant of the decision = t_recv_ms and slot of the row that crossed the minute (row at_row itself; QP review on
+    #1415: never the row before, a live process cannot decide before it has received the trigger row)."""
     pool: str
     mint: str
     at_row: int
@@ -232,8 +233,7 @@ class C1nfDecider:
             for p in self.sink.of("c1nf_pick"):
                 if state.warmup:
                     continue  # cannot happen (decisions are off); never an entry in a warm-up hour
-                out.append(Entry(pool=p["pool"], mint=p["mint"], at_row=i, decision_ms=self._last[0] if self._last[0] is not None else self._ms,
-                                 decision_slot=self._last[1] if self._last[1] is not None else p["SD_slot"], exit_after_s=self.exit_s,
+                out.append(Entry(pool=p["pool"], mint=p["mint"], at_row=i, decision_ms=int(row["t_recv_ms"]), decision_slot=int(p["SD_slot"]), exit_after_s=self.exit_s,
                                  meta={"pred": p["pred"], "h_top1": p["h_top1"], "model_sha": p["model_sha"], "feature_hash": p["feature_hash"], "decision_T_ms": p["decision_T_ms"],
                                        "SD_slot": p["SD_slot"], "q_lamports": p["q_lamports"], "v_lamports": p["v_lamports"]}))
             self.sink.records.clear()
@@ -327,6 +327,9 @@ def check_manifest(m):
         v = m["pricing_lat_entry_s"]
         if isinstance(v, bool) or not isinstance(v, (int, float)) or v not in O.LATENCY_VALUES_S:
             raise Refused("pricing_lat_entry_s must be one of the declared values %s" % (list(O.LATENCY_VALUES_S),))
+    dp = m.get("duckdb_pin")
+    if dp is not None and not (isinstance(dp, dict) and set(dp) == {"version", "sha256"} and isinstance(dp["version"], str) and re.fullmatch(r"[0-9a-f]{64}", str(dp["sha256"]))):
+        raise Refused("duckdb_pin must be {version: str, sha256: 64 hex of the installed duckdb module file}")
     po = m.get("pick_oracle")
     if po is not None and not (isinstance(po, str) and po.startswith("none: EXP-022 withdrawn")):
         raise Refused("pick_oracle must be a string starting 'none: EXP-022 withdrawn' (the runner never imports the oracle)")
@@ -378,11 +381,35 @@ def guard_paths(m, roots):
         raise Refused("tape_dir and out_root must be disjoint")
 
 
+def duckdb_identity():
+    """(version, sha256 of the installed duckdb module file): the wallet ledger's trader keying depends on the duckdb build (tools/c1nf_wallet_ledger check_hash_pin)"""
+    import duckdb
+    return duckdb.__version__, hashlib.sha256(Path(duckdb.__file__).read_bytes()).hexdigest()
+
+
+def check_duckdb_pin(m, probe=None):
+    dp = m.get("duckdb_pin")
+    if dp is None:
+        return
+    try:
+        got = (probe or duckdb_identity)()
+    except Exception as e:  # noqa: BLE001 - no duckdb, no start
+        raise Refused("duckdb_pin set but duckdb cannot be inspected: %s" % type(e).__name__)
+    if tuple(got) != (dp["version"], dp["sha256"]):
+        raise Refused("duckdb differs from the manifest pin: have %s, pinned %s: refused" % (got, (dp["version"], dp["sha256"])))
+
+
 def link_hour(m, out_root, ms):
     """the tape input of one hour: a symlink under out_root/tapelink to the keeper's file (the runner reads only through it). -> path or None when the keeper has no such hour"""
     src = hour_file(m["tape_dir"], ms)
     if src is None:
         return None
+    real, root = os.path.realpath(src), os.path.realpath(m["tape_dir"])
+    if not real.startswith(root + os.sep):
+        raise Refused("hour file %s resolves to %s, outside the keeper dir %s: refused" % (src.name, real, root))
+    for w in FORBIDDEN_PATH_WORDS:
+        if w in real.replace(root, ""):
+            raise Refused("hour file %s resolves to a forbidden path word %r" % (src.name, w))
     d = Path(out_root) / "tapelink"
     d.mkdir(parents=True, exist_ok=True)
     dst = d / src.name
@@ -487,6 +514,9 @@ def default_decider(m, ledger_provider=None):
     return C1nfDecider(engine, models, oracle_bypass=m.get("pick_oracle") is not None, exit_s=m.get("exit_s", EXIT_S_DEFAULT))
 
 
+_DUCKDB_PROBE = [None]  # test seam
+
+
 def follow(manifest_path_or_dict, once=False, max_hours=None, *, sleep_fn=time.sleep, _roots=None, decider_factory=None, ledger_builder=None, engine_kw=None):
     """-> exit code. _roots, decider_factory, ledger_builder, engine_kw are test seams (the CLI does not expose them)."""
     try:
@@ -505,6 +535,7 @@ def follow(manifest_path_or_dict, once=False, max_hours=None, *, sleep_fn=time.s
 
 def _follow(m, once, max_hours, sleep_fn, roots, decider_factory, ledger_builder, engine_kw):
     check_seal(m)
+    check_duckdb_pin(m, _DUCKDB_PROBE[0])
     guard_paths(m, roots)
     out_root = Path(m["out_root"])
     out_root.mkdir(parents=True, exist_ok=True)
@@ -572,8 +603,6 @@ def _locked(m, out_root, once, max_hours, sleep_fn, decider_factory, ledger_buil
         entries = decider.decide(rows, st)
         for r in rows:
             if r.get("pool"):
-                pools_seen.add(r["pool"])
-            elif r.get("type") == "pool_create" and r.get("pool"):
                 pools_seen.add(r["pool"])
             if r.get("type") == "create" and r.get("creator"):
                 creators_seen.add(r["creator"])
