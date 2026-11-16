@@ -64,6 +64,14 @@ LT_K_P50 = 14                         # S4-twin on landing_k only: p50 <= 14 slo
 LT_K_P90 = 19                         # p90 <= 14 + 5 slots (floor(1.1 s / 0.215 s)); the ms leg is printed, never banded
 LT_SCHEMA = "osb_recon_lt.v1"
 LT_JSON, LT_MD = "recon-lt-a.json", "recon-lt-a.md"
+# S window 2 (QP-RULING-1116-recon-latency-twin-ADD1, sha256 c022ebc4ee9f43a9cd736bf2aa0e7f664924a1e019ac479e6558980d527bd27c): from the 0.25 SOL install start line, the 0.25 rung only, the same twin.
+# The end is an input the manager gives (the first later executor start line whose stake, rpc_rps, code_sha256, config path or config sha256 differs), never a recon figure.
+LT_W2_START_UTC = "2026-11-16T20:34:44Z"
+LT_W2_STAKE = 0.25
+LT_W2_TWIN_ID = "osb-a-lt-a"
+LT_W2_TWIN_MANIFEST_SHA256 = "811229cb20f109124966ba40603a00b7d9e4c61df6839b51ddd3acfa94b65883"  # sha256 of the twin manifest file A-lt-ar.json (its bytes), as named in the QP ruling and ADD1
+LT_W2_SCHEMA = "osb_recon_lt_w2.v1"
+LT_W2_JSON, LT_W2_MD = "recon-lt-a-w2.json", "recon-lt-a-w2.md"
 H3_OPEN_TOLERANCE_MS = 3_600_000      # one side closed and the other still open longer than this: mismatch
 # ---- end of bands ----
 MODEL_LANDING_MS = 1900
@@ -314,13 +322,22 @@ def read_sim(manifest_path, roots=None, twin_path=None):
     return {"twin": twin, "manifest": m, "book_id": m["book_id"], "entries": entries, "exits": exits, "positions": positions, "tids": tids, "stakes": m["stakes_sol"], "end_ms": info["end"], "start_ms": start_ms, "state": info["state"]}
 
 
-def read_lt_twin(lt_path, a_manifest, roots=None):
+def read_lt_twin(lt_path, a_manifest, roots=None, pin=None):
     """latency-twin mode (QP-RULING-1116-recon-latency-twin 1(f)): -> {positions, end_ms, book_id}: the latency twin's own board valuation. Refused unless the manifest has twin_of "osb-a", pricing_lat_entry_s
     3.01, gap_exclusion on (or absent, its default), differs from book A in no key but the twin-free keys, and its host decision_md5 equals book A's at the latest hour present in both (Am.9 Erratum 4)."""
     try:
         m = O.load_manifest(lt_path)
     except O.Refused:
         raise Refusal("latency twin manifest refused")
+    if pin is not None:  # window 2: the twin is pinned by book_id and by the sha256 of its manifest file; no other twin, no re-pick
+        try:
+            fsha = hashlib.sha256(Path(lt_path).read_bytes()).hexdigest()
+        except OSError:
+            raise Refusal("latency twin manifest unreadable")
+        if m.get("book_id") != pin["book_id"]:
+            raise Refusal("latency twin manifest: book_id is not %s" % pin["book_id"])
+        if fsha != pin["sha256"]:
+            raise Refusal("latency twin manifest: sha256 is not the pinned one")
     if a_manifest.get("book_id") != LT_STRICT_ID or m.get("twin_of") != LT_STRICT_ID or m.get("book_id") == a_manifest.get("book_id"):
         raise Refusal("latency twin manifest: twin_of is not osb-a")
     lat = m.get("pricing_lat_entry_s")
@@ -600,7 +617,7 @@ def band(status, **kw):
     return dict(status=status, **kw)
 
 
-def evaluate(rows, metrics, win_to, extras, s4_twin=False):
+def evaluate(rows, metrics, win_to, extras, s4_twin=False, s_stake=None):
     """H1..H3 on the whole window (FAIL at any n); S1..S4 on the newest S_ROLLING_N matched filled trades at a rung with entry in the last 7 days (INSUFFICIENT below S1_MIN_MATCHED)"""
     lo = [r for r in rows if r["class"] == "live_only"]
     bad = [r for r in rows if r["class"] == "sim_only" and r["reason"] in ("unexplained", "feed_gap_mismatch")]
@@ -619,7 +636,8 @@ def evaluate(rows, metrics, win_to, extras, s4_twin=False):
               n_tp_in_sim_gap=sum(1 for m in metrics if m.get("reason") == CODED_TP_GAP),
               n_live_nonrule_exit=len(nr), nonrule_cap_exceeded=nr_cap, nonrule_cap="max %d and %d%% of matched trades" % (H3_NONRULE_MAX_N, int(100 * H3_NONRULE_MAX_FRAC)),
               nonrule_net_live_sol=[m["net_live_sol"] for m in nr])
-    roll = [m for m in sorted(metrics, key=lambda m: m["_t"]) if not m["no_rung"] and win_to - S_RECENT_MS <= m["_t"] < win_to][-S_ROLLING_N:]
+    roll = [m for m in sorted(metrics, key=lambda m: m["_t"]) if not m["no_rung"] and win_to - S_RECENT_MS <= m["_t"] < win_to
+            and (s_stake is None or abs(m["stake_sol"] - s_stake) < STAKE_TOL)][-S_ROLLING_N:]  # s_stake (window 2): the S set is that rung's matched filled trades only
     slips = [m["entry_slip_pp"] for m in roll if m["entry_slip_pp"] is not None]
     if len(slips) < S1_MIN_MATCHED:
         s1 = band("INSUFFICIENT", n=len(slips), min=S1_MIN_MATCHED)
@@ -683,7 +701,7 @@ def wilson_block(k, n):
     return {"n": n, "n_failed": k, "rate": (k / n) if n else None, "wilson95_lo": lo, "wilson95_hi": hi}
 
 
-def reconcile(ex_rows, ex_meta, sim, now_ms, win_clip=None, s4_twin=False):
+def reconcile(ex_rows, ex_meta, sim, now_ms, win_clip=None, s4_twin=False, s_stake=None):
     """win_clip (latency-twin mode only): (from_ms, to_ms or None) clips the window; s4_twin selects the landing_k-only S4"""
     head = ex_rows[0]
     win_from, win_to = max(head["since_ms"], sim["start_ms"]), min(head["as_of_ms"], sim["end_ms"])
@@ -693,7 +711,7 @@ def reconcile(ex_rows, ex_meta, sim, now_ms, win_clip=None, s4_twin=False):
     spans, nr_spans = down_spans(ex_rows), down_spans(ex_rows, with_starts=True)
     rows, pairs, live_sent, extras = classify(ex_rows, sim, win_from, win_to)
     metrics = [pair_metrics(o, e, sim, spans, win_to, nr_spans) for o, e in pairs]
-    bands, status = evaluate(rows, metrics, win_to, extras, s4_twin)
+    bands, status = evaluate(rows, metrics, win_to, extras, s4_twin, s_stake)
     sent_ids = {oid for oid, _ in live_sent}
     sent = [r for r in ex_rows if r["kind"] == "order" and r["order_id"] in sent_ids]
     reasons = {}
@@ -722,11 +740,11 @@ def reconcile(ex_rows, ex_meta, sim, now_ms, win_clip=None, s4_twin=False):
     return res
 
 
-def reconcile_lt(ex_rows, ex_meta, sim_a, twin, now_ms, s_end_ms):
+def reconcile_lt(ex_rows, ex_meta, sim_a, twin, now_ms, s_end_ms, start_utc=None, s_stake=None):
     """latency-twin mode: H1..H3 are book A's, over book A's window, unchanged; S1..S3 and S4-twin are computed against the twin's rows over the S window [LT_S_START, s_end_ms).
     Status: PASS only if H1, H2, H3, S1, S2, S3 and S4-twin all PASS; any INSUFFICIENT -> INSUFFICIENT; any FAIL -> FAIL."""
     res_a = reconcile(ex_rows, ex_meta, sim_a, now_ms)
-    res = reconcile(ex_rows, ex_meta, lt_sim(sim_a, twin), now_ms, win_clip=(B.parse_instant(LT_S_START_UTC), s_end_ms), s4_twin=True)
+    res = reconcile(ex_rows, ex_meta, lt_sim(sim_a, twin), now_ms, win_clip=(B.parse_instant(start_utc or LT_S_START_UTC), s_end_ms), s4_twin=True, s_stake=s_stake)
     out = dict(res, schema=LT_SCHEMA, book_id=sim_a["book_id"], twin_book_id=twin["book_id"], window=res["window"], h_window=res_a["window"],
                **{k: res_a[k] for k in ("h1", "h2", "h3")})
     out["s_window_end_input"] = None if s_end_ms is None else utc(s_end_ms)
@@ -736,6 +754,22 @@ def reconcile_lt(ex_rows, ex_meta, sim_a, twin, now_ms, s_end_ms):
     out["counts_by_reason"] = res_a["counts_by_reason"]
     sts = [out[k]["status"] for k in ("h1", "h2", "h3", "s1", "s2", "s3", "s4")]
     out["status"] = "FAIL" if "FAIL" in sts else "INSUFFICIENT" if "INSUFFICIENT" in sts else "PASS"
+    if s_stake is not None:  # window 2 (ADD1 2(d)): a live buy in the window at another stake means the declared start line is not what ran: FAIL, printed with its count
+        w_from = max(ex_rows[0]["since_ms"], sim_a["start_ms"], B.parse_instant(start_utc))  # the window of reconcile(), in ms
+        w_to = min(ex_rows[0]["as_of_ms"], sim_a["end_ms"], twin["end_ms"])
+        if s_end_ms is not None:
+            w_to = min(w_to, s_end_ms)
+        by = collections.Counter()
+        for o in ex_rows:  # every sent live buy inside the window, filled or not, matched or not (from the extract itself)
+            t = tms(o) if o.get("kind") == "order" else None
+            if t is not None and o.get("sent") and w_from <= t < w_to:
+                st = (o.get("stake_lamports") or o.get("led_stake_lamports") or 0) / 1e9
+                if abs(st - s_stake) >= STAKE_TOL:
+                    by["%g" % st] += 1
+        out["s_stake_sol"] = s_stake
+        out["off_stake_live_buys"] = {"n": sum(by.values()), "by_stake_sol": dict(sorted(by.items()))}
+        if by:
+            out["status"] = "FAIL"
     return out
 
 
@@ -750,6 +784,11 @@ def recon_lt_md(res):
             "- S4-twin is on landing steps only: p50 at most %d and p90 at most %d steps (nearest rank); milliseconds p50 %s, p90 %s are printed with no band. Rolling set n %d." % (
                 LT_K_P50, LT_K_P90, res["s4"].get("p50_ms", "n/a"), res["s4"].get("p90_ms", "n/a"), res["s4"].get("n", 0)),
             "- Twin trades left out by the twin (counted as no_sim, outside S1 and S2) by reason: %s." % json.dumps(res.get("excluded_reason_counts", {}), sort_keys=True), ""]
+    if res.get("schema") == LT_W2_SCHEMA:  # S window 2 (QP-RULING-1116-recon-latency-twin-ADD1): the 0.25 rung only
+        head[0] = "# Open sim recon against latency twin %s, S window 2 (0.25 SOL install): book A against the live FLOOR bot (paper)" % res["twin_book_id"]
+        head[5:5] = ["- S window 2 from the 0.25 install start line %s; S1..S4-twin use matched filled live trades at the %g SOL stake only, priced by the twin's %g column; no pooling with window 1 or with other stakes. "
+                     "Live buys in the window at another stake: %d (any makes this status FAIL), by stake %s." % (
+                         LT_W2_START_UTC, res["s_stake_sol"], res["s_stake_sol"], res["off_stake_live_buys"]["n"], json.dumps(res["off_stake_live_buys"]["by_stake_sol"], sort_keys=True))]
     body = recon_md(res).split("\n")
     return "\n".join(head + ["---", ""] + body[4:])
 
@@ -864,7 +903,10 @@ def run(a, roots=None, out_roots=None, now_ms=None):
 
 
 def run_lt(a, roots=None, out_roots=None, now_ms=None):
-    """latency-twin mode: writes recon-lt-a.json / recon-lt-a.md only (never recon.json) under its own lock"""
+    """latency-twin mode: writes recon-lt-a.json / recon-lt-a.md only (never recon.json) under its own lock; with --lt-window2, recon-lt-a-w2.json / .md only (S window 2, 0.25 rung, pinned twin)"""
+    w2 = bool(getattr(a, "lt_window2", False))
+    start_utc = LT_W2_START_UTC if w2 else LT_S_START_UTC
+    jname, mname, schema = (LT_W2_JSON, LT_W2_MD, LT_W2_SCHEMA) if w2 else (LT_JSON, LT_MD, LT_SCHEMA)
     if a.twin_manifest:
         raise Refusal("--lt-twin-manifest and --twin-manifest are two different modes")
     out_dir = guard([a.extract_dir, a.manifest, a.out_dir, a.lt_twin_manifest], a.out_dir, out_roots)
@@ -872,22 +914,24 @@ def run_lt(a, roots=None, out_roots=None, now_ms=None):
     s_end = None
     if a.lt_s_end_utc is not None:
         s_end = B.parse_instant(a.lt_s_end_utc)
-        if s_end <= B.parse_instant(LT_S_START_UTC):
+        if s_end <= B.parse_instant(start_utc):
             raise Refusal("--lt-s-end-utc is not after the S window start")
     os.makedirs(out_dir, exist_ok=True)
-    lock = open(os.path.join(out_dir, ".osb-recon-lt-a.lock"), "a")
+    lock = open(os.path.join(out_dir, ".osb-recon-lt-a-w2.lock" if w2 else ".osb-recon-lt-a.lock"), "a")
     try:
         fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
     except OSError:
         raise Refusal("another osb_recon latency-twin run holds the lock")
     ex_rows, ex_meta = read_extract(a.extract_dir)
     sim_a = read_sim(a.manifest, roots)
-    twin = read_lt_twin(a.lt_twin_manifest, sim_a["manifest"], roots)
-    res = reconcile_lt(ex_rows, ex_meta, sim_a, twin, now, s_end)
+    twin = read_lt_twin(a.lt_twin_manifest, sim_a["manifest"], roots, pin={"book_id": LT_W2_TWIN_ID, "sha256": LT_W2_TWIN_MANIFEST_SHA256} if w2 else None)
+    res = reconcile_lt(ex_rows, ex_meta, sim_a, twin, now, s_end, start_utc, LT_W2_STAKE if w2 else None)
+    if w2:
+        res["schema"] = schema
     md = recon_lt_md(res)
     check_output(res, md)
-    write_atomic(os.path.join(out_dir, LT_JSON), json.dumps(res, indent=1, sort_keys=False) + "\n")
-    write_atomic(os.path.join(out_dir, LT_MD), md)
+    write_atomic(os.path.join(out_dir, jname), json.dumps(res, indent=1, sort_keys=False) + "\n")
+    write_atomic(os.path.join(out_dir, mname), md)
     print("osb_recon (latency twin): status %s matched %d live_only %d sim_only %d bands %s" % (res["status"], res["counts"]["matched"], res["counts"]["live_only"], res["counts"]["sim_only"],
                                                                                            " ".join("%s=%s" % (k, res[k]["status"]) for k in ("h1", "h2", "h3", "s1", "s2", "s3", "s4"))), flush=True)
     return 0
@@ -902,7 +946,11 @@ def main(argv=None, **kw):
     ap.add_argument("--twin-manifest", default=None, help="book A's gap_exclusion hold twin (optional)")
     ap.add_argument("--lt-twin-manifest", default=None, help="latency-twin mode: book A's latency twin osb-a-lt-a (QP-RULING-1116-recon-latency-twin); writes recon-lt-a.json / .md only")
     ap.add_argument("--lt-s-end-utc", default=None, help="latency-twin mode: S window end YYYY-MM-DDTHH:MM:SSZ, the first differing executor start line (an input from the manager); default open")
+    ap.add_argument("--lt-window2", action="store_true", help="latency-twin mode, S window 2 (QP-RULING-1116-recon-latency-twin-ADD1): start %s, the 0.25 rung only, twin pinned to %s; writes recon-lt-a-w2.json / .md only" % (LT_W2_START_UTC, LT_W2_TWIN_ID))
     a = ap.parse_args(argv)
+    if a.lt_window2 and not a.lt_twin_manifest:
+        print("osb_recon: refused: --lt-window2 needs --lt-twin-manifest", file=sys.stderr, flush=True)
+        return 2
     try:
         return run_lt(a, **kw) if a.lt_twin_manifest else run(a, **kw)
     except Refusal as e:
