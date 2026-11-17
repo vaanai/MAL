@@ -396,15 +396,41 @@ def test_n_below_10_at_l1_is_judged_at_l2_exactly(tmp_path):
     assert B.render(o).count("too rare to judge") >= 1
 
 
-def test_n_at_l2_ge_10_reads_at_l2(tmp_path):
+def day_cut(day):
+    return B.day_start_ms(day) + D + B.BOOK_LAG_MS
+
+
+def test_read_at_first_completed_day_that_reaches_10(tmp_path):
     fx = Fx(tmp_path, tape_end=LATE_TAPE)
-    good_book(fx, n=6)
-    for i in range(6):                                             # between L1 and L2: n >= 10 as of L2
-        e = L1 + D + i * H
+    good_book(fx, n=6)                                             # n < 10 at L1
+    for i in range(6):                                             # day 11-22 brings n to >= 10
+        e = L1 + H + i * 60_000
         fx.entry(fx.bot, e, e + H, (1_000_000, 1_000_000))
         fx.entry(fx.bot + "-plc", e, e + H, (-1_000_000, -1_000_000))
+    c = day_cut("2026-11-22")
+    assert fx.build(L1)["look_state"] == "extended" and fx.build(c - 1)["look_state"] == "extended"
+    o = fx.build(c)
+    assert o["look_state"] == "look" and o["bar"]["read_instant_utc"] == B.utc(c) and o["bar"]["frozen"]["cell_0.1"]["n"] >= 10
+    for i in range(5):                                             # later rows are not in the frozen cell
+        e = c + H + i * H
+        fx.entry(fx.bot, e, e + H, (-9_000_000, -9_000_000))
+        fx.entry(fx.bot + "-plc", e, e + H, (9_000_000, 9_000_000))
+    later = fx.build(L2 + 2 * D)
+    assert later["bar"]["read_instant_utc"] == B.utc(c) and later["bar"]["frozen"] == o["bar"]["frozen"] and later["bar"]["verdict"] == o["bar"]["verdict"]
+
+
+def test_never_reaches_10_reads_at_l2(tmp_path):
+    fx = Fx(tmp_path, tape_end=LATE_TAPE)
+    good_book(fx, n=6)
+    o = fx.build(L2)
+    assert o["look_state"] == "too_rare" and o["bar"]["read_instant_utc"] == B.utc(L2) and o["bar"]["verdict"] == "NO-GO"
+
+
+def test_n_ge_10_at_l1_reads_at_l1(tmp_path):
+    fx = Fx(tmp_path, tape_end=LATE_TAPE)
+    good_book(fx)
     o = fx.build(L2 + D)
-    assert o["look_state"] == "look" and o["bar"]["read_instant_utc"] == B.utc(L2)
+    assert o["look_state"] == "look" and o["bar"]["read_instant_utc"] == B.utc(L1)
 
 
 def test_waiting_for_tape_is_not_a_read(tmp_path):

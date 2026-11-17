@@ -282,28 +282,38 @@ def entries_excluded(b, s_ms):
 
 
 # ------------------------------------------------------------------------------------------------------------------------------ the look and the bar
-THE_LOOK_RULE = ("THE look is the first build at or after the read instant (L1; L2 when n < 10 at L1); the verdict below is the frozen result as of that instant (rows decided before it only). "
+THE_LOOK_RULE = ("THE look is the first build at or after the read instant (L1 when n >= 10 at L1; else the first completed UTC day in (L1, L2] that brings n to 10, capped at L2); the verdict below is the frozen result as of that instant (rows decided before it only). "
                  "A verdict from any other build is not the read; the manager records the read build with its generated time and md sha256.")
 REPLAY = "replay in progress: not a read"
 
 
-def look_status(now_ms, s_ms, tape_end, n1, n2):
-    """n1 / n2 = n at L1 / L2 judged AS OF those instants (None while the tape has not reached them). -> state, text, read instant (or None)"""
+def look_status(now_ms, s_ms, tape_end, n_fn):
+    """n_fn(cut) = n at the deciding stake judged AS OF the instant `cut` (None while the tape has not reached it). The read instant: L1 when n >= 10 at L1; otherwise the first completed-UTC-day instant
+    (day end + 90 min) in (L1, L2) at which n >= 10, else L2 (n judged at L2: NO-GO, too rare, when still < 10). -> dict(state, text, evaluate, read_ms, l1, l2)"""
     l1, l2 = s_ms + 5 * DAY_MS, s_ms + 10 * DAY_MS
     base = {"l1": l1, "l2": l2, "read_ms": None, "evaluate": False}
     if now_ms < l1:
         return dict(base, state="before_l1", text=BEFORE_LOOK)
+    n1 = n_fn(l1)
     if n1 is None:
         return dict(base, state="waiting_tape", text="look instant passed; the tape has not reached L1 yet: not a read")
     if n1 >= MIN_N:
         return dict(base, state="look", evaluate=True, read_ms=l1, text="the read instant is L1 (n >= 10 at L1): the frozen result below is the read; " + THE_LOOK_RULE)
-    if now_ms < l2:
-        return dict(base, state="extended", text="too few trades to judge (n < 10 at L1); the read moves to L2 = S + 10 d: not a read")
-    if n2 is None:
-        return dict(base, state="waiting_tape", text="L2 passed; the tape has not reached L2 yet: not a read")
-    if n2 < MIN_N:
-        return dict(base, state="too_rare", evaluate=True, read_ms=l2, verdict="NO-GO", text="NO-GO (too rare to judge): n < 10 at L2 judged as of L2, whatever n is now; the owner may override only in his own quoted words")
-    return dict(base, state="look", evaluate=True, read_ms=l2, text="the read instant is L2 (n < 10 at L1, n >= 10 at L2 judged as of L2): the frozen result below is the read; " + THE_LOOK_RULE)
+    cands, d = [], day_of(l1)
+    while day_start_ms(d) + DAY_MS + BOOK_LAG_MS < l2:
+        c = day_start_ms(d) + DAY_MS + BOOK_LAG_MS
+        if c > l1:
+            cands.append(c)
+        d = day_of(day_start_ms(d) + DAY_MS)
+    for c in cands + [l2]:
+        if now_ms < c:
+            return dict(base, state="extended", text="too few trades to judge (n < 10 at L1); the read is the first completed UTC day in (L1, L2] that brings n to 10, else L2: not a read yet")
+        n = n_fn(c)
+        if n is None:
+            return dict(base, state="waiting_tape", text="the tape has not reached the candidate read instant %s yet: not a read" % utc(c))
+        if n >= MIN_N:
+            return dict(base, state="look", evaluate=True, read_ms=c, text="the read instant is %s, the first completed UTC day after L1 that brings n to 10 (n < 10 at L1): the frozen result below is the read; " % utc(c) + THE_LOOK_RULE)
+    return dict(base, state="too_rare", evaluate=True, read_ms=l2, verdict="NO-GO", text="NO-GO (too rare to judge): n < 10 at L2 judged as of L2, whatever n is now; the owner may override only in his own quoted words")
 
 
 def bar(decider, cells, plc_cells, ex, pre_s):
@@ -367,7 +377,7 @@ def build(out_root, now_ms, n_watched, roots=None):
         look = {"state": "replay", "text": REPLAY + " (status.json is at run %s, active=%s; the `book` link is run %s): no cells, no verdict" % (status.get("run"), status.get("active"), bk["run"].name),
                 "evaluate": False, "l1": s_ms + 5 * DAY_MS, "l2": s_ms + 10 * DAY_MS, "read_ms": None}
     else:
-        look = look_status(now_ms, s_ms, tape_end, n_at(main, plc, s_ms, tape_end, s_ms + 5 * DAY_MS), n_at(main, plc, s_ms, tape_end, s_ms + 10 * DAY_MS))
+        look = look_status(now_ms, s_ms, tape_end, lambda cut: n_at(main, plc, s_ms, tape_end, cut))
     bar_out = {"shown": False, "verdict": None}
     if look["evaluate"]:
         fdays, fcells, fplc, fex, _fp = analyse(main, plc, s_ms, look["read_ms"], until=look["read_ms"])
