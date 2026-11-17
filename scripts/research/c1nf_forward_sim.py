@@ -948,7 +948,7 @@ def _locked(m, out_root, once, max_hours, sleep_fn, decider_factory, ledger_buil
         status.update(last_hour=key, last_hour_end_ms=end, warmup_hour=is_warm, wall_time_utc=datetime.now(timezone.utc).isoformat(), active=verified, open_positions=book.open_positions(),
                       ledger_days_built=list(lstep.built), ledger_days_incomplete=list(lstep.incomplete), decision_md5=dmd5, ledger_md5=lmd5, book_counts=dict(book.c))
         O._atomic_json(out_root / "status.json", status)
-        if m["decider"] in PLACEBO_DECIDERS and not is_warm:
+        if (m["decider"] in PLACEBO_DECIDERS or m["decider"] in U1_DECIDERS) and not is_warm:  # U1: strict exclusion + GAP_DISCLOSURE (QP verdict item 2); no placebo bot, "main" only
             O._atomic_json(out_root / "gap_exclusions.json", book.gap_exclusion_split())
         if is_warm and end == start_ms:  # the last warm-up hour is done: the disclosure carries the count of pools first seen in W
             meta = json.loads((out_root / "meta.json").read_text())

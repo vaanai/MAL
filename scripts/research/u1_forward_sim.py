@@ -318,7 +318,7 @@ class U1Decider:
     first_create_slot) -> Table A row, optional forward fetch when a launcher is untraced; open_fn() -> open positions of the book now; hr_fn(create_row) -> holder-rewards coin
     (injected: the UR 0.4 rule was not read by the builder; default off)."""
 
-    def __init__(self, start_ms, table, *, mode="book", labels=frozenset(), plan=None, fetch_fn=None, open_fn=None, exact_open_fn=None, hr_fn=None, max_open=MAX_OPEN, lat_s=S.LAT_DECIDING_S):
+    def __init__(self, start_ms, table, *, mode="book", labels=frozenset(), plan=None, fetch_fn=None, open_fn=None, exact_open_fn=None, hr_fn=None, max_open=MAX_OPEN, lat_s=S.LAT_DECIDING_S, out_root=None):
         if mode not in MODES:
             raise ValueError("mode must be one of %s" % (MODES,))
         if mode == "placebo" and plan is None:
@@ -339,6 +339,39 @@ class U1Decider:
         self.universe_log = []     # [{pool, mint, pc_s}] graduates that entered the universe
         self.c = collections.Counter()
         self.counters_prev = collections.Counter()
+        self.out_root = Path(out_root) if out_root is not None else None
+        self.launcher_hours = []   # [{hour, launchers, sha256}] one record per warm-up hour (rewritten whole: a replay rebuilds it identically)
+        self._plan_flushed = [0, 0]  # lines of universe_log / gate_log already in the plan input file
+        if self.out_root is not None and self.mode == "book":
+            pi = self.out_root / PLAN_INPUT
+            if pi.exists():
+                pi.unlink()  # a restart replays from W and rebuilds the same file: never a duplicate line
+
+    # -- persistence (B1 launcher list, B2 plan input); names / counts / sha256 only leave this class, the files carry addresses
+    def _write_launcher_list(self, hour):
+        n, sha, same = write_launcher_list(self.reg, self.out_root / LAUNCHER_LIST)
+        self.c["u1_launchers_listed"], self.c["u1_launchers_first_slot_from_graduate_only"] = n, same
+        self.launcher_hours.append({"hour": hour, "launchers": n, "sha256": sha})
+        _atomic_write_0440(self.out_root / LAUNCHER_LIST_BY_HOUR, "".join(json.dumps(r, sort_keys=True) + "\n" for r in self.launcher_hours).encode())
+
+    def _append_plan_input(self):
+        """append-only: new universe and gate rows of this hour; the file is 0440 between appends"""
+        new_u, new_g = self.universe_log[self._plan_flushed[0]:], self.gate_log[self._plan_flushed[1]:]
+        if not (new_u or new_g):
+            return
+        path = self.out_root / PLAN_INPUT
+        if not path.exists():
+            os.close(os.open(str(path), os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600))
+        os.chmod(path, 0o640)
+        with open(path, "ab") as fh:
+            for r in new_u:
+                fh.write((json.dumps({"kind": "universe", "pool": r["pool"], "mint": r["mint"], "pc_s": r["pc_s"]}, sort_keys=True) + "\n").encode())
+            for r in new_g:
+                fh.write((json.dumps({"kind": "gate", "pool": r["pool"], "mint": r["mint"], "pc_s": r["pc_s"], "entered": r["entered"]}, sort_keys=True) + "\n").encode())
+            fh.flush()
+            os.fsync(fh.fileno())
+        os.chmod(path, 0o440)
+        self._plan_flushed = [len(self.universe_log), len(self.gate_log)]
 
     # -- funder side
     def _ensure_traced(self, g):
@@ -503,14 +536,22 @@ class U1Decider:
             g = self.reg.feed(row)
             if g is not None:
                 self.c["graduates_seen"] += 1
-                if not state.warmup and g.pc_ms + DECISION_DELAY_S * 1000 >= self.start_ms:
-                    self._ensure_traced(g)
+                if g.pc_ms + DECISION_DELAY_S * 1000 >= self.start_ms:
+                    if state.warmup:
+                        self.c["queued_in_last_warmup_hour"] += 1  # D >= S: decided at S or later; _ensure_traced stays forward-only
+                    else:
+                        self._ensure_traced(g)
                     self.pending.append((g.pc_ms + DECISION_DELAY_S * 1000, g.mint))
                     self.pending.sort()
             if S._isint(row.get("slot")) and S._isint(t):
                 self.last_slot = row["slot"]
         if state.warmup and out:
             raise AssertionError("U1 decider produced an entry in a warm-up hour")
+        if self.out_root is not None:
+            if state.warmup:
+                self._write_launcher_list(state.hour)
+            elif self.mode == "book":
+                self._append_plan_input()
         cnt = collections.Counter(self.c)
         cnt.update(self.reg.c)
         state.counts.update({k: v - self.counters_prev.get(k, 0) for k, v in cnt.items() if v != self.counters_prev.get(k, 0)})
@@ -529,4 +570,49 @@ def build_decider(m, table=None, **kw):
     labels = frozenset(Path(u1["labels"]).read_text().split()) if u1.get("labels") else frozenset()
     mode = {"u1": "book", "u1_lowrep": "low_rep", "u1_placebo": "placebo"}[m["decider"]]
     plan = load_placebo_plan(u1["placebo_plan"], u1.get("placebo_plan_sha256")) if mode == "placebo" else None
+    kw.setdefault("out_root", m.get("out_root"))
     return U1Decider(S.parse_hour(m["start_hour"]), table, mode=mode, labels=labels, plan=plan, lat_s=float(m.get("pricing_lat_entry_s", S.LAT_DECIDING_S)), **kw)
+
+
+# ------------------------------------------------------------------------------------------------------------------------------ plan subcommand (B2)
+def read_plan_input(path, through_hour=None):
+    """-> (universe, entries, gate_passed_mints). through_hour 'YYYY-MM-DDTHH': only rows whose pc_s + 1,800 s lies before the end of that hour (the hour is closed for the plan's window)"""
+    end_s = (S.parse_hour(through_hour) + S.HOUR_MS) // 1000 if through_hour else None
+    uni, ents, gate = [], [], set()
+    for ln in Path(path).read_text().splitlines():
+        if not ln.strip():
+            continue
+        r = json.loads(ln)
+        if end_s is not None and r["pc_s"] + PLACEBO_WINDOW_S >= end_s:
+            continue
+        if r["kind"] == "universe":
+            uni.append({"pool": r["pool"], "mint": r["mint"], "pc_s": r["pc_s"]})
+        elif r["kind"] == "gate":
+            gate.add(r["mint"])
+            if r.get("entered"):
+                ents.append({"pool": r["pool"], "mint": r["mint"], "pc_s": r["pc_s"]})
+    return uni, ents, gate
+
+
+def plan_main(a_in, a_out, through_hour=None):
+    uni, ents, gate = read_plan_input(a_in, through_hour)
+    plan, c = build_placebo_plan(uni, ents, gate)
+    sha = write_placebo_plan(plan, c, a_out)
+    return {"plan_sha256": sha, "plan_pools": len(plan), "universe": len(uni), "book_entries": len(ents), "counters": dict(c)}
+
+
+def main(argv=None):
+    import argparse
+    ap = argparse.ArgumentParser(description="u1_forward_sim helpers")
+    sub = ap.add_subparsers(dest="cmd", required=True)
+    pl = sub.add_parser("plan", help="build the placebo plan from the persisted plan input; prints the sha256 and counters only")
+    pl.add_argument("--in", dest="inp", required=True)
+    pl.add_argument("--out", required=True)
+    pl.add_argument("--through-hour", default=None)
+    a = ap.parse_args(argv)
+    print(json.dumps(plan_main(a.inp, a.out, a.through_hour), sort_keys=True))
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
