@@ -185,7 +185,7 @@ class Fetcher:
         self.table_a, self.table_b = {}, {}
         self.by_funder = collections.defaultdict(list)  # funder -> traced launchers resolved to it
         self.counters = collections.Counter()
-        self.rpc_errors = collections.Counter()  # RPC error code -> count
+        self.rpc_errors = collections.Counter()  # (method, code, retryable) -> count
         self.pages_hist = collections.Counter()
         self.pages_per_launcher, self.tx_per_launcher = {}, {}
         self.t0 = self.clock()
@@ -214,7 +214,7 @@ class Fetcher:
             try:
                 return self.rpc(method, params)
             except RpcError as e:
-                self.rpc_errors["%s" % (e.code,)] += 1  # counts only, per attempt
+                self.rpc_errors[(method, e.code, bool(e.retryable))] += 1  # counts only, per attempt
                 if e.code == 429:
                     self.counters["n429"] += 1
                 if not e.retryable or attempt == MAX_RETRIES:
@@ -307,6 +307,10 @@ class Fetcher:
         if checkpoint_fn:
             checkpoint_fn(self)
 
+    def rpc_errors_by_key(self):
+        """JSON-able: "method|code|retryable" -> count"""
+        return {"%s|%s|%s" % (m, c, str(r).lower()): n for (m, c, r), n in sorted(self.rpc_errors.items(), key=str)}
+
     def credits_used(self):
         return self.meter.total_used() if isinstance(self.meter, DailyMeters) else self.meter.used
 
@@ -387,7 +391,7 @@ def pilot_record(f, n_w, wall_s, dashboard_delta=None):
     return {"n_launchers": n, "status_counts": status, "pages_per_launcher_mean": sum(pages) / len(pages), "pages_per_launcher_max": max(pages),
             "get_transaction_per_launcher_mean": sum(txs) / len(txs), "get_transaction_per_launcher_max": max(txs), "hub_tests": f.counters.get("hub_tests", 0),
             "calls_by_method": f.calls_by_method(), "credits_table_total": credits, "credits_table_mean_per_launcher": mean_c, "dashboard_note": e_note,
-            "retries": f.counters.get("retries", 0), "n429": f.counters.get("n429", 0), "rpc_errors_by_code": dict(f.rpc_errors), "wall_time_s": wall_s,
+            "retries": f.counters.get("retries", 0), "n429": f.counters.get("n429", 0), "rpc_errors": f.rpc_errors_by_key(), "wall_time_s": wall_s,
             "n_funding_after_create": status["funding_after_create"], "stored_keys_exact": keys_ok, "n_w": n_w, "projected_backfill_credits": projected,
             "pass": {"a_projected_le_30000": a, "b_resolved_ge_5": b, "c_no_fetch_error": c, "d_no_funding_after_create": d, "e_credits_within_2x": e}, "verdict": verdict,
             "provider": "Helius RPC", "methods": ["getSignaturesForAddress", "getTransaction"], "note": "no Enhanced API, no getTransactionsForAddress"}
@@ -439,7 +443,7 @@ def main(argv=None):
     f.run(todo, checkpoint_fn=lambda fx: write_tables(fx, a.out))
     shas = write_tables(f, a.out)
     summary = {"mode": a.mode, "credits_by_table": f.credits_used(), "calls_by_method": f.calls_by_method(), "status_counts": dict((k, v) for k, v in f.counters.items() if k.startswith("status_")),
-               "retries": f.counters.get("retries", 0), "n429": f.counters.get("n429", 0), "wall_time_s": round(f.clock() - f.t0, 1), "table_sha256": shas}
+               "retries": f.counters.get("retries", 0), "n429": f.counters.get("n429", 0), "rpc_errors": f.rpc_errors_by_key(), "wall_time_s": round(f.clock() - f.t0, 1), "table_sha256": shas}
     if a.mode == "pilot":
         summary["pilot_record"] = pilot_record(f, a.n_w or len(allL), f.clock() - f.t0, a.dashboard_delta)
     print(json.dumps(summary, sort_keys=True))  # counts and hashes only: no address, no key
