@@ -449,8 +449,18 @@ def u1_manifest(tmp_path, decider="u1", **extra):
     ta.write_text(json.dumps({"launcher": "A", "funder": "F", "funding_slot": 1, "status": "resolved"}) + "\n")
     m = {"book_id": "u1-test", "title": "t", "decider": decider, "stakes_sol": [0.1, 0.25, 0.5], "send_lamports": 505_000, "start_hour": START,
          "tape_dir": S.KEEP_ROOT, "out_root": S.SIM_ROOT + "/u1-test", "u1": {"table_a": str(ta), "table_a_sha256": hashlib.sha256(ta.read_bytes()).hexdigest(), "hr_exclusion": True}}
+    if decider == "u1_lowrep":
+        mk_book_dir(tmp_path / "book")
+        m["u1"]["book_out_root"] = str(tmp_path / "book")
     m.update(extra)
     return m
+
+
+def mk_book_dir(d, decider="u1"):
+    d.mkdir(parents=True, exist_ok=True)
+    (d / "manifest.sha256").write_text("0" * 64 + "\n")
+    (d / "meta.json").write_text(json.dumps({"decider": decider}))
+    return d
 
 
 def test_manifest_accepts_u1_deciders_and_builds_them(tmp_path):
@@ -789,6 +799,8 @@ def test_u1_gap_between_decision_and_exit_removes_the_trade_and_the_disclosure_i
     if decider == "u1_placebo":
         plan = tmp_path / "plan.json"
         u1.update(placebo_plan=str(plan), placebo_plan_sha256=U.write_placebo_plan({}, {}, plan))
+    if decider == "u1_lowrep":
+        u1["book_out_root"] = str(mk_book_dir(tmp_path / "book"))
     m = T1.manifest(tmp_path, decider=decider, warmup_hours=1, u1=u1)
     m.pop("wallet_ledger_root", None)
     assert T1.run(tmp_path, m, GapStub()) == 0
@@ -1209,7 +1221,7 @@ def test_no_rpc_guard_refuses_any_live_fetch_in_code(tmp_path):
     assert S.default_decider(S.check_manifest(u1_manifest(tmp_path, out_root=str(tmp_path / "o")))).fetch_fn.allow_rpc is True
 
 
-@pytest.mark.parametrize("decider", ["u1_lowrep", "u1_placebo"])
+@pytest.mark.parametrize("decider", ["u1_placebo"])
 def test_only_the_book_builds_a_live_fetcher(tmp_path, monkeypatch, decider):
     def boom(*a, **k):
         raise AssertionError("key or transport touched by a non-book run")
@@ -1224,3 +1236,141 @@ def test_only_the_book_builds_a_live_fetcher(tmp_path, monkeypatch, decider):
     run(dec, sorted(history_rows("A", 3), key=lambda r: r["t_recv_ms"]), warmup=True)
     run(dec, stream(candidate("A")))
     assert not (tmp_path / "o" / U.FWD_JOURNAL).exists() and not (tmp_path / "o" / U.FWD_CREDITS).exists()
+
+
+# ============================================================================================================================ QP ADD1: lowrep reads the book's journal, placebo has no fetcher
+def book_dir_with_journal(tmp_path, mock=None, stored=("h",)):
+    """a book out_root whose journal was written by a live ForwardFetch (the real writer) and whose md5-by-hour.jsonl holds `stored`"""
+    book = mk_book_dir(tmp_path / "book")
+    ff = U.ForwardFetch(book, BACKFILL_A, [], transport_factory=lambda: mock or fx_mock(hub=False), sleep_fn=lambda s: None, clock=lambda: 0.0, day_fn=lambda: DAYK)
+    ff.set_hour("h")
+    ff("NEWL", 50)
+    (book / "md5-by-hour.jsonl").write_text("".join(json.dumps({"hour": h}) + "\n" for h in stored))
+    return book
+
+
+def lowrep_decider(tmp_path, book, **kw):
+    t = U.FunderTable.from_rows(BACKFILL_A)
+    ff = U.BookJournalReader(book, tmp_path / "lr", **kw)
+    return U.U1Decider(S_MS, t, mode="low_rep", fetch_fn=ff, out_root=tmp_path / "lr"), ff
+
+
+def test_lowrep_and_placebo_build_no_transport_and_never_touch_the_key(tmp_path, monkeypatch):
+    def boom(*a, **k):
+        raise AssertionError("key or transport touched")
+    monkeypatch.setattr(F, "load_key", boom)
+    monkeypatch.setattr(F, "make_transport", boom)
+    book = book_dir_with_journal(tmp_path)
+    m = u1_manifest(tmp_path, "u1_lowrep", out_root=str(tmp_path / "lr"))
+    m["u1"]["book_out_root"] = str(book)
+    dec = S.default_decider(S.check_manifest(m))
+    assert isinstance(dec.fetch_fn, U.BookJournalReader) and not hasattr(dec.fetch_fn, "transport_factory")
+    _, st = run(dec, sorted(history_rows("A", 3), key=lambda r: r["t_recv_ms"]), warmup=True)
+    assert st.counts["u1_rpc_calls"] == 0 and not (tmp_path / "lr" / U.FWD_JOURNAL).exists() and not (tmp_path / "lr" / U.FWD_CREDITS).exists()
+    plan = tmp_path / "plan.json"
+    mp = u1_manifest(tmp_path, "u1_placebo", out_root=str(tmp_path / "pl"))
+    mp["u1"].update(placebo_plan=str(plan), placebo_plan_sha256=U.write_placebo_plan({}, {}, plan))
+    assert S.default_decider(S.check_manifest(mp)).fetch_fn is None
+
+
+def test_lowrep_waits_for_the_books_md5_line_then_decides_from_the_books_journal(tmp_path):
+    book = book_dir_with_journal(tmp_path, stored=())              # the book has written the journal row but not stored hour "h"
+    waits = []
+
+    def sleep(sec):
+        waits.append(sec)
+        if len(waits) == 2:
+            (book / "md5-by-hour.jsonl").write_text(json.dumps({"hour": "h"}) + "\n")
+    dec, ff = lowrep_decider(tmp_path, book, sleep_fn=sleep)
+    hist = history_rows("OLD", 1, 2)                                 # OLD has a low alive share: the line takes what the book's link lends to NEWL
+    entries, st = flow(dec, hist, candidate("NEWL"))
+    assert len(waits) == 2 and waits[0] == S.POLL_S and st.counts["u1_rpc_calls"] == 0
+    assert len(entries) == 1 and entries[0].meta["hist_kind"] == "funder" and entries[0].meta["mode"] == "low_rep"
+    # the same decisions as a run whose NEWL link came from the same row
+    t2 = U.FunderTable.from_rows(BACKFILL_A + [{"launcher": "NEWL", "funder": FX, "funding_slot": 5, "status": "resolved"}])
+    ref = new_decider(table=t2, mode="low_rep")
+    e2, _ = flow(ref, hist, candidate("NEWL"))
+    assert [e.as_dict() for e in e2] == [e.as_dict() for e in entries]
+    assert json.loads((tmp_path / "lr" / "status.json").read_text()).get("waiting_for_book_hour") is None      # cleared once the hour arrived
+
+
+def test_lowrep_waiting_status_shows_the_hour(tmp_path):
+    book = book_dir_with_journal(tmp_path, stored=())
+    seen = []
+    dec, ff = lowrep_decider(tmp_path, book, sleep_fn=lambda s: (seen.append(json.loads((tmp_path / "lr" / "status.json").read_text())), (book / "md5-by-hour.jsonl").write_text(json.dumps({"hour": "h"}) + "\n")))
+    ff.set_hour("h")
+    assert seen == [{"waiting_for_book_hour": "h"}]
+
+
+def test_lowrep_refuses_a_launcher_the_books_journal_lacks_and_never_fetches(tmp_path):
+    book = book_dir_with_journal(tmp_path)
+    dec, ff = lowrep_decider(tmp_path, book, sleep_fn=lambda s: pytest.fail("must not wait: hour is stored"))
+    ff.set_hour("h")
+    with pytest.raises(S.Refused, match="out of order"):              # the next journal line is NEWL's: a different launcher is out of order, not fetched
+        ff("OTHER", 50)
+    assert ff("NEWL", 50)["launcher"] == "NEWL"
+    with pytest.raises(S.Refused, match="no live fetch"):             # the book's hour is stored and the journal holds nothing more: refused, never fetched
+        ff("OTHER", 50)
+    assert ff.counters["u1_rpc_calls"] == 0
+
+
+def test_lowrep_resumes_after_end_of_file_when_the_book_appends(tmp_path):
+    book = book_dir_with_journal(tmp_path)
+    dec, ff = lowrep_decider(tmp_path, book)
+    ff.set_hour("h")
+    assert ff("NEWL", 50)["launcher"] == "NEWL"
+    with pytest.raises(S.Refused, match="no live fetch"):             # end of file now (the book has not appended yet)
+        ff("L3", 50)
+    # the book appends L3 (a torn tail is first invisible, then complete)
+    j = book / U.FWD_JOURNAL
+    line = json.dumps({"funder": FX, "funding_slot": 5, "launcher": "L3", "status": "resolved"}, sort_keys=True, separators=(",", ":")) + "\n"
+    with open(j, "ab") as fh:
+        fh.write(line.encode()[:10])
+    with pytest.raises(S.Refused, match="no live fetch"):
+        ff("L3", 50)
+    with open(j, "ab") as fh:
+        fh.write(line.encode()[10:])
+    assert ff("L3", 50)["launcher"] == "L3"
+
+
+def test_manifest_key_book_out_root_is_required_for_lowrep_and_refused_elsewhere_and_checked(tmp_path):
+    m = u1_manifest(tmp_path, "u1_lowrep")
+    del m["u1"]["book_out_root"]
+    with pytest.raises(S.Refused):
+        S.check_manifest(m)
+    for dec in ("u1",):
+        m2 = u1_manifest(tmp_path, dec)
+        m2["u1"]["book_out_root"] = str(tmp_path / "book")
+        with pytest.raises(S.Refused):
+            S.check_manifest(m2)
+    m3 = u1_manifest(tmp_path, "u1_lowrep", out_root=str(tmp_path / "x"))
+    m3["u1"]["book_out_root"] = str(tmp_path / "x")                  # equal to its own out_root
+    with pytest.raises(S.Refused):
+        S.check_manifest(m3)
+    for bad in ("manifest.sha256", "meta.json"):                      # runtime checks of the book directory
+        m4 = u1_manifest(tmp_path, "u1_lowrep", out_root=str(tmp_path / "lr"))
+        (tmp_path / "book" / bad).unlink()
+        with pytest.raises(S.Refused):
+            S.default_decider(S.check_manifest(m4))
+        mk_book_dir(tmp_path / "book")
+    m5 = u1_manifest(tmp_path, "u1_lowrep", out_root=str(tmp_path / "lr"))
+    mk_book_dir(tmp_path / "book", decider="u4")
+    with pytest.raises(S.Refused, match="not the deciding"):
+        S.default_decider(S.check_manifest(m5))
+
+
+def test_placebo_entries_are_identical_with_and_without_a_fetcher(tmp_path):
+    # a planned pool of a launcher that would link through a forward fetch: the placebo entry does not read the link (only meta fields differ)
+    plan = {"PNEW": {"for": "PE", "pc_s": S_S + 3600}}
+    hist, cand = history_rows("OLD", 3), candidate("NEWL")
+    out = []
+    for fetch in (None, lambda L, slot: {"launcher": L, "funder": FX, "funding_slot": 5, "status": "resolved"}):
+        dec = U.U1Decider(S_MS, U.FunderTable.from_rows(BACKFILL_A), mode="placebo", plan=plan, fetch_fn=fetch)
+        entries, st = flow(dec, hist, cand)
+        out.append([{k: v for k, v in e.as_dict().items() if k != "meta"} for e in entries])
+    assert out[0] == out[1] and len(out[0]) == 1
+
+
+def test_adr_disclosures_are_word_for_word():
+    assert U.LOWREP_DISCLOSURE == ("The low-reputation line makes no RPC call: it reads the book's forward funder journal read-only and decides an hour only after the book has stored it; its forward links are the book's.")
+    assert U.PLACEBO_NO_RPC_DISCLOSURE == ("The placebo run makes no RPC call and uses the backfill funder tables only; forward launchers are unlinked in its view, which changes no placebo entry or exit (the draw and the exits read no funder link).")
