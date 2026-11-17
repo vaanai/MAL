@@ -20,6 +20,7 @@ S = D0 + 12 * H                      # start_hour 2026-11-17T12
 TAPE_END = B.day_start_ms("2026-11-23") + 3 * H   # complete days 11-17 .. 11-22 (6)
 L1, L2 = S + 5 * D, S + 10 * D
 LAM = 1_000_000_000
+LATE_TAPE = B.day_start_ms("2026-12-02") + 3 * H
 DEC_TEXT = (ROOT / "DEC" / "DEC-035-live-learning-lane.md").read_text()
 
 
@@ -35,7 +36,7 @@ class Fx:
         meta = {"book_id": book_id, "decider": dec, "start_hour": start_hour, "pricing_lat_entry_s": 4.085, "send_lamports": 505000}
         meta.update(extra_meta or {})
         (self.root / "meta.json").write_text(json.dumps(meta))
-        (self.root / "status.json").write_text(json.dumps({"book_id": book_id, "last_hour": "x", "last_hour_end_ms": tape_end}))
+        (self.root / "status.json").write_text(json.dumps({"book_id": book_id, "last_hour": "x", "last_hour_end_ms": tape_end, "active": True, "run": "0001"}))
         self.bot = "c1nf-fwd-" + book_id
         self.n = 0
 
@@ -60,8 +61,12 @@ class Fx:
                              "legs": {"total": {"flat_1p9": {"state": "filled", "net_lamports": int(f)}, "press_1p9": {"state": "filled", "net_lamports": int(p)}}}})
         self.rows(bot, rows, day=B.day_of(entry_ms), run=run)
 
-    def build(self, now_ms, **kw):
-        return B.build(str(self.root), now_ms, roots=(str(self.sim),), **kw)
+    def build(self, now_ms, n_watched=57, **kw):
+        return B.build(str(self.root), now_ms, n_watched, roots=(str(self.sim),), **kw)
+
+    def refuse_row(self, bot, entry_ms, reason="no_prints"):
+        self.n += 1
+        self.rows(bot, [{"kind": "refused", "position_id": "r%d" % self.n, "bot_id": bot, "decision_ms": {"entry": entry_ms, "exit": None}, "reason": reason}], day=B.day_of(entry_ms))
 
 
 def good_book(fx, n=12, flat=2_000_000, press=1_500_000, plc=(-1_000_000, -1_200_000)):
@@ -162,8 +167,8 @@ def test_no_go_cases(tmp_path, kw, failed):
 
 def test_no_go_top3_concentration(tmp_path):
     fx = Fx(tmp_path)
-    for i in range(12):
-        e = S + (i + 1) * H + (i % 6) * D
+    for i in range(24):
+        e = S + (i + 1) * H + (i % 5) * D
         fx.entry(fx.bot, e, e + H, ((50_000_000 if i < 3 else -1_000_000), (50_000_000 if i < 3 else -1_000_000)))
     o = fx.build(L1)
     assert o["bar"]["legs"]["flat"]["1_total_net_sol_gt_0"]["met"] and not o["bar"]["legs"]["flat"]["2_total_ex_top3_gt_0"]["met"] and o["bar"]["verdict"] == "NO-GO"
@@ -192,7 +197,7 @@ def test_no_go_days_and_exclusions_and_pre_s(tmp_path):
 
 
 def test_too_few_trades_extend_then_too_rare(tmp_path):
-    fx = Fx(tmp_path)
+    fx = Fx(tmp_path, tape_end=LATE_TAPE)
     good_book(fx, n=6)
     o1 = fx.build(L1)
     assert o1["look_state"] == "extended" and "too few trades to judge" in o1["status"] and o1["bar"]["verdict"] is None
@@ -220,11 +225,11 @@ def test_placebo_line_next_to_book(tmp_path):
     assert "Random-pick (placebo) book" in md and "-0.001000" in md and "0.002000" in md
 
 
-def test_twin_gets_no_bar(tmp_path):
-    fx = Fx(tmp_path, "osb-u4-lat3010", extra_meta={"pricing_lat_entry_s": 3.010})
-    good_book(fx)
-    o = fx.build(L1)
-    assert o["deciding"] is False and o["bar"]["verdict"] is None and "never deciding" in B.render(o)
+@pytest.mark.parametrize("sfx", ["-lat3010", "-lat5590", "-send160k"])
+def test_twin_and_fee_out_roots_refused(tmp_path, sfx):
+    fx = Fx(tmp_path, "osb-u4" + sfx, extra_meta={"pricing_lat_entry_s": 3.010})
+    with pytest.raises(B.Refused, match="not built"):
+        fx.build(L1)
 
 
 def test_only_active_run_is_read(tmp_path):
@@ -235,6 +240,7 @@ def test_only_active_run_is_read(tmp_path):
     fx.entry(fx.bot, S + H, S + 2 * H, (1e6, 1e6), run=run2)
     (fx.root / "book").unlink()
     (fx.root / "book").symlink_to(run2)
+    (fx.root / "status.json").write_text(json.dumps({"last_hour_end_ms": TAPE_END, "active": True, "run": "0002"}))
     assert fx.build(S + 2 * D)["cells"]["0.1"]["n"] == 1
 
 
@@ -247,9 +253,9 @@ def test_labels_and_best_of_n(tmp_path):
         assert o["cells"]["0.1"]["label"] == lab and o["cells"]["0.25"]["label"] == lab
         assert o["cells"]["0.5"]["label"] == "model only, extrapolated; not for steering" and o["cells"]["1"]["label"] == "model only, extrapolated; not for steering"
         md = B.render(o)
-        assert "best of %d book rows; treat any good number as shrunk" % B.ROWS_PER_BOOK[o["decider"]] in md
+        assert "best of 57 book rows; treat any good number as shrunk" in md
     o = fx.build(S + 2 * D, n_watched=57)
-    assert "best of 57 rows" in " ".join(d["text"] for d in o["disclosures"]) and o["n_books_watched_source"] == "--n-watched"
+    assert "best of 57 rows" in " ".join(d["text"] for d in o["disclosures"]) and o["n_books_watched_source"].startswith("--n-watched")
 
 
 @pytest.mark.parametrize("name", [n for n in dir(T) if n.isupper()])
@@ -260,7 +266,7 @@ def test_disclosure_constants_are_verbatim_in_dec(name):
 def test_c1nf_disclosures_include_late_print_and_u_books_bounded_state(tmp_path):
     fx = Fx(tmp_path, "c1nf-fwd-v1", extra_meta={"pools_first_seen_in_warmup": 4321})
     md = B.render(fx.build(S + D))
-    assert T.C1_LATE_PRINT in md and T.C1_SEC4.replace("<n_books_watched>", "12") in md and "pools first seen in warm-up: 4321" in md and "in-sample, post-hoc filter, September" in md
+    assert T.C1_LATE_PRINT in md and T.C1_SEC4.replace("<n_books_watched>", "57") in md and "pools first seen in warm-up: 4321" in md and "in-sample, post-hoc filter, September" in md
     for bid in ("osb-u4", "osb-u2"):
         fx = Fx(tmp_path / bid, bid)
         (fx.root / "gap_exclusions.json").write_text(json.dumps({"main": {"total": {"entries": 40, "feed_gap_timed": 3, "feed_gap_requested": 4}, "by_day": {}}}))
@@ -291,7 +297,7 @@ def test_never_open_names_refused_and_not_read(tmp_path):
 def test_unknown_book_and_bad_root_refused(tmp_path):
     fx = Fx(tmp_path)
     with pytest.raises(B.Refused):
-        B.build(str(fx.root), L1)                               # not under the real SIM_ROOT
+        B.build(str(fx.root), L1, 57)                           # not under the real SIM_ROOT
     (fx.root / "meta.json").write_text(json.dumps({"book_id": "osb-u9", "decider": "u4", "start_hour": "2026-11-17T12"}))
     with pytest.raises(B.Refused):
         fx.build(L1)
@@ -331,6 +337,155 @@ def test_main_exit_codes(tmp_path, monkeypatch):
     good_book(fx)
     monkeypatch.setattr(B, "SIM_ROOT", str(fx.sim))
     monkeypatch.setattr(B, "OUT_ROOTS", (str(tmp_path / "board"),))
-    assert B.main([str(fx.root), "--out-dir", str(tmp_path / "board"), "--now-ms", str(L1)]) == 0
-    assert B.main([str(fx.root), "--out-dir", str(tmp_path / "nope"), "--now-ms", str(L1)]) == 2
-    assert B.main([str(tmp_path), "--out-dir", str(tmp_path / "board")]) == 2
+    assert B.main([str(fx.root), "--out-dir", str(tmp_path / "board"), "--now-ms", str(L1), "--n-watched", "57"]) == 0
+    assert B.main([str(fx.root), "--out-dir", str(tmp_path / "nope"), "--now-ms", str(L1), "--n-watched", "57"]) == 2
+    assert B.main([str(tmp_path), "--out-dir", str(tmp_path / "board"), "--n-watched", "57"]) == 2
+    assert B.main([str(fx.root), "--out-dir", str(tmp_path / "board"), "--now-ms", str(L1), "--n-watched", "29"]) == 2
+
+
+# ------------------------------------------------------------------------------------------------------------------------------ PR #1435 review fixes
+
+
+def test_n_watched_required_and_floor(tmp_path):
+    fx = Fx(tmp_path)
+    for bad in (None, 29, 0):
+        with pytest.raises(B.Refused, match="n-watched"):
+            fx.build(L1, n_watched=bad)
+    o = fx.build(L1, n_watched=88)
+    assert "best of 88 book rows" in B.render(o) and "88" in o["disclosures"][0]["text"]
+    with pytest.raises(SystemExit):
+        B.main([str(fx.root), "--out-dir", str(tmp_path / "b")])      # argparse: --n-watched is required
+
+
+def test_u_warmup_never_uses_pools_first_seen(tmp_path):
+    for bid in ("osb-u4", "osb-u2"):
+        fx = Fx(tmp_path / bid, bid, extra_meta={"pools_first_seen_in_warmup": 4321})
+        o = fx.build(S + D)
+        txt = " ".join(d["text"] for d in o["disclosures"])
+        assert "4321" not in txt and "4321" not in B.render(o) and "excluded and counted: not recorded by the runner" in txt
+        assert o["pools_first_seen_in_warmup"] is None
+
+
+def test_read_is_frozen_as_of_the_read_instant(tmp_path):
+    fx = Fx(tmp_path, tape_end=LATE_TAPE)
+    good_book(fx)                                                  # n = 10 at L1: the read instant is L1
+    first = fx.build(L1)
+    assert first["bar"]["verdict"] == "GO" and first["bar"]["read_instant_utc"] == B.utc(L1)
+    for i in range(10):                                            # later bad trades never change the frozen result
+        e = L1 + D + i * H
+        fx.entry(fx.bot, e, e + H, (-9_000_000, -9_000_000))
+        fx.entry(fx.bot + "-plc", e, e + H, (9_000_000, 9_000_000))
+    later = fx.build(L1 + 3 * D)
+    assert later["bar"]["verdict"] == "GO" and later["bar"]["frozen"] == first["bar"]["frozen"]
+    assert later["cells"]["0.1"]["legs"]["flat"]["total_sol"] < 0            # the live cells moved on
+    md = B.render(later)
+    assert "not the read" in md and "Frozen result as of the read instant" in md
+
+
+def test_n_below_10_at_l1_is_judged_at_l2_exactly(tmp_path):
+    fx = Fx(tmp_path, tape_end=LATE_TAPE)
+    good_book(fx, n=6)                                             # 5 trades by L1, 6 by L2
+    assert fx.build(L1)["look_state"] == "extended" and fx.build(L1)["bar"]["verdict"] is None
+    for i in range(14):                                            # trades AFTER L2 take n past 10 now
+        e = L2 + D + i * H
+        fx.entry(fx.bot, e, e + H, (1_000_000, 1_000_000))
+        fx.entry(fx.bot + "-plc", e, e + H, (-1, -1))
+    o = fx.build(L2 + 3 * D)
+    assert o["cells"]["0.1"]["n"] >= 10                            # n now
+    assert o["look_state"] == "too_rare" and o["bar"]["verdict"] == "NO-GO" and "as of L2" in o["status"]
+    assert B.render(o).count("too rare to judge") >= 1
+
+
+def test_n_at_l2_ge_10_reads_at_l2(tmp_path):
+    fx = Fx(tmp_path, tape_end=LATE_TAPE)
+    good_book(fx, n=6)
+    for i in range(6):                                             # between L1 and L2: n >= 10 as of L2
+        e = L1 + D + i * H
+        fx.entry(fx.bot, e, e + H, (1_000_000, 1_000_000))
+        fx.entry(fx.bot + "-plc", e, e + H, (-1_000_000, -1_000_000))
+    o = fx.build(L2 + D)
+    assert o["look_state"] == "look" and o["bar"]["read_instant_utc"] == B.utc(L2)
+
+
+def test_waiting_for_tape_is_not_a_read(tmp_path):
+    fx = Fx(tmp_path)                                              # tape ends 11-23T03, before L2
+    good_book(fx, n=6)
+    o = fx.build(L2 + D)
+    assert o["look_state"] == "waiting_tape" and o["bar"]["verdict"] is None and "not a read" in o["status"]
+
+
+def test_replay_in_progress_shows_no_cells_no_verdict(tmp_path):
+    fx = Fx(tmp_path)
+    good_book(fx)
+    # restart: the new run replays from warm-up, status.json moves (earlier tape end, new run, not yet active) while `book` still points at the old run
+    (fx.root / "status.json").write_text(json.dumps({"last_hour": "warm", "last_hour_end_ms": D0 - 5 * D, "active": False, "run": "0002"}))
+    o = fx.build(L2 + D)
+    assert o["look_state"] == "replay" and o["cells"] == {} and o["bar"]["verdict"] is None and "replay in progress: not a read" in o["status"]
+    assert o["entries"]["forward_entries"] == 0
+    # a status that is active but names a different run than the `book` link is also refused as a read
+    (fx.root / "status.json").write_text(json.dumps({"last_hour_end_ms": TAPE_END, "active": True, "run": "0002"}))
+    assert fx.build(L1)["look_state"] == "replay"
+
+
+def test_engine_refused_buys_count_in_the_excluded_share(tmp_path):
+    fx = Fx(tmp_path)
+    good_book(fx, n=12)
+    for i in range(30):
+        fx.refuse_row(fx.bot, S + (i + 1) * 60_000)
+    o = fx.build(L1)
+    e = o["entries"]
+    assert e["engine_refused"] == 30 and e["forward_entries"] == 42 and e["excluded"] == 30 and e["excluded_share"] == pytest.approx(30 / 42)
+    assert o["bar"]["verdict"] == "NO-GO" and not o["bar"]["legs"]["flat"]["4_excluded_share_le_20pct_of_forward_entries"]["met"]
+    assert e["excluded_by_reason"] == {"refused:no_prints": 30}
+
+
+def test_run_link_outside_book_folder_refused(tmp_path):
+    fx = Fx(tmp_path)
+    outside = tmp_path / "elsewhere" / "0001"
+    (outside / "ledger" / "x").mkdir(parents=True)
+    (fx.root / "book").unlink()
+    (fx.root / "book").symlink_to(outside)
+    with pytest.raises(B.Refused, match="active run"):
+        fx.build(L1)
+    assert B.main([str(fx.root), "--out-dir", str(tmp_path / "board"), "--n-watched", "57"]) == 2
+
+
+def test_symlinked_json_outside_refused_cleanly(tmp_path, monkeypatch):
+    fx = Fx(tmp_path)
+    ext = tmp_path / "ext.json"
+    ext.write_text((fx.root / "meta.json").read_text())
+    (fx.root / "meta.json").unlink()
+    (fx.root / "meta.json").symlink_to(ext)
+    with pytest.raises(B.Refused, match="outside"):
+        fx.build(L1)
+    monkeypatch.setattr(B, "SIM_ROOT", str(fx.sim))
+    assert B.main([str(fx.root), "--out-dir", str(tmp_path / "board"), "--n-watched", "57"]) == 2
+
+
+def test_bad_rows_are_counted_not_crashes(tmp_path, monkeypatch):
+    fx = Fx(tmp_path)
+    good_book(fx, n=3)
+    d = fx.run / "ledger" / fx.bot
+    with open(d / ("trades-%s.jsonl" % B.day_of(S)), "a") as fh:
+        fh.write("[1, 2]\n{\"kind\": \"open\"}\n{\"kind\": \"trade\", \"position_id\": \"z\"}\nnot json\n")
+    o = fx.build(S + 2 * D)
+    assert o["malformed_ledger_rows"] == 4 and o["cells"]["0.1"]["n"] == 3
+
+
+def test_not_built_items_listed(tmp_path):
+    fx = Fx(tmp_path)
+    o = fx.build(S + D)
+    md = B.render(o)
+    assert len(o["not_built"]) >= 5 and "## Not built here" in md
+    for k in ("twin", "ledger-incomplete", "peak capital at risk", "pre-S row scan"):
+        assert any(k in x for x in o["not_built"]) and k in md
+
+
+def test_ledger_files_go_through_the_guard(tmp_path):
+    fx = Fx(tmp_path)
+    good_book(fx, n=2)
+    outside = tmp_path / "out.jsonl"
+    outside.write_text('{"kind": "open", "position_id": "q", "decision_ms": {"entry": %d}}\n' % (S + H))
+    (fx.run / "ledger" / fx.bot / "trades-2026-11-30.jsonl").symlink_to(outside)
+    with pytest.raises(B.Refused, match="outside"):
+        fx.build(S + 2 * D)

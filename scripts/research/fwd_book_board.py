@@ -34,6 +34,12 @@ ROWS_PER_BOOK = {"c1nf": 12, "u4": 9, "u2": 9}  # DEC-035 Am.9 records: 4 stakes
 NAMES = {"c1nf": "C1-NF", "u4": "U4", "u2": "U2"}
 BEFORE_LOOK = "before the look instant: not a read"
 MIN_N, MAX_EXCL = 10, 0.20
+MIN_N_WATCHED = 12 + 9 + 9   # these three books' own rows; the board-wide N is larger once any other board row is watched
+NOT_BUILT = ["latency-twin and send160k out_roots: refused (the --compare decision-md5 identity check, ADD2 (a)2, and the 160,000-lamport reader, ADD1 (b), are not built)",
+             "C1-NF ledger-incomplete day flag (ruling section 1: > 20% no_wallet_ledger refusals in a day)",
+             "U4 / U2 peak capital at risk per rung (ruling 0.6)",
+             "U4 / U2 named board counters of sections 1.5 / 2.5 (only the raw summed decider counters are shown)",
+             "pre-S row scan of earlier runs (only the active run is scanned)"]
 DECIDING_STAKE = "0.1"
 BASE58 = re.compile(r"[1-9A-HJ-NP-Za-km-z]{32,44}")
 FORBIDDEN_KEYS = {"pool", "mint", "signature", "price", "reserve", "slot", "wallet", "trader", "creator"}
@@ -72,9 +78,13 @@ def _isint(x):
 
 # ------------------------------------------------------------------------------------------------------------------------------ reading (names guarded)
 def guarded(root, path):
-    """refuse any path whose parts below the book root name a never-open item"""
-    rel = Path(path).resolve().relative_to(Path(root).resolve()) if Path(path).is_absolute() else Path(path)
-    for part in rel.parts:
+    """resolve symlinks; refuse a path that leaves the book folder or names a never-open item"""
+    try:
+        root_r = Path(root).resolve()
+        rel = Path(path).resolve().relative_to(root_r)
+    except (ValueError, OSError, RuntimeError):
+        raise Refused("path outside the book folder: %s" % Path(path).name)
+    for part in tuple(rel.parts) + (Path(path).name,):
         if any(part.startswith(w) or part == w for w in NEVER_OPEN):
             raise Refused("never-open path refused: %s" % part)
     return Path(path)
@@ -87,20 +97,29 @@ def read_json(root, name, required=True):
             raise Refused("missing %s" % name)
         return None
     try:
-        return json.loads(p.read_text())
+        r = json.loads(p.read_text())
+        if not isinstance(r, dict):
+            raise ValueError("not an object")
+        return r
     except (OSError, ValueError) as e:
         raise Refused("unreadable %s: %s" % (name, type(e).__name__))
 
 
 def active_run(root):
-    root = Path(root)
+    """the `book` link's run (else the highest runs/NNNN); it must resolve to runs/NNNN inside the book folder"""
+    root = Path(root).resolve()
     link = root / "book"
+    runs_dir = root / "runs"
     if link.exists():
-        return link.resolve()
-    runs = sorted(p for p in (root / "runs").glob("[0-9][0-9][0-9][0-9]") if p.is_dir()) if (root / "runs").is_dir() else []
-    if not runs:
-        raise Refused("no active run (no `book` link, no runs/NNNN)")
-    return runs[-1]
+        run = link.resolve()
+    else:
+        runs = sorted(p for p in runs_dir.glob("[0-9][0-9][0-9][0-9]") if p.is_dir()) if runs_dir.is_dir() else []
+        if not runs:
+            raise Refused("no active run (no `book` link, no runs/NNNN)")
+        run = runs[-1].resolve()
+    if run.parent != runs_dir.resolve() or not re.fullmatch(r"\d{4}", run.name):
+        raise Refused("the active run is not runs/NNNN inside the book folder")
+    return run
 
 
 def load_book(out_root, roots=None):
@@ -112,14 +131,14 @@ def load_book(out_root, roots=None):
     base = book_id
     for sfx in SUFFIXES:
         if book_id.endswith(sfx):
-            base = book_id[:-len(sfx)]
+            raise Refused("twin / fee out_roots (-lat3010, -lat5590, -send160k) get no figures: their readers (the --compare decision-md5 identity check, ADD2 (a)2; the 160,000 reader, ADD1 (b)) are not built")
     if base not in DECIDING:
         raise Refused("unknown book id: only c1nf-fwd-v1, osb-u4, osb-u2 (and their -lat3010 / -lat5590 / -send160k twins)")
     meta, status = read_json(root, "meta.json"), read_json(root, "status.json")
     if meta.get("book_id") != book_id or meta.get("decider") != DECIDING[base]:
         raise Refused("meta.json book_id / decider does not match the out_root")
     return {"root": root, "book_id": book_id, "base": base, "decider": DECIDING[base], "deciding": book_id == base, "meta": meta, "status": status,
-            "gap": read_json(root, "gap_exclusions.json", required=False), "run": active_run(root)}
+            "gap_path": root / "gap_exclusions.json", "run": active_run(root)}
 
 
 def read_counts(root):
@@ -135,18 +154,27 @@ def read_counts(root):
     return rows
 
 
-def read_ledger(run, s_ms):
-    """-> {bot_dir: {opens, trades, excluded, refused, malformed, pre_s}}; reads trades-DAY.jsonl files of the active run only"""
+def new_bot():
+    return {"opens": {}, "trades": {}, "excluded": {}, "refused": collections.Counter(), "refused_rows": {}, "malformed": 0, "pre_s": 0}
+
+
+def read_ledger(root, run, s_ms):
+    """-> {bot_dir: {opens, trades, excluded, refused_rows, malformed, pre_s}}; reads trades-DAY.jsonl files of the active run only, each through the path guard; a bad row is counted malformed"""
     out = {}
     led = Path(run) / "ledger"
     if not led.is_dir():
         return out
     for bdir in sorted(p for p in led.iterdir() if p.is_dir()):
-        b = {"opens": {}, "trades": {}, "excluded": {}, "refused": collections.Counter(), "malformed": 0, "pre_s": 0}
+        b = new_bot()
         for f in sorted(bdir.iterdir()):
             if not LEDGER_FILE.match(f.name):
                 continue
-            for ln in f.read_text().splitlines():
+            guarded(root, f)
+            try:
+                lines = f.read_text().splitlines()
+            except (OSError, UnicodeDecodeError) as e:
+                raise Refused("unreadable ledger file: %s" % type(e).__name__)
+            for ln in lines:
                 if not ln.strip():
                     continue
                 try:
@@ -154,25 +182,37 @@ def read_ledger(run, s_ms):
                 except ValueError:
                     b["malformed"] += 1
                     continue
-                k = r.get("kind")
+                if not isinstance(r, dict) or not isinstance(r.get("position_id"), str):
+                    b["malformed"] += 1
+                    continue
+                k, pid = r.get("kind"), r["position_id"]
                 dm = (r.get("decision_ms") or {}).get("entry") if isinstance(r.get("decision_ms"), dict) else None
-                if k in ("open", "trade", "excluded") and _isint(dm) and dm < s_ms:
+                if k in ("open", "trade", "excluded", "refused") and _isint(dm) and dm < s_ms:
                     b["pre_s"] += 1
                 if k == "open" and _isint(dm):
-                    b["opens"][r["position_id"]] = dm
+                    b["opens"][pid] = dm
                 elif k == "trade":
                     try:
                         leg = r["legs"][RULE]
-                        b["trades"][(r["position_id"], float(r["stake_sol"]))] = {"entry": dm, "exit": (r["decision_ms"] or {}).get("exit"), "flat": leg["flat_" + LAT]["net_lamports"],
-                                                                                    "press": leg["press_" + LAT]["net_lamports"], "reason": str(r.get("exit_reason") or "")}
-                    except (KeyError, TypeError):
+                        b["trades"][(pid, float(r["stake_sol"]))] = {"entry": dm, "exit": r["decision_ms"].get("exit"), "flat": leg["flat_" + LAT]["net_lamports"],
+                                                                      "press": leg["press_" + LAT]["net_lamports"], "reason": str(r.get("exit_reason") or "")}
+                    except (KeyError, TypeError, AttributeError, ValueError):
                         b["malformed"] += 1
                 elif k == "excluded":
-                    b["excluded"].setdefault(r["position_id"], str(r.get("exclusion_reason") or "unknown"))
-                elif k == "refused":
-                    b["refused"][str(r.get("reason") or r.get("refusal") or "unknown")[:40]] += 1
+                    b["excluded"].setdefault(pid, str(r.get("exclusion_reason") or "unknown"))
+                elif k == "refused" and _isint(dm):
+                    b["refused_rows"].setdefault(pid, (str(r.get("reason") or r.get("refusal") or "unknown")[:40], dm))
         out[bdir.name] = b
     return out
+
+
+def clip(b, until):
+    """the book's rows as of the instant `until`: entries decided before it only (the frozen read, rows up to that instant)"""
+    if until is None:
+        return b
+    opens = {p: t for p, t in b["opens"].items() if t < until}
+    return dict(b, opens=opens, trades={k: t for k, t in b["trades"].items() if _isint(t["entry"]) and t["entry"] < until},
+                excluded={p: r for p, r in b["excluded"].items() if p in opens}, refused_rows={p: v for p, v in b["refused_rows"].items() if v[1] < until})
 
 
 # ------------------------------------------------------------------------------------------------------------------------------ numbers
@@ -227,26 +267,43 @@ def bot_cells(b, days, tape_end, s_ms):
 
 
 def entries_excluded(b, s_ms):
+    """requested = forward buy decisions the engine was handed (open rows) + those it refused (refused rows); excluded = engine-excluded + engine-refused (QP / reviewer on PR #1435:
+    refused buys count toward the excluded share, arena_paper); excluded share = excluded / requested. Decider-level refusals (no_wallet_ledger, guard, cap) are runner counters, beside."""
     ent = {p for p, t in b["opens"].items() if t >= s_ms}
+    ref = {p: v[0] for p, v in b["refused_rows"].items() if v[1] >= s_ms}
+    req = ent | set(ref)
     exc = {p: r for p, r in b["excluded"].items() if p in ent}
+    exc.update({p: "refused:" + r for p, r in ref.items()})
     priced = {p for (p, _s) in b["trades"] if p in ent}
     by = collections.Counter(exc.values())
-    return {"forward_entries": len(ent), "excluded": len(exc), "excluded_by_reason": dict(sorted(by.items())),
-            "excluded_share": (len(exc) / len(ent)) if ent else None, "priced_positions": len(priced), "no_trade_row_yet": len(ent - set(exc) - priced),
-            "refusals_by_reason": dict(sorted(b["refused"].items()))}
+    return {"forward_entries": len(req), "engine_refused": len(ref), "excluded": len(exc), "excluded_by_reason": dict(sorted(by.items())),
+            "excluded_share": (len(exc) / len(req)) if req else None, "priced_positions": len(priced), "no_trade_row_yet": len(ent - set(exc) - priced),
+            "refusals_by_reason": dict(sorted(collections.Counter(ref.values()).items()))}
 
 
 # ------------------------------------------------------------------------------------------------------------------------------ the look and the bar
-def look_status(now_ms, s_ms, n):
+THE_LOOK_RULE = ("THE look is the first build at or after the read instant (L1; L2 when n < 10 at L1); the verdict below is the frozen result as of that instant (rows decided before it only). "
+                 "A verdict from any other build is not the read; the manager records the read build with its generated time and md sha256.")
+REPLAY = "replay in progress: not a read"
+
+
+def look_status(now_ms, s_ms, tape_end, n1, n2):
+    """n1 / n2 = n at L1 / L2 judged AS OF those instants (None while the tape has not reached them). -> state, text, read instant (or None)"""
     l1, l2 = s_ms + 5 * DAY_MS, s_ms + 10 * DAY_MS
+    base = {"l1": l1, "l2": l2, "read_ms": None, "evaluate": False}
     if now_ms < l1:
-        return {"state": "before_l1", "text": BEFORE_LOOK, "evaluate": False, "l1": l1, "l2": l2}
-    if n >= MIN_N:
-        return {"state": "look", "text": "look instant reached; n >= 10: the mechanical bar below is the read (the first build at or after L1, or from L1 with n >= 10 once extended, is THE look; the manager records it)",
-                "evaluate": True, "l1": l1, "l2": l2}
+        return dict(base, state="before_l1", text=BEFORE_LOOK)
+    if n1 is None:
+        return dict(base, state="waiting_tape", text="look instant passed; the tape has not reached L1 yet: not a read")
+    if n1 >= MIN_N:
+        return dict(base, state="look", evaluate=True, read_ms=l1, text="the read instant is L1 (n >= 10 at L1): the frozen result below is the read; " + THE_LOOK_RULE)
     if now_ms < l2:
-        return {"state": "extended", "text": "too few trades to judge (n < 10 at L1); extended once to L2 = S + 10 d", "evaluate": False, "l1": l1, "l2": l2}
-    return {"state": "too_rare", "text": "NO-GO (too rare to judge): n < 10 at L2; the owner may override only in his own quoted words", "evaluate": False, "l1": l1, "l2": l2, "verdict": "NO-GO"}
+        return dict(base, state="extended", text="too few trades to judge (n < 10 at L1); the read moves to L2 = S + 10 d: not a read")
+    if n2 is None:
+        return dict(base, state="waiting_tape", text="L2 passed; the tape has not reached L2 yet: not a read")
+    if n2 < MIN_N:
+        return dict(base, state="too_rare", evaluate=True, read_ms=l2, verdict="NO-GO", text="NO-GO (too rare to judge): n < 10 at L2 judged as of L2, whatever n is now; the owner may override only in his own quoted words")
+    return dict(base, state="look", evaluate=True, read_ms=l2, text="the read instant is L2 (n < 10 at L1, n >= 10 at L2 judged as of L2): the frozen result below is the read; " + THE_LOOK_RULE)
 
 
 def bar(decider, cells, plc_cells, ex, pre_s):
@@ -274,35 +331,53 @@ def bar(decider, cells, plc_cells, ex, pre_s):
 
 
 # ------------------------------------------------------------------------------------------------------------------------------ build
-def build(out_root, now_ms, n_watched=None, roots=None):
+def analyse(main, plc, s_ms, tape_end, until=None):
+    days = complete_days(s_ms, tape_end) if tape_end is not None and tape_end > s_ms else []
+    m, p = clip(main, until), (clip(plc, until) if plc else None)
+    te = tape_end or 0
+    return days, bot_cells(m, days, te, s_ms), (bot_cells(p, days, te, s_ms) if p else None), entries_excluded(m, s_ms), (entries_excluded(p, s_ms) if p else None)
+
+
+def n_at(main, plc, s_ms, tape_end, cut):
+    """n at the deciding stake as of the instant `cut` (None while the tape has not reached it)"""
+    if tape_end is None or tape_end < cut:
+        return None
+    c = analyse(main, plc, s_ms, cut, until=cut)[1]
+    return c[DECIDING_STAKE]["n"] if DECIDING_STAKE in c else 0
+
+
+def build(out_root, now_ms, n_watched, roots=None):
+    if not _isint(n_watched) or n_watched < MIN_N_WATCHED:
+        raise Refused("--n-watched is required and is the board-wide count of watched book rows (at least %d: 12 + 9 + 9 of these three books alone); the best-of-N sentence prints it" % MIN_N_WATCHED)
     bk = load_book(out_root, roots)
     meta, status, dec = bk["meta"], bk["status"], bk["decider"]
     if "start_hour" not in meta:
         raise Refused("meta.json has no start_hour")
     tape_end = status.get("last_hour_end_ms") if _isint(status.get("last_hour_end_ms")) else None
     s_ms = hour_ms(meta["start_hour"])
-    led = read_ledger(bk["run"], s_ms)
+    replay = status.get("active") is not True or status.get("run") != bk["run"].name   # a restart replays into a NEW run while status.json already moves: the old run's ledger and the new status do not match
+    led = {} if replay else read_ledger(bk["root"], bk["run"], s_ms)
     main_id = [k for k in led if not k.endswith("-plc")]
     plc_id = [k for k in led if k.endswith("-plc")]
-    main = led[main_id[0]] if main_id else {"opens": {}, "trades": {}, "excluded": {}, "refused": collections.Counter(), "malformed": 0, "pre_s": 0}
+    main = led[main_id[0]] if main_id else new_bot()
     plc = led[plc_id[0]] if plc_id else None
-    started = tape_end is not None and tape_end > s_ms
-    days = complete_days(s_ms, tape_end) if started else []
-    cells = bot_cells(main, days, tape_end or 0, s_ms)
-    plc_cells = bot_cells(plc, days, tape_end or 0, s_ms) if plc else None
-    ex = entries_excluded(main, s_ms)
+    days, cells, plc_cells, ex, plc_ex = analyse(main, plc, s_ms, tape_end)
     pre_s = main["pre_s"] + (plc["pre_s"] if plc else 0)
-    n = cells[DECIDING_STAKE]["n"] if DECIDING_STAKE in cells else 0
-    look = look_status(now_ms, s_ms, n)
-    verdict = None
-    if bk["deciding"]:
-        b = bar(dec, cells, plc_cells, ex, pre_s)
-        verdict = b["verdict"] if look["evaluate"] else look.get("verdict")
-        bar_out = dict(b, shown=look["evaluate"], verdict=verdict)
+    if replay:
+        look = {"state": "replay", "text": REPLAY + " (status.json is at run %s, active=%s; the `book` link is run %s): no cells, no verdict" % (status.get("run"), status.get("active"), bk["run"].name),
+                "evaluate": False, "l1": s_ms + 5 * DAY_MS, "l2": s_ms + 10 * DAY_MS, "read_ms": None}
     else:
-        bar_out = {"shown": False, "verdict": None, "note": "a latency twin or fee column: shown beside, never deciding; no GO / NO-GO is computed for it"}
-    nw = n_watched if n_watched is not None else ROWS_PER_BOOK[dec]
-    counts = read_counts(bk["root"])
+        look = look_status(now_ms, s_ms, tape_end, n_at(main, plc, s_ms, tape_end, s_ms + 5 * DAY_MS), n_at(main, plc, s_ms, tape_end, s_ms + 10 * DAY_MS))
+    bar_out = {"shown": False, "verdict": None}
+    if look["evaluate"]:
+        fdays, fcells, fplc, fex, _fp = analyse(main, plc, s_ms, look["read_ms"], until=look["read_ms"])
+        b = bar(dec, fcells, fplc, fex, pre_s)
+        bar_out = dict(b, shown=True, verdict=look.get("verdict") or b["verdict"], read_instant_utc=utc(look["read_ms"]), rule=THE_LOOK_RULE,
+                       frozen={"days_complete": len(fdays), "cell_0.1": fcells.get(DECIDING_STAKE), "random_pick_cell_0.1": (fplc or {}).get(DECIDING_STAKE), "entries": fex})
+    if not look["evaluate"] and not replay:
+        bar_out["provisional"] = bar(dec, cells, plc_cells, ex, pre_s)["legs"]
+    nw = n_watched
+    counts = [] if replay else read_counts(bk["root"])
     fwd_counts = [r for r in counts if not r.get("warmup")]
     summed = collections.Counter()
     for r in fwd_counts:
@@ -310,29 +385,31 @@ def build(out_root, now_ms, n_watched=None, roots=None):
             if _isint(v) and k not in ("rows", "pools_seen_total", "creators_seen_total"):
                 summed[k] += v
     last_book = dict(fwd_counts[-1].get("book") or {}) if fwd_counts else {}
-    gap_main = ((bk["gap"] or {}).get("main") or {})
+    gap = None if replay else read_json(bk["root"], "gap_exclusions.json", required=False)
+    gap_main = ((gap or {}).get("main") or {})
     gtot = gap_main.get("total") or {}
-    out = {"schema": SCHEMA, "generated_utc": utc(now_ms), "generated_ms": now_ms, "book_id": bk["book_id"], "decider": dec, "deciding": bk["deciding"],
+    out = {"schema": SCHEMA, "generated_utc": utc(now_ms), "generated_ms": now_ms, "book_id": bk["book_id"], "decider": dec, "deciding": True,
            "paper_only": True, "gate_read": False, "promotion_gate": "No book has cleared the promotion gate.",
            "pricing_lat_entry_s": meta.get("pricing_lat_entry_s"), "send_lamports": meta.get("send_lamports"), "start_hour": meta["start_hour"], "S_utc": utc(s_ms),
            "L1_utc": utc(look["l1"]), "L2_utc": utc(look["l2"]), "status": look["text"], "look_state": look["state"],
-           "tape_through_utc": utc(tape_end) if tape_end else None, "last_hour": status.get("last_hour"), "run": Path(bk["run"]).name,
+           "tape_through_utc": utc(tape_end) if tape_end else None, "last_hour": status.get("last_hour"), "run": bk["run"].name,
            "forward_complete_days": days, "rows_decided_before_S": pre_s, "rows_decided_before_S_must_be_0": True, "void": pre_s > 0,
            "cells": {k: dict(v, label=(LABEL_EXTRAP if k in EXTRAP_STAKES[dec] else LABEL_MODEL[dec])) for k, v in cells.items()},
            "random_pick": {k: dict(v) for k, v in plc_cells.items()} if plc_cells is not None else None,
-           "entries": ex, "random_pick_entries": entries_excluded(plc, s_ms) if plc else None,
+           "entries": ex, "random_pick_entries": plc_ex,
            "gap_exclusions": {"total": gtot, "by_day": gap_main.get("by_day")} if gap_main else None,
-           "bar": bar_out, "n_books_watched": nw, "n_books_watched_source": "--n-watched" if n_watched is not None else "this book's own rows only (%d); other books' rows add to N" % ROWS_PER_BOOK[dec],
+           "bar": bar_out, "n_books_watched": nw, "n_books_watched_source": "--n-watched (board-wide count of watched book rows, supplied by the manager)",
            "counters_forward_hours_summed": dict(sorted(summed.items())), "book_counters_last": dict(sorted(last_book.items())),
-           "pools_first_seen_in_warmup": meta.get("pools_first_seen_in_warmup"), "malformed_ledger_rows": main["malformed"] + (plc["malformed"] if plc else 0),
-           "not_built": ["latency-twin columns (need the per-hour decision md5 --compare identity)", "160,000-lamport column (needs its tested reader, ADD1 (b) / ADD2 (a)3)"]}
+           "pools_first_seen_in_warmup": meta.get("pools_first_seen_in_warmup") if dec == "c1nf" else None, "malformed_ledger_rows": main["malformed"] + (plc["malformed"] if plc else 0),
+           "not_built": NOT_BUILT}
     out["disclosures"] = disclosures(dec, nw, meta, gtot, ex)
     return out
 
 
 def disclosures(dec, nw, meta, gtot, ex):
-    warm_n = meta.get("pools_first_seen_in_warmup")
-    warm_txt = str(warm_n) if warm_n is not None else "not recorded by the runner (meta.json has no count): not available"
+    # meta.pools_first_seen_in_warmup counts pools first seen in W; it is the C1-NF warm-up sentence's number. The U4 / U2 sentence asks for mints excluded for history before W, which the runner does not record.
+    warm_n = meta.get("pools_first_seen_in_warmup") if dec == "c1nf" else None
+    warm_txt = str(warm_n) if warm_n is not None else "not recorded by the runner"
     gn = gtot.get("feed_gap_timed", 0) + gtot.get("feed_gap_requested", 0) if gtot else None
     out = []
     if dec == "c1nf":
@@ -369,8 +446,8 @@ def render(o):
         L += ["**BOOK VOID: %d ledger row(s) decided before S (must be 0).**" % o["rows_decided_before_S"], ""]
     L += ["- generated %s; tape through %s (last hour %s); run %s" % (o["generated_utc"], o["tape_through_utc"], o["last_hour"], o["run"]),
           "- S = %s; L1 = S + 5 d = %s; L2 = S + 10 d = %s" % (o["S_utc"], o["L1_utc"], o["L2_utc"]),
-          "- role: %s; entry latency %s s; send %s lamports per send" % ("deciding" if o["deciding"] else "beside, never deciding", o["pricing_lat_entry_s"], o["send_lamports"]),
-          "- best of %d book rows; treat any good number as shrunk (N: %s)" % (o["n_books_watched"], o["n_books_watched_source"]),
+          "- role: %s; entry latency %s s; send %s lamports per send" % ("deciding", o["pricing_lat_entry_s"], o["send_lamports"]),
+          "- best of %d book rows; treat any good number as shrunk (N: %s). The 12 / 9 / 9 rows of the three books are inside N." % (o["n_books_watched"], o["n_books_watched_source"]),
           "- rows decided before S: %d (must be 0)" % o["rows_decided_before_S"],
           "- forward complete UTC days: %d" % len(o["forward_complete_days"]), ""]
     L += ["## Stake cells, both fail legs (forward only; net SOL booked on the exit day; complete days only)", "",
@@ -405,9 +482,9 @@ def render(o):
             L.append("| no complete forward day yet |")
     L += ["", "## Entries and exclusions (the book's own bot)", ""]
     e = o["entries"]
-    L += ["- forward entries %d; excluded %d (share %s); priced positions %d; no trade row yet %d" % (e["forward_entries"], e["excluded"], f6(e["excluded_share"]), e["priced_positions"], e["no_trade_row_yet"]),
+    L += ["- requested forward entries %d (incl. %d engine-refused); excluded %d (engine-excluded + engine-refused; share %s); priced positions %d; no trade row yet %d" % (e["forward_entries"], e["engine_refused"], e["excluded"], f6(e["excluded_share"]), e["priced_positions"], e["no_trade_row_yet"]),
           "- excluded by reason: %s" % (json.dumps(e["excluded_by_reason"], sort_keys=True) if e["excluded_by_reason"] else "none"),
-          "- refusals by reason (beside, not part of the bar): %s" % (json.dumps(e["refusals_by_reason"], sort_keys=True) if e["refusals_by_reason"] else "none")]
+          "- engine refusals by reason (counted in the excluded share above): %s" % (json.dumps(e["refusals_by_reason"], sort_keys=True) if e["refusals_by_reason"] else "none")]
     g = o["gap_exclusions"]
     if g and g["total"]:
         t = g["total"]
@@ -427,15 +504,23 @@ def render(o):
           "Deciding cell: stake 0.10, entry 19 slots, 505,000 per send, rent stranded, under BOTH fail legs. GO iff every condition holds under both legs; otherwise NO-GO. n < 10 at L1: extend once to L2; n < 10 at L2: NO-GO (too rare to judge).",
           "Not a gate read; a GO licenses only a T1 DEC-035 amendment draft for a micro-size lane start (owner's word, QP + reviewer at the exact head), not evidence of an edge.", ""]
     b = o["bar"]
-    if not o["deciding"]:
-        L.append(b["note"])
-    else:
-        v = b["verdict"] if (b["shown"] or b["verdict"]) else None
-        L.append("**Verdict: %s**" % (v if v else "none (%s)" % (BEFORE_LOOK if o["look_state"] == "before_l1" else o["status"])))
-        L += ["", "Conditions as measured now (%s):" % ("the read" if b["shown"] else "NOT a read"), "", "| condition | flat 15% | met | pressure x1 | met |", "| --- | --- | --- | --- | --- |"]
-        for name in b["legs"]["flat"]:
-            fl, pr = b["legs"]["flat"][name], b["legs"]["press"][name]
+    v = b.get("verdict")
+    L.append("**Verdict: %s**" % (v if v else "none (%s)" % (BEFORE_LOOK if o["look_state"] == "before_l1" else o["status"])))
+    legs = b["legs"] if b["shown"] else b.get("provisional")
+    if b["shown"]:
+        L += ["", "Frozen result as of the read instant %s (rows decided before it only). %s" % (b["read_instant_utc"], b["rule"]), "", "Conditions at the read instant:"]
+    elif legs:
+        L += ["", "Conditions as measured now (NOT a read; %s):" % o["status"]]
+    if legs:
+        L += ["", "| condition | flat 15% | met | pressure x1 | met |", "| --- | --- | --- | --- | --- |"]
+        for name in legs["flat"]:
+            fl, pr = legs["flat"][name], legs["press"][name]
             L.append("| %s | %s | %s | %s | %s |" % (name, json.dumps(fl["value"]), "yes" if fl["met"] else "no", json.dumps(pr["value"]), "yes" if pr["met"] else "no"))
+    g = o["gap_exclusions"]
+    if g and g.get("by_day"):
+        L += ["", "## Excluded share of entries per decision day (runner counters, ADD1 A1)", "", "| day | entries | feed_gap timed | feed_gap requested | excluded share |", "| --- | --- | --- | --- | --- |"]
+        for d, r in sorted(g["by_day"].items()):
+            L.append("| %s | %s | %s | %s | %s |" % (d, r.get("entries"), r.get("feed_gap_timed"), r.get("feed_gap_requested"), r.get("excluded_share")))
     L += ["", "## Counters", "", "- forward-hour counters summed: %s" % (json.dumps(o["counters_forward_hours_summed"], sort_keys=True) or "none"),
           "- book counters (cumulative, last hour): %s" % json.dumps(o["book_counters_last"], sort_keys=True), ""]
     L += ["## Not built here", ""] + ["- " + x for x in o["not_built"]] + ["", "## Disclosures (verbatim)", ""]
@@ -491,13 +576,13 @@ def main(argv=None):
     ap.add_argument("out_root")
     ap.add_argument("--out-dir", required=True)
     ap.add_argument("--now-ms", type=int, default=None)
-    ap.add_argument("--n-watched", type=int, default=None)
+    ap.add_argument("--n-watched", type=int, required=True, help="board-wide count of watched book rows (each book adds its rows; at least 30)")
     a = ap.parse_args(argv)
     try:
         o = build(a.out_root, a.now_ms if a.now_ms is not None else int(time.time() * 1000), a.n_watched)
         o2 = write(o, a.out_dir)
-    except Refused as e:
-        print("refused: %s" % e, file=sys.stderr)
+    except (Refused, OSError, ValueError, KeyError, TypeError, AttributeError) as e:
+        print("refused: %s" % (e if isinstance(e, Refused) else "unreadable book files (%s)" % type(e).__name__), file=sys.stderr)
         return 2
     print("ok %s %s" % (o2["book_id"], o2["status"]))
     return 0
