@@ -26,8 +26,8 @@ def make_root(tmp: Path) -> Path:
     root = tmp / "arena"
     dl = DecisionLog(str(root))
     dl.append(E.BOT, T0, {"kind": "start", "binding": "proof", "frozen_sha": E.FROZEN_SHA, "rules": [E.BOT]})
-    for i in range(3):
-        dl.append(E.BOT, T0 + 1_000 + i, {"kind": "entry", "order_id": f"o{i}", "pool": f"P{i}", "meta": meta(), "decision_slot": 1000 + i, "stake_sol": FA.PAPER_STAKE_SOL, "attempt_key": None})
+    for i in range(6):  # 10 s apart: more than the 5 s entry-age gate
+        dl.append(E.BOT, T0 + 1_000 + i * 10_000, {"kind": "entry", "order_id": f"o{i}", "pool": f"P{i}", "meta": meta(), "decision_slot": 1000 + i, "stake_sol": FA.PAPER_STAKE_SOL, "attempt_key": None})
     return root
 
 
@@ -118,7 +118,7 @@ def test_require_buy_and_config_derived(trees):
 def test_per_row(trees):
     tmp, a, _b, root = trees
     rc, j = _cli(["per-row", "--tree-a", str(a), "--tree-b", str(a), "--root-copy", str(root), "--out", str(tmp / "out_pr")])
-    assert rc == 0 and j["all_ok"] and j["entry_rows"] == 3 and len(j["runs"]) == 4
-    assert [r["outcome_a"] for r in j["runs"][:3]] == ["buy_sent"] * 3  # 100 SOL: the wallet floor never binds
-    last = j["runs"][3]
-    assert last["balance_lamports"] == 900_000_000 and last["equal"] and last["dropped_keys"] == []  # same tree both sides
+    assert rc == 0 and j["all_ok"] and j["entry_rows"] == 6 and len(j["runs"]) == 7
+    assert [r["outcome_a"] for r in j["runs"][:6]] == ["buy_sent"] * 6  # 100 SOL: the wallet floor never binds
+    last = j["runs"][6]
+    assert last["balance_lamports"] == 900_000_000 and last["equal"] and last["wallet_floor_refusals_a"] >= 1 and last["wallet_floor_refusals_b"] >= 1 and last["dropped_keys"] == []  # same tree both sides

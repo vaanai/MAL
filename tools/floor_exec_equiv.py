@@ -202,6 +202,10 @@ def truncated_root(src: Path, dst: Path, max_seq: int) -> None:
             (d / f.name).write_text("\n".join(keep) + "\n")
 
 
+def count_why(streams: dict[str, list[Any]], why: str) -> int:
+    return sum(1 for v in streams.values() for r in v if isinstance(r, dict) and r.get("kind") == "entry_refused" and r.get("why") == why)
+
+
 def outcome(streams: dict[str, list[Any]], oid: str) -> str:
     for v in streams.values():
         for r in v:
@@ -217,22 +221,28 @@ def cmd_per_row(a: argparse.Namespace) -> int:
     runs: list[dict[str, Any]] = []
     bad = False
 
-    def one(label: str, root: Path, clock: int, balance: int, oid: str | None) -> None:
+    def one(label: str, root: Path, clock: int, balance: int, oid: str | None, need_floor: bool = False) -> None:
         nonlocal bad
         res, ra, rb = execute(Path(a.tree_a), Path(a.tree_b), root, out / label, clock, balance)
         oa, ob = (outcome(ra["streams"], oid), outcome(rb["streams"], oid)) if oid else (None, None)
         want = ALLOWED_DROP if res["buy_sent_a"] else []
-        ok = bool(res["equal"] and ra["rc"] == 0 and rb["rc"] == 0 and res["dropped_keys"] in (want, []) and oa == ob)
+        floor_a = count_why(ra["streams"], "wallet_floor")
+        floor_b = count_why(rb["streams"], "wallet_floor")
+        floor_ok = (floor_a >= 1 and floor_b >= 1) if need_floor else True
+        ok = bool(floor_ok and res["equal"] and ra["rc"] == 0 and rb["rc"] == 0 and res["dropped_keys"] in (want, []) and oa == ob)
         bad = bad or not ok
         runs.append({"run": label, "order_id": oid, "equal": res["equal"], "rc_a": ra["rc"], "rc_b": rb["rc"], "rows_by_kind_a": res["rows_by_kind_a"], "rows_by_kind_b": res["rows_by_kind_b"],
-                     "dropped_keys": res["dropped_keys"], "outcome_a": oa, "outcome_b": ob, "clock_ms": clock, "balance_lamports": balance, "ok": ok})
+                     "dropped_keys": res["dropped_keys"], "outcome_a": oa, "outcome_b": ob, "clock_ms": clock, "balance_lamports": balance, "ok": ok,
+                     **({"wallet_floor_refusals_a": floor_a, "wallet_floor_refusals_b": floor_b} if need_floor else {})})
 
     for n, e in enumerate(entries):
         root = out / "_roots" / f"r{n}"
         truncated_root(src, root, int(e["seq"]))
         one(f"row{n:04d}", root, int(e["ms"]) + 1_000, a.balance, e["order_id"])
-    last = max((int(r.get("ms") or 0) for _, r in rows), default=0)
-    one("all_rows_floor", src, last + 1_000, a.floor_balance, None)
+    # wallet-floor run: clock = FIRST entry + 1000 ms; later rows then have a negative age, and the gate refuses only age > MAX_DECISION_AGE_MS (arena_live_bridge: `now - row["ms"] > 5000`),
+    # so every later entry is processed as fresh. The run must show >= 1 wallet_floor refusal in BOTH trees.
+    first = int(entries[0]["ms"]) if entries else 0
+    one("all_rows_floor", src, first + 1_000, a.floor_balance, None, need_floor=True)
     print(json.dumps({"schema": "floor_exec_equiv_per_row_v1", "entry_rows": len(entries), "entry_rule": 'kind == "entry" with a str order_id, sorted by (ms, seq)', "all_ok": not bad,
                       "outcomes": dict(sorted(Counter(f"{r['outcome_a']}" for r in runs if r["order_id"]).items())), "runs": runs}, indent=1, sort_keys=True))
     return 1 if bad or not entries else 0
