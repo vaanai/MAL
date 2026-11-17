@@ -342,8 +342,9 @@ def hr_coin(create_row):
 
 # ------------------------------------------------------------------------------------------------------------------------------ forward fetch (B3, QP 1117 Q2-Q4)
 class ForwardFetch:
-    """fetch_fn(launcher, first_create_slot) -> Table A row, for launchers first graduating from S. ONE append-only journal `<out_root>/u1-fwd-journal.jsonl` (Table A rows with exactly
-    launcher / funder / funding_slot / status, Table B rows with exactly funder / hub_activity, in the order produced; written + flushed + fsynced before the decider uses a row). It is NOT loaded
+    """fetch_fn(launcher, first_create_slot) -> Table A row, for launchers first graduating from S. ONE append-only journal `<out_root>/u1-fwd-journal.jsonl`: one line per launcher, the Table A
+    keys launcher / funder / funding_slot / status, plus `hub_activity` on the same line when that fetch ran the hub test of the row's funder (one line = nothing to tear apart; QP asked for
+    separate B lines, reviewer round 3 asked for one line); written + flushed + fsynced before the decider uses a row. It is NOT loaded
     at start: a restart consumes it as a FIFO at the same calls that produced it (the next A line must be the requested launcher, else Refused; a B line is applied right after its A line, so
     hub_of never returns a later fact). No RPC while replaying a stored hour: a launcher the journal lacks in a stored hour is Refused. One attempt per launcher from S. The fetcher runs unlocked
     at FORWARD_RPS (2 rps), is seeded with the frozen backfill rows (incl. by_funder), and its per-UTC-day credit use is persisted to `u1-credits-by-day.json` at every counted call.
@@ -352,8 +353,8 @@ class ForwardFetch:
     def __init__(self, out_root, table_a_rows=(), table_b_rows=(), *, transport_factory=None, cap_per_day=F.CAPS["forward_day"], rps=F.FORWARD_RPS, clock=time.monotonic,
                  sleep_fn=time.sleep, day_fn=None, allow_rpc=True):
         self.root = Path(out_root)
+        self._replaying = False  # True while the current hour is already stored in md5-by-hour.jsonl: any RPC attempt is refused
         self.allow_rpc = allow_rpc  # False (manifest u1.no_rpc, the dry run): any live fetch raises
-        self._replaying = False
         self.journal = self.root / FWD_JOURNAL
         self.credits_path = self.root / FWD_CREDITS
         self.by_hour_path = self.root / FWD_BY_HOUR
@@ -379,7 +380,7 @@ class ForwardFetch:
     # -- transport (lazy: the key file is touched at the first live call only)
     def _rpc(self, method, params):
         if self._replaying or not self.allow_rpc:
-            raise S.Refused("u1 forward fetch: RPC refused (dry run no_rpc, or a journal replay)")  # code guard, not only a test
+            raise S.Refused("u1 forward fetch: RPC refused (dry run no_rpc, or a stored hour being replayed)")  # code guard, not only a test
         if self._transport is None:
             if self.transport_factory is None:
                 raise F.RpcError("no_transport")
@@ -410,7 +411,8 @@ class ForwardFetch:
                 self._eof = True
                 return None
             if not ln.endswith(b"\n"):
-                self._torn_at = pos  # a torn last line (crash mid-write): ignored, cut off at the first append
+                self._torn_at = pos  # a torn last line (crash mid-write): only the fragment is dropped (complete lines stay), cut off at the first append
+                self.counters["u1_fwd_torn_line_dropped"] += 1
                 self._eof = True
                 return None
             self._buf = json.loads(ln)
@@ -444,6 +446,7 @@ class ForwardFetch:
     # -- fetch_fn interface
     def set_hour(self, hour, warmup=False):
         self.hour = hour
+        self._replaying = hour in self.stored_hours
         self._calls_hour0 = self.total_calls()
 
     def hub_of(self, funder):
@@ -454,26 +457,16 @@ class ForwardFetch:
         a = self._peek()
         row = None
         if a is not None:  # replay: the journal answers, no RPC
-            if a.get("launcher") != launcher or set(a) != set(F.TABLE_A_KEYS):
+            if a.get("launcher") != launcher or not (set(a) == set(F.TABLE_A_KEYS) or set(a) == set(F.TABLE_A_KEYS) | {"hub_activity"}):
                 raise S.Refused("u1 forward journal out of order")
-            apos = self._buf_pos
             self._take()
-            nxt = self._peek()
-            if nxt is None and self._torn_at is not None:
-                # an A line followed by a torn tail = a crash while writing A + its B line: the A row is dropped with it (cut at A's start) and the launcher is fetched live again
-                self._torn_at = apos
-                self._rows_total -= 1
-                self.counters["u1_fwd_rows"] -= 1
-                self.counters["u1_fwd_torn_pair_dropped"] += 1
-            else:
-                row = {k: a[k] for k in F.TABLE_A_KEYS}
-                self.fetcher.table_a[launcher] = row
-                if row["status"] == "resolved":
-                    self.fetcher.by_funder[row["funder"]].append(launcher)
-                if nxt is not None and set(nxt) == set(F.TABLE_B_KEYS):
-                    self._take()
-                    self.fetcher.table_b[nxt["funder"]] = nxt["hub_activity"]
-                    self._hub_now[nxt["funder"]] = nxt["hub_activity"]
+            row = {k: a[k] for k in F.TABLE_A_KEYS}
+            self.fetcher.table_a[launcher] = row
+            if row["status"] == "resolved":
+                self.fetcher.by_funder[row["funder"]].append(launcher)
+            if "hub_activity" in a:  # the hub result of THIS fetch (one journal line = one launcher row + its hub row: nothing to tear apart)
+                self.fetcher.table_b[row["funder"]] = a["hub_activity"]
+                self._hub_now[row["funder"]] = a["hub_activity"]
         if row is None:
             if self.hour in self.stored_hours:
                 raise S.Refused("u1 forward journal lacks launcher for a stored hour: no RPC while replaying")
@@ -483,9 +476,11 @@ class ForwardFetch:
             row = dict(self.fetcher.fetch_launcher(launcher, first_create_slot))
             row = {k: row[k] for k in F.TABLE_A_KEYS}
             new_b = [(f, v) for f, v in self.fetcher.table_b.items() if f not in before]
-            self._append([row] + [{"funder": f, "hub_activity": v} for f, v in new_b])
-            for f, v in new_b:
+            line = dict(row)
+            for f, v in new_b:  # at most one: the hub test is on this row's funder
+                line["hub_activity"] = v
                 self._hub_now[f] = v
+            self._append([line])
         if row["status"] in ("fetch_error", "fetch_capped"):
             self.counters["u1_fetch_once_unlinked"] += 1
         self.counters["u1_rpc_calls"] = self.total_calls()
@@ -521,12 +516,14 @@ class BookJournalReader:
     journal as a FIFO exactly like ForwardFetch's replay. End of file is not permanent: the reader resumes from its byte offset. A launcher the journal lacks once the book has stored the hour
     is Refused, never fetched."""
 
-    def __init__(self, book_out_root, own_out_root, *, sleep_fn=time.sleep, poll_s=None, status_fn=None):
+    def __init__(self, book_out_root, own_out_root, *, sleep_fn=time.sleep, poll_s=None, status_fn=None, book_manifest_sha256=None):
         self.book, self.own = Path(book_out_root), Path(own_out_root)
         if os.path.realpath(self.book) == os.path.realpath(self.own):
             raise S.Refused("u1.book_out_root must differ from the line's own out_root")
         if not (self.book / "manifest.sha256").exists():
             raise S.Refused("u1.book_out_root holds no manifest.sha256: not a book run")
+        if book_manifest_sha256 is not None and (self.book / "manifest.sha256").read_text().split()[:1] != [book_manifest_sha256]:
+            raise S.Refused("u1.book_manifest_sha256 differs from the book's manifest.sha256")
         try:
             meta = json.loads((self.book / "meta.json").read_text())
         except (OSError, ValueError):
@@ -598,15 +595,12 @@ class BookJournalReader:
         if got is None:
             raise S.Refused("u1 lowrep has no live fetch: the book's journal lacks launcher for a stored book hour")
         a, n = got
-        if a.get("launcher") != launcher or set(a) != set(F.TABLE_A_KEYS):
+        if a.get("launcher") != launcher or not (set(a) == set(F.TABLE_A_KEYS) or set(a) == set(F.TABLE_A_KEYS) | {"hub_activity"}):
             raise S.Refused("u1 forward journal out of order")
         self._off += n
         self.counters["u1_fwd_rows"] += 1
-        nxt = self._next()
-        if nxt is not None and set(nxt[0]) == set(F.TABLE_B_KEYS):
-            self._off += nxt[1]
-            self.counters["u1_fwd_rows"] += 1
-            self._hub_now[nxt[0]["funder"]] = nxt[0]["hub_activity"]
+        if "hub_activity" in a:
+            self._hub_now[a["funder"]] = a["hub_activity"]
         row = {k: a[k] for k in F.TABLE_A_KEYS}
         if row["status"] in ("fetch_error", "fetch_capped"):
             self.counters["u1_fetch_once_unlinked"] += 1
@@ -900,7 +894,7 @@ def build_decider(m, table=None, **kw):
     plan = load_placebo_plan(u1["placebo_plan"], u1.get("placebo_plan_sha256")) if mode == "placebo" else None
     kw.setdefault("out_root", m.get("out_root"))
     if kw.get("out_root") is not None and "fetch_fn" not in kw and mode == "low_rep":
-        kw["fetch_fn"] = BookJournalReader(u1["book_out_root"], kw["out_root"])   # ADD1: no transport, no key; placebo: no fetcher at all (fetch_fn None)
+        kw["fetch_fn"] = BookJournalReader(u1["book_out_root"], kw["out_root"], book_manifest_sha256=u1.get("book_manifest_sha256"))   # ADD1: no transport, no key; placebo: no fetcher at all (fetch_fn None)
     if kw.get("out_root") is not None and "fetch_fn" not in kw and mode == "book":
         # only the deciding book builds a live fetcher
         kw["fetch_fn"] = ForwardFetch(kw["out_root"], a_rows, b_rows, transport_factory=lambda: F.make_transport(F.load_key()), allow_rpc=not u1.get("no_rpc", False))

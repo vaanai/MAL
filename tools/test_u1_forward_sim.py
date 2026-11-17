@@ -926,7 +926,7 @@ def test_forward_fetch_journal_keys_order_mode_and_rps_constant(tmp_path):
     row = ff("NEWL", 50)
     assert row == {"launcher": "NEWL", "funder": FX, "funding_slot": 5, "status": "resolved"} and ff.hub_of(FX) is True    # the backfill rows seeded by_funder: the hub test ran
     lines = [json.loads(x) for x in (tmp_path / U.FWD_JOURNAL).read_text().splitlines()]
-    assert lines == [row, {"funder": FX, "hub_activity": True}] and set(lines[0]) == set(F.TABLE_A_KEYS) and set(lines[1]) == set(F.TABLE_B_KEYS)   # B directly after its A row
+    assert lines == [dict(row, hub_activity=True)]                                                  # ONE line: the A row and its hub result together
     assert mode_of(tmp_path / U.FWD_JOURNAL) == 0o640
     assert F.FORWARD_RPS == 2.0 and ff.fetcher.rps == 2.0 and ff.rps == 2.0 and sl and all(abs(x - 0.5) < 1e-9 for x in sl)   # fixed <= 2 rps, spacing 0.5 s
     assert json.loads((tmp_path / U.FWD_CREDITS).read_text()) == {DAYK: ff.total_calls()} and ff.total_calls() == 3
@@ -987,7 +987,7 @@ def test_by_hour_chain_has_counts_and_the_journal_sha_and_is_not_duplicated_by_a
     ff.end_hour("h1")
     ff.end_hour("h1")
     rec = [json.loads(x) for x in (tmp_path / U.FWD_BY_HOUR).read_text().splitlines()]
-    assert len(rec) == 1 and rec[0]["fwd_rows_total"] == 2 and rec[0]["rpc_calls_hour"] == 3 and rec[0]["credits_day"] == 3
+    assert len(rec) == 1 and rec[0]["fwd_rows_total"] == 1 and rec[0]["rpc_calls_hour"] == 3 and rec[0]["credits_day"] == 3
     assert rec[0]["journal_sha256"] == hashlib.sha256((tmp_path / U.FWD_JOURNAL).read_bytes()).hexdigest()
 
 
@@ -1007,7 +1007,7 @@ def test_decider_forward_fetch_links_the_new_launcher_and_a_restart_replays_with
     mock = fx_mock(hub=False)
     dec, ff = fwd_decider(tmp_path, mock)
     entries, st = flow(dec, hist, cand)
-    assert len(entries) == 1 and entries[0].meta["hist_kind"] == "funder" and st.counts["u1_rpc_calls"] == 3 and st.counts["u1_fwd_rows"] == 2
+    assert len(entries) == 1 and entries[0].meta["hist_kind"] == "funder" and st.counts["u1_rpc_calls"] == 3 and st.counts["u1_fwd_rows"] == 1
     first_slot = U.first_create_slot(dec.reg, "NEWL")
     assert first_slot == (S_S + 100) * 2 < dec.reg.creates["NEW"]["slot"]          # Q1: the fetch got the min slot over all creates, not the graduate's create slot
     assert dec.reg.grads["NEW"].create_slot > first_slot
@@ -1178,25 +1178,78 @@ def test_sidecar_and_credits_writes_are_fsynced_and_atomic(tmp_path, monkeypatch
     assert len(calls) - n1 >= 2 and not list(tmp_path.glob("*.tmp"))
 
 
-def test_a_torn_hub_row_after_a_complete_a_row_drops_the_pair_and_refetches_live(tmp_path):
+def test_a_torn_final_line_is_cut_counted_and_refetched_and_complete_lines_stay(tmp_path):
     ff = mk_fwd(tmp_path, fx_mock())
     ff.set_hour("h1")
     ff("NEWL", 50)
     j = tmp_path / U.FWD_JOURNAL
     data = j.read_bytes()
-    j.write_bytes(data[:-10])                                                                       # the B line is cut in the middle
+    j.write_bytes(data[:-10])                                                                       # the launcher line (with its hub result) is cut in the middle
     mock = fx_mock()
     ff2 = mk_fwd(tmp_path, mock)
     ff2.set_hour("h2")
     row = ff2("NEWL", 50)
-    assert row["status"] == "resolved" and ff2.hub_of(FX) is True and ff2.counters["u1_fwd_torn_pair_dropped"] == 1 and mock.log      # fetched again, hub test included
+    assert row["status"] == "resolved" and ff2.hub_of(FX) is True and ff2.counters["u1_fwd_torn_line_dropped"] == 1 and mock.log      # fetched again, hub test included
     lines = [json.loads(x) for x in j.read_text().splitlines()]
-    assert len(lines) == 2 and set(lines[0]) == set(F.TABLE_A_KEYS) and set(lines[1]) == set(F.TABLE_B_KEYS)        # exactly one A and one B, no torn tail
-    # a torn A line alone is cut and refetched the same way (as before)
-    j.write_bytes(data[:5])
+    assert len(lines) == 1 and lines[0]["hub_activity"] is True and lines[0]["launcher"] == "NEWL"                  # no torn tail left
+
+
+def test_crash_on_the_first_row_of_a_new_hour_keeps_the_previous_hours_last_row(tmp_path):
+    """regression (reviewer round 3): hour h1 stored with its last row complete, the book crashes while writing the first row of h2: restart replays h1 from the journal (no RPC) and refetches the torn row"""
+    ff = mk_fwd(tmp_path, fx_mock())
+    ff.set_hour("h1")
+    ff("NEWL", 50)
+    ff.set_hour("h2")
+    ff("L3", 50)
+    j = tmp_path / U.FWD_JOURNAL
+    lines = j.read_bytes().splitlines(keepends=True)
+    assert len(lines) == 2
+    j.write_bytes(lines[0] + lines[1][:12])                                                         # h2's first row is torn
+    (tmp_path / "md5-by-hour.jsonl").write_text(json.dumps({"hour": "h1"}) + "\n")
+    mock = fx_mock()
+    ff2 = mk_fwd(tmp_path, mock)
+    ff2.set_hour("h1")
+    assert ff2("NEWL", 50)["status"] == "resolved" and ff2.hub_of(FX) is True and mock.log == []     # the complete h1 row is kept and answers with no RPC
+    ff2.set_hour("h2")
+    assert ff2("L3", 50)["launcher"] == "L3" and mock.log                                           # only the torn fragment is refetched
+    assert [json.loads(x)["launcher"] for x in j.read_text().splitlines()] == ["NEWL", "L3"] and ff2.counters["u1_fwd_torn_line_dropped"] == 1
+    # the same torn tail inside a STORED hour is refused (the row was used by the stored decisions: it cannot be lost)
+    j.write_bytes(lines[0] + lines[1][:12])
+    (tmp_path / "md5-by-hour.jsonl").write_text("".join(json.dumps({"hour": h}) + "\n" for h in ("h1", "h2")))
     ff3 = mk_fwd(tmp_path, fx_mock())
-    ff3.set_hour("h3")
-    assert ff3("NEWL", 50)["status"] == "resolved" and len(j.read_text().splitlines()) == 2
+    ff3.set_hour("h1")
+    ff3("NEWL", 50)
+    ff3.set_hour("h2")
+    with pytest.raises(S.Refused, match="stored hour"):
+        ff3("L3", 50)
+
+
+def test_rpc_is_refused_in_a_stored_hour_by_the_replaying_guard(tmp_path):
+    (tmp_path / "md5-by-hour.jsonl").write_text(json.dumps({"hour": "h1"}) + "\n")
+    mock = fx_mock()
+    ff = mk_fwd(tmp_path, mock)
+    ff.set_hour("h1")
+    assert ff._replaying is True
+    with pytest.raises(S.Refused, match="stored hour"):
+        ff._rpc("getTransaction", [])                                                                 # any RPC attempt, not only a fetch
+    ff.set_hour("h2")
+    assert ff._replaying is False and ff("NEWL", 50)["status"] == "resolved"
+
+
+def test_lowrep_book_manifest_sha_is_a_checked_optional_key(tmp_path):
+    m = u1_manifest(tmp_path, "u1_lowrep", out_root=str(tmp_path / "lr"))
+    m["u1"]["book_manifest_sha256"] = "0" * 64                                                        # equals the fixture book's manifest.sha256
+    S.default_decider(S.check_manifest(json.loads(json.dumps(m))))
+    m["u1"]["book_manifest_sha256"] = "1" * 64
+    with pytest.raises(S.Refused, match="differs"):
+        S.default_decider(S.check_manifest(json.loads(json.dumps(m))))
+    m["u1"]["book_manifest_sha256"] = "zz"
+    with pytest.raises(S.Refused):
+        S.check_manifest(m)
+    mb = u1_manifest(tmp_path)
+    mb["u1"]["book_manifest_sha256"] = "0" * 64
+    with pytest.raises(S.Refused):
+        S.check_manifest(mb)
 
 
 def test_no_rpc_guard_refuses_any_live_fetch_in_code(tmp_path):

@@ -451,13 +451,15 @@ def check_manifest(m):
         raise Refused("decider must be one of %s" % (list(DECIDERS),))
     if m["decider"] in U1_DECIDERS:
         u1 = m.get("u1")
-        if not (isinstance(u1, dict) and isinstance(u1.get("table_a"), str) and set(u1) <= {"table_a", "table_b", "labels", "table_a_sha256", "table_b_sha256", "labels_sha256", "placebo_plan", "placebo_plan_sha256", "hr_exclusion", "no_rpc", "book_out_root"}):
+        if not (isinstance(u1, dict) and isinstance(u1.get("table_a"), str) and set(u1) <= {"table_a", "table_b", "labels", "table_a_sha256", "table_b_sha256", "labels_sha256", "placebo_plan", "placebo_plan_sha256", "hr_exclusion", "no_rpc", "book_out_root", "book_manifest_sha256"}):
             raise Refused("decider %s needs manifest key u1 = {table_a, table_a_sha256, [table_b, table_b_sha256], [labels, labels_sha256], [placebo_plan, placebo_plan_sha256], hr_exclusion} (file paths and sha256)" % m["decider"])
         for k in ("table_a", "table_b", "labels"):  # QP 1117 Q10: a file key needs its sha256 key (and no sha256 key without its file); build_decider refuses on a mismatch
             if (k in u1) != (k + "_sha256" in u1) or (k + "_sha256" in u1 and not (isinstance(u1[k + "_sha256"], str) and re.fullmatch(r"[0-9a-f]{64}", u1[k + "_sha256"]))):
                 raise Refused("u1.%s and u1.%s_sha256 must be given together (64 hex)" % (k, k))
         if (m["decider"] == "u1_lowrep") != ("book_out_root" in u1) or ("book_out_root" in u1 and not isinstance(u1["book_out_root"], str)):
             raise Refused("u1.book_out_root (a path) is required for decider u1_lowrep and refused for the others")
+        if "book_manifest_sha256" in u1 and not (m["decider"] == "u1_lowrep" and isinstance(u1["book_manifest_sha256"], str) and re.fullmatch(r"[0-9a-f]{64}", u1["book_manifest_sha256"])):
+            raise Refused("u1.book_manifest_sha256 (64 hex) is only for decider u1_lowrep")
         if "book_out_root" in u1 and os.path.realpath(u1["book_out_root"]) == os.path.realpath(m["out_root"]):
             raise Refused("u1.book_out_root must differ from out_root")
         if "no_rpc" in u1 and u1["no_rpc"] is not True:
