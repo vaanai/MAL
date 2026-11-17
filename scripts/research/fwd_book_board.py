@@ -103,7 +103,8 @@ def active_run(root):
     return runs[-1]
 
 
-def load_book(out_root, roots=(SIM_ROOT,)):
+def load_book(out_root, roots=None):
+    roots = roots or (SIM_ROOT,)
     root = Path(out_root).resolve()
     if not any(str(root.parent) == str(Path(r).resolve()) for r in roots):
         raise Refused("out_root must be <%s>/<book_id>" % "|".join(roots))
@@ -273,7 +274,7 @@ def bar(decider, cells, plc_cells, ex, pre_s):
 
 
 # ------------------------------------------------------------------------------------------------------------------------------ build
-def build(out_root, now_ms, n_watched=None, roots=(SIM_ROOT,)):
+def build(out_root, now_ms, n_watched=None, roots=None):
     bk = load_book(out_root, roots)
     meta, status, dec = bk["meta"], bk["status"], bk["decider"]
     if "start_hour" not in meta:
@@ -471,7 +472,8 @@ def atomic(path, text):
     os.replace(tmp, path)
 
 
-def write(o, out_dir, out_roots=OUT_ROOTS):
+def write(o, out_dir, out_roots=None):
+    out_roots = out_roots or OUT_ROOTS
     d = Path(out_dir).expanduser().resolve()
     if not any(d == Path(r).expanduser().resolve() or Path(r).expanduser().resolve() in d.parents for r in out_roots):
         raise Refused("out-dir must be under %s" % " or ".join(out_roots))
