@@ -219,6 +219,7 @@ def launcher_list_rows(reg, rule=None):
 
 def _atomic_write_0440(path, data):
     path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
     tmp = path.with_name(path.name + ".tmp")
     if tmp.exists():
         tmp.unlink()
@@ -360,6 +361,7 @@ class U1Decider:
         if not (new_u or new_g):
             return
         path = self.out_root / PLAN_INPUT
+        path.parent.mkdir(parents=True, exist_ok=True)
         if not path.exists():
             os.close(os.open(str(path), os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600))
         os.chmod(path, 0o640)

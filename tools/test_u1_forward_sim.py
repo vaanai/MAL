@@ -486,10 +486,10 @@ def test_cap_open_open_count_never_below_exact_and_refuses_at_ten():
     # the hour-start count over-counts positions that close inside the hour: exact 9, reported 10 -> refused (over-count only), flagged stale by the exact hook
     dec = new_decider(open_fn=lambda: 10, exact_open_fn=lambda d_ms: 9)
     entries, st = flow(dec, history_rows("A", 3), candidate("A"))
-    assert entries == [] and st.counts["cap_open_stale"] == 1 and U.board_disclosures(st.counts) == [U.STALE_DISCLOSURE % 1]
+    assert entries == [] and st.counts["cap_open_stale"] == 1 and U.board_disclosures(st.counts, True) == [U.STALE_DISCLOSURE % 1]
     # exact also 10: not stale
     entries, st = flow(new_decider(open_fn=lambda: 10, exact_open_fn=lambda d_ms: 10), history_rows("A", 3), candidate("A"))
-    assert st.counts["cap_open"] == 1 and st.counts["cap_open_stale"] == 0 and U.board_disclosures(st.counts) == []
+    assert st.counts["cap_open"] == 1 and st.counts["cap_open_stale"] == 0 and U.board_disclosures(st.counts, True) == []
 
 
 def test_own_count_without_open_fn_is_an_upper_bound_of_the_true_count():
@@ -561,3 +561,252 @@ def test_default_hr_predicate_matches_the_pda_creator():
     c = [create(mint, "A", S_S + 3000, creator=pda)] + [pool_create(mint, S_S + 3600), print_("P" + mint, S_S + 4000)]
     entries, st = run(dec, c)
     assert entries == [] and st.counts["hr_coin_excluded"] == 1
+
+
+# ============================================================================================================================ u1-start-prep part 1a
+import hashlib  # noqa: E402
+import os  # noqa: E402
+import stat  # noqa: E402
+
+
+def mode_of(p):
+    return stat.S_IMODE(os.stat(p).st_mode)
+
+
+# ---------------------------------------------------------------------------------------------------------------------------- B1 launcher list
+def warm_rows_for_list():
+    """launcher A: a NON-graduate create at slot 100 (earlier), a graduate whose create is at slot 2000; launcher B: one graduate; launcher C: a create with no graduate"""
+    t = S_S - 3 * DAY
+    a_nongrad = row("create", t - 5000, prog="pumpfun", mint="NG", trader="A", creator="A")
+    a_nongrad["slot"] = 100
+    rows = [a_nongrad] + graduate("GA", "A", t) + graduate("GB", "B", t + 500) + [create("NC", "C", t + 700)]
+    return sorted(rows, key=lambda r: r["t_recv_ms"])
+
+
+def test_launcher_list_min_slot_over_all_creates_sorted_atomic_0440_with_counts(tmp_path):
+    dec = new_decider(out_root=tmp_path)
+    _, st = run(dec, warm_rows_for_list(), warmup=True)
+    path = tmp_path / U.LAUNCHER_LIST
+    data = path.read_bytes()
+    got = [json.loads(x) for x in data.decode().splitlines()]
+    ga_slot = (S_S - 3 * DAY - 600) * 2
+    assert [g["launcher"] for g in got] == ["A", "B"]                       # sorted; C has no graduate
+    assert got[0] == {"launcher": "A", "first_create_slot": 100}            # min over ALL create rows, not the graduate's own create slot
+    assert got[1]["first_create_slot"] == (S_S - 3 * DAY + 500 - 600) * 2 and ga_slot > 100
+    assert mode_of(path) == 0o440 and not (tmp_path / (U.LAUNCHER_LIST + ".tmp")).exists()
+    assert st.counts["u1_launchers_listed"] == 2 and st.counts["u1_launchers_first_slot_from_graduate_only"] == 1   # B only: A's chosen slot predates its graduate
+    by_hour = [json.loads(x) for x in (tmp_path / U.LAUNCHER_LIST_BY_HOUR).read_text().splitlines()]
+    assert by_hour == [{"hour": "h", "launchers": 2, "sha256": hashlib.sha256(data).hexdigest()}] and mode_of(tmp_path / U.LAUNCHER_LIST_BY_HOUR) == 0o440
+    # a second warm-up hour rewrites (never appends) the list and adds one by-hour record
+    st2 = S.RunState(hour="h2", warmup=True, day="d")
+    dec.decide(sorted(graduate("GC", "D", S_S - 2 * DAY), key=lambda r: r["t_recv_ms"]), st2)
+    assert [json.loads(x)["launcher"] for x in path.read_text().splitlines()] == ["A", "B", "D"] and st2.counts["u1_launchers_listed"] == 1   # counts are per-hour deltas
+    assert len((tmp_path / U.LAUNCHER_LIST_BY_HOUR).read_text().splitlines()) == 2
+
+
+def test_launcher_list_slot_rule_is_one_switch_and_the_u1_fetcher_reads_the_list(tmp_path):
+    dec = new_decider(out_root=tmp_path)
+    run(dec, warm_rows_for_list(), warmup=True)
+    assert U.first_create_slot(dec.reg, "A") == 100
+    assert U.first_create_slot(dec.reg, "A", rule="earliest_graduate") == (S_S - 3 * DAY - 600) * 2
+    with pytest.raises(ValueError):
+        U.first_create_slot(dec.reg, "A", rule="nope")
+    U.FIRST_CREATE_SLOT_RULE, old = "earliest_graduate", U.FIRST_CREATE_SLOT_RULE
+    try:
+        rows, same = U.launcher_list_rows(dec.reg)
+    finally:
+        U.FIRST_CREATE_SLOT_RULE = old
+    assert rows[0]["first_create_slot"] == (S_S - 3 * DAY - 600) * 2 and same == 2
+    import u1_funder_fetch as F
+    n, sha, _ = U.write_launcher_list(dec.reg, tmp_path / "again.jsonl")
+    got = F.read_launcher_list(str(tmp_path / "again.jsonl"))
+    assert len(list(got)) == n == 2
+
+
+def test_launcher_list_is_not_written_without_out_root_or_in_forward_hours(tmp_path):
+    dec = new_decider()
+    run(dec, warm_rows_for_list(), warmup=True)
+    assert not list(tmp_path.iterdir())
+    dec = new_decider(out_root=tmp_path)
+    run(dec, stream(candidate("A")))
+    assert not (tmp_path / U.LAUNCHER_LIST).exists()
+
+
+# ---------------------------------------------------------------------------------------------------------------------------- B2 plan input and the plan subcommand
+def forward_with_entry(out_root):
+    dec = new_decider(out_root=out_root)
+    entries, st = flow(dec, history_rows("A", 3), candidate("A"))
+    assert len(entries) == 1
+    return dec
+
+
+def test_plan_input_is_persisted_append_only_0440_and_a_restart_replay_does_not_duplicate(tmp_path):
+    dec = forward_with_entry(tmp_path)
+    path = tmp_path / U.PLAN_INPUT
+    lines = [json.loads(x) for x in path.read_text().splitlines()]
+    assert {r["kind"] for r in lines} == {"universe", "gate"} and mode_of(path) == 0o440
+    assert [r for r in lines if r["kind"] == "gate"] == [{"kind": "gate", "pool": "PNEW", "mint": "NEW", "pc_s": S_S + 3600, "entered": True}]
+    assert set(lines[0]) == {"kind", "pool", "mint", "pc_s"}
+    sha1 = hashlib.sha256(path.read_bytes()).hexdigest()
+    forward_with_entry(tmp_path)                      # restart = full replay from W with a new decider on the same out_root
+    assert hashlib.sha256(path.read_bytes()).hexdigest() == sha1
+    # a second forward hour appends and leaves the earlier lines as they were
+    before = path.read_bytes()
+    dec.universe_log.append({"pool": "PX", "mint": "X", "pc_s": S_S + 7200})
+    dec.decide([], S.RunState(hour="h3", warmup=False, day="d"))
+    assert path.read_bytes().startswith(before) and len(path.read_text().splitlines()) == len(lines) + 1 and mode_of(path) == 0o440
+
+
+def test_low_rep_and_placebo_modes_persist_no_plan_input(tmp_path):
+    dec = new_decider(out_root=tmp_path, mode="low_rep")
+    flow(dec, history_rows("A", 1, 2), candidate("A"))
+    assert not (tmp_path / U.PLAN_INPUT).exists()
+
+
+def test_plan_subcommand_builds_the_plan_prints_sha_and_counters_only_and_never_rebuilds(tmp_path, capsys):
+    pi = tmp_path / "in.jsonl"
+    rows = [{"kind": "gate", "pool": "PE", "mint": "E", "pc_s": 10_000, "entered": True}, {"kind": "gate", "pool": "PF", "mint": "F", "pc_s": 10_100, "entered": False}]
+    rows += [{"kind": "universe", "pool": "P%d" % i, "mint": "M%d" % i, "pc_s": 10_000 + 50 * i} for i in range(-5, 6)] + [{"kind": "universe", "pool": "PE", "mint": "E", "pc_s": 10_000}]
+    rows += [{"kind": "universe", "pool": "PF", "mint": "F", "pc_s": 10_100}]
+    pi.write_text("".join(json.dumps(r) + "\n" for r in rows))
+    out = tmp_path / "plan.json"
+    assert U.main(["plan", "--in", str(pi), "--out", str(out)]) == 0
+    printed = json.loads(capsys.readouterr().out)
+    plan = json.loads(out.read_text())["plan"]
+    assert set(printed) == {"plan_sha256", "plan_pools", "universe", "book_entries", "counters"} and printed["plan_pools"] == len(plan) == 1
+    assert printed["plan_sha256"] == hashlib.sha256(out.read_bytes()).hexdigest() and mode_of(out) == 0o440
+    assert next(iter(plan.values()))["for"] == "PE" and "PE" not in plan and "PF" not in plan
+    U.load_placebo_plan(out, printed["plan_sha256"])
+    with pytest.raises(FileExistsError):
+        U.main(["plan", "--in", str(pi), "--out", str(out)])
+    # through-hour: only rows whose pc_s + 1,800 s lies before the end of that hour
+    hr_end = S_S + 3600
+    late = {"kind": "gate", "pool": "PL", "mint": "L", "pc_s": hr_end - 1000, "entered": True}
+    pi.write_text(json.dumps(late) + "\n" + json.dumps({"kind": "universe", "pool": "PL", "mint": "L", "pc_s": hr_end - 1000}) + "\n")
+    uni, ents, gate = U.read_plan_input(pi, through_hour=START)
+    assert ents == [] and gate == set() and uni == []
+    uni, ents, gate = U.read_plan_input(pi, through_hour="2026-11-20T01")
+    assert len(ents) == 1 and gate == {"L"}
+
+
+# ---------------------------------------------------------------------------------------------------------------------------- B4 strict gap exclusion for U1
+class GapStub:
+    """a U1-shaped entry (no exit_from_decision) at row 100 of the first forward hour with a timed exit 3,000 s later (the 6 h hold does not fit the fixture)"""
+
+    def decide(self, rows, state):
+        rows = list(rows)
+        if state.warmup or state.hour != __import__("tools.test_c1nf_forward_sim", fromlist=["x"]).HOUR0:
+            return []
+        prev = rows[99]
+        return [S.Entry(pool="P1", mint="MP1", at_row=100, decision_ms=prev["t_recv_ms"], decision_slot=prev["slot"], exit_after_s=3000.0)]
+
+
+@pytest.mark.parametrize("decider", ["u1", "u1_lowrep", "u1_placebo"])
+def test_u1_gap_between_decision_and_exit_removes_the_trade_and_the_disclosure_is_verbatim(tmp_path, monkeypatch, decider):
+    import collections as C
+    from tools import test_c1nf_forward_sim as T1
+    monkeypatch.setattr(S, "MIN_WARMUP_H", 1)
+    monkeypatch.setattr(S, "WARMUP_MIN_BY_DECIDER", {})
+    monkeypatch.setattr("tools.arena_paper.shutil.disk_usage", lambda path: C.namedtuple("Usage", "total used free")(1000, 500, 500))
+    T1.write_keep(tmp_path, 3)
+    f = tmp_path / "keep" / ("tape-%s.jsonl" % S.hour_key(T1.H0_MS))
+    rows = [json.loads(x) for x in f.read_text().splitlines()]
+    t = rows[500]["t_recv_ms"]
+    rows.insert(500, {"v": 1, "type": "gap", "prog": "all", "kind": "tip_gap_backlog_jump", "data_loss": True, "from_slot": rows[499]["slot"], "to_slot": rows[500]["slot"], "t_recv_ms": t, "block_time": t // 1000})
+    f.write_text("".join(json.dumps(r) + "\n" for r in rows))
+    ta = tmp_path / "a.jsonl"
+    ta.write_text("")
+    u1 = {"table_a": str(ta), "hr_exclusion": True}
+    if decider == "u1_placebo":
+        plan = tmp_path / "plan.json"
+        u1.update(placebo_plan=str(plan), placebo_plan_sha256=U.write_placebo_plan({}, {}, plan))
+    m = T1.manifest(tmp_path, decider=decider, warmup_hours=1, u1=u1)
+    m.pop("wallet_ledger_root", None)
+    assert T1.run(tmp_path, m, GapStub()) == 0
+    g = json.loads((Path(m["out_root"]) / "gap_exclusions.json").read_text())
+    assert list(k for k in g if k != "disclosure") == ["main"]                            # no placebo bot for U1: the placebo is its own book run
+    assert g["main"]["total"] == {"entries": 1, "feed_gap_timed": 1, "feed_gap_requested": 0}
+    assert g["disclosure"] == S.GAP_DISCLOSURE.format(n=1, N=1, timed=1, requested=0) and g["disclosure"].startswith("Strict feed-gap exclusion: any data_loss gap between decision and exit")
+    assert not [r for r in T1.ledger_rows(m["out_root"]) if r["kind"] == "trade"]       # the trade is removed, not priced
+    assert any(r["kind"] == "excluded" and str(r["exclusion_reason"]).startswith("feed_gap") for r in T1.ledger_rows(m["out_root"]))
+
+
+def test_u1_has_no_placebo_bot_and_the_engine_default_exclusion_is_not_gap_in_hold(tmp_path):
+    from tools import test_c1nf_forward_sim as T1
+    m = S.check_manifest(u1_manifest(tmp_path, out_root=str(tmp_path / "o")))
+    assert "u1" not in S.PLACEBO_DECIDERS and set(S.U1_DECIDERS).isdisjoint(S.PLACEBO_DECIDERS)
+    bk = S.Book(m, tmp_path / "run", "0" * 64)
+    assert set(bk.bots) == {"main"} and "hold" not in json.dumps(m)
+
+
+# ---------------------------------------------------------------------------------------------------------------------------- B5 cap_open_stale wording
+def test_cap_open_stale_is_never_shown_as_zero_without_an_exact_count():
+    for counts in ({}, {"cap_open_stale": 0}, {"cap_open_stale": 7, "cap_open": 7}):
+        assert U.board_disclosures(counts) == [U.CAP_OPEN_NOT_COMPUTED]
+    assert U.CAP_OPEN_NOT_COMPUTED == "cap_open_stale not computed; cap_open counts the book's own entries for a full 6 h (stops ignored)"
+    dec = new_decider(open_fn=lambda: 10)
+    entries, st = flow(dec, history_rows("A", 3), candidate("A"))
+    assert entries == [] and st.counts["cap_open"] == 1 and "cap_open_stale" not in st.counts and dec.exact_open_fn is None
+    assert U.board_disclosures(st.counts, dec.exact_open_fn is not None) == [U.CAP_OPEN_NOT_COMPUTED]
+
+
+# ---------------------------------------------------------------------------------------------------------------------------- B6 last warm-up hour graduates
+def test_graduate_in_the_last_warmup_hour_with_D_after_S_is_queued_counted_and_decided():
+    dec = new_decider()
+    last = S_S - 100                                           # pool_create 100 s before S: D = S + 260 s
+    wu = sorted(history_rows("A", 3), key=lambda r: r["t_recv_ms"]) + [create("LW", "A", last - 600), pool_create("LW", last)]
+    run(dec, sorted(wu, key=lambda r: r["t_recv_ms"]), warmup=True)
+    assert dec.c["queued_in_last_warmup_hour"] == 1 and len(dec.pending) == 1 and dec.pending[0][0] == (last + 360) * 1000
+    early = dec.c["queued_in_last_warmup_hour"]
+    entries, st = run(dec, [print_("PLW", S_S + 100), print_("PLW", S_S + 259), print_("PLW", S_S + 261)])
+    assert len(entries) == 1 and entries[0].mint == "LW" and st.counts["universe_graduates"] == 1 and early == 1
+
+
+def test_graduate_with_D_before_S_is_not_queued_in_warmup_and_tracing_stays_forward_only():
+    calls = []
+
+    def fetch(launcher, slot):
+        calls.append(launcher)
+        return None
+    dec = new_decider(fetch_fn=fetch)
+    run(dec, sorted(history_rows("A", 3) + graduate("OLD", "A", S_S - 3600)[:2] + [create("LW", "A", S_S - 700), pool_create("LW", S_S - 100)], key=lambda r: r["t_recv_ms"]), warmup=True)
+    assert dec.c["queued_in_last_warmup_hour"] == 1 and calls == [] and len(dec.pending) == 1
+
+
+# ---------------------------------------------------------------------------------------------------------------------------- G10 exit_s is ignored for U1
+def test_u1_exit_s_in_the_manifest_is_ignored_and_the_hold_is_the_ruling_6h(tmp_path):
+    outs = []
+    for kw in ({}, {"exit_s": 300}, {"exit_s": 3600}, {"exit_s": 1}):
+        m = S.check_manifest(u1_manifest(tmp_path, out_root=str(tmp_path / "o"), **kw))
+        dec = S.default_decider(m)
+        entries, _ = flow(dec, history_rows("A", 3), candidate("A"))
+        assert len(entries) == 1
+        outs.append(entries[0].as_dict())
+    assert outs[0] == outs[1] == outs[2] == outs[3]
+    assert outs[0]["exit_after_s"] == U.HOLD_S - S.LAT_DECIDING_S == 21_600 - 4.085 and U.HOLD_S == 21_600
+    assert S.EXIT_S_MAX["u1"] == 3600 < U.HOLD_S         # the manifest bound is irrelevant to U1: the decider sets the hold
+
+
+# ---------------------------------------------------------------------------------------------------------------------------- C1-NF / U4 / U2 stay md5-equal
+PINNED_MANIFEST_SHA = {
+    "c1nf": "66c455eaab8a350b8a4ea79a34b5691dd9fa43509a5bb9898d193f932b15bf55",
+    "u4": "efad2907b973df7ebecdbb8d009201d43137f7aa4659a50e54f7615a04ad4931",
+    "u2": "a5b8bddfe9fd87a81b14ef3a2933656d3ba8c36926a155a38887a6e66b9e7b7b",
+}
+PINNED_DECISION_MD5 = {"u4": "09ce2974b4e3fb5f4f41af799a0ea422", "u2": "9a06b45b5c6e33825a0557b0e4e2697d"}   # taken on origin/main d29de639 before this PR; 408 per-hour md5s joined
+
+
+@pytest.mark.parametrize("decider,kw", [("c1nf", {}), ("u4", {"exit_s": 14_400}), ("u2", {"exit_s": 43_200})])
+def test_canonical_manifest_sha256_of_c1nf_u4_u2_is_unchanged(decider, kw):
+    m = {"book_id": "pin-" + decider, "title": "t", "decider": decider, "stakes_sol": [0.1, 0.25, 0.5, 1.0] if decider == "c1nf" else [0.1, 0.25, 0.5], "send_lamports": 505_000,
+         "start_hour": START, "tape_dir": S.KEEP_ROOT, "out_root": S.SIM_ROOT + "/pin-" + decider}
+    m.update(kw)
+    assert S.manifest_sha256(S.check_manifest(m)) == PINNED_MANIFEST_SHA[decider]
+
+
+@pytest.mark.parametrize("decider", ["u4", "u2"])
+def test_u4_u2_fixture_decision_md5_is_unchanged(decider):
+    import u4_u2_deciders as UD
+    from tools import test_u4_u2_forward_sim as T2
+    per_hour = T2.run_long(UD.U4Decider if decider == "u4" else UD.U2Decider, T2.long_rows())[0]
+    assert len(per_hour) == 408 and hashlib.md5("".join(per_hour).encode()).hexdigest() == PINNED_DECISION_MD5[decider]
