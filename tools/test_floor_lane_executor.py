@@ -1314,7 +1314,8 @@ def test_presend_at_budget_3_0_allows_10th_open_and_refuses_when_wipe_bound_cros
     n = 10 (11th entry): -2,777,378,405 > -3,000,000,000 -> allowed.
     n = 11 (12th entry): -3,031,238,405 <= -3,000,000,000 -> lane_budget_presend. max_open 16 never binds."""
     budget = 3_000_000_000
-    lc = H.LaneConfig(tmp_path / "l.jsonl", tmp_path / "STOP", X.LANE_BOT_ID, STAKE25, 16, budget, DAILY05, X.LANE_MIN_FEE_RESERVE, 60.0)
+    _, lc, _ = X.make_config(_am6_raw(tmp_path, budget_lamports=budget))  # through validation: refused under the old 2.10 ceiling
+    assert lc.budget_lamports == budget and lc.fee_reserve_lamports == X.LANE_MIN_FEE_RESERVE and lc.max_open == 16
     led = X.FloorLaneLedger(lc)
     res = {}
     for n in (9, 10, 11):
