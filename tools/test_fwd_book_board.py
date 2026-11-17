@@ -90,7 +90,7 @@ def test_cells_both_legs_top3_and_days(tmp_path):
     assert pr["total_sol"] == pytest.approx(0.0065) and pr["total_ex_top3_sol"] == pytest.approx(-0.0025)   # press millis 4,3,2,0,-2,-0.5: drop 4,3,2 -> -2.5
     assert (fl["days_positive"], fl["days_not_positive"]) == (2, 4)           # four empty days count complete and not positive
     assert (fl["days_with_trades_positive"], fl["days_with_trades_not_positive"]) == (2, 0)
-    assert (pr["days_positive"], pr["days_with_trades_positive"], pr["days_with_trades_not_positive"]) == (2, 2, 0)
+    assert (pr["days_positive"], pr["days_with_trades_positive"], pr["days_with_trades_not_positive"]) == (1, 1, 1)   # press day 2 nets -2.5 millis
     assert "0.25" in o["cells"] and o["cells"]["0.25"]["legs"]["flat"]["total_sol"] == pytest.approx(0.0125 * 2.5)
     assert fl["per_day"][0]["n"] == 3 and fl["per_day"][2]["n"] == 0
     assert fl["mean_sol"] == pytest.approx(0.0125 / 6)
