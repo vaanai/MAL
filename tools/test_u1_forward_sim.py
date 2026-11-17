@@ -1131,3 +1131,96 @@ def test_a_gap_mode_key_in_a_u1_manifest_is_refused(tmp_path):
     for k in ("gap_mode", "gap_in_hold", "gap_hold"):
         with pytest.raises(S.Refused):
             S.check_manifest(u1_manifest(tmp_path, **{k: "hold"}))
+
+
+# ============================================================================================================================ reviewer round 2 (3b1443b4)
+def test_torn_last_line_of_the_by_hour_sidecar_is_dropped_counted_and_recomputed(tmp_path):
+    ff = mk_fwd(tmp_path, fx_mock())
+    ff.set_hour("h1")
+    ff("NEWL", 50)
+    ff.end_hour("h1")
+    good = (tmp_path / U.FWD_BY_HOUR).read_text()
+    (tmp_path / U.FWD_BY_HOUR).write_text(good + '{"hour": "h2", "fwd_rows')                    # a crash in the middle of the next hour's write
+    ff2 = mk_fwd(tmp_path, None)
+    ff2.set_hour("h2")
+    ff2.end_hour("h2")                                                                            # no exception: the torn line is dropped and h2 is recomputed
+    recs = [json.loads(x) for x in (tmp_path / U.FWD_BY_HOUR).read_text().splitlines()]
+    assert [r["hour"] for r in recs] == ["h1", "h2"] and ff2.counters["u1_by_hour_torn_dropped"] == 1
+    # the torn line is the hour being recomputed or an earlier one: both recover; a torn line that is not last is corruption
+    (tmp_path / U.FWD_BY_HOUR).write_text('{"hour": "h1", "x\n' + good)
+    with pytest.raises(S.Refused, match="corrupt"):
+        mk_fwd(tmp_path, None).end_hour("h3")
+
+
+def test_sidecar_and_credits_writes_are_fsynced_and_atomic(tmp_path, monkeypatch):
+    calls = []
+    real = os.fsync
+    monkeypatch.setattr(os, "fsync", lambda fd: (calls.append(fd), real(fd))[1])
+    ff = mk_fwd(tmp_path, fx_mock())
+    ff.set_hour("h1")
+    n0 = len(calls)
+    ff._persist_credits()
+    assert len(calls) - n0 >= 2 and not list(tmp_path.glob("*.tmp"))                                # file + directory
+    n1 = len(calls)
+    ff.end_hour("h1")
+    assert len(calls) - n1 >= 2 and not list(tmp_path.glob("*.tmp"))
+
+
+def test_a_torn_hub_row_after_a_complete_a_row_drops_the_pair_and_refetches_live(tmp_path):
+    ff = mk_fwd(tmp_path, fx_mock())
+    ff.set_hour("h1")
+    ff("NEWL", 50)
+    j = tmp_path / U.FWD_JOURNAL
+    data = j.read_bytes()
+    j.write_bytes(data[:-10])                                                                       # the B line is cut in the middle
+    mock = fx_mock()
+    ff2 = mk_fwd(tmp_path, mock)
+    ff2.set_hour("h2")
+    row = ff2("NEWL", 50)
+    assert row["status"] == "resolved" and ff2.hub_of(FX) is True and ff2.counters["u1_fwd_torn_pair_dropped"] == 1 and mock.log      # fetched again, hub test included
+    lines = [json.loads(x) for x in j.read_text().splitlines()]
+    assert len(lines) == 2 and set(lines[0]) == set(F.TABLE_A_KEYS) and set(lines[1]) == set(F.TABLE_B_KEYS)        # exactly one A and one B, no torn tail
+    # a torn A line alone is cut and refetched the same way (as before)
+    j.write_bytes(data[:5])
+    ff3 = mk_fwd(tmp_path, fx_mock())
+    ff3.set_hour("h3")
+    assert ff3("NEWL", 50)["status"] == "resolved" and len(j.read_text().splitlines()) == 2
+
+
+def test_no_rpc_guard_refuses_any_live_fetch_in_code(tmp_path):
+    mock = fx_mock()
+    ff = U.ForwardFetch(tmp_path, BACKFILL_A, [], transport_factory=lambda: mock, allow_rpc=False, day_fn=lambda: DAYK)
+    ff.set_hour("h1")
+    with pytest.raises(S.Refused, match="RPC refused"):
+        ff("NEWL", 50)
+    assert mock.log == [] and not (tmp_path / U.FWD_JOURNAL).exists()
+    with pytest.raises(S.Refused):
+        ff._rpc("getTransaction", [])
+    # through the manifest: u1.no_rpc true builds a guarded fetcher; any other value is refused
+    m = u1_manifest(tmp_path, out_root=str(tmp_path / "o"))
+    m["u1"]["no_rpc"] = True
+    d = S.default_decider(S.check_manifest(m))
+    assert d.fetch_fn.allow_rpc is False
+    m2 = u1_manifest(tmp_path, out_root=str(tmp_path / "o"))
+    m2["u1"]["no_rpc"] = False
+    with pytest.raises(S.Refused):
+        S.check_manifest(m2)
+    # the book's own manifest (no key) is live-capable
+    assert S.default_decider(S.check_manifest(u1_manifest(tmp_path, out_root=str(tmp_path / "o")))).fetch_fn.allow_rpc is True
+
+
+@pytest.mark.parametrize("decider", ["u1_lowrep", "u1_placebo"])
+def test_only_the_book_builds_a_live_fetcher(tmp_path, monkeypatch, decider):
+    def boom(*a, **k):
+        raise AssertionError("key or transport touched by a non-book run")
+    monkeypatch.setattr(F, "load_key", boom)
+    monkeypatch.setattr(F, "make_transport", boom)
+    m = u1_manifest(tmp_path, decider, out_root=str(tmp_path / "o"))
+    if decider == "u1_placebo":
+        plan = tmp_path / "plan.json"
+        m["u1"].update(placebo_plan=str(plan), placebo_plan_sha256=U.write_placebo_plan({}, {}, plan))
+    dec = S.default_decider(S.check_manifest(m))
+    assert dec.fetch_fn is None
+    run(dec, sorted(history_rows("A", 3), key=lambda r: r["t_recv_ms"]), warmup=True)
+    run(dec, stream(candidate("A")))
+    assert not (tmp_path / "o" / U.FWD_JOURNAL).exists() and not (tmp_path / "o" / U.FWD_CREDITS).exists()

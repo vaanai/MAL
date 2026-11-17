@@ -44,6 +44,10 @@ FWD_DISCLOSURE = ("Forward funder links are fetched inside the book when it proc
                   "the funder and hub test are past-only, but status `deep` is judged on history up to the fetch.")
 FETCH_ONCE_DISCLOSURE = "One funder fetch per launcher from S; fetch_error and fetch_capped launchers stay own-history-only for the book's life."
 RATE_DISCLOSURE = "Forward funder fetch runs unlocked at <= 2 rps beside the walkers' four 10-rps slots."
+LOWREP_DISCLOSURE = ("The low-reputation line makes no RPC call: it reads the book's forward funder journal read-only and decides an hour only after the book has stored it; "
+                     "its forward links are the book's.")
+PLACEBO_NO_RPC_DISCLOSURE = ("The placebo run makes no RPC call and uses the backfill funder tables only; forward launchers are unlinked in its view, which changes no placebo entry or exit "
+                             "(the draw and the exits read no funder link).")
 FWD_JOURNAL = "u1-fwd-journal.jsonl"
 FWD_CREDITS = "u1-credits-by-day.json"
 FWD_BY_HOUR = "u1-fwd-by-hour.jsonl"
@@ -231,6 +235,11 @@ def launcher_list_rows(reg):
 
 
 def _atomic_write_0440(path, data):
+    _atomic_write(path, data, 0o440)
+
+
+def _atomic_write(path, data, mode):
+    """temp + fsync + rename + directory fsync"""
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp = path.with_name(path.name + ".tmp")
@@ -241,7 +250,7 @@ def _atomic_write_0440(path, data):
         fh.write(data)
         fh.flush()
         os.fsync(fh.fileno())
-    os.chmod(tmp, 0o440)
+    os.chmod(tmp, mode)
     os.replace(tmp, path)
     dfd = os.open(str(path.parent), os.O_RDONLY)
     try:
@@ -341,8 +350,10 @@ class ForwardFetch:
     The key is read only when the first live call is made (a dry run, all hours warm-up, makes 0 RPC calls and never touches the key file)."""
 
     def __init__(self, out_root, table_a_rows=(), table_b_rows=(), *, transport_factory=None, cap_per_day=F.CAPS["forward_day"], rps=F.FORWARD_RPS, clock=time.monotonic,
-                 sleep_fn=time.sleep, day_fn=None):
+                 sleep_fn=time.sleep, day_fn=None, allow_rpc=True):
         self.root = Path(out_root)
+        self.allow_rpc = allow_rpc  # False (manifest u1.no_rpc, the dry run): any live fetch raises
+        self._replaying = False
         self.journal = self.root / FWD_JOURNAL
         self.credits_path = self.root / FWD_CREDITS
         self.by_hour_path = self.root / FWD_BY_HOUR
@@ -361,12 +372,14 @@ class ForwardFetch:
         self.hour = None
         self.counters = collections.Counter()
         self._hub_now = {}
-        self._rfh, self._buf, self._torn_at, self._eof = None, None, None, False
+        self._rfh, self._buf, self._torn_at, self._eof, self._buf_pos = None, None, None, False, 0
         self._rows_total = 0
         self._calls_hour0 = 0
 
     # -- transport (lazy: the key file is touched at the first live call only)
     def _rpc(self, method, params):
+        if self._replaying or not self.allow_rpc:
+            raise S.Refused("u1 forward fetch: RPC refused (dry run no_rpc, or a journal replay)")  # code guard, not only a test
         if self._transport is None:
             if self.transport_factory is None:
                 raise F.RpcError("no_transport")
@@ -375,9 +388,7 @@ class ForwardFetch:
 
     def _persist_credits(self):
         self.root.mkdir(parents=True, exist_ok=True)
-        tmp = self.credits_path.with_name(self.credits_path.name + ".tmp")
-        tmp.write_text(json.dumps(self.meters.used_by_day(), sort_keys=True))
-        os.replace(tmp, self.credits_path)
+        _atomic_write(self.credits_path, json.dumps(self.meters.used_by_day(), sort_keys=True).encode(), 0o640)
 
     def total_calls(self):
         return sum(sum(m.calls.values()) for m in self.meters.days.values())
@@ -393,6 +404,7 @@ class ForwardFetch:
                     return None
                 self._rfh = open(self.journal, "rb")
             pos = self._rfh.tell()
+            self._buf_pos = pos
             ln = self._rfh.readline()
             if not ln:
                 self._eof = True
@@ -430,7 +442,7 @@ class ForwardFetch:
         self.counters["u1_fwd_rows"] += len(rows)
 
     # -- fetch_fn interface
-    def set_hour(self, hour):
+    def set_hour(self, hour, warmup=False):
         self.hour = hour
         self._calls_hour0 = self.total_calls()
 
@@ -440,22 +452,33 @@ class ForwardFetch:
     def __call__(self, launcher, first_create_slot):
         self._hub_now = {}
         a = self._peek()
+        row = None
         if a is not None:  # replay: the journal answers, no RPC
             if a.get("launcher") != launcher or set(a) != set(F.TABLE_A_KEYS):
                 raise S.Refused("u1 forward journal out of order")
+            apos = self._buf_pos
             self._take()
-            row = {k: a[k] for k in F.TABLE_A_KEYS}
-            self.fetcher.table_a[launcher] = row
-            if row["status"] == "resolved":
-                self.fetcher.by_funder[row["funder"]].append(launcher)
-            b = self._peek()
-            if b is not None and set(b) == set(F.TABLE_B_KEYS):
-                self._take()
-                self.fetcher.table_b[b["funder"]] = b["hub_activity"]
-                self._hub_now[b["funder"]] = b["hub_activity"]
-        else:
+            nxt = self._peek()
+            if nxt is None and self._torn_at is not None:
+                # an A line followed by a torn tail = a crash while writing A + its B line: the A row is dropped with it (cut at A's start) and the launcher is fetched live again
+                self._torn_at = apos
+                self._rows_total -= 1
+                self.counters["u1_fwd_rows"] -= 1
+                self.counters["u1_fwd_torn_pair_dropped"] += 1
+            else:
+                row = {k: a[k] for k in F.TABLE_A_KEYS}
+                self.fetcher.table_a[launcher] = row
+                if row["status"] == "resolved":
+                    self.fetcher.by_funder[row["funder"]].append(launcher)
+                if nxt is not None and set(nxt) == set(F.TABLE_B_KEYS):
+                    self._take()
+                    self.fetcher.table_b[nxt["funder"]] = nxt["hub_activity"]
+                    self._hub_now[nxt["funder"]] = nxt["hub_activity"]
+        if row is None:
             if self.hour in self.stored_hours:
                 raise S.Refused("u1 forward journal lacks launcher for a stored hour: no RPC while replaying")
+            if not self.allow_rpc:
+                raise S.Refused("u1 forward fetch: RPC refused (dry run no_rpc)")
             before = set(self.fetcher.table_b)
             row = dict(self.fetcher.fetch_launcher(launcher, first_create_slot))
             row = {k: row[k] for k in F.TABLE_A_KEYS}
@@ -470,18 +493,127 @@ class ForwardFetch:
         return row
 
     def end_hour(self, hour):
-        """per-hour chain (counts only, sidecar `u1-fwd-by-hour.jsonl`, one line per hour, never duplicated by a replay)"""
-        done = set()
+        """per-hour chain (counts only, sidecar `u1-fwd-by-hour.jsonl`, one line per hour, never duplicated by a replay). Rewritten atomically with fsync; a torn or unparsable last line
+        left by an older crash is dropped (and counted) and the record recomputed, never a reason to stop the book."""
+        recs = []
         if self.by_hour_path.exists():
-            done = {json.loads(ln)["hour"] for ln in self.by_hour_path.read_text().splitlines() if ln.strip()}
-        if hour in done:
+            lines = self.by_hour_path.read_text().splitlines()
+            for i, ln in enumerate(lines):
+                try:
+                    recs.append(json.loads(ln))
+                except ValueError:
+                    if i != len(lines) - 1:
+                        raise S.Refused("u1 forward by-hour sidecar corrupt before its last line")
+                    self.counters["u1_by_hour_torn_dropped"] += 1
+        if hour in {r["hour"] for r in recs}:
+            if self.counters.get("u1_by_hour_torn_dropped"):
+                _atomic_write(self.by_hour_path, "".join(json.dumps(r, sort_keys=True) + "\n" for r in recs).encode(), 0o640)
             return
         data = self.journal.read_bytes() if self.journal.exists() else b""
-        rec = {"hour": hour, "fwd_rows_total": self._rows_total, "journal_sha256": hashlib.sha256(data).hexdigest(), "rpc_calls_hour": self.total_calls() - self._calls_hour0,
-               "credits_day": self.meters.used_by_day().get(self.day_fn(), 0)}
-        self.root.mkdir(parents=True, exist_ok=True)
-        with open(self.by_hour_path, "a") as fh:
-            fh.write(json.dumps(rec, sort_keys=True) + "\n")
+        recs.append({"hour": hour, "fwd_rows_total": self._rows_total, "journal_sha256": hashlib.sha256(data).hexdigest(), "rpc_calls_hour": self.total_calls() - self._calls_hour0,
+                     "credits_day": self.meters.used_by_day().get(self.day_fn(), 0)})
+        _atomic_write(self.by_hour_path, "".join(json.dumps(r, sort_keys=True) + "\n" for r in recs).encode(), 0o640)
+
+
+class BookJournalReader:
+    """fetch_fn of `u1_lowrep` (QP-RULING-1117-u1-start ADD1): reads the BOOK's forward journal read-only. No transport, no key, no journal or credits file of its own; any path that would call
+    RPC raises Refused. Before deciding a forward hour H it waits (poll) until the book's md5-by-hour.jsonl holds H (the book fsyncs its journal rows before it stores the hour), then consumes the
+    journal as a FIFO exactly like ForwardFetch's replay. End of file is not permanent: the reader resumes from its byte offset. A launcher the journal lacks once the book has stored the hour
+    is Refused, never fetched."""
+
+    def __init__(self, book_out_root, own_out_root, *, sleep_fn=time.sleep, poll_s=None, status_fn=None):
+        self.book, self.own = Path(book_out_root), Path(own_out_root)
+        if os.path.realpath(self.book) == os.path.realpath(self.own):
+            raise S.Refused("u1.book_out_root must differ from the line's own out_root")
+        if not (self.book / "manifest.sha256").exists():
+            raise S.Refused("u1.book_out_root holds no manifest.sha256: not a book run")
+        try:
+            meta = json.loads((self.book / "meta.json").read_text())
+        except (OSError, ValueError):
+            raise S.Refused("u1.book_out_root meta.json unreadable")
+        if meta.get("decider") != "u1":
+            raise S.Refused("u1.book_out_root is not the deciding u1 book")
+        self.journal, self.md5_path = self.book / FWD_JOURNAL, self.book / "md5-by-hour.jsonl"
+        self.sleep_fn, self.poll_s = sleep_fn, (S.POLL_S if poll_s is None else poll_s)
+        self.status_fn = status_fn or self._write_status
+        self.counters = collections.Counter()
+        self.counters["u1_rpc_calls"] = 0
+        self._off, self._hub_now, self.hour = 0, {}, None
+
+    def _write_status(self, hour):
+        sp = self.own / "status.json"
+        try:
+            st = json.loads(sp.read_text()) if sp.exists() else {}
+        except ValueError:
+            st = {}
+        if hour is None:
+            st.pop("waiting_for_book_hour", None)
+        else:
+            st["waiting_for_book_hour"] = hour
+        self.own.mkdir(parents=True, exist_ok=True)
+        _atomic_write(sp, json.dumps(st, sort_keys=True).encode(), 0o640)
+
+    def _book_hours(self):
+        if not self.md5_path.exists():
+            return set()
+        out = set()
+        for ln in self.md5_path.read_text().splitlines():
+            try:
+                out.add(json.loads(ln)["hour"])
+            except (ValueError, KeyError):
+                continue  # a line still being written
+        return out
+
+    def set_hour(self, hour, warmup=False):
+        self.hour = hour
+        if warmup:
+            return
+        waited = False
+        while hour not in self._book_hours():
+            if not waited:
+                self.status_fn(hour)
+                waited = True
+            self.counters["u1_lowrep_waits"] += 1
+            self.sleep_fn(self.poll_s)
+        if waited:
+            self.status_fn(None)
+
+    def _next(self):
+        """-> the next complete journal line (parsed) or None when there is none YET; the offset only moves over complete lines"""
+        if not self.journal.exists():
+            return None
+        with open(self.journal, "rb") as fh:
+            fh.seek(self._off)
+            ln = fh.readline()
+        if not ln or not ln.endswith(b"\n"):
+            return None
+        return json.loads(ln), len(ln)
+
+    def hub_of(self, funder):
+        return self._hub_now.get(funder)
+
+    def __call__(self, launcher, first_create_slot):
+        self._hub_now = {}
+        got = self._next()
+        if got is None:
+            raise S.Refused("u1 lowrep has no live fetch: the book's journal lacks launcher for a stored book hour")
+        a, n = got
+        if a.get("launcher") != launcher or set(a) != set(F.TABLE_A_KEYS):
+            raise S.Refused("u1 forward journal out of order")
+        self._off += n
+        self.counters["u1_fwd_rows"] += 1
+        nxt = self._next()
+        if nxt is not None and set(nxt[0]) == set(F.TABLE_B_KEYS):
+            self._off += nxt[1]
+            self.counters["u1_fwd_rows"] += 1
+            self._hub_now[nxt[0]["funder"]] = nxt[0]["hub_activity"]
+        row = {k: a[k] for k in F.TABLE_A_KEYS}
+        if row["status"] in ("fetch_error", "fetch_capped"):
+            self.counters["u1_fetch_once_unlinked"] += 1
+        return row
+
+    def end_hour(self, hour):
+        return None
 
 
 # ------------------------------------------------------------------------------------------------------------------------------ decider
@@ -699,7 +831,7 @@ class U1Decider:
     def decide(self, hour_rows, state):
         out = []
         if hasattr(self.fetch_fn, "set_hour"):
-            self.fetch_fn.set_hour(state.hour)
+            self.fetch_fn.set_hour(state.hour, state.warmup)
         for i, row in enumerate(hour_rows):
             t = row.get("t_recv_ms")
             if S._isint(t):
@@ -767,8 +899,11 @@ def build_decider(m, table=None, **kw):
     mode = {"u1": "book", "u1_lowrep": "low_rep", "u1_placebo": "placebo"}[m["decider"]]
     plan = load_placebo_plan(u1["placebo_plan"], u1.get("placebo_plan_sha256")) if mode == "placebo" else None
     kw.setdefault("out_root", m.get("out_root"))
-    if kw.get("out_root") is not None and "fetch_fn" not in kw:
-        kw["fetch_fn"] = ForwardFetch(kw["out_root"], a_rows, b_rows, transport_factory=lambda: F.make_transport(F.load_key()))
+    if kw.get("out_root") is not None and "fetch_fn" not in kw and mode == "low_rep":
+        kw["fetch_fn"] = BookJournalReader(u1["book_out_root"], kw["out_root"])   # ADD1: no transport, no key; placebo: no fetcher at all (fetch_fn None)
+    if kw.get("out_root") is not None and "fetch_fn" not in kw and mode == "book":
+        # only the deciding book builds a live fetcher
+        kw["fetch_fn"] = ForwardFetch(kw["out_root"], a_rows, b_rows, transport_factory=lambda: F.make_transport(F.load_key()), allow_rpc=not u1.get("no_rpc", False))
     return U1Decider(S.parse_hour(m["start_hour"]), table, mode=mode, labels=labels, plan=plan, lat_s=float(m.get("pricing_lat_entry_s", S.LAT_DECIDING_S)), **kw)
 
 
