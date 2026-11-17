@@ -120,6 +120,25 @@ def test_retry_then_fetch_error_counts_every_request():
     assert f.meter.used == 1 + 4  # one page + 4 attempts
 
 
+def test_version_1_transaction_resolves_and_request_carries_version_1():
+    t = tx([sys_ins("transfer", source=FUNDER, destination=L, lamports=4_000_000)], slot=50)
+    t["version"] = 1
+    m = Mock(sigs={L: [[sig(1)]]}, txs={"s1": t})
+    row = fetcher(m).fetch_launcher(L, 100)
+    assert row["status"] == "resolved" and row["funder"] == FUNDER
+    assert F.MAX_TX_VERSION == 1
+    gt = [c[1][1] for c in m.log if c[0] == "getTransaction"]
+    assert gt and all(o["maxSupportedTransactionVersion"] == 1 and o["encoding"] == "jsonParsed" for o in gt)
+
+
+def test_rpc_32015_is_fetch_error_and_counted_by_code():
+    m = Mock(sigs={L: [[sig(1)]]}, fail={"s1": -32015})
+    f = fetcher(m)
+    assert f.fetch_launcher(L, 100)["status"] == "fetch_error"
+    assert dict(f.rpc_errors) == {"-32015": 1}
+    assert F.pilot_record(f, 1000, 1.0)["rpc_errors_by_code"] == {"-32015": 1}
+
+
 # ---------------------------------------------------------------------------------------------------------------------------- credit cap
 def test_cap_refuses_before_the_call_and_marks_fetch_capped():
     m = Mock(sigs={"L%d" % i: [[sig(1)]] for i in range(10)}, txs={"s1": tx([sys_ins("transfer", source=FUNDER, destination="x", lamports=4_000_000)])})

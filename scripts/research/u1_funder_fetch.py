@@ -21,6 +21,7 @@ CAPS = {"pilot": 100, "backfill": 30_000, "forward_day": 3_000}
 PAGE_LIMIT = 1000
 MAX_PAGES = 20
 MAX_TX_CALLS = 3
+MAX_TX_VERSION = 1  # maxSupportedTransactionVersion for every getTransaction (0 made Helius answer -32015 on version-1 transactions)
 MIN_INFLOW_LAMPORTS = 1_000_000
 HUB_WINDOW_S = 3600
 MAX_RETRIES = 3
@@ -184,6 +185,7 @@ class Fetcher:
         self.table_a, self.table_b = {}, {}
         self.by_funder = collections.defaultdict(list)  # funder -> traced launchers resolved to it
         self.counters = collections.Counter()
+        self.rpc_errors = collections.Counter()  # RPC error code -> count
         self.pages_hist = collections.Counter()
         self.pages_per_launcher, self.tx_per_launcher = {}, {}
         self.t0 = self.clock()
@@ -212,6 +214,7 @@ class Fetcher:
             try:
                 return self.rpc(method, params)
             except RpcError as e:
+                self.rpc_errors["%s" % (e.code,)] += 1  # counts only, per attempt
                 if e.code == 429:
                     self.counters["n429"] += 1
                 if not e.retryable or attempt == MAX_RETRIES:
@@ -250,7 +253,7 @@ class Fetcher:
                 before = page[-1].get("signature")
             if row["status"] == "no_sol_inflow":
                 for sig in reversed(keep):  # oldest successful first
-                    tx = self._call("getTransaction", [sig, {"maxSupportedTransactionVersion": 0, "encoding": "jsonParsed"}])
+                    tx = self._call("getTransaction", [sig, {"maxSupportedTransactionVersion": MAX_TX_VERSION, "encoding": "jsonParsed"}])
                     txc += 1
                     hit = qualifying_inflow(tx, launcher) if tx else None
                     if hit:
@@ -384,7 +387,7 @@ def pilot_record(f, n_w, wall_s, dashboard_delta=None):
     return {"n_launchers": n, "status_counts": status, "pages_per_launcher_mean": sum(pages) / len(pages), "pages_per_launcher_max": max(pages),
             "get_transaction_per_launcher_mean": sum(txs) / len(txs), "get_transaction_per_launcher_max": max(txs), "hub_tests": f.counters.get("hub_tests", 0),
             "calls_by_method": f.calls_by_method(), "credits_table_total": credits, "credits_table_mean_per_launcher": mean_c, "dashboard_note": e_note,
-            "retries": f.counters.get("retries", 0), "n429": f.counters.get("n429", 0), "wall_time_s": wall_s,
+            "retries": f.counters.get("retries", 0), "n429": f.counters.get("n429", 0), "rpc_errors_by_code": dict(f.rpc_errors), "wall_time_s": wall_s,
             "n_funding_after_create": status["funding_after_create"], "stored_keys_exact": keys_ok, "n_w": n_w, "projected_backfill_credits": projected,
             "pass": {"a_projected_le_30000": a, "b_resolved_ge_5": b, "c_no_fetch_error": c, "d_no_funding_after_create": d, "e_credits_within_2x": e}, "verdict": verdict,
             "provider": "Helius RPC", "methods": ["getSignaturesForAddress", "getTransaction"], "note": "no Enhanced API, no getTransactionsForAddress"}
