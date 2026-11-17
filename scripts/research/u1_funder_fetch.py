@@ -25,6 +25,7 @@ MIN_INFLOW_LAMPORTS = 1_000_000
 HUB_WINDOW_S = 3600
 MAX_RETRIES = 3
 RPS = 10.0
+FORWARD_RPS = 2.0  # QP-RULING-1117-u1-start Q4: the in-run forward fetch is unlocked (no walker flock slot) at a fixed rate of at most 2 rps
 PILOT_N = 10
 STATUSES = ("resolved", "no_sol_inflow", "deep", "fetch_error", "fetch_capped", "funding_after_create")
 TABLE_A_KEYS = ("launcher", "funder", "funding_slot", "status")
@@ -54,10 +55,11 @@ class KeyError_(Exception):
 class CreditMeter:
     """counts credits by the table price BEFORE a call and refuses to exceed the cap. forward mode: one meter per UTC day (see DailyMeters)."""
 
-    def __init__(self, cap, prices=None):
+    def __init__(self, cap, prices=None, used=0, on_charge=None):
         self.cap, self.prices = int(cap), dict(prices or PRICES)
-        self.used = 0
+        self.used = int(used)
         self.calls = collections.Counter()
+        self.on_charge = on_charge  # called after every counted charge (the forward day meter persists itself here)
 
     def charge(self, method):
         p = self.prices[method]  # an unknown method (anything outside the two) is a KeyError: not allowed
@@ -65,14 +67,24 @@ class CreditMeter:
             raise CapReached("credit cap %d reached (used %d)" % (self.cap, self.used))
         self.used += p
         self.calls[method] += 1
+        if self.on_charge is not None:
+            self.on_charge()
 
 
 class DailyMeters:
-    def __init__(self, cap_per_day=CAPS["forward_day"]):
-        self.cap, self.days = cap_per_day, {}
+    def __init__(self, cap_per_day=CAPS["forward_day"], used_by_day=None, on_charge=None):
+        """used_by_day: {day: credits already used} (a restart seeds the day's meter from the persisted file: the cap is per UTC day, not per process)"""
+        self.cap, self.days, self.on_charge = cap_per_day, {}, on_charge
+        for d, u in (used_by_day or {}).items():
+            self.days[d] = CreditMeter(self.cap, used=u, on_charge=on_charge)
 
     def for_day(self, day):
-        return self.days.setdefault(day, CreditMeter(self.cap))
+        if day not in self.days:
+            self.days[day] = CreditMeter(self.cap, on_charge=self.on_charge)
+        return self.days[day]
+
+    def used_by_day(self):
+        return {d: m.used for d, m in sorted(self.days.items())}
 
     def total_used(self):
         return sum(m.used for m in self.days.values())
@@ -175,6 +187,15 @@ class Fetcher:
         self.pages_hist = collections.Counter()
         self.pages_per_launcher, self.tx_per_launcher = {}, {}
         self.t0 = self.clock()
+
+    def seed(self, table_a_rows, table_b_rows=()):
+        """load frozen backfill rows (all statuses, Table B, and by_funder from the resolved rows, as the CLI does for non-pilot modes)"""
+        for r in table_a_rows:
+            self.table_a[r["launcher"]] = {k: r[k] for k in TABLE_A_KEYS}
+            if r["status"] == "resolved":
+                self.by_funder[r["funder"]].append(r["launcher"])
+        for r in table_b_rows:
+            self.table_b[r["funder"]] = r["hub_activity"]
 
     # -- metering and one call
     def _meter(self):
@@ -387,7 +408,11 @@ def main(argv=None):
     ap.add_argument("--n-w", type=int, default=None, help="registry launcher count N_W (pilot projection)")
     ap.add_argument("--env-file", default=None, help="path of the key file (default $U1_HELIUS_ENV_FILE)")
     ap.add_argument("--dashboard-delta", type=int, default=None)
+    ap.add_argument("--cap", type=int, default=None, help="backfill credit cap for THIS run; lower only (refused above %d): the cap is on the SUM of all backfill runs (QP-RULING-1117-u1-start Q5)" % CAPS["backfill"])
     a = ap.parse_args(argv)
+    if a.cap is not None and (a.mode != "backfill" or not 0 <= a.cap <= CAPS["backfill"]):
+        print("u1_funder_fetch: --cap is for backfill only and must be in [0, %d]" % CAPS["backfill"], file=sys.stderr)
+        return 2
     try:
         key = load_key(a.env_file)
     except KeyError_ as e:
@@ -399,7 +424,7 @@ def main(argv=None):
         meter = DailyMeters()
         f = Fetcher(make_transport(key), meter, day_fn=lambda: datetime.now(timezone.utc).strftime("%Y-%m-%d"))
     else:
-        meter = CreditMeter(CAPS["pilot"] if a.mode == "pilot" else CAPS["backfill"])
+        meter = CreditMeter(CAPS["pilot"] if a.mode == "pilot" else (CAPS["backfill"] if a.cap is None else a.cap))
         f = Fetcher(make_transport(key), meter)
     todo = pilot_selection(allL) if a.mode == "pilot" else allL
     if a.mode != "pilot":

@@ -451,8 +451,19 @@ def check_manifest(m):
         raise Refused("decider must be one of %s" % (list(DECIDERS),))
     if m["decider"] in U1_DECIDERS:
         u1 = m.get("u1")
-        if not (isinstance(u1, dict) and isinstance(u1.get("table_a"), str) and set(u1) <= {"table_a", "table_b", "labels", "placebo_plan", "placebo_plan_sha256", "hr_exclusion"}):
-            raise Refused("decider %s needs manifest key u1 = {table_a, [table_b], [labels], [placebo_plan, placebo_plan_sha256], hr_exclusion} (file paths)" % m["decider"])
+        if not (isinstance(u1, dict) and isinstance(u1.get("table_a"), str) and set(u1) <= {"table_a", "table_b", "labels", "table_a_sha256", "table_b_sha256", "labels_sha256", "placebo_plan", "placebo_plan_sha256", "hr_exclusion", "no_rpc", "book_out_root", "book_manifest_sha256"}):
+            raise Refused("decider %s needs manifest key u1 = {table_a, table_a_sha256, [table_b, table_b_sha256], [labels, labels_sha256], [placebo_plan, placebo_plan_sha256], hr_exclusion} (file paths and sha256)" % m["decider"])
+        for k in ("table_a", "table_b", "labels"):  # QP 1117 Q10: a file key needs its sha256 key (and no sha256 key without its file); build_decider refuses on a mismatch
+            if (k in u1) != (k + "_sha256" in u1) or (k + "_sha256" in u1 and not (isinstance(u1[k + "_sha256"], str) and re.fullmatch(r"[0-9a-f]{64}", u1[k + "_sha256"]))):
+                raise Refused("u1.%s and u1.%s_sha256 must be given together (64 hex)" % (k, k))
+        if (m["decider"] == "u1_lowrep") != ("book_out_root" in u1) or ("book_out_root" in u1 and not isinstance(u1["book_out_root"], str)):
+            raise Refused("u1.book_out_root (a path) is required for decider u1_lowrep and refused for the others")
+        if "book_manifest_sha256" in u1 and not (m["decider"] == "u1_lowrep" and isinstance(u1["book_manifest_sha256"], str) and re.fullmatch(r"[0-9a-f]{64}", u1["book_manifest_sha256"])):
+            raise Refused("u1.book_manifest_sha256 (64 hex) is only for decider u1_lowrep")
+        if "book_out_root" in u1 and os.path.realpath(u1["book_out_root"]) == os.path.realpath(m["out_root"]):
+            raise Refused("u1.book_out_root must differ from out_root")
+        if "no_rpc" in u1 and u1["no_rpc"] is not True:
+            raise Refused("u1.no_rpc, when given, must be true (the dry run: the forward fetch refuses any RPC)")
         if u1.get("hr_exclusion") is not True:
             raise Refused("u1.hr_exclusion must be true: the holder-rewards exclusion is required (QP ADD1 4); the runner does not start without it")
         if m["decider"] == "u1_placebo" and not (isinstance(u1.get("placebo_plan"), str) and isinstance(u1.get("placebo_plan_sha256"), str)):
@@ -948,7 +959,7 @@ def _locked(m, out_root, once, max_hours, sleep_fn, decider_factory, ledger_buil
         status.update(last_hour=key, last_hour_end_ms=end, warmup_hour=is_warm, wall_time_utc=datetime.now(timezone.utc).isoformat(), active=verified, open_positions=book.open_positions(),
                       ledger_days_built=list(lstep.built), ledger_days_incomplete=list(lstep.incomplete), decision_md5=dmd5, ledger_md5=lmd5, book_counts=dict(book.c))
         O._atomic_json(out_root / "status.json", status)
-        if m["decider"] in PLACEBO_DECIDERS and not is_warm:
+        if (m["decider"] in PLACEBO_DECIDERS or m["decider"] in U1_DECIDERS) and not is_warm:  # U1: strict exclusion + GAP_DISCLOSURE (QP verdict item 2); no placebo bot, "main" only
             O._atomic_json(out_root / "gap_exclusions.json", book.gap_exclusion_split())
         if is_warm and end == start_ms:  # the last warm-up hour is done: the disclosure carries the count of pools first seen in W
             meta = json.loads((out_root / "meta.json").read_text())

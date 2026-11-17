@@ -279,3 +279,22 @@ def test_pilot_blocked_when_fewer_than_five_resolved():
     f.run([("A%d" % i, 100) for i in range(10)])
     rec = F.pilot_record(f, 100, 1)
     assert rec["verdict"] == "BLOCKED" and not rec["pass"]["b_resolved_ge_5"]
+
+
+def test_backfill_cap_flag_is_lower_only_and_backfill_only(tmp_path, capsys):
+    lst = tmp_path / "l.jsonl"
+    lst.write_text("")
+    for argv in (["backfill", "--cap", "30001"], ["backfill", "--cap", "-1"], ["pilot", "--cap", "50"], ["forward", "--cap", "5"]):
+        assert F.main(argv + ["--launchers", str(lst), "--out", str(tmp_path / "o"), "--env-file", str(tmp_path / "none.env")]) == 2
+    assert "--cap" in capsys.readouterr().err
+
+
+def test_day_meter_seeded_from_stored_use_and_hook_fires_per_charge():
+    seen = []
+    dm = F.DailyMeters(5, used_by_day={"d": 3}, on_charge=lambda: seen.append(1))
+    m = dm.for_day("d")
+    m.charge("getTransaction")
+    m.charge("getTransaction")
+    with pytest.raises(F.CapReached):
+        m.charge("getTransaction")
+    assert dm.used_by_day() == {"d": 5} and len(seen) == 2 and F.FORWARD_RPS == 2.0
