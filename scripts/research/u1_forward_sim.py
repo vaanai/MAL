@@ -32,6 +32,7 @@ HUB_FUNDER_CHILDREN = 50
 HUB_LAUNCHER_GRADS = 50
 PLACEBO_WINDOW_S = 1800
 PLACEBO_MIN_N = 5
+CAP_OPEN_NOT_COMPUTED = "cap_open_stale not computed; cap_open counts the book's own entries for a full 6 h (stops ignored)"
 STALE_DISCLOSURE = "cap_open uses an hour-start open count; %d entries were refused that an exact count would have taken"
 PLACEBO_DISCLOSURE = "placebo built by a lagged plan pass; it trails the book by up to about 1 h plus the hold"
 H4_DISCLOSURE = "H4 lacks pump fee/global accounts; H2 (> 50 children) removes any that fund many launchers"
@@ -105,6 +106,7 @@ class Registry:
         self.pool_mint = {}               # pool -> mint
         self.by_launcher = collections.defaultdict(list)  # launcher -> [mint] graduates (with a create row)
         self.gaps = []                    # [(t_s)] data_loss gap instants (prog all | pumpswap)
+        self.min_slot = {}                # launcher -> minimum create slot over ALL of its create rows fed so far (launcher list, B1)
         self.c = collections.Counter()
 
     def feed(self, row):
@@ -123,6 +125,8 @@ class Registry:
                 launcher = trader or creator
                 if launcher:
                     self.creates[m] = {"launcher": launcher, "slot": row["slot"], "from_creator": not trader, "trader_ne_creator": bool(trader and creator and trader != creator), "row": row}
+                    if launcher not in self.min_slot or row["slot"] < self.min_slot[launcher]:
+                        self.min_slot[launcher] = row["slot"]
                     self.c["launcher_from_creator"] += (not trader)
                     self.c["trader_ne_creator"] += bool(trader and creator and trader != creator)
             return None
@@ -172,6 +176,67 @@ class Registry:
 
 def cluster_id(key):
     return hashlib.sha256(str(key).encode()).hexdigest()[:12]
+
+
+# ------------------------------------------------------------------------------------------------------------------------------ launcher list (B1)
+LAUNCHER_LIST = "u1-launchers.jsonl"
+LAUNCHER_LIST_BY_HOUR = "u1-launchers-by-hour.jsonl"
+PLAN_INPUT = "u1-plan-input.jsonl"
+# QP Q1: which slot the launcher list carries. "min_over_creates" = the minimum create slot over ALL of the launcher's create rows seen in W (default, ruling 1.2 item 6 "first create
+# row in the tape"); "earliest_graduate" = the create slot of the launcher's earliest graduate's create row (what _ensure_traced passes). Switch here only.
+FIRST_CREATE_SLOT_RULE = "min_over_creates"
+
+
+def graduate_first_slot(reg, launcher):
+    slots = [reg.grads[m].create_slot for m in reg.by_launcher.get(launcher, ()) if reg.grads[m].create_slot is not None]
+    return min(slots) if slots else None
+
+
+def first_create_slot(reg, launcher, rule=None):
+    """the ONE place that chooses the launcher list's first_create_slot (a QP ruling on Q1 switches FIRST_CREATE_SLOT_RULE and nothing else)"""
+    rule = rule or FIRST_CREATE_SLOT_RULE
+    if rule == "min_over_creates":
+        return reg.min_slot.get(launcher)
+    if rule == "earliest_graduate":
+        return graduate_first_slot(reg, launcher)
+    raise ValueError("unknown first_create_slot rule %r" % (rule,))
+
+
+def launcher_list_rows(reg, rule=None):
+    """one row per launcher with >= 1 graduate (with a create row) among the rows fed so far, sorted by launcher -> ([{launcher, first_create_slot}], n_first_slot_from_graduate_only)
+    where the second number counts listed launchers whose chosen slot equals their earliest graduate's create slot (no earlier create row of a non-graduate)"""
+    rows, same = [], 0
+    for l in sorted(reg.by_launcher):
+        if not reg.by_launcher[l]:
+            continue
+        fs = first_create_slot(reg, l, rule)
+        if fs is None:
+            continue
+        rows.append({"launcher": l, "first_create_slot": fs})
+        same += fs == graduate_first_slot(reg, l)
+    return rows, same
+
+
+def _atomic_write_0440(path, data):
+    path = Path(path)
+    tmp = path.with_name(path.name + ".tmp")
+    if tmp.exists():
+        tmp.unlink()
+    fd = os.open(str(tmp), os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    with os.fdopen(fd, "wb") as fh:
+        fh.write(data)
+        fh.flush()
+        os.fsync(fh.fileno())
+    os.chmod(tmp, 0o440)
+    os.replace(tmp, path)
+
+
+def write_launcher_list(reg, path, rule=None):
+    """atomic rewrite (temp + rename, 0440) of the launcher list -> (n_launchers, sha256 of the file bytes, n_first_slot_from_graduate_only)"""
+    rows, same = launcher_list_rows(reg, rule)
+    data = "".join(json.dumps(r, sort_keys=True, separators=(",", ":")) + "\n" for r in rows).encode()
+    _atomic_write_0440(path, data)
+    return len(rows), hashlib.sha256(data).hexdigest(), same
 
 
 # ------------------------------------------------------------------------------------------------------------------------------ pure helpers
@@ -225,7 +290,10 @@ def placebo_summary(book_n, placebo_n):
             "disclosure": PLACEBO_DISCLOSURE}
 
 
-def board_disclosures(counts):
+def board_disclosures(counts, exact_open_computed=False):
+    """cap_open_stale is shown only when an exact open count was wired (exact_open_computed); otherwise the "not computed" wording is ALWAYS emitted and no cap_open_stale number (never a 0) is shown"""
+    if not exact_open_computed:
+        return [CAP_OPEN_NOT_COMPUTED]
     out = []
     if counts.get("cap_open_stale", 0) > 0:
         out.append(STALE_DISCLOSURE % counts["cap_open_stale"])
