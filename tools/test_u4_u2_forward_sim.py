@@ -695,3 +695,157 @@ def test_u4_u2_manifests_take_no_model_or_ledger_pins_and_respect_rent_mode(tmp_
     stranded = S.Book(S.check_manifest(mf(tmp_path, "u2", exit_s=3600)), tmp_path / "r1", "0" * 64, T1.SPS)
     refunded = S.Book(S.check_manifest(mf(tmp_path, "u2", exit_s=3600, rent_mode="refunded")), tmp_path / "r2", "0" * 64, T1.SPS)
     assert stranded.engine.cfg.rent > 0 and refunded.engine.cfg.rent == 0
+
+
+# ---------------------------------------------------------------------------------------------------------------------------------- bounded state (job #2916: osb-u4 OOM after 270 replayed hours)
+# OLD = bounded=False (the previous code path, verbatim); NEW = bounded=True. The long synthetic stream below is multi-day, has thousands of mints / wallets, graduations, repeated create / pool_create rows, pools without a create,
+# data-loss gaps, routers, transfer-heavy mints, creates without a supply field and positions held across the sweep instants. Synthetic only; nothing here is a price, a fill or a result.
+SYNTH = "So11111111111111111111111111111111111111112"
+DAYS_BEFORE, DAYS_AFTER = 11, 6
+
+
+def long_rows(days_before=DAYS_BEFORE, days_after=DAYS_AFTER, per_hour=6, seed=11):
+    rnd = random.Random(seed)
+    t_lo, t_hi = -days_before * 86_400, days_after * 86_400
+    rows, mints, pool_n = [], [], [0]
+    wallets = ["W%d" % i for i in range(3000)]
+    routers = ["RT%d" % i for i in range(5)]
+    for h in range(t_lo // 3600, t_hi // 3600):
+        t0 = h * 3600
+        for k in range(per_hour):
+            n = len(mints)
+            mint, t = "M%d" % n, t0 + rnd.randrange(3600)
+            creator = hr_pda(mint) if n % 53 == 0 else "C%d" % rnd.randrange(500)
+            cr = create(mint, t, creator=creator, trader=creator)
+            if n % 5:
+                cr["token_raw"] = 10 ** 15   # n % 5 == 0: no supply field (the counted fallback)
+            rows.append(cr)
+            if rnd.random() < 0.03:
+                rows.append(dict(cr, t_recv_ms=cr["t_recv_ms"] + 7))   # a repeated create row
+            mints.append(mint)
+            rows.append(trade(mint, "x", t, creator, "buy", 10 ** 13, prog="pumpfun", slot=cr["slot"]))
+            for j in range(rnd.randrange(2, 18)):   # pump.fun phase trades over the first 2 days
+                tt = t + rnd.randrange(1, 2 * 86_400)
+                if tt >= t_hi:
+                    continue
+                w = rnd.choice(wallets)
+                side = "buy" if rnd.random() < 0.7 else "sell"
+                tok = rnd.choice((10 ** 9, 10 ** 11, 10 ** 12)) if n % 29 else 3 * 10 ** 14   # n % 29: a dump no balance explains (transfer heavy)
+                rows.append(trade(mint, "x", tt, w, side, tok, prog="pumpfun"))
+            if rnd.random() < 0.22:   # graduates 3 h .. 9 d after the create
+                gt = t + rnd.choice((3 * 3600, 8 * 3600, 30 * 3600, 70 * 3600, 6 * 86_400, 9 * 86_400)) + rnd.randrange(3600)
+                if gt >= t_hi - 3600:
+                    continue
+                pool = "P%d" % pool_n[0]
+                pool_n[0] += 1
+                rows.append(pool_create(pool, mint, gt, quote=SYNTH if rnd.random() < 0.94 else "OTHERQUOTE"))
+                if rnd.random() < 0.06:
+                    rows.append(pool_create(pool, mint, gt + 30 * 3600))   # repeated pool_create, long after
+                    rows.append(pool_create(pool, mint, gt + 10 * 86_400))
+                q, accumulate = rnd.randrange(200, 400) * 10 ** 9, rnd.random() < 0.5
+                tt, end = gt + 60, gt + rnd.choice((2, 5, 9, 12)) * 86_400
+                holders, dump_t = [], gt + rnd.randrange(4, 14) * 3600   # accumulation by fresh wallets (NS up, TOP1 down), then a dump by the same wallets
+                while tt < min(end, t_hi):
+                    q = int(q * (1.0 + rnd.gauss(0, 0.05)))
+                    q = max(q, 160 * 10 ** 9)
+                    if accumulate and tt < gt + 20 * 3600:
+                        if tt < dump_t or not holders:
+                            w, side, tok = "A%d-%d" % (n, len(holders)), "buy", 3 * 10 ** 13
+                            holders.append(w)
+                        else:
+                            w, side, tok = holders.pop(0), "sell", 3 * 10 ** 13
+                        step = rnd.randrange(300, 1500)
+                    else:
+                        w, side, tok, step = rnd.choice(wallets), "buy" if rnd.random() < 0.5 else "sell", rnd.choice((10 ** 10, 10 ** 11)), rnd.randrange(600, 5400)
+                    rows.append(trade(mint, pool, tt, w, side, tok, q=q, b=5 * 10 ** 14, so=rnd.choice((10 ** 8, 10 ** 9)), v=None if rnd.random() < 0.02 else V))
+                    tt += step
+        for r in routers:   # routers: > 50 distinct mints in 24 h
+            for _ in range(4):
+                if mints:
+                    mt = rnd.choice(mints[-400:])
+                    rows.append(trade(mt, "x", t0 + rnd.randrange(3600), r, "buy", 10 ** 9, prog="pumpfun"))
+        if h % 37 == 5:
+            rows.append(gap(t0 + rnd.randrange(3600), prog=rnd.choice(("pumpswap", "all", "pumpfun"))))
+        if h % 11 == 3:
+            rows.append(dict(gap(t0 + 100), kind="tip_note", data_loss=False))
+        for j in range(2):   # pumpswap prints of pools that never had a pool_create row
+            rows.append(trade("U%d" % (h % 20), "UP%d" % (h % 20), t0 + 50 + j, "W1", "buy", 10 ** 10, q=300 * 10 ** 9, b=5 * 10 ** 14, so=10 ** 9))
+    return rows
+
+
+def run_long(cls, rows, probes=(), **kw):
+    import hashlib
+    dec = cls(START_MS, hr_pda_fn=hr_pda, **kw)
+    by_hour = collections.defaultdict(list)
+    for r in rows:
+        by_hour[(r["block_time"] - T0) // 3600].append(r)
+    per_hour, probe, tot = [], {}, collections.Counter()
+    for h in range(-DAYS_BEFORE * 24, DAYS_AFTER * 24):
+        st = S.RunState(hour="h%d" % h, warmup=h < 0, day="d")
+        hr = sorted(by_hour.get(h, []), key=lambda r: (r["block_time"], r["slot"]))
+        ents = dec.decide(hr, st)
+        sells = dec.take_sells()
+        marks = dec.drain_marks() if hasattr(dec, "drain_marks") else []
+        per_hour.append(hashlib.md5(S.canon([e.as_dict() for e in ents] + [s.as_dict() for s in sells] + [dict(st.counts), marks]).encode()).hexdigest())
+        tot.update(st.counts)
+        tot["entries"] += len(ents)
+        tot["sells"] += len(sells)
+        day = (h + 1 + DAYS_BEFORE * 24) // 24   # days processed so far
+        if (h + 1 + DAYS_BEFORE * 24) % 24 == 0 and day in probes:
+            probe[day] = size_of(dec)
+    return per_hour, dec, tot, probe
+
+
+def size_of(dec):
+    d = dict(creates=len(dec.creates), pools=len(dec.pools), seen_once=len(dec.seen_once), hr=len(dec._hr), mint_pool=len(dec.mint_pool))
+    if isinstance(dec, D.U4Decider):
+        d.update(mints=len(dec.mints), wallets=len(dec.wallet_mints), wallet_entries=sum(len(w) for w in dec.wallet_mints.values()), bal=sum(len(m.bal) for m in dec.mints.values() if m.bal is not None))
+    else:
+        d.update(series=len(dec.series), prints=sum(len(v[0]) for v in dec.series.values()), last_print=len(dec.last_print))
+    return d
+
+
+@pytest.fixture(scope="module")
+def long_fixture():
+    return long_rows()
+
+
+PROBES = (5, 9, 11, 14, 17)
+
+
+def test_u4_long_stream_decisions_counts_and_marks_are_md5_equal_old_vs_new_and_the_state_is_bounded(long_fixture):
+    old, d_old, t_old, p_old = run_long(D.U4Decider, long_fixture, PROBES, bounded=False)
+    new, d_new, t_new, p_new = run_long(D.U4Decider, long_fixture, PROBES, bounded=True)
+    assert old == new and t_old == t_new and len(new) == 17 * 24
+    print("U4 totals", dict(t_new), "pruned", dict(d_new.pruned), "new", p_new, "old", p_old)
+    assert t_new["fires"] > 0 and t_new["placebo_entries"] > 0 and t_new["marks_evaluated"] > 1000 and t_new["gap_tainted"] > 0 and t_new["transfer_heavy"] > 0 and t_new["supply_fallback"] > 0
+    assert t_new["no_create_row"] > 0 and t_new["routers_excluded"] > 0 and t_new["entries"] > 0
+    assert t_new["ns_fall_exits"] + t_new["ns_fall_exits_placebo"] + t_new["ns_exit_disabled"] > 0
+    pr = d_new.pruned   # every pruning path ran
+    for k in ("tainted_freed", "mints_dropped", "mints_early", "early_fallback", "wallet_mints", "pools"):
+        assert pr[k] > 0, k
+    # the old tables grow with the hours; the new ones stop growing once the 8-day mint window is full (day 9 of 17)
+    assert p_old[17]["creates"] > 1.5 * p_old[9]["creates"] and p_old[17]["pools"] > 1.5 * p_old[9]["pools"]
+    n_mint_8d = len({r["mint"] for r in long_fixture if r["type"] == "create" and r["block_time"] - T0 > DAYS_AFTER * 86_400 - 8 * 86_400 - 7200})   # created in the last 8 d + 2 h
+    assert p_new[17]["creates"] <= p_new[11]["creates"] * 1.1 and p_new[17]["creates"] <= n_mint_8d and p_new[17]["mints"] == p_new[17]["creates"]
+    assert p_new[17]["pools"] <= p_new[11]["pools"] * 1.6 + 10 and p_new[17]["pools"] < p_old[17]["pools"] / 4
+    assert p_new[17]["wallet_entries"] < p_old[17]["wallet_entries"] and p_new[17]["wallet_entries"] <= p_new[11]["wallet_entries"] * 1.25
+    assert p_new[17]["seen_once"] <= p_new[11]["seen_once"] + 50 and p_new[17]["seen_once"] < p_old[17]["seen_once"]
+    assert p_new[17]["bal"] < p_old[17]["bal"]   # taint releases the balances of every mint a data-loss gap reached
+    assert len(d_new.dead_pools) == pr["pools"] and not d_new._early
+
+
+def test_u2_long_stream_decisions_counts_and_marks_are_md5_equal_old_vs_new_and_the_state_is_bounded(long_fixture):
+    old, d_old, t_old, p_old = run_long(D.U2Decider, long_fixture, PROBES, bounded=False)
+    new, d_new, t_new, p_new = run_long(D.U2Decider, long_fixture, PROBES, bounded=True)
+    assert old == new and t_old == t_new
+    print("U2 totals", dict(t_new), "pruned", dict(d_new.pruned), "new", p_new, "old", p_old)
+    assert t_new["picks"] > 0 and t_new["placebo_entries"] > 0 and t_new["marks_evaluated"] > 10 and t_new["missing_v"] > 0 and t_new["stop_exits"] + t_new["take_exits"] > 0
+    assert t_new["quote_unknown"] > 0 and t_new["hr_coin_excluded"] > 0
+    pr = d_new.pruned
+    assert pr["pools"] > 0 and pr["pool_held_deferred"] > 0   # a pool past the universe ceiling was kept while a position held it, and dropped afterwards
+    # the old decider trims a series only at a forward mark (day 11 on): its warm-up tables hold every print; the new one holds about 31 h of prints and one anchor per pool, in warm-up too
+    assert p_old[11]["prints"] > 4 * p_new[11]["prints"] and p_old[9]["prints"] > 20 * p_new[9]["prints"] and p_new[17]["prints"] <= p_new[14]["prints"] * 1.2
+    assert p_new[17]["pools"] < p_old[17]["pools"] and p_new[17]["pools"] <= p_new[14]["pools"] * 1.2 + 10 and p_old[17]["pools"] > 1.5 * p_old[11]["pools"]
+    assert p_new[17]["last_print"] < p_old[17]["last_print"] and p_new[17]["seen_once"] <= p_new[14]["seen_once"] + 20
+    assert len(d_new.dead_pools) == pr["pools"]

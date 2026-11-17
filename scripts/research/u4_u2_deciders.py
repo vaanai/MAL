@@ -339,6 +339,7 @@ class U4Decider(_Base):
             if self._early and side == "sell" and self._early.get(mint) is False:
                 self._early[mint] = True  # dropped before the first mark: the previous code counted this mint's supply fallback at its first sell
                 self._count("supply_fallback")
+                self.pruned["early_fallback"] += 1
             return  # no create row: no history from the create, never in the universe (counted at the mark)
         if row.get("prog") == "pumpswap":
             ms.last_swap_bt = bt
@@ -378,6 +379,8 @@ class U4Decider(_Base):
     def ns_top1(self, mint, m, routers):
         """(NS, TOP1) at mark m, or None when no tape-visible holder supply"""
         ms, cr = self.mints[mint], self.creates[mint]
+        if ms.freed:
+            raise RuntimeError("ns_top1 on a released mint (unreachable: tainted / heavy mints are skipped before it)")
         D = sum(b for b in ms.bal.values() if b > 0)
         if D <= 0:
             return None
@@ -531,6 +534,8 @@ class U4Decider(_Base):
             if cr is None or cr["bt"] != bt:
                 continue
             ms = self.mints.pop(mt, None)
+            if early:
+                self.pruned["mints_early"] += 1
             if early and ms is not None and cr["supply"] is None:
                 self._early[mt] = ms.counted_fallback
             self._untainted.pop(mt, None)
@@ -665,6 +670,7 @@ class U2Decider(_Base):
         for ts, ps in self.series.values():
             self._trim_series(ts, ps, ref)
         held = set(self.pos["main"]) | set(self.pos["placebo"])
+        self.pruned["pool_held_deferred"] += sum(1 for pl in held if pl in self.pools and ref - self.pools[pl]["created_bt"] >= U2_AGE_MAX_S)
         for pool in [pl for pl, p in self.pools.items() if ref - p["created_bt"] >= U2_AGE_MAX_S and pl not in held]:
             mint = self.pools[pool]["mint"]
             self._kill_pool(pool)
