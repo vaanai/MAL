@@ -55,7 +55,7 @@ LANE_MAX_OPEN_DEFAULT = 8  # what a lane block without max_open gets (unchanged 
 # real limits, so the live port lifts the probe's counters far above anything the lane can reach. FloorLanePort.__init__ applies them to ex.limits.
 LANE_PROBE_MAX_ATTEMPTS = 100_000
 LANE_PROBE_MAX_DAYS = 60.0
-LANE_BUDGET_MAX_LAMPORTS = 2_100_000_000  # a ceiling only (read by floor-lane-1 validation alone; the DSL lane has DSL_LANE_BUDGET_MAX_LAMPORTS); the live config sets budget_lamports. DEC-035 Am.5 (owner, 2026-11-12): 0.60 -> 1.20 SOL lifetime; Am.6: 1.20 -> 2.10 SOL
+LANE_BUDGET_MAX_LAMPORTS = 4_000_000_000  # a ceiling only (read by floor-lane-1 validation alone; the DSL lane has DSL_LANE_BUDGET_MAX_LAMPORTS); the live config sets budget_lamports. DEC-035 Am.5 (owner, 2026-11-12): 0.60 -> 1.20 SOL lifetime; Am.6: 1.20 -> 2.10 SOL; DEC-035 amendment (budget raise), pending: ceiling 2.10 -> 4.0 SOL (the live value stays 2.10 until that amendment, the owner's word and a Helm install)
 LANE_BUDGET_DEFAULT_LAMPORTS = 300_000_000  # what a lane block without budget_lamports gets (unchanged from before the step-up)
 LANE_DAILY_MAX_LAMPORTS = 100_000_000  # the SHARED daily ceiling: the DSL lane (tools/forge/dsl_lane_executor.py, a pinned blob) reads it. DEC-035 Am.5 does not move it
 FLOOR_LANE_DAILY_MAX_LAMPORTS = 500_000_000  # floor-lane-1 only: DEC-035 Am.5 (owner, 2026-11-12) 0.10 -> 0.20 SOL daily stop ceiling; Am.6: 0.20 -> 0.50 SOL
