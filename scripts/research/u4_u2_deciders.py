@@ -15,6 +15,7 @@ Readings the ruling leaves open (flagged in the PR body): total supply = pump st
 """
 import bisect
 import collections
+import heapq
 import random
 import statistics
 import sys
@@ -45,6 +46,8 @@ U4_NS_FALL = 0.80                    # or NS(M) <= 0.80 x NS(entry mark)
 U4_TRANSFER_HEAVY = 0.05             # cumulative unexplained sell tokens <= 5% of total supply
 U4_ROUTER_MINTS_24H = 50             # a wallet that traded > 50 distinct mints in the 24 h before M is a router / bot
 U4_BUNDLE_SLOTS = 1                  # first buy in the create slot or the next slot
+U4_MINT_KEEP_S = 8 * 86_400          # a mint whose create is older than this at a mark is dropped for good (existing rule of _prune_snaps)
+SWEEP_WALLETS_EVERY_H = 6            # bounded mode: wallet router history is swept every 6th hourly sweep
 # ---- U2 (ruling 2)
 U2_MARK_HOURS = (0, 6, 12, 18)
 U2_AGE_MIN_S, U2_AGE_MAX_S = 24 * 3600, 168 * 3600
@@ -91,7 +94,13 @@ class _Base:
     """shared plumbing: row ingest, registries, mark clock, placebo bookkeeping"""
     name = "base"
 
-    def __init__(self, start_ms, hr_pda_fn=None):
+    def __init__(self, start_ms, hr_pda_fn=None, bounded=True):
+        # bounded=True: memory is bounded on the stream clock by dropping state that no later row can bring back into a decision (PR claude/u4u2-bounded-state; decisions md5-equal to bounded=False,
+        # tools/test_u4_u2_forward_sim.py). bounded=False is the previous code path, kept for the old-vs-new equality tests.
+        self.bounded = bounded
+        self.pruned = collections.Counter()  # what the bounded mode dropped (diagnostic only; never part of a record)
+        self.dead_pools = set()              # pools dropped for good (tombstones: a repeated pool_create row is ignored as before)
+        self._sweeps = 0
         self.start_s = start_ms // 1000
         self.hr_pda_fn = hr_pda_fn or hr_pda_default
         self.creates = {}                    # mint -> {bt, slot, creator, trader}
@@ -110,7 +119,8 @@ class _Base:
     def is_hr(self, mint):
         if mint not in self._hr:
             cr = self.creates.get(mint)
-            self._hr[mint] = bool(cr and cr["creator"] and cr["creator"] == self.hr_pda_fn(mint))
+            creator = cr["creator"] if isinstance(cr, dict) else cr  # U2 (bounded) stores the creator only
+            self._hr[mint] = bool(cr and creator and creator == self.hr_pda_fn(mint))
         return self._hr[mint]
 
     def _count(self, k, n=1):
@@ -142,18 +152,35 @@ class _Base:
         typ = row.get("type", "trade")
         bt = S._bt(row)
         if typ == "create" and row.get("mint") and bt is not None and _isint(row.get("slot")):
-            self.creates.setdefault(row["mint"], {"bt": bt, "slot": row["slot"], "creator": row.get("creator"), "trader": row.get("trader"),
-                                                  "supply": row["token_raw"] if _isint(row.get("token_raw")) and row["token_raw"] > 0 else None})
+            if row["mint"] not in self.creates:
+                self.creates[row["mint"]] = self._create_record(row, bt)
             self.on_create(row["mint"])
             return True
         if typ == "pool_create" and row.get("pool") and row.get("mint") and bt is not None:
-            if row["pool"] not in self.pools:
+            if row["pool"] not in self.pools and row["pool"] not in self.dead_pools:
                 self.pools[row["pool"]] = {"mint": row["mint"], "created_bt": bt, "quote_ok": row.get("quote_mint") == WSOL}  # unknown quote = excluded, counted (ruling 0.4)
                 self.mint_pool.setdefault(row["mint"], row["pool"])
             return True
         return False
 
+    def _create_record(self, row, bt):
+        return {"bt": bt, "slot": row["slot"], "creator": row.get("creator"), "trader": row.get("trader"),
+                "supply": row["token_raw"] if _isint(row.get("token_raw")) and row["token_raw"] > 0 else None}
+
     def on_create(self, mint):
+        pass
+
+    def _kill_pool(self, pool):
+        """bounded mode: a pool no later mark can evaluate (and no position holds) is dropped with its once-per-pool refusal keys"""
+        p = self.pools.pop(pool)
+        self.dead_pools.add(pool)
+        if self.mint_pool.get(p["mint"]) == pool:
+            del self.mint_pool[p["mint"]]
+        for k in ("no_create_row", "quote_unknown", "hr_coin_excluded"):
+            self.seen_once.discard((k, pool))
+        self.pruned["pools"] += 1
+
+    def sweep_hour(self):
         pass
 
     # ---- the mark clock
@@ -187,6 +214,9 @@ class _Base:
             self.after_row(row, i)
         state.counts.update(self.c)
         self.c.clear()
+        if self.bounded:
+            self._sweeps += 1
+            self.sweep_hour()
         out = self.take_entries()
         return out
 
@@ -211,7 +241,7 @@ class _Base:
 
 # ====================================================================================================================================== U4
 class _MintU4:
-    __slots__ = ("bal", "sold", "first_buy_slot", "unexplained", "tainted", "heavy", "snaps", "last_swap_bt", "counted_taint", "counted_heavy", "counted_fallback")
+    __slots__ = ("bal", "sold", "first_buy_slot", "unexplained", "tainted", "heavy", "snaps", "last_swap_bt", "counted_taint", "counted_heavy", "counted_fallback", "freed")
 
     def __init__(self):
         self.bal, self.sold, self.first_buy_slot = {}, set(), {}
@@ -219,6 +249,11 @@ class _MintU4:
         self.snaps = {}          # mark -> (NS, TOP1)
         self.last_swap_bt = None
         self.counted_taint = self.counted_heavy = self.counted_fallback = False
+        self.freed = False       # bounded mode: bal / first_buy_slot / sold / snaps released (the mint can no longer reach ns_top1)
+
+    def free(self):
+        self.bal = self.sold = self.first_buy_slot = self.snaps = None
+        self.freed = True
 
 
 class U4Decider(_Base):
@@ -226,8 +261,8 @@ class U4Decider(_Base):
     name = "u4"
     snap_window_s = U4_DELTA_S
 
-    def __init__(self, start_ms, hr_pda_fn=None, supply_raw=TOTAL_SUPPLY_RAW):
-        super().__init__(start_ms, hr_pda_fn)
+    def __init__(self, start_ms, hr_pda_fn=None, supply_raw=TOTAL_SUPPLY_RAW, bounded=True):
+        super().__init__(start_ms, hr_pda_fn, bounded)
         self.supply = supply_raw
         self.mints = {}                      # mint -> _MintU4
         self.wallet_mints = collections.defaultdict(collections.OrderedDict)  # wallet -> OrderedDict mint -> last trade bt (router rule)
@@ -235,6 +270,12 @@ class U4Decider(_Base):
         self.entered = {"main": set(), "placebo": set()}      # once per mint, ever, per bot
         self.held = {"main": {}, "placebo": {}}               # mint -> {pool, mark, ns0, expiry_s, disabled}
         self.latest_bt = 0
+        # bounded mode only
+        self._untainted = {}                 # mint -> create slot, for the mints in self.mints that no gap has reached (the gap handler walks these, not every create)
+        self._heap = []                      # (create bt, mint): the exact 8-day drop without scanning every create at every mark
+        self._cand = set()                   # wallets with more than U4_ROUTER_MINTS_24H stored mints: the only possible routers
+        self._marks_run = 0
+        self._early = {}                     # mints dropped before the first mark with no create supply: mint -> counted_fallback (the supply_fallback counter stays exact)
 
     def first_mark_at_or_after(self, t):
         return -(-t // U4_MARK_S) * U4_MARK_S
@@ -243,18 +284,37 @@ class U4Decider(_Base):
         return m + U4_MARK_S
 
     def on_create(self, mint):
-        self.mints.setdefault(mint, _MintU4())
+        if not self.bounded:
+            self.mints.setdefault(mint, _MintU4())
+            return
+        if mint not in self.mints:
+            ms = self.mints[mint] = _MintU4()
+            self._untainted[mint] = self.creates[mint]["slot"]
+            if mint in self._early:
+                ms.counted_fallback = self._early[mint]
+        heapq.heappush(self._heap, (self.creates[mint]["bt"], mint))
+
+    def _taint_all(self, hi):
+        """a data-loss gap reaching slot hi: every mint created at or before it is out for good (its balances are never read again, so they are released)"""
+        if not self.bounded:
+            for mint, cr in self.creates.items():  # every mint created at or before the gap's end may have lost a trade
+                ms = self.mints.get(mint)
+                if ms is not None and (hi is None or cr["slot"] <= hi):
+                    ms.tainted = True
+            return
+        for mint in [mt for mt, sl in self._untainted.items() if hi is None or sl <= hi]:
+            ms = self.mints[mint]
+            ms.tainted = True
+            ms.free()
+            del self._untainted[mint]
+            self.pruned["tainted_freed"] += 1
 
     # ---- state
     def ingest(self, row):
         typ = row.get("type", "trade")
         if typ == "gap":
             if (row.get("data_loss") or str(row.get("kind", "")).startswith("tip_gap")) and (row.get("prog") in GAP_PROGS or row.get("prog") is None):
-                hi = row.get("to_slot", row.get("slot"))
-                for mint, cr in self.creates.items():  # every mint created at or before the gap's end may have lost a trade
-                    ms = self.mints.get(mint)
-                    if ms is not None and (hi is None or cr["slot"] <= hi):
-                        ms.tainted = True
+                self._taint_all(row.get("to_slot", row.get("slot")))
             return
         if self._ingest_meta(row):
             return
@@ -264,17 +324,30 @@ class U4Decider(_Base):
         tok, side, slot = row.get("token_raw"), row.get("side"), row.get("slot")
         if not (mint and w and bt is not None and _isint(tok) and side in ("buy", "sell") and _isint(slot)):
             return
+        if self.bounded and isinstance(mint, str) and isinstance(w, str):
+            mint, w = sys.intern(mint), sys.intern(w)  # one string object per wallet / mint instead of one per row
         self.latest_bt = max(self.latest_bt, bt)
         wm = self.wallet_mints[w]  # router rule: distinct mints per wallet in the trailing 24 h
         wm[mint] = bt
         wm.move_to_end(mint)
         while wm and next(iter(wm.values())) < bt - 86_400:
             wm.popitem(last=False)
+        if self.bounded and len(wm) > U4_ROUTER_MINTS_24H:
+            self._cand.add(w)
         ms = self.mints.get(mint)
         if ms is None:
+            if self._early and side == "sell" and self._early.get(mint) is False:
+                self._early[mint] = True  # dropped before the first mark: the previous code counted this mint's supply fallback at its first sell
+                self._count("supply_fallback")
+                self.pruned["early_fallback"] += 1
             return  # no create row: no history from the create, never in the universe (counted at the mark)
         if row.get("prog") == "pumpswap":
             ms.last_swap_bt = bt
+        if ms.freed:  # tainted (or heavy and not held): no balance is read again; only the supply-fallback count still depends on a sell
+            if side == "sell" and not ms.counted_fallback and self.creates[mint]["supply"] is None:
+                ms.counted_fallback = True
+                self._count("supply_fallback")
+            return
         if side == "buy":
             ms.bal[w] = ms.bal.get(w, 0) + tok
             ms.first_buy_slot.setdefault(w, slot)
@@ -294,13 +367,20 @@ class U4Decider(_Base):
                     self._count("supply_fallback")
             if ms.unexplained > U4_TRANSFER_HEAVY * sup:
                 ms.heavy = True
+                if self.bounded and mint not in self.held["main"] and mint not in self.held["placebo"]:
+                    ms.free()  # heavy is permanent and a heavy mint never enters; only a held position still reads its balances
 
     def _routers(self, m):
-        return {w for w, wm in self.wallet_mints.items() if sum(1 for t in wm.values() if t > m - 86_400) > U4_ROUTER_MINTS_24H}
+        if not self.bounded:
+            return {w for w, wm in self.wallet_mints.items() if sum(1 for t in wm.values() if t > m - 86_400) > U4_ROUTER_MINTS_24H}
+        # a router has more than U4_ROUTER_MINTS_24H FRESH mints, so more than that many stored ones: the candidate set (len > 50 at some trade, re-filtered at the sweep) is a superset
+        return {w for w in self._cand if w in self.wallet_mints and sum(1 for t in self.wallet_mints[w].values() if t > m - 86_400) > U4_ROUTER_MINTS_24H}
 
     def ns_top1(self, mint, m, routers):
         """(NS, TOP1) at mark m, or None when no tape-visible holder supply"""
         ms, cr = self.mints[mint], self.creates[mint]
+        if ms.freed:
+            raise RuntimeError("ns_top1 on a released mint (unreachable: tainted / heavy mints are skipped before it)")
         D = sum(b for b in ms.bal.values() if b > 0)
         if D <= 0:
             return None
@@ -319,6 +399,7 @@ class U4Decider(_Base):
 
     # ---- the mark
     def run_mark(self, m, warmup):
+        self._marks_run += 1
         if m < self.start_s:
             # U4 snapshot-only marks in [S - 60 min, S): NS / TOP1 for the first post-S deltas; no universe pass, no fire, no draw (ruling 1.4)
             routers = self._routers(m)
@@ -425,15 +506,67 @@ class U4Decider(_Base):
                     del self.held[bot][mint]
 
     def _prune_snaps(self, m):
+        if self.bounded:
+            for p in self.pools.values():  # snapshots are only written and read for the mints of live pools; the hourly sweep clears the rest
+                ms = self.mints.get(p["mint"])
+                if ms is not None and ms.snaps:
+                    for k in [k for k in ms.snaps if k < m - U4_DELTA_S]:
+                        del ms.snaps[k]
+            if self.latest_bt:
+                self._drop_old_mints(m - U4_MINT_KEEP_S, early=False)
+            self._early.clear()  # the first mark has now dropped what the previous code drops there
+            return
         for ms in self.mints.values():
             if ms.snaps:
                 for k in [k for k in ms.snaps if k < m - U4_DELTA_S]:
                     del ms.snaps[k]
         # a mint whose pool is older than the universe ceiling (or never graduated and old) is dropped for good
         if self.latest_bt:
-            dead = [mt for mt, cr in self.creates.items() if mt in self.mints and cr["bt"] < m - 8 * 86_400]
+            dead = [mt for mt, cr in self.creates.items() if mt in self.mints and cr["bt"] < m - U4_MINT_KEEP_S]
             for mt in dead:
                 del self.mints[mt]
+
+    def _drop_old_mints(self, cut, early):
+        """mints (and their create records, which only a live mint reads) created before `cut`; exact: a heap by create time instead of a scan of every create"""
+        while self._heap and self._heap[0][0] < cut:
+            bt, mt = heapq.heappop(self._heap)
+            cr = self.creates.get(mt)
+            if cr is None or cr["bt"] != bt:
+                continue
+            ms = self.mints.pop(mt, None)
+            if early:
+                self.pruned["mints_early"] += 1
+            if early and ms is not None and cr["supply"] is None:
+                self._early[mt] = ms.counted_fallback
+            self._untainted.pop(mt, None)
+            del self.creates[mt]
+            self._hr.pop(mt, None)
+            self.pruned["mints_dropped"] += 1
+
+    def sweep_hour(self):
+        """hourly, on the stream clock. `ref` is the next mark to be evaluated: marks only grow, so everything no mark >= ref can read is dropped."""
+        ref = self.next_mark if self.next_mark is not None else self.start_s - self.snap_window_s
+        if self._marks_run == 0 and self.latest_bt:
+            # before the first mark nothing is evaluated; the first mark (>= S - 60 min) drops every mint created before mark - 8 d at its end, and its own evaluation is a snapshot that drop deletes
+            self._drop_old_mints(self.start_s - self.snap_window_s - U4_MINT_KEEP_S, early=True)
+        for pool in [pl for pl, p in self.pools.items() if ref - p["created_bt"] >= U4_AGE_MAX_S]:
+            self._kill_pool(pool)
+        for mt, ms in self.mints.items():
+            if ms.snaps:
+                for k in [k for k in ms.snaps if k < ref - U4_DELTA_S]:
+                    del ms.snaps[k]
+            if ms.heavy and not ms.freed and mt not in self.held["main"] and mt not in self.held["placebo"]:
+                ms.free()
+        if self._sweeps % SWEEP_WALLETS_EVERY_H == 0:
+            cut = ref - 86_400  # an entry at or before this is not counted at any mark >= ref
+            for w in list(self.wallet_mints):
+                wm = self.wallet_mints[w]
+                for mt in [mt for mt, t in wm.items() if t <= cut]:
+                    del wm[mt]
+                    self.pruned["wallet_mints"] += 1
+                if not wm:
+                    del self.wallet_mints[w]
+            self._cand = {w for w in self._cand if len(self.wallet_mints.get(w, ())) > U4_ROUTER_MINTS_24H}
 
 
 # ====================================================================================================================================== U2
@@ -442,13 +575,17 @@ class U2Decider(_Base):
     name = "u2"
     snap_window_s = 0
 
-    def __init__(self, start_ms, hr_pda_fn=None):
-        super().__init__(start_ms, hr_pda_fn)
+    def __init__(self, start_ms, hr_pda_fn=None, bounded=True):
+        super().__init__(start_ms, hr_pda_fn, bounded)
         self.series = collections.defaultdict(lambda: ([], []))   # pool -> (block times, post-trade spots), prints with a price only
         self.last_print = {}                                       # pool -> {"bt","slot","quote","spot"}
         self.entries = []
         self.pos = {"main": {}, "placebo": {}}                     # pool -> {"land_slot","ref","expiry_s"}
         self.mark_records = []
+
+    def _create_record(self, row, bt):
+        # U2 only reads "a create row exists" and its creator (holder-rewards test): bounded mode keeps the creator string, not the five-field record
+        return row.get("creator") or "" if self.bounded else super()._create_record(row, bt)
 
     def first_mark_at_or_after(self, t):
         d = t - t % 86_400
@@ -470,6 +607,10 @@ class U2Decider(_Base):
         if not (pool and bt is not None and _isint(slot)):
             return
         spot = post_spot(row)
+        if self.bounded and pool in self.dead_pools:  # older than every window and held by no position: no table reads it again (the missing_v count stays)
+            if spot is None:
+                self._count("missing_v")
+            return
         lp = self.last_print.get(pool)
         if spot is None:
             self._count("missing_v")
@@ -514,6 +655,28 @@ class U2Decider(_Base):
 
     def after_row(self, row, i):
         pass
+
+    def _trim_series(self, ts, ps, m):
+        j = bisect.bisect_right(ts, m - U2_R_S - 3600) - 1
+        if j > 0:
+            del ts[:j]
+            del ps[:j]
+
+    def sweep_hour(self):
+        """hourly, on the stream clock; `ref` is the next mark: marks only grow, so a price series older than the anchor for ref - 25 h and a pool older than the universe ceiling at ref are never read again"""
+        if self.next_mark is None:
+            return
+        ref = self.next_mark
+        for ts, ps in self.series.values():
+            self._trim_series(ts, ps, ref)
+        held = set(self.pos["main"]) | set(self.pos["placebo"])
+        self.pruned["pool_held_deferred"] += sum(1 for pl in held if pl in self.pools and ref - self.pools[pl]["created_bt"] >= U2_AGE_MAX_S)
+        for pool in [pl for pl, p in self.pools.items() if ref - p["created_bt"] >= U2_AGE_MAX_S and pl not in held]:
+            mint = self.pools[pool]["mint"]
+            self._kill_pool(pool)
+            self.series.pop(pool, None)
+            self.last_print.pop(pool, None)
+            self._hr.pop(mint, None)
 
     def price_at(self, pool, t):
         ts, ps = self.series.get(pool, ([], []))
