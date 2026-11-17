@@ -37,16 +37,20 @@ SHIM = (
     "_T = int(os.environ['FLOOR_EQUIV_CLOCK_MS']) / 1000.0\n"
     "time.time = lambda: _T\n"
     "time.sleep = lambda s: None\n"
+    "from pathlib import Path\n"
     "from tools import floor_lane_executor as X\n"
+    "import functools\n"
+    "X.FloorLaneBridge = functools.partial(X.FloorLaneBridge, tier_path=Path(os.environ['FLOOR_EQUIV_TIER']))\n"
     "sys.exit(X.main(sys.argv[1:]))\n"
 )
-NEW_KEYS = {"stage_ms": {"checked": 1, "prefetch": 2, "reads": 3, "wa": 4, "buy_done": 5}, "stage_note": "x"}
+NEW_KEYS = {"stage_ms": {"checked": 1, "prefetch": 2, "reads": 3, "wa": 4, "buy_done": 5}, "stage_note": "x", "exec_stage_ms": {"state_ms": 1, "built_ms": 2}, "presend_batch": False}
 
 
 def gen_config(root: Path, state_dir: Path, work: Path, end_ms: int, balance: int) -> dict[str, Any]:
     """Same values for both trees. The field set of a lane config; no presend_batch, no a3 record, no live_ok."""
     return {"mode": "dry", "bot_id": BOT, "frozen_sha": FROZEN_SHA, "root": str(root), "state_dir": str(state_dir), "end_ms": end_ms, "rpc_rps": RPC_RPS,
             "dry_balance_lamports": balance,
+            "stop_file": str(work / "STOP"), "halt_file": str(work / "HALT"), "live_ok_path": str(work / "LIVE_OK"),
             "lane": {**LANE, "ledger_path": str(work / "lane-ledger.jsonl"), "stop_path": str(work / "LANE-STOP")}}
 
 
@@ -73,14 +77,15 @@ def run_tree(tree: Path, root_copy: Path, out: Path, label: str, clock_ms: int, 
     cfg_path.write_text(json.dumps(gen_config(root, state, work, clock_ms + 86_400_000, balance), sort_keys=True, indent=1))
     shim = work / "shim.py"
     shim.write_text(SHIM)
-    env = {"PATH": os.environ.get("PATH", ""), "PYTHONPATH": str(tree), "FLOOR_EQUIV_CLOCK_MS": str(clock_ms), "PYTHONHASHSEED": "0", "HOME": str(work)}
+    env = {"PATH": os.environ.get("PATH", ""), "PYTHONPATH": str(tree), "FLOOR_EQUIV_CLOCK_MS": str(clock_ms), "FLOOR_EQUIV_TIER": str(work / "TIER"), "PYTHONHASHSEED": "0", "HOME": str(work)}
     p = subprocess.run([sys.executable, str(shim), "run", "--config", str(cfg_path), "--once"], cwd=tree, env=env, capture_output=True, text=True, timeout=600)
     (work / "stdout.txt").write_text(p.stdout)
     (work / "stderr.txt").write_text(p.stderr)
     ledger = work / "lane-ledger.jsonl"
     files = sorted(state.rglob("*.jsonl")) + ([ledger] if ledger.exists() else [])
     streams = {str(f.relative_to(work)): [json.loads(x) for x in f.read_text().splitlines() if x.strip()] for f in files}
-    return {"rc": p.returncode, "streams": streams, "start_line": (p.stdout.splitlines() or [""])[0], "stderr_tail": p.stderr[-300:]}
+    written = json.loads(cfg_path.read_text())
+    return {"config": written, "config_presend_batch": ("absent" if "presend_batch" not in written else written["presend_batch"]), "rc": p.returncode, "streams": streams, "start_line": (p.stdout.splitlines() or [""])[0], "stderr_tail": p.stderr[-300:]}
 
 
 def all_keys(o: Any, acc: set[str]) -> set[str]:
@@ -136,21 +141,101 @@ def compare(a: dict[str, list[Any]], b: dict[str, list[Any]]) -> dict[str, Any]:
     return {"rows_by_kind_a": kinds(a), "rows_by_kind_b": kinds(b), "dropped_keys": sorted(drop), "md5_a": ma, "md5_b": mb, "streams_a": sorted(a), "streams_b": sorted(b), "equal": ma == mb}
 
 
-def cmd_run(a: argparse.Namespace) -> int:
-    out, rc = Path(a.out), Path(a.root_copy)
+def count_kind(streams: dict[str, list[Any]], kind: str) -> int:
+    return sum(1 for v in streams.values() for r in v if isinstance(r, dict) and r.get("kind") == kind)
+
+
+def execute(tree_a: Path, tree_b: Path, rc: Path, out: Path, clock: int, balance: int) -> tuple[dict[str, Any], dict[str, Any], dict[str, Any]]:
     out.mkdir(parents=True, exist_ok=True)
-    clock = a.clock_ms if a.clock_ms is not None else max_row_ms(rc) + 1_000
-    ra = run_tree(Path(a.tree_a).resolve(), rc, out, "tree_a", clock, a.balance)
-    rb = run_tree(Path(a.tree_b).resolve(), rc, out, "tree_b", clock, a.balance)
+    ra = run_tree(tree_a.resolve(), rc, out, "tree_a", clock, balance)
+    rb = run_tree(tree_b.resolve(), rc, out, "tree_b", clock, balance)
     res = compare(ra["streams"], rb["streams"])
     nonempty = sum(len(v) for v in ra["streams"].values()) > 0
-    res.update({"schema": "floor_exec_equiv_v1", "clock_ms": clock, "balance_lamports": a.balance, "rc_a": ra["rc"], "rc_b": rb["rc"], "start_line_a": ra["start_line"],
-                "start_line_b": rb["start_line"], "config_presend_batch": "absent", "nonempty": nonempty})
+    res.update({"clock_ms": clock, "balance_lamports": balance, "rc_a": ra["rc"], "rc_b": rb["rc"], "start_line_a": ra["start_line"], "start_line_b": rb["start_line"],
+                "config_presend_batch": ra["config_presend_batch"] if ra["config_presend_batch"] == rb["config_presend_batch"] else "DIFFERS", "nonempty": nonempty,
+                "buy_sent_a": count_kind(ra["streams"], "buy_sent")})
     if ra["rc"] or rb["rc"]:
         res["stderr_tail_a"], res["stderr_tail_b"] = ra["stderr_tail"], rb["stderr_tail"]
     res["equal"] = bool(res["equal"] and ra["rc"] == 0 and rb["rc"] == 0 and nonempty)
+    return res, ra, rb
+
+
+def cmd_run(a: argparse.Namespace) -> int:
+    out, rc = Path(a.out), Path(a.root_copy)
+    clock = a.clock_ms if a.clock_ms is not None else max_row_ms(rc) + 1_000
+    res, ra, rb = execute(Path(a.tree_a), Path(a.tree_b), rc, out, clock, a.balance)
+    res["schema"] = "floor_exec_equiv_v1"
+    if a.require_buy and res["buy_sent_a"] == 0:
+        res["equal"], res["require_buy_failed"] = False, True
     print(json.dumps(res, sort_keys=True, indent=1))
     return 0 if res["equal"] else 1
+
+
+ALLOWED_DROP = ["exec_stage_ms", "stage_ms"]
+
+
+def load_log_rows(root: Path) -> list[tuple[Path, dict[str, Any]]]:
+    """Every row of <root>/decisions/l1-floor-v2/*.jsonl as (file, row), in file order then line order (the chain order: seq ascending)."""
+    out = []
+    for f in sorted((root / "decisions" / BOT).glob("*.jsonl")):
+        for line in f.read_text().splitlines():
+            if line.strip():
+                out.append((f, json.loads(line)))
+    return out
+
+
+def entry_rows(rows: list[tuple[Path, dict[str, Any]]]) -> list[dict[str, Any]]:
+    """Entry rows = rows with kind == "entry" and a string order_id, in decision-time order (ms, then seq)."""
+    es = [r for _, r in rows if r.get("kind") == "entry" and isinstance(r.get("order_id"), str)]
+    return sorted(es, key=lambda r: (int(r.get("ms") or 0), int(r.get("seq") or 0)))
+
+
+def truncated_root(src: Path, dst: Path, max_seq: int) -> None:
+    """A private copy of the decision log holding only rows with seq <= max_seq (a chain prefix; the hash chain still verifies)."""
+    if dst.exists():
+        shutil.rmtree(dst)
+    d = dst / "decisions" / BOT
+    d.mkdir(parents=True)
+    for f in sorted((src / "decisions" / BOT).glob("*.jsonl")):
+        keep = [x for x in f.read_text().splitlines() if x.strip() and int(json.loads(x).get("seq", 0)) <= max_seq]
+        if keep:
+            (d / f.name).write_text("\n".join(keep) + "\n")
+
+
+def outcome(streams: dict[str, list[Any]], oid: str) -> str:
+    for v in streams.values():
+        for r in v:
+            if isinstance(r, dict) and r.get("order_id") == oid and r.get("kind") in ("buy_sent", "entry_refused", "buy_port_refused"):
+                return "buy_sent" if r["kind"] == "buy_sent" else f"{r['kind']}:{r.get('why') or r.get('label')}"
+    return "no_row"
+
+
+def cmd_per_row(a: argparse.Namespace) -> int:
+    out, src = Path(a.out), Path(a.root_copy)
+    rows = load_log_rows(src)
+    entries = entry_rows(rows)
+    runs: list[dict[str, Any]] = []
+    bad = False
+
+    def one(label: str, root: Path, clock: int, balance: int, oid: str | None) -> None:
+        nonlocal bad
+        res, ra, rb = execute(Path(a.tree_a), Path(a.tree_b), root, out / label, clock, balance)
+        oa, ob = (outcome(ra["streams"], oid), outcome(rb["streams"], oid)) if oid else (None, None)
+        want = ALLOWED_DROP if res["buy_sent_a"] else []
+        ok = bool(res["equal"] and ra["rc"] == 0 and rb["rc"] == 0 and res["dropped_keys"] in (want, []) and oa == ob)
+        bad = bad or not ok
+        runs.append({"run": label, "order_id": oid, "equal": res["equal"], "rc_a": ra["rc"], "rc_b": rb["rc"], "rows_by_kind_a": res["rows_by_kind_a"], "rows_by_kind_b": res["rows_by_kind_b"],
+                     "dropped_keys": res["dropped_keys"], "outcome_a": oa, "outcome_b": ob, "clock_ms": clock, "balance_lamports": balance, "ok": ok})
+
+    for n, e in enumerate(entries):
+        root = out / "_roots" / f"r{n}"
+        truncated_root(src, root, int(e["seq"]))
+        one(f"row{n:04d}", root, int(e["ms"]) + 1_000, a.balance, e["order_id"])
+    last = max((int(r.get("ms") or 0) for _, r in rows), default=0)
+    one("all_rows_floor", src, last + 1_000, a.floor_balance, None)
+    print(json.dumps({"schema": "floor_exec_equiv_per_row_v1", "entry_rows": len(entries), "entry_rule": 'kind == "entry" with a str order_id, sorted by (ms, seq)', "all_ok": not bad,
+                      "outcomes": dict(sorted(Counter(f"{r['outcome_a']}" for r in runs if r["order_id"]).items())), "runs": runs}, indent=1, sort_keys=True))
+    return 1 if bad or not entries else 0
 
 
 # --- readers -------------------------------------------------------------------------------------------------------------------------------------------------
@@ -240,9 +325,15 @@ def main(argv: list[str] | None = None) -> int:
     r.add_argument("--out", required=True)
     r.add_argument("--balance", type=int, default=DEFAULT_BALANCE)
     r.add_argument("--clock-ms", type=int, default=None)
+    r.add_argument("--require-buy", action="store_true", help="fail if tree A has 0 buy_sent rows")
+    q = sub.add_parser("per-row")
+    for k in ("--tree-a", "--tree-b", "--root-copy", "--out"):
+        q.add_argument(k, required=True)
+    q.add_argument("--balance", type=int, default=100_000_000_000, help="per-row runs (default 100 SOL: the wallet floor never binds)")
+    q.add_argument("--floor-balance", type=int, default=900_000_000, help="the one all-rows run at the last row's clock (default 0.9 SOL: the wallet floor binds)")
     sub.add_parser("readers")
     a = ap.parse_args(argv)
-    return cmd_run(a) if a.cmd == "run" else cmd_readers(a)
+    return {"run": cmd_run, "readers": cmd_readers, "per-row": cmd_per_row}[a.cmd](a)
 
 
 if __name__ == "__main__":

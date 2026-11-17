@@ -79,3 +79,46 @@ def test_readers_accept_new_keys(capsys):
     rc = E.main(["readers"])
     out = json.loads(capsys.readouterr().out)
     assert rc == 0 and out["all_ok"] and len(out["readers"]) >= 4
+    assert {"exec_stage_ms", "presend_batch", "stage_ms"} <= set(out["new_keys"])
+
+
+def test_generated_config_has_no_host_path(tmp_path):
+    work, root = tmp_path / "work", tmp_path / "root"
+    cfg = E.gen_config(root, work / "state", work, T0 + 1, 1)
+    paths = []
+
+    def walk(o):
+        if isinstance(o, dict):
+            for v in o.values():
+                walk(v)
+        elif isinstance(o, str) and o.startswith("/"):
+            paths.append(o)
+
+    walk(cfg)
+    assert {"stop_file", "halt_file", "live_ok_path"} <= set(cfg) and "presend_batch" not in cfg
+    assert paths and all(p.startswith((str(work), str(root))) for p in paths), paths
+
+
+def _cli(args):
+    r = subprocess.run([sys.executable, "-m", "tools.floor_exec_equiv", *args], cwd=REPO, capture_output=True, text=True, timeout=900)
+    return r.returncode, json.loads(r.stdout)
+
+
+def test_require_buy_and_config_derived(trees):
+    tmp, a, _b, root = trees
+    base = ["run", "--tree-a", str(a), "--tree-b", str(a), "--out", str(tmp / "out_rb"), "--require-buy"]
+    rc, j = _cli(base + ["--root-copy", str(root)])
+    assert rc == 0 and j["buy_sent_a"] >= 1 and j["config_presend_batch"] == "absent"
+    empty = tmp / "empty"
+    DecisionLog(str(empty)).append(E.BOT, T0, {"kind": "start", "binding": "proof", "frozen_sha": E.FROZEN_SHA, "rules": [E.BOT]})
+    rc, j = _cli(base + ["--root-copy", str(empty)])
+    assert rc == 1 and j.get("require_buy_failed") is True
+
+
+def test_per_row(trees):
+    tmp, a, _b, root = trees
+    rc, j = _cli(["per-row", "--tree-a", str(a), "--tree-b", str(a), "--root-copy", str(root), "--out", str(tmp / "out_pr")])
+    assert rc == 0 and j["all_ok"] and j["entry_rows"] == 3 and len(j["runs"]) == 4
+    assert [r["outcome_a"] for r in j["runs"][:3]] == ["buy_sent"] * 3  # 100 SOL: the wallet floor never binds
+    last = j["runs"][3]
+    assert last["balance_lamports"] == 900_000_000 and last["equal"] and last["dropped_keys"] == []  # same tree both sides
