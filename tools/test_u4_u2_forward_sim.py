@@ -849,3 +849,53 @@ def test_u2_long_stream_decisions_counts_and_marks_are_md5_equal_old_vs_new_and_
     assert p_new[17]["pools"] < p_old[17]["pools"] and p_new[17]["pools"] <= p_new[14]["pools"] * 1.2 + 10 and p_old[17]["pools"] > 1.5 * p_old[11]["pools"]
     assert p_new[17]["last_print"] < p_old[17]["last_print"] and p_new[17]["seen_once"] <= p_new[14]["seen_once"] + 20
     assert len(d_new.dead_pools) == pr["pools"]
+
+
+def test_u4_repeated_create_and_pool_rows_after_a_drop_behave_as_before():
+    """a create row repeated after the mint's early drop (no supply field, sells before and after) and a pool_create repeated after the pool was dropped: old and new agree on decisions and counts"""
+    rows = [create("M1", -9 * 86_400 - 3600), trade("M1", "x", -9 * 86_400, "A", "buy", 5, prog="pumpfun"),
+            trade("M1", "x", -5 * 86_400, "B", "sell", 9, prog="pumpfun"),
+            create("M1", -9 * 86_400 - 3600), trade("M1", "x", -1800, "C", "sell", 9, prog="pumpfun"),   # a repeated create row, then a sell on the resurrected mint
+            create("M2", -3 * 86_400), pool_create("P2", "M2", -3 * 86_400 + 10), trade("M2", "P2", -3 * 86_400 + 20, "A", "buy", 5),
+            pool_create("P2", "M2", -7200), trade("M2", "P2", -7000, "A", "buy", 5), pool_create("P1", "M1", -3 * 3600), trade("M1", "P1", -2 * 3600, "A", "buy", 5),
+            trade("Z", "PZ", 10, "zz", "buy", 1)]
+    for mode in (D.U4Decider, D.U2Decider):
+        old, d_old, t_old, _ = run_long(mode, rows, bounded=False)
+        new, d_new, t_new, _ = run_long(mode, rows, bounded=True)
+        assert old == new and t_old == t_new
+    d = run_long(D.U4Decider, rows, bounded=True)[1]
+    assert "P2" in d.dead_pools and "P2" not in d.pools and d.pruned["mints_early"] >= 1 and d.pruned["early_fallback"] >= 1
+
+
+@pytest.mark.parametrize("decider,seed", [("u4", 3), ("u2", 5)])
+def test_runner_decision_ledger_and_counts_md5_equal_old_vs_new_through_the_book_engine(tmp_path, monkeypatch, decider, seed):
+    """the whole runner path (decider -> pricing engine -> book ledger): decision md5, ledger md5 per hour, the counts and the open-position count are equal for bounded=False and bounded=True. 96 warm-up hours and 48 forward
+    hours; the 8-day mint window is cut to 30 h so the exact mint drop and the early drop run inside the fixture. The U4 / U2 books build no wallet ledger (ruling 0.1): there is none to compare."""
+    monkeypatch.setattr(D, "U4_MINT_KEEP_S", 30 * 3600)
+    rows = long_rows(days_before=4, days_after=2, per_hour=5, seed=seed)
+    by_hour = collections.defaultdict(list)
+    for r in rows:
+        by_hour[(r["block_time"] - T0) // 3600].append(r)
+    res = {}
+    for bounded in (False, True):
+        tmp = tmp_path / ("new" if bounded else "old")
+        keep = tmp / "keep"
+        keep.mkdir(parents=True)
+        for h in range(-96, 49):
+            hr = sorted(by_hour.get(h, []), key=lambda r: (r["block_time"], r["slot"]))
+            (keep / ("tape-%s.jsonl" % S.hour_key(START_MS + h * S.HOUR_MS))).write_text("".join(json.dumps(r) + "\n" for r in hr))
+        m = mf(tmp, decider, warmup_hours=96, exit_s=14_400 if decider == "u4" else 43_200)
+        dec = (D.U4Decider if decider == "u4" else D.U2Decider)(START_MS, hr_pda_fn=hr_pda, bounded=bounded)
+        assert S.follow(m, fixture=True, once=True, _roots=T1.roots(tmp), decider_factory=lambda mm: dec, ledger_builder=lambda *a: None, engine_kw=T1.SPS) == 0
+        out = Path(m["out_root"])
+        hours = [json.loads(ln) for ln in (out / "md5-by-hour.jsonl").read_text().splitlines()]
+        counts = [json.loads(ln) for ln in (out / "counts.jsonl").read_text().splitlines()]
+        res[bounded] = (hours, [c["decider"] for c in counts], (out / "decisions.md5").read_text(), json.loads((out / "status.json").read_text())["book_counts"], dec)
+    assert res[False][:4] == res[True][:4] and len(res[True][0]) == 144
+    assert sum(1 for h in res[True][0] if h["ledger_md5"] != hashlib_empty()) > 0 and res[True][3].get("buys", 0) > 0   # the book really priced entries
+    assert decider == "u2" or sum(res[True][4].pruned.values()) > 0   # U2 pools do not reach the 168 h ceiling inside this fixture (the long fixture covers that)
+
+
+def hashlib_empty():
+    import hashlib
+    return hashlib.md5(b"").hexdigest()

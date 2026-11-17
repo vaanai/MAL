@@ -522,7 +522,7 @@ class U4Decider(_Base):
                     del ms.snaps[k]
         # a mint whose pool is older than the universe ceiling (or never graduated and old) is dropped for good
         if self.latest_bt:
-            dead = [mt for mt, cr in self.creates.items() if mt in self.mints and cr["bt"] < m - 8 * 86_400]
+            dead = [mt for mt, cr in self.creates.items() if mt in self.mints and cr["bt"] < m - U4_MINT_KEEP_S]
             for mt in dead:
                 del self.mints[mt]
 
