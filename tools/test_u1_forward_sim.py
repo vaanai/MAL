@@ -605,19 +605,12 @@ def test_launcher_list_min_slot_over_all_creates_sorted_atomic_0440_with_counts(
     assert len((tmp_path / U.LAUNCHER_LIST_BY_HOUR).read_text().splitlines()) == 2
 
 
-def test_launcher_list_slot_rule_is_one_switch_and_the_u1_fetcher_reads_the_list(tmp_path):
+def test_launcher_list_slot_has_one_definition_and_the_u1_fetcher_reads_the_list(tmp_path):
     dec = new_decider(out_root=tmp_path)
     run(dec, warm_rows_for_list(), warmup=True)
-    assert U.first_create_slot(dec.reg, "A") == 100
-    assert U.first_create_slot(dec.reg, "A", rule="earliest_graduate") == (S_S - 3 * DAY - 600) * 2
-    with pytest.raises(ValueError):
-        U.first_create_slot(dec.reg, "A", rule="nope")
-    U.FIRST_CREATE_SLOT_RULE, old = "earliest_graduate", U.FIRST_CREATE_SLOT_RULE
-    try:
-        rows, below = U.launcher_list_rows(dec.reg)
-    finally:
-        U.FIRST_CREATE_SLOT_RULE = old
-    assert rows[0]["first_create_slot"] == (S_S - 3 * DAY - 600) * 2 and below == 0
+    assert U.first_create_slot(dec.reg, "A") == 100 and not hasattr(U, "FIRST_CREATE_SLOT_RULE")   # one definition, no switch (QP verdict 5)
+    rows, below = U.launcher_list_rows(dec.reg)
+    assert rows[0] == {"launcher": "A", "first_create_slot": 100} and below == 1
     import u1_funder_fetch as F
     n, sha, _ = U.write_launcher_list(dec.reg, tmp_path / "again.jsonl")
     got = F.read_launcher_list(str(tmp_path / "again.jsonl"))
@@ -645,7 +638,7 @@ def test_plan_input_is_persisted_append_only_0440_and_a_restart_replay_does_not_
     dec = forward_with_entry(tmp_path)
     path = tmp_path / U.PLAN_INPUT
     lines = [json.loads(x) for x in path.read_text().splitlines()]
-    assert {r["kind"] for r in lines} == {"universe", "gate"} and mode_of(path) == 0o440
+    assert {r["kind"] for r in lines} == {"universe", "gate", "hour"} and mode_of(path) == 0o440 and lines[-1] == {"kind": "hour", "hour": "h"}
     assert [r for r in lines if r["kind"] == "gate"] == [{"kind": "gate", "pool": "PNEW", "mint": "NEW", "pc_s": S_S + 3600, "entered": True}]
     assert set(lines[0]) == {"kind", "pool", "mint", "pc_s"}
     sha1 = hashlib.sha256(path.read_bytes()).hexdigest()
@@ -655,7 +648,8 @@ def test_plan_input_is_persisted_append_only_0440_and_a_restart_replay_does_not_
     before = path.read_bytes()
     dec.universe_log.append({"pool": "PX", "mint": "X", "pc_s": S_S + 7200})
     dec.decide([], S.RunState(hour="h3", warmup=False, day="d"))
-    assert path.read_bytes().startswith(before) and len(path.read_text().splitlines()) == len(lines) + 1 and mode_of(path) == 0o440
+    assert path.read_bytes().startswith(before) and len(path.read_text().splitlines()) == len(lines) + 2 and mode_of(path) == 0o440   # the new universe row + the hour marker
+    assert dec.universe_log == [] and dec.gate_log == []                                                                           # flushed rows leave memory
 
 
 def test_low_rep_and_placebo_modes_persist_no_plan_input(tmp_path):
@@ -664,14 +658,28 @@ def test_low_rep_and_placebo_modes_persist_no_plan_input(tmp_path):
     assert not (tmp_path / U.PLAN_INPUT).exists()
 
 
+def markers(a_s, b_s):
+    """one hour-complete marker per whole UTC hour holding a_s .. b_s"""
+    h = S.parse_hour(S.hour_key(a_s * 1000))
+    out = []
+    while h <= b_s * 1000:
+        out.append({"kind": "hour", "hour": S.hour_key(h)})
+        h += S.HOUR_MS
+    return out
+
+
+def write_rows(path, rows):
+    path.write_text("".join(json.dumps(r) + "\n" for r in rows))
+
+
 def test_plan_subcommand_builds_the_plan_prints_sha_and_counters_only_and_never_rebuilds(tmp_path, capsys):
     pi = tmp_path / "in.jsonl"
     rows = [{"kind": "gate", "pool": "PE", "mint": "E", "pc_s": 10_000, "entered": True}, {"kind": "gate", "pool": "PF", "mint": "F", "pc_s": 10_100, "entered": False}]
     rows += [{"kind": "universe", "pool": "P%d" % i, "mint": "M%d" % i, "pc_s": 10_000 + 50 * i} for i in range(-5, 6)] + [{"kind": "universe", "pool": "PE", "mint": "E", "pc_s": 10_000}]
-    rows += [{"kind": "universe", "pool": "PF", "mint": "F", "pc_s": 10_100}]
-    pi.write_text("".join(json.dumps(r) + "\n" for r in rows))
+    rows += [{"kind": "universe", "pool": "PF", "mint": "F", "pc_s": 10_100}] + markers(10_000, 10_000 + 2 * 3600)
+    write_rows(pi, rows)
     out = tmp_path / "plan.json"
-    assert U.main(["plan", "--in", str(pi), "--out", str(out)]) == 0
+    assert U.main(["plan", "--in", str(pi), "--out", str(out), "--through-hour", S.hour_key((10_000 + 7200) * 1000)]) == 0
     printed = json.loads(capsys.readouterr().out)
     plan = json.loads(out.read_text())["plan"]
     assert set(printed) == {"plan_sha256", "plan_pools", "universe", "book_entries", "counters"} and printed["plan_pools"] == len(plan) == 1
@@ -679,16 +687,75 @@ def test_plan_subcommand_builds_the_plan_prints_sha_and_counters_only_and_never_
     assert next(iter(plan.values()))["for"] == "PE" and "PE" not in plan and "PF" not in plan
     U.load_placebo_plan(out, printed["plan_sha256"])
     with pytest.raises(FileExistsError):
-        U.main(["plan", "--in", str(pi), "--out", str(out)])
-    # through-hour: only rows whose pc_s + 1,800 s lies before the end of that hour
-    hr_end = S_S + 3600
-    late = {"kind": "gate", "pool": "PL", "mint": "L", "pc_s": hr_end - 1000, "entered": True}
-    pi.write_text(json.dumps(late) + "\n" + json.dumps({"kind": "universe", "pool": "PL", "mint": "L", "pc_s": hr_end - 1000}) + "\n")
-    # P + 2,160 s must lie in a closed hour (Q7): P = hr_end - 1000 -> P + 2160 = hr_end + 1160, in hour 01; through hour 00 -> not ripe (still a gate pass: never drawn), through hour 01 -> ripe
-    uni, ents, gate, nr = U.read_plan_input(pi, through_hour=START)
-    assert ents == [] and gate == {"L"} and nr == 1 and len(uni) == 1
-    uni, ents, gate, nr = U.read_plan_input(pi, through_hour="2026-11-20T01")
-    assert len(ents) == 1 and gate == {"L"} and nr == 0
+        U.main(["plan", "--in", str(pi), "--out", str(out), "--through-hour", S.hour_key((10_000 + 7200) * 1000)])
+    with pytest.raises(SystemExit):                                                  # --through-hour is required
+        U.main(["plan", "--in", str(pi), "--out", str(tmp_path / "n.json")])
+
+
+H1 = "2026-11-20T01"
+END1 = S.parse_hour(H1) // 1000 + 3600      # end of hour H1 (s)
+
+
+def cut_input(entry_pc, cand_pc):
+    """one book entry and one candidate; markers through hour H1 (D of the candidate = cand_pc + 360 s is in the file when it is before END1)"""
+    return [{"kind": "gate", "pool": "PL", "mint": "L", "pc_s": entry_pc, "entered": True}, {"kind": "universe", "pool": "PL", "mint": "L", "pc_s": entry_pc},
+            {"kind": "universe", "pool": "PC", "mint": "C", "pc_s": cand_pc}] + markers(S_S, END1 - 1)
+
+
+def test_through_hour_keeps_a_candidate_near_the_cut_for_a_ripe_entry(tmp_path):
+    # reviewer 1: entry P = END1 - 2500 (P + 2,160 s < END1: ripe), candidate at P + 1,800 s = END1 - 700 whose D = END1 - 340 is inside the closed hour: it is in the universe and drawn
+    P = END1 - 2500
+    pi = tmp_path / "in.jsonl"
+    write_rows(pi, cut_input(P, P + 1800))
+    assert U.plan_main(pi, tmp_path / "p.json", H1)["plan_pools"] == 1
+    # an entry whose P + 2,160 s is after the end of H1 is not ripe (and nothing else is left): refused, counted
+    pi2 = tmp_path / "in2.jsonl"
+    write_rows(pi2, cut_input(END1 - 2000, END1 - 1500))
+    with pytest.raises(ValueError, match="no ripe"):
+        U.plan_main(pi2, tmp_path / "p2.json", H1)
+    assert not (tmp_path / "p2.json").exists()
+    # boundary: P + 2,160 s == END1 is NOT ripe (the hour containing it is not closed), one second earlier is
+    for dp, n in ((0, 0), (-1, 1)):
+        ent = [{"kind": "gate", "pool": "PL", "mint": "L", "pc_s": END1 - 2160 + dp, "entered": True}, {"kind": "gate", "pool": "PK", "mint": "K", "pc_s": END1 - 5000, "entered": True}]
+        pj = tmp_path / ("b%d.jsonl" % n)
+        write_rows(pj, ent + [{"kind": "universe", "pool": "PK", "mint": "K", "pc_s": END1 - 5000}] + markers(S_S, END1 - 1))
+        assert U.read_plan_input(pj, H1)[3] == 1 - n
+
+
+def test_plan_refuses_an_incomplete_plan_input(tmp_path):
+    P = END1 - 2500
+    full = cut_input(P, P + 1800)
+    pi = tmp_path / "in.jsonl"
+    write_rows(pi, [])
+    with pytest.raises(ValueError, match="no hour marker"):                       # empty file
+        U.plan_main(pi, tmp_path / "a.json", H1)
+    write_rows(pi, [r for r in full if r["kind"] != "hour"])
+    with pytest.raises(ValueError, match="no hour marker"):                       # rows without markers (an old / foreign file)
+        U.plan_main(pi, tmp_path / "b.json", H1)
+    # a replay stopped before H1: markers end earlier than H1
+    stopped = [r for r in full if r["kind"] != "hour"] + markers(S_S, END1 - 3600 - 1)
+    write_rows(pi, stopped)
+    with pytest.raises(ValueError, match="not complete through"):
+        U.plan_main(pi, tmp_path / "c.json", H1)
+    # a marker gap
+    gap = [r for r in full if r["kind"] != "hour"] + [m for m in markers(S_S - 3600, END1 - 1) if m["hour"] != "2026-11-20T00"]
+    write_rows(pi, gap)
+    with pytest.raises(ValueError, match="consecutive"):
+        U.plan_main(pi, tmp_path / "d.json", H1)
+    assert not [f for f in tmp_path.iterdir() if f.suffix == ".json"]            # no plan file was written by any refusal
+    write_rows(pi, full)
+    assert U.plan_main(pi, tmp_path / "e.json", H1)["plan_pools"] == 1
+
+
+def test_decider_restart_replay_leaves_a_file_a_plan_refuses_until_the_hour_is_replayed(tmp_path):
+    dec = new_decider(out_root=tmp_path)
+    run(dec, stream(candidate("A", "N1", S_S + 3600)))                              # forward hour "h": marker written, even though the hour held only a candidate
+    path = tmp_path / U.PLAN_INPUT
+    assert json.loads(path.read_text().splitlines()[-1]) == {"kind": "hour", "hour": "h"}
+    new_decider(out_root=tmp_path)                                                    # a restart: the file is rebuilt by the replay, empty until then
+    assert not path.exists()
+    with pytest.raises(FileNotFoundError):
+        U.plan_main(path, tmp_path / "x.json", "h")
 
 
 # ---------------------------------------------------------------------------------------------------------------------------- B4 strict gap exclusion for U1
@@ -812,3 +879,255 @@ def test_u4_u2_fixture_decision_md5_is_unchanged(decider):
     from tools import test_u4_u2_forward_sim as T2
     per_hour = T2.run_long(UD.U4Decider if decider == "u4" else UD.U2Decider, T2.long_rows())[0]
     assert len(per_hour) == 408 and hashlib.md5("".join(per_hour).encode()).hexdigest() == PINNED_DECISION_MD5[decider]
+
+
+# ============================================================================================================================ u1-start-prep part 1b (QP-RULING-1117-u1-start)
+from tools import test_u1_funder_fetch as TF  # noqa: E402
+import u1_funder_fetch as F  # noqa: E402
+
+DAYK = "2026-11-20"
+FX = "FunderX"
+BACKFILL_A = [{"launcher": "OLD", "funder": FX, "funding_slot": 1, "status": "resolved"}]
+
+
+def fx_mock(hub=True, **kw):
+    full = [{"signature": "f%d" % i, "slot": i, "blockTime": 10_000 - i // 100, "err": None} for i in range(1000)]
+    sigs = {"NEWL": [[TF.sig(1)]], "L3": [[TF.sig(3)]], "L4": [[TF.sig(4)]], FX: [full if hub else full[:10]]}
+    txs = {s: TF.tx([TF.sys_ins("transfer", source=FX, destination=d, lamports=2_000_000)], slot=5, bt=10_000) for s, d in (("s1", "NEWL"), ("s3", "L3"), ("s4", "L4"))}
+    return TF.Mock(sigs=sigs, txs=txs, **kw)
+
+
+def mk_fwd(root, mock=None, cap=F.CAPS["forward_day"], sleeps=None, factory_calls=None):
+    def factory():
+        if factory_calls is not None:
+            factory_calls.append(1)
+        if mock is None:
+            raise AssertionError("transport built: a key would have been read")
+        return mock
+    return U.ForwardFetch(root, BACKFILL_A, [], transport_factory=factory, cap_per_day=cap, sleep_fn=(sleeps.append if sleeps is not None else (lambda s: None)), clock=lambda: 0.0, day_fn=lambda: DAYK)
+
+
+def test_forward_fetch_journal_keys_order_mode_and_rps_constant(tmp_path):
+    sl = []
+    ff = mk_fwd(tmp_path, fx_mock(), sleeps=sl)
+    ff.set_hour("h1")
+    row = ff("NEWL", 50)
+    assert row == {"launcher": "NEWL", "funder": FX, "funding_slot": 5, "status": "resolved"} and ff.hub_of(FX) is True    # the backfill rows seeded by_funder: the hub test ran
+    lines = [json.loads(x) for x in (tmp_path / U.FWD_JOURNAL).read_text().splitlines()]
+    assert lines == [row, {"funder": FX, "hub_activity": True}] and set(lines[0]) == set(F.TABLE_A_KEYS) and set(lines[1]) == set(F.TABLE_B_KEYS)   # B directly after its A row
+    assert mode_of(tmp_path / U.FWD_JOURNAL) == 0o640
+    assert F.FORWARD_RPS == 2.0 and ff.fetcher.rps == 2.0 and ff.rps == 2.0 and sl and all(abs(x - 0.5) < 1e-9 for x in sl)   # fixed <= 2 rps, spacing 0.5 s
+    assert json.loads((tmp_path / U.FWD_CREDITS).read_text()) == {DAYK: ff.total_calls()} and ff.total_calls() == 3
+
+
+def test_replay_of_a_full_journal_makes_zero_rpc_and_hub_of_follows_the_journal(tmp_path):
+    ff = mk_fwd(tmp_path, fx_mock())
+    ff.set_hour("h1")
+    ff("NEWL", 50)
+    ff("L3", 50)
+    assert ff.hub_of(FX) is None                       # L3's own call produced no B line: no hub fact from an earlier launcher is handed back
+    (tmp_path / "md5-by-hour.jsonl").write_text(json.dumps({"hour": "h1"}) + "\n")
+    made = []
+    ff2 = mk_fwd(tmp_path, None, factory_calls=made)   # restart: the transport factory raises if it is ever used
+    ff2.set_hour("h1")
+    assert ff2("NEWL", 50)["status"] == "resolved" and ff2.hub_of(FX) is True
+    assert ff2("L3", 50)["launcher"] == "L3" and ff2.hub_of(FX) is None
+    assert ff2.total_calls() == 0 and made == []
+    # the journal was not loaded at start: a launcher out of order is refused
+    ff3 = mk_fwd(tmp_path, None)
+    ff3.set_hour("h1")
+    with pytest.raises(S.Refused, match="out of order"):
+        ff3("L4", 50)
+
+
+def test_stored_hour_needing_a_launcher_the_journal_lacks_is_refused_with_no_rpc(tmp_path):
+    (tmp_path / "md5-by-hour.jsonl").write_text(json.dumps({"hour": "h1"}) + "\n")
+    mock = fx_mock()
+    ff = mk_fwd(tmp_path, mock)
+    ff.set_hour("h1")
+    with pytest.raises(S.Refused, match="stored hour"):
+        ff("NEWL", 50)
+    assert mock.log == []
+    ff.set_hour("h2")                                   # an hour not yet stored may fetch live
+    assert ff("NEWL", 50)["status"] == "resolved" and mock.log
+
+
+def test_persisted_day_meter_survives_a_restart_and_the_cap_still_stops_calls(tmp_path):
+    ff = mk_fwd(tmp_path, fx_mock(), cap=5)
+    ff.set_hour("h1")
+    ff("NEWL", 50)                                      # 3 credits (2 for the launcher + the hub test)
+    assert json.loads((tmp_path / U.FWD_CREDITS).read_text()) == {DAYK: 3}
+    (tmp_path / U.FWD_JOURNAL).unlink()                 # only the credit file survives the "restart" (a fresh journal)
+    mock = fx_mock()
+    ff2 = mk_fwd(tmp_path, mock, cap=5)
+    ff2.set_hour("h2")
+    assert ff2.meters.used_by_day() == {DAYK: 3}
+    assert ff2("L3", 50)["status"] == "resolved"        # 2 more credits: 5
+    r4 = ff2("L4", 50)
+    assert r4["status"] == "fetch_capped" and ff2.meters.used_by_day() == {DAYK: 5} and len(mock.log) == 2   # no call past the cap
+    assert json.loads((tmp_path / U.FWD_CREDITS).read_text()) == {DAYK: 5}
+
+
+def test_by_hour_chain_has_counts_and_the_journal_sha_and_is_not_duplicated_by_a_replay(tmp_path):
+    ff = mk_fwd(tmp_path, fx_mock())
+    ff.set_hour("h1")
+    ff("NEWL", 50)
+    ff.end_hour("h1")
+    ff.end_hour("h1")
+    rec = [json.loads(x) for x in (tmp_path / U.FWD_BY_HOUR).read_text().splitlines()]
+    assert len(rec) == 1 and rec[0]["fwd_rows_total"] == 2 and rec[0]["rpc_calls_hour"] == 3 and rec[0]["credits_day"] == 3
+    assert rec[0]["journal_sha256"] == hashlib.sha256((tmp_path / U.FWD_JOURNAL).read_bytes()).hexdigest()
+
+
+def fwd_decider(root, mock, stored=()):
+    if stored:
+        (Path(root) / "md5-by-hour.jsonl").write_text("".join(json.dumps({"hour": h}) + "\n" for h in stored))
+    ff = mk_fwd(root, mock)
+    t = U.FunderTable.from_rows(BACKFILL_A)
+    return new_decider(table=t, fetch_fn=ff, out_root=root), ff
+
+
+def test_decider_forward_fetch_links_the_new_launcher_and_a_restart_replays_with_zero_rpc(tmp_path):
+    hist = history_rows("OLD", 3)
+    cand = candidate("NEWL")
+    cand.insert(0, row("create", S_S + 100, prog="pumpfun", mint="EARLY", trader="NEWL", creator="NEWL"))     # a non-graduated create BEFORE the graduate's create
+    cand = sorted(cand, key=lambda r: r["t_recv_ms"])
+    mock = fx_mock(hub=False)
+    dec, ff = fwd_decider(tmp_path, mock)
+    entries, st = flow(dec, hist, cand)
+    assert len(entries) == 1 and entries[0].meta["hist_kind"] == "funder" and st.counts["u1_rpc_calls"] == 3 and st.counts["u1_fwd_rows"] == 2
+    first_slot = U.first_create_slot(dec.reg, "NEWL")
+    assert first_slot == (S_S + 100) * 2 < dec.reg.creates["NEW"]["slot"]          # Q1: the fetch got the min slot over all creates, not the graduate's create slot
+    assert dec.reg.grads["NEW"].create_slot > first_slot
+    assert (tmp_path / U.FWD_BY_HOUR).exists()
+    dec2, ff2 = fwd_decider(tmp_path / "r", None, stored=())                   # a different dir has no journal: control for the fixture
+    (tmp_path / "r").mkdir(exist_ok=True)
+    # restart on the same out_root with the hour stored: zero RPC (the factory raises), identical decisions
+    dec3, ff3 = fwd_decider(tmp_path, None, stored=["h"])
+    entries3, st3 = flow(dec3, hist, cand)
+    assert [e.as_dict() for e in entries3] == [e.as_dict() for e in entries] and ff3.total_calls() == 0 and st3.counts["u1_rpc_calls"] == 0
+
+
+def test_second_graduate_of_a_fetch_error_launcher_makes_zero_calls():
+    calls = []
+
+    def fetch(launcher, slot):
+        calls.append(launcher)
+        return {"launcher": launcher, "funder": None, "funding_slot": None, "status": "fetch_error"}
+    dec = new_decider(fetch_fn=fetch)
+    run(dec, sorted(history_rows("A", 3), key=lambda r: r["t_recv_ms"]), warmup=True)
+    run(dec, stream(candidate("A", "N1", S_S + 3600), candidate("A", "N2", S_S + 5400)))
+    assert calls == ["A"] and dec.table.known("A") and dec.table.funder_of("A") is None
+
+
+def test_dry_run_all_warmup_hours_make_zero_rpc_and_never_touch_the_key(tmp_path, monkeypatch):
+    def boom(*a, **k):
+        raise AssertionError("key or transport touched")
+    monkeypatch.setattr(F, "load_key", boom)
+    monkeypatch.setattr(F, "make_transport", boom)
+    m = u1_manifest(tmp_path, out_root=str(tmp_path / "o"))
+    dec = S.default_decider(S.check_manifest(m))
+    assert isinstance(dec.fetch_fn, U.ForwardFetch)
+    _, st = run(dec, sorted(history_rows("A", 3) + candidate("A"), key=lambda r: r["t_recv_ms"]), warmup=True)
+    assert st.counts["u1_rpc_calls"] == 0 and dec.fetch_fn.total_calls() == 0 and not (tmp_path / "o" / U.FWD_JOURNAL).exists() and not (tmp_path / "o" / U.FWD_CREDITS).exists()
+
+
+# ---------------------------------------------------------------------------------------------------------------------------- B7 checked manifest keys
+def sha_of(b):
+    return hashlib.sha256(b).hexdigest()
+
+
+def test_manifest_sha_keys_are_checked_and_refuse_on_mismatch(tmp_path):
+    m = u1_manifest(tmp_path)
+    ta = Path(m["u1"]["table_a"])
+    assert m["u1"]["table_a_sha256"] == sha_of(ta.read_bytes())
+    S.default_decider(S.check_manifest(dict(m)))
+    bad = u1_manifest(tmp_path)
+    ta.write_text(ta.read_text() + "\n")                                         # the file changes under the pinned sha256
+    with pytest.raises(S.Refused, match="sha256 differs"):
+        S.default_decider(S.check_manifest(bad))
+    for drop in ("table_a_sha256",):
+        m2 = u1_manifest(tmp_path)
+        del m2["u1"][drop]
+        with pytest.raises(S.Refused):
+            S.check_manifest(m2)
+    m3 = u1_manifest(tmp_path)
+    m3["u1"]["table_b_sha256"] = "0" * 64                                         # a sha key without its file
+    with pytest.raises(S.Refused):
+        S.check_manifest(m3)
+    m4 = u1_manifest(tmp_path)
+    m4["u1"]["table_b"] = str(tmp_path / "b.jsonl")                              # a file key without its sha key
+    with pytest.raises(S.Refused):
+        S.check_manifest(m4)
+    m5 = u1_manifest(tmp_path)
+    m5["u1"]["table_a_sha256"] = "XYZ"
+    with pytest.raises(S.Refused):
+        S.check_manifest(m5)
+
+
+def test_table_b_and_labels_are_loaded_only_when_their_sha_matches_and_no_labels_means_h3_empty(tmp_path):
+    m = u1_manifest(tmp_path, out_root=str(tmp_path / "o"))
+    assert S.default_decider(S.check_manifest(dict(m))).labels == frozenset()    # H3 empty: no label list pinned
+    tb, lb = tmp_path / "b.jsonl", tmp_path / "labels.txt"
+    tb.write_text(json.dumps({"funder": "F", "hub_activity": True}) + "\n")
+    lb.write_text("EXCH1 EXCH2\n")
+    m["u1"].update(table_b=str(tb), table_b_sha256=sha_of(tb.read_bytes()), labels=str(lb), labels_sha256=sha_of(lb.read_bytes()))
+    d = S.default_decider(S.check_manifest(json.loads(json.dumps(m))))
+    assert d.labels == {"EXCH1", "EXCH2"} and d.table.hub_activity("F") is True
+    lb.write_text("EXCH1\n")
+    with pytest.raises(S.Refused):
+        S.default_decider(S.check_manifest(json.loads(json.dumps(m))))
+
+
+# ---------------------------------------------------------------------------------------------------------------------------- Q7 extension plan and disclosure
+def test_plan_input_rows_carry_no_price_or_outcome_keys(tmp_path):
+    forward_with_entry(tmp_path)
+    keys = set()
+    for ln in (tmp_path / U.PLAN_INPUT).read_text().splitlines():
+        keys |= set(json.loads(ln))
+    assert keys == {"kind", "pool", "mint", "pc_s", "entered", "hour"}
+
+
+def test_extension_plan_keeps_the_earlier_rows_unchanged_or_is_refused(tmp_path):
+    base = 10_000
+    rows = []
+    for i in range(6):                                                           # six entries 100 s apart, each with a crowd of candidates around it
+        rows.append({"kind": "gate", "pool": "PE%d" % i, "mint": "E%d" % i, "pc_s": base + 100 * i, "entered": True})
+    rows += [{"kind": "universe", "pool": "PU%d" % i, "mint": "U%d" % i, "pc_s": base - 1500 + 25 * i} for i in range(160)]
+    pi = tmp_path / "in.jsonl"
+    write_rows(pi, rows + markers(base - 3600, base + 100 * 6 + 3 * 3600))
+    h_all = S.hour_key((base + 100 * 6 + 3 * 3600) * 1000)
+    h_mid = S.hour_key((base + 250 + 2160 + 3600) * 1000)                         # ripe for the first entries only
+    assert S.hour_key(base * 1000) <= h_mid <= h_all
+    p1, p2, p3 = tmp_path / "p1.json", tmp_path / "p2.json", tmp_path / "p3.json"
+    r1 = U.plan_main(pi, p1, h_mid)
+    r2 = U.plan_main(pi, p2, h_all, extends=p1)
+    assert r2["plan_pools"] >= r1["plan_pools"] >= 1 and r1["counters"].get("placebo_entry_not_ripe", 0) >= 0
+    old, new = json.loads(p1.read_text())["plan"], json.loads(p2.read_text())["plan"]
+    assert all(new[k] == v for k, v in old.items())
+    # an extension that changes an earlier row is refused and writes nothing
+    tampered = tmp_path / "t.json"
+    plan = dict(old)
+    k0 = sorted(plan)[0]
+    plan[k0] = dict(plan[k0], **{"for": "PX"}) if plan else plan
+    if old:
+        tampered.write_text(json.dumps({"plan": plan, "counters": {}}))
+        with pytest.raises(ValueError, match="refused"):
+            U.plan_main(pi, p3, h_all, extends=tampered)
+        assert not p3.exists()
+
+
+def test_a_gate_pass_with_D_in_the_next_hour_is_not_ripe_and_new_disclosure_text():
+    uni_ok = U.PLACEBO_RIPE_S == 2160 and U.PLACEBO_WINDOW_S == 1800 and U.DECISION_DELAY_S == 360 and U.PLACEBO_WINDOW_S + U.DECISION_DELAY_S == U.PLACEBO_RIPE_S
+    assert uni_ok
+    s = U.placebo_summary(10, 7, plan_sha="abc", built="2026-11-22T00:00:00Z", through_hour="2026-11-21T23")
+    assert s["condition_6_evaluable"] and s["disclosure"] == ("Placebo built once at the look by a deterministic plan pass (plan sha256 abc, built 2026-11-22T00:00:00Z, through hour 2026-11-21T23) from the book's "
+                                                             "graduation and gate lists; priced afterwards by a separate full-replay run of the same engine; it was not run alongside the book.")
+    assert not U.placebo_summary(10, 4)["condition_6_evaluable"]
+    assert not U.placebo_summary(10, 9, placebo_excluded_share=0.21)["condition_6_evaluable"] and U.placebo_summary(10, 9, placebo_excluded_share=0.20)["condition_6_evaluable"]
+
+
+def test_a_gap_mode_key_in_a_u1_manifest_is_refused(tmp_path):
+    for k in ("gap_mode", "gap_in_hold", "gap_hold"):
+        with pytest.raises(S.Refused):
+            S.check_manifest(u1_manifest(tmp_path, **{k: "hold"}))

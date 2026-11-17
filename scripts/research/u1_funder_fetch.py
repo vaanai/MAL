@@ -55,10 +55,11 @@ class KeyError_(Exception):
 class CreditMeter:
     """counts credits by the table price BEFORE a call and refuses to exceed the cap. forward mode: one meter per UTC day (see DailyMeters)."""
 
-    def __init__(self, cap, prices=None):
+    def __init__(self, cap, prices=None, used=0, on_charge=None):
         self.cap, self.prices = int(cap), dict(prices or PRICES)
-        self.used = 0
+        self.used = int(used)
         self.calls = collections.Counter()
+        self.on_charge = on_charge  # called after every counted charge (the forward day meter persists itself here)
 
     def charge(self, method):
         p = self.prices[method]  # an unknown method (anything outside the two) is a KeyError: not allowed

@@ -200,9 +200,8 @@ def cluster_id(key):
 LAUNCHER_LIST = "u1-launchers.jsonl"
 LAUNCHER_LIST_BY_HOUR = "u1-launchers-by-hour.jsonl"
 PLAN_INPUT = "u1-plan-input.jsonl"
-# QP Q1: which slot the launcher list carries. "min_over_creates" = the minimum create slot over ALL of the launcher's create rows seen in W (default, ruling 1.2 item 6 "first create
-# row in the tape"); "earliest_graduate" = the create slot of the launcher's earliest graduate's create row (what _ensure_traced passes). Switch here only.
-FIRST_CREATE_SLOT_RULE = "min_over_creates"
+# QP-RULING-1117-u1-start Q1: first_create_slot(L) = the minimum create slot over ALL of L's create rows seen so far (graduated or not); the ONE definition, used by the launcher list and by the
+# forward fetch. (No other rule exists: the graduate's own create slot is not acceptable.)
 
 
 def graduate_first_slot(reg, launcher):
@@ -210,24 +209,19 @@ def graduate_first_slot(reg, launcher):
     return min(slots) if slots else None
 
 
-def first_create_slot(reg, launcher, rule=None):
-    """the ONE place that chooses the launcher list's first_create_slot (a QP ruling on Q1 switches FIRST_CREATE_SLOT_RULE and nothing else)"""
-    rule = rule or FIRST_CREATE_SLOT_RULE
-    if rule == "min_over_creates":
-        return reg.min_slot.get(launcher)
-    if rule == "earliest_graduate":
-        return graduate_first_slot(reg, launcher)
-    raise ValueError("unknown first_create_slot rule %r" % (rule,))
+def first_create_slot(reg, launcher):
+    """the ONE definition of the launcher list's and the forward fetch's first_create_slot (Q1)"""
+    return reg.min_slot.get(launcher)
 
 
-def launcher_list_rows(reg, rule=None):
+def launcher_list_rows(reg):
     """one row per launcher with >= 1 graduate (with a create row) among the rows fed so far, sorted by launcher -> ([{launcher, first_create_slot}], n_below)
     where n_below counts listed launchers whose chosen slot is below their earliest graduate's create slot (u1_first_slot_below_graduate_create)"""
     rows, below = [], 0
     for l in sorted(reg.by_launcher):
         if not reg.by_launcher[l]:
             continue
-        fs = first_create_slot(reg, l, rule)
+        fs = first_create_slot(reg, l)
         if fs is None:
             continue
         rows.append({"launcher": l, "first_create_slot": fs})
@@ -249,11 +243,16 @@ def _atomic_write_0440(path, data):
         os.fsync(fh.fileno())
     os.chmod(tmp, 0o440)
     os.replace(tmp, path)
+    dfd = os.open(str(path.parent), os.O_RDONLY)
+    try:
+        os.fsync(dfd)
+    finally:
+        os.close(dfd)
 
 
-def write_launcher_list(reg, path, rule=None):
+def write_launcher_list(reg, path):
     """atomic rewrite (temp + rename, 0440) of the launcher list -> (n_launchers, sha256 of the file bytes, n_first_slot_from_graduate_only)"""
-    rows, below = launcher_list_rows(reg, rule)
+    rows, below = launcher_list_rows(reg)
     data = "".join(json.dumps(r, sort_keys=True, separators=(",", ":")) + "\n" for r in rows).encode()
     _atomic_write_0440(path, data)
     return len(rows), hashlib.sha256(data).hexdigest(), below
@@ -362,7 +361,7 @@ class ForwardFetch:
         self.hour = None
         self.counters = collections.Counter()
         self._hub_now = {}
-        self._rfh, self._buf, self._torn_at = None, None, None
+        self._rfh, self._buf, self._torn_at, self._eof = None, None, None, False
         self._rows_total = 0
         self._calls_hour0 = 0
 
@@ -386,16 +385,21 @@ class ForwardFetch:
     # -- journal
     def _peek(self):
         if self._buf is None:
+            if self._eof:
+                return None  # the replay is over: everything after is live and is appended (never re-read)
             if self._rfh is None:
                 if not self.journal.exists():
+                    self._eof = True
                     return None
                 self._rfh = open(self.journal, "rb")
             pos = self._rfh.tell()
             ln = self._rfh.readline()
             if not ln:
+                self._eof = True
                 return None
             if not ln.endswith(b"\n"):
                 self._torn_at = pos  # a torn last line (crash mid-write): ignored, cut off at the first append
+                self._eof = True
                 return None
             self._buf = json.loads(ln)
         return self._buf
@@ -511,7 +515,6 @@ class U1Decider:
         self.fetch_seen = {}
         self.out_root = Path(out_root) if out_root is not None else None
         self.launcher_hours = []   # [{hour, launchers, sha256}] one record per warm-up hour (rewritten whole: a replay rebuilds it identically)
-        self._plan_flushed = [0, 0]  # lines of universe_log / gate_log already in the plan input file
         if self.out_root is not None and self.mode == "book":
             pi = self.out_root / PLAN_INPUT
             if pi.exists():
@@ -524,25 +527,25 @@ class U1Decider:
         self.launcher_hours.append({"hour": hour, "launchers": n, "sha256": sha})
         _atomic_write_0440(self.out_root / LAUNCHER_LIST_BY_HOUR, "".join(json.dumps(r, sort_keys=True) + "\n" for r in self.launcher_hours).encode())
 
-    def _append_plan_input(self):
-        """append-only: new universe and gate rows of this hour; the file is 0440 between appends"""
-        new_u, new_g = self.universe_log[self._plan_flushed[0]:], self.gate_log[self._plan_flushed[1]:]
-        if not (new_u or new_g):
-            return
+    def _append_plan_input(self, hour):
+        """append-only: this hour's new universe and gate rows, then ALWAYS one `{"kind": "hour", "hour": H}` marker (empty hours included): a reader knows the file is complete through H only
+        if H's marker is there. The file is 0440 between appends. The in-memory logs are cleared once flushed (bounded memory)."""
         path = self.out_root / PLAN_INPUT
         path.parent.mkdir(parents=True, exist_ok=True)
         if not path.exists():
             os.close(os.open(str(path), os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600))
         os.chmod(path, 0o640)
         with open(path, "ab") as fh:
-            for r in new_u:
+            for r in self.universe_log:
                 fh.write((json.dumps({"kind": "universe", "pool": r["pool"], "mint": r["mint"], "pc_s": r["pc_s"]}, sort_keys=True) + "\n").encode())
-            for r in new_g:
+            for r in self.gate_log:
                 fh.write((json.dumps({"kind": "gate", "pool": r["pool"], "mint": r["mint"], "pc_s": r["pc_s"], "entered": r["entered"]}, sort_keys=True) + "\n").encode())
+            fh.write((json.dumps({"kind": "hour", "hour": hour}, sort_keys=True) + "\n").encode())
             fh.flush()
             os.fsync(fh.fileno())
         os.chmod(path, 0o440)
-        self._plan_flushed = [len(self.universe_log), len(self.gate_log)]
+        self.universe_log.clear()
+        self.gate_log.clear()
 
     # -- funder side
     def _ensure_traced(self, g):
@@ -726,7 +729,7 @@ class U1Decider:
             if state.warmup:
                 self._write_launcher_list(state.hour)
             elif self.mode == "book":
-                self._append_plan_input()
+                self._append_plan_input(state.hour)
         if hasattr(self.fetch_fn, "counters"):
             if not state.warmup:
                 self.fetch_fn.end_hour(state.hour)
@@ -770,29 +773,44 @@ def build_decider(m, table=None, **kw):
 
 
 # ------------------------------------------------------------------------------------------------------------------------------ plan subcommand (B2)
-def read_plan_input(path, through_hour=None):
-    """-> (universe, entries, gate_passed_mints, n_not_ripe). through_hour 'YYYY-MM-DDTHH': a book entry is kept only if the hour containing P + 2,160 s is closed by the end of that hour (Q7 rule 1);
-    the others are counted (placebo_entry_not_ripe). Universe and gate rows are kept whole: for a ripe entry every candidate in its window has reached D, and a ripe entry's draw depends on
-    nothing later, so an extension plan reproduces every earlier draw."""
-    end_s = (S.parse_hour(through_hour) + S.HOUR_MS) // 1000 if through_hour else None
-    uni, ents, gate, not_ripe = [], [], set(), 0
+def read_plan_input(path, through_hour):
+    """-> (universe, entries, gate_passed_mints, n_not_ripe). Refuses (ValueError) an incomplete file: no hour markers, markers not consecutive, no marker for through_hour (or none at all), or no
+    book entry. through_hour 'YYYY-MM-DDTHH' (required): a book entry is kept only if the hour containing P + 2,160 s is closed by the end of that hour (Q7 rule 1; every
+    candidate with pool_create <= P + 1,800 s has then reached D = pool_create + 360 s and is in the file); the others are counted (placebo_entry_not_ripe). Universe and gate rows are kept
+    whole: a ripe entry's draw depends on nothing later, so an extension plan reproduces every earlier draw."""
+    uni, ents, gate, hours, pending = [], [], set(), [], []
     for ln in Path(path).read_text().splitlines():
         if not ln.strip():
             continue
         r = json.loads(ln)
-        if r["kind"] == "universe":
+        if r["kind"] == "hour":
+            hours.append(r["hour"])
+        elif r["kind"] == "universe":
             uni.append({"pool": r["pool"], "mint": r["mint"], "pc_s": r["pc_s"]})
         elif r["kind"] == "gate":
             gate.add(r["mint"])
             if r.get("entered"):
-                if end_s is not None and r["pc_s"] + PLACEBO_RIPE_S >= end_s:
-                    not_ripe += 1
-                else:
-                    ents.append({"pool": r["pool"], "mint": r["mint"], "pc_s": r["pc_s"]})
+                pending.append({"pool": r["pool"], "mint": r["mint"], "pc_s": r["pc_s"]})
+    if not hours:
+        raise ValueError("plan input has no hour marker: incomplete (restart replay, exit 4 or empty file): refused")
+    for a, b in zip(hours, hours[1:]):
+        if S.parse_hour(b) != S.parse_hour(a) + S.HOUR_MS:
+            raise ValueError("plan input hour markers are not consecutive (%s then %s): refused" % (a, b))
+    if through_hour not in hours:
+        raise ValueError("plan input has no marker for hour %s: not complete through it: refused" % through_hour)
+    end_s = (S.parse_hour(through_hour) + S.HOUR_MS) // 1000
+    not_ripe = 0
+    for e in pending:
+        if e["pc_s"] + PLACEBO_RIPE_S >= end_s:
+            not_ripe += 1
+        else:
+            ents.append(e)
+    if not ents:
+        raise ValueError("plan input has no ripe book entry through %s: refused" % through_hour)
     return uni, ents, gate, not_ripe
 
 
-def plan_main(a_in, a_out, through_hour=None, extends=None):
+def plan_main(a_in, a_out, through_hour, extends=None):
     uni, ents, gate, not_ripe = read_plan_input(a_in, through_hour)
     plan, c = build_placebo_plan(uni, ents, gate)
     c["placebo_entry_not_ripe"] += not_ripe
@@ -812,7 +830,7 @@ def main(argv=None):
     pl = sub.add_parser("plan", help="build the placebo plan from the persisted plan input; prints the sha256 and counters only")
     pl.add_argument("--in", dest="inp", required=True)
     pl.add_argument("--out", required=True)
-    pl.add_argument("--through-hour", default=None)
+    pl.add_argument("--through-hour", required=True, help="YYYY-MM-DDTHH, the last closed hour the plan may use")
     pl.add_argument("--extends", default=None, help="an earlier plan file whose rows must appear unchanged in the new plan (else refused)")
     a = ap.parse_args(argv)
     print(json.dumps(plan_main(a.inp, a.out, a.through_hour, a.extends), sort_keys=True))
