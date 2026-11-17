@@ -1326,3 +1326,91 @@ Only the three bold values change in the live config. The `funded_lamports`, `wa
 **Unchanged.** Am.6 in full except "20" in its install gate as set above; Am.10 (the item 5 window and its rollback rule); §2 limits other than the Am.6 values; the promotion gate; the seals; the A3 pauses; the H3 cap and every recon band; the clocks of HANDOFF section 5. A stake above 0.25 SOL, or a budget above 2.10 SOL, still needs a new amendment with the owner's word and a price-impact estimate (§6).
 
 No book has cleared the promotion gate. Nothing here says FLOOR makes money.
+
+## Amendment 11 install record, 2026-11-16
+
+Written 2026-11-17 (`date -u`) by a records worker for the manager; records only; in force only with QP's OK on the exact head and a reviewer verdict. It records the installation of Amendment 11 (floor-lane-1 stake 0.25 SOL, config only). It changes no rule, limit, code, config or install step, and Amendment 11's own text is not edited: this record is the update. Sources: the manager's state file `ops/manager24/state-manager24.md` (lines stamped 2026-11-15T21:43Z, 2026-11-16T20:26:00Z, 20:36:07Z, 20:36:41Z and 20:37:37Z). Nothing was re-read from a host. No book has cleared the promotion gate. Nothing here says FLOOR makes money.
+
+- **The owner's word** (owner chat about 2026-11-16T20:2xZ, as the state file records it at 20:26:00Z): "I'm on board with all of your recommendations, you have my yes for all of them". The manager read it as: FLOOR 0.25 now; C1-NF live at 0.10 if the 5-day GO; CE1 switch if it beats A; U1 proceed.
+- **The ask.** `HELM-ASK-1116-1`: config-only change, stake 250000000, budget 2100000000, daily 500000000, on tree `e5fd255b`; new config `...-s025.json`; drop-in `zzzzzz-s025.conf`; rollback is to remove the drop-in. The ask told Helm to avoid 23:30Z to 00:05Z and 15:55Z to 16:30Z on 2026-11-17, and asked Helm to get the owner's yes in the Helm chat.
+- **What was done** (state file, 2026-11-16T20:36:07Z, job #2906). Executor stop/start instant **2026-11-16T20:34:43Z**; new PID **1258559**; journal start line at 20:34:44Z: `stake=250000000 rpc_rps=4.0`; tree `e5fd255b`; drop-in `zzzzzz-s025.conf` present; `NRestarts` 0; STOP file absent. The host (PID 3750092) was **not restarted**: unchanged, `NRestarts` 0. Three positions opened at 0.10 carried over.
+- **Evidence still owed at install.** `HELM-REPLY-1116-1` (config diff and sha256) was not yet in at 20:36:07Z or at 20:37:37Z. The lane ledger does not log a per-restart start event in the old form (job #2908, 20:36:41Z: the newest `start` kind is from about 2026-11-10, stake 30000000), so the journal start line is the install evidence until the reply arrives. The new config sha256 is not recorded here.
+- **Recon state at install: not recorded** in the state-file lines this record is built from. Amendment 11 item 4 asks that the sim matches live. QP's NOT OK on PR #1407 at 1225dae1 (comment 6901839367, 2026-11-15T21:43Z) said the owner's offer was "sim matches live", so any recon state other than a full PASS means that condition is not met and the install needs a new owner word on that state. **This record does not state the "sim matches live" condition as met.** The install rests on the owner's yes to all the manager's recommendations (quoted above).
+- **Am.10 window.** Closed early by the owner's yes: at 20:36:07Z the state file has n 5 and median 1089 ms, read as WORKED. The final item 5 result is in the section "Amendment 10 item 5 result, 2026-11-17 (final)" below.
+- **Hourly check.** At 20:37:37Z (job #2909): start line as above; host 3750092 and follower 2625920 active; sends today 2 landed 2 failed 0; open 3 (basis 0.305021520, all at 0.10); refusals {} {}; STOP absent. The hourly's offline lane report pointed at the old config (budget 1.2, daily 0.2); the manager fixed it to the new config.
+- **Rollback** (from the ask): remove the drop-in `zzzzzz-s025.conf`, daemon-reload, restart the executor only. Never the host.
+
+No book has cleared the promotion gate. Nothing here says FLOOR makes money.
+
+## 14-day window reset record, 2026-11-16
+
+Written 2026-11-17 (`date -u`) by a records worker for the manager; records only. It records the FLOOR 14-day window reset run by Helm under `HELM-REPLY-1108-1`. Source: state file line stamped 2026-11-16T17:1xZ (Helm reply file 17:07Z; manager read-only job #2898). Nothing was re-read from a host.
+
+- Helm stopped the executor at **2026-11-16T17:06:25.21Z** and started it at **17:06:25.42Z** (pause about 0.2 s).
+- **The only change:** `first_send_ms` 1794148248897 to null (floor-state sha `307d82b1..` to `e855550d..`). Bridge state unchanged (seq 153, 3 open).
+- Job #2898: executor new PID **1149497**, ActiveEnter 17:06:25Z, `NRestarts` 0, tree `e5fd255b`, config sha256 `32991fe5c2aad031..` (match), start line at 17:06:26Z ends `rpc_rps=4.0`. Host 3750092 unchanged; follower 2625920; open 3 (basis 0.305021520); refusals {} {}; journal error or traceback lines since 17:05: 0; STOP absent.
+- Same code, config path and config sha256 as the Amendment 10 install, with `rpc_rps=4.0` in the start line, so under the QP timing ruling quoted in the Amendment 10 install record this reset does not end the item 5 window.
+- Health watch #2775 exited 3 at 17:09:04Z on the expected PID change; successor #2899 watches PIDs 3750092 and 1149497.
+
+No book has cleared the promotion gate. Nothing here says FLOOR makes money.
+
+## Amendment 10 item 5 result, 2026-11-17 (final)
+
+Written 2026-11-17 (`date -u`) by a records worker for the manager; records only. Source: the manager's hourly job #2980, 2026-11-17T19:36Z (measure output as quoted), and the 10 buys as given in the brief of this PR. Nothing was re-read from a host.
+
+Measure output, verbatim:
+- "ITEM 5(a): n 10 median decision_to_send_ms 1091.5 range 1045 1206 -> WORKED (<= 1300) (baseline 2048-2105 on 11 of 12, 2739 once)"
+- "ITEM 5 (c) COUNTED rows 0"
+
+The 10 live buys (order id, instant, `decision_to_send_ms`):
+
+| Order id | Instant (UTC) | decision_to_send_ms |
+| --- | --- | --- |
+| 4b6ee798bd567c3e | 2026-11-15T11:06:28Z | 1068 |
+| 04249ae1071ed17d | 2026-11-15T13:12:55Z | 1089 |
+| ab8888e97bbb29ca | 2026-11-15T23:45:58Z | 1097 |
+| 892bedbcb3801011 | 2026-11-16T16:10:58Z | 1206 |
+| dcfe2c7fe77ef3ad | 2026-11-16T16:12:25Z | 1072 |
+| 5b5c6a162df54ac1 | 2026-11-17T00:55:02Z | 1094 |
+| 386a12143151e807 | 2026-11-17T02:06:51Z | 1045 |
+| a9eef6bd5c78ad9e | 2026-11-17T03:51:46Z | 1086 |
+| 683ac45831594ab3 | 2026-11-17T04:02:02Z | 1097 |
+| bd6222de3daf171e | 2026-11-17T04:06:45Z | 1098 |
+
+Amendment 10 keeps the key (`rpc_rps` 4.0) on this result. This is a latency measure, not a profit claim. The earlier read at the 0.25 install (n 5, median 1089 ms) is in the Amendment 11 install record above.
+
+No book has cleared the promotion gate. Nothing here says FLOOR makes money.
+
+## Lane exits record, 2026-11-16 to 2026-11-17
+
+Written 2026-11-17 (`date -u`) by a records worker for the manager; records only. Sources: state file lines stamped 2026-11-16T23:57:42Z (job #2920), 2026-11-17T16:21:32Z (job #2974) and 2026-11-17T17:36:37Z (hourly #2976). Nothing was re-read from a host.
+
+- **Exit 3** (stake 0.10): order `ab8888e97bbb29ca`, third time-stop exit, landed (due about 2026-11-16T23:45:58Z); sell failures 0. Daily report 2026-11-16: exits 3, realized +0.019560289 SOL after all fees (the third exit -0.002789034); open 2 (basis 0.203347680).
+- **Exits 4 and 5** (stake 0.10): `892bedbcb3801011` and `dcfe2c7fe77ef3ad`, both time-stop exits landed (job #2974, 2026-11-17T16:21Z); sell failures 0. 2026-11-17 so far: exits 2, realized -0.004869836 SOL. **All pre-0.25 positions are now closed.** Open 7, all at 0.25 (basis 1.761716880).
+- **First 0.25 exit** (hourly #2976, 2026-11-17T17:36Z): exit 3 of the day, +0.129651905 SOL on one 0.25 position, before its time stop. 2026-11-17 totals at that hour: sends 9 landed 9 failed 0, exits 3, realized +0.124782069 SOL after all fees; open 8 (basis 2.013390720).
+
+Counts and realized SOL after fees from the lane's daily report; not a gate read; floor-lane-1 has not cleared the promotion gate.
+
+## Open simulation board changes, 2026-11-17
+
+Written 2026-11-17 (`date -u`) by a records worker for the manager; records only; paper books only. Sources: state file lines stamped 2026-11-17T00:18:03Z, 02:19:03Z, 05:53:56Z and 05:54:12Z. Nothing was re-read from a host.
+
+- **CE1 start** (QP-RULING-1115-ce1-prereg steps 4 and 5). PR #1411 merged 2026-11-15T22:25:14Z (`87afda62`), before 2026-11-17T00Z, so the start instant **2026-11-17T00:00:00Z** stands. Contiguous hours [2026-11-03T03, 2026-11-17T00): 333, 0 missing. Job #2921 was submitted and queued at 00:18Z (it needed 10 GB; 7.6 GB was free while C1-NF dry 4 #2917 held 12 GB). A late start replays from the start instant.
+- **Board change** (2026-11-17T02:19:03Z): `BOOKS.json` went from 9 books to 8. **D0r and D1 were removed**; CE1 was added (variant, start 2026-11-17T00:00:00Z). Board #2886 was cancelled and replaced by v13 #2932 at `ff00e565`. First build at 02:18:59Z lists osb-a, osb-c, osb-e1, osb-e2, osb-a-gh, osb-a-lt-a, osb-c-gh, osb-ce1 (starting). No refusal or error in the log. CE1 peak RSS after seed: not recorded.
+- **Twin window 2, manager decision** (2026-11-17T05:54:12Z): **no DEC-035 "w2 steering" amendment for now.** Per QP-RULING-1116-recon-latency-twin-ADD1 section 4 it is optional. It would make "window-2 twin PASS on every hour from R" a condition of a stake step above 0.25 or a lane limit raise (one FAIL would block it for the rest of window 2). Without it, window 2 is information only and cannot steer; budget and limit raises rest on the owner's standing word (lane cap raises are the manager's call), the Am.6 budget and daily stop, and the section 2 limits. Reported to the owner as information; to be reconsidered if the owner wants the sim-match gate. This corrects the earlier "owed" wording.
+- **Window-2 first read** (one-off 05:52Z, `osb_recon --lt-window2` at `ce33feab`, PR #1419; twin osb-a-lt-a `811229cb`; S from 2026-11-16T20:34:44Z, end open): INSUFFICIENT (no 0.25 exit yet); H1 PASS, H2 PASS, H3 PASS; all 7 live 0.25 buys matched by the paper twin; live-only 0; sim-only 3 (all `restart_lockout`, explained); buy failures 0 of 7. This is a match count, not a profit claim.
+
+No book has cleared the promotion gate. Nothing here says any book makes money.
+
+## Records nits, 2026-11-17
+
+Written 2026-11-17 (`date -u`) by a records worker for the manager; records only. Sources: state file lines stamped 2026-11-17T18:12:39Z and 2026-11-17T00:46:27Z; the two sha256 values were computed with `sha256sum` on the files under `/data/mal/hunt-1008/ops/manager24/`.
+
+- **(a) Script hashes** (U1, owed after PR #1438 merged as `9979445b`):
+  - `ops/manager24/u1-backfill-delta.sh` sha256 `206f4e70f3ef45cc1b07fafda3cf39d1cc5eeeb29a66f6f211e356d46c946624`
+  - `ops/manager24/u1-dry-3.sh` sha256 `70a76fa7c4ad0aafe629b635eeb7eec8714d8020cdbc064c6ff717674144c1c2`
+- **(b) Zero counts.** In the U1 `counts.jsonl`, a zero count appears as an absent key, not as a key with value 0 (reviewer nit; the state file points at line 866 of the reviewed text).
+- **(c) Void manifests.** `osb-u1-void-1117a.json` and `osb-u1-lowrep-void-1117a.json` name `out_root` paths that are live books' roots. They are void manifests and must never be relaunched. (State file: "void manifests name live out_roots (never relaunch)". U1 osb-u1 #2977 and lowrep #2978 run on 1117b.)
+- **(d) The #1433 nit.** PR #1433 (Am.9 osb-u4/osb-u2 pin re-issue to `c58f0ee4`) merged 2026-11-17T00:46:27Z after QP OK and REVIEWER APPROVE at `dcf99392`. Reviewer nit, as written: "section header ~l.901 still says re-pinned to 49dbf7ca". QP note, as written: "late start must not move S, skip hours or depend on another book's post-S figure".
+
+No book has cleared the promotion gate. Nothing here says any book makes money.
