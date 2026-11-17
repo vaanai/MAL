@@ -11,10 +11,12 @@ book output are the runner's. Pieces
   build_placebo_plan   pure helper (random pick draw); the -25% stop is requested by the decider as a SellReq (price-exit mechanism of #1422, ruling 4b)
 Every constant below is the ruling's.
 """
-import collections, hashlib, json, os, random
+import collections, hashlib, json, os, random, re, time
+from datetime import datetime, timezone
 from pathlib import Path
 
 import c1nf_forward_sim as S
+import u1_funder_fetch as F
 from u4_u2_deciders import post_spot, hr_pda_default  # one definition across books (QP ADD1 item 7); no local copy
 
 WSOL = S.WSOL
@@ -32,9 +34,19 @@ HUB_FUNDER_CHILDREN = 50
 HUB_LAUNCHER_GRADS = 50
 PLACEBO_WINDOW_S = 1800
 PLACEBO_MIN_N = 5
-CAP_OPEN_NOT_COMPUTED = "cap_open_stale not computed; cap_open counts the book's own entries for a full 6 h (stops ignored)"
+CAP_OPEN_NOT_COMPUTED = "cap_open_stale not computed; cap_open counts the book's own entries for a full 6 h (stops ignored), so it may refuse entries an exact count would have taken."
 STALE_DISCLOSURE = "cap_open uses an hour-start open count; %d entries were refused that an exact count would have taken"
-PLACEBO_DISCLOSURE = "placebo built by a lagged plan pass; it trails the book by up to about 1 h plus the hold"
+PLACEBO_RIPE_S = 2160   # QP-RULING-1117-u1-start Q7: an entry is in a plan only if the hour containing P + 2,160 s is closed (D of a candidate with pool_create <= P + 1,800 s is <= P + 2,160 s)
+PLACEBO_MAX_EXCLUDED_SHARE = 0.20
+PLACEBO_DISCLOSURE = ("Placebo built once at the look by a deterministic plan pass (plan sha256 {sha}, built {built}, through hour {hour}) from the book's graduation and gate lists; "
+                      "priced afterwards by a separate full-replay run of the same engine; it was not run alongside the book.")
+FWD_DISCLOSURE = ("Forward funder links are fetched inside the book when it processes the hour holding a graduate's pool_create (after the hour closes, not within 360 s); "
+                  "the funder and hub test are past-only, but status `deep` is judged on history up to the fetch.")
+FETCH_ONCE_DISCLOSURE = "One funder fetch per launcher from S; fetch_error and fetch_capped launchers stay own-history-only for the book's life."
+RATE_DISCLOSURE = "Forward funder fetch runs unlocked at <= 2 rps beside the walkers' four 10-rps slots."
+FWD_JOURNAL = "u1-fwd-journal.jsonl"
+FWD_CREDITS = "u1-credits-by-day.json"
+FWD_BY_HOUR = "u1-fwd-by-hour.jsonl"
 H4_DISCLOSURE = "H4 lacks pump fee/global accounts; H2 (> 50 children) removes any that fund many launchers"
 FEE_NOTE = "UR 0.4 pricing, fees, rent and fail legs are the runner's engine; unchanged"
 MODES = ("book", "low_rep", "placebo")
@@ -57,9 +69,11 @@ class FunderTable:
         self._of = {}                                   # launcher -> (funder, funding_slot)
         self._children = collections.defaultdict(list)  # funder -> [(launcher, funding_slot)]
         self._hub = {}                                  # funder -> True / False / "error"
+        self._seen = set()                              # launchers with a Table A row of ANY status (one fetch attempt per launcher, ever: QP Q3)
 
     def add_row(self, row):
-        """Table A row; only status `resolved` links anything"""
+        """Table A row; only status `resolved` links anything, every status marks the launcher seen"""
+        self._seen.add(row["launcher"])
         if row.get("status") == "resolved" and row["launcher"] not in self._of:
             self._of[row["launcher"]] = (row["funder"], row["funding_slot"])
             self._children[row["funder"]].append((row["launcher"], row["funding_slot"]))
@@ -80,7 +94,11 @@ class FunderTable:
         return self._of.get(launcher)
 
     def known(self, launcher):
-        return launcher in self._of
+        """seen over all six statuses (a fetch_error / capped / deep launcher is never fetched again)"""
+        return launcher in self._seen
+
+    def mark_seen(self, launcher):
+        self._seen.add(launcher)
 
     def children_upto(self, funder, slot):
         return [l for l, s in self._children.get(funder, ()) if s <= slot]
@@ -203,9 +221,9 @@ def first_create_slot(reg, launcher, rule=None):
 
 
 def launcher_list_rows(reg, rule=None):
-    """one row per launcher with >= 1 graduate (with a create row) among the rows fed so far, sorted by launcher -> ([{launcher, first_create_slot}], n_first_slot_from_graduate_only)
-    where the second number counts listed launchers whose chosen slot equals their earliest graduate's create slot (no earlier create row of a non-graduate)"""
-    rows, same = [], 0
+    """one row per launcher with >= 1 graduate (with a create row) among the rows fed so far, sorted by launcher -> ([{launcher, first_create_slot}], n_below)
+    where n_below counts listed launchers whose chosen slot is below their earliest graduate's create slot (u1_first_slot_below_graduate_create)"""
+    rows, below = [], 0
     for l in sorted(reg.by_launcher):
         if not reg.by_launcher[l]:
             continue
@@ -213,8 +231,9 @@ def launcher_list_rows(reg, rule=None):
         if fs is None:
             continue
         rows.append({"launcher": l, "first_create_slot": fs})
-        same += fs == graduate_first_slot(reg, l)
-    return rows, same
+        gs = graduate_first_slot(reg, l)
+        below += gs is not None and fs < gs
+    return rows, below
 
 
 def _atomic_write_0440(path, data):
@@ -234,10 +253,10 @@ def _atomic_write_0440(path, data):
 
 def write_launcher_list(reg, path, rule=None):
     """atomic rewrite (temp + rename, 0440) of the launcher list -> (n_launchers, sha256 of the file bytes, n_first_slot_from_graduate_only)"""
-    rows, same = launcher_list_rows(reg, rule)
+    rows, below = launcher_list_rows(reg, rule)
     data = "".join(json.dumps(r, sort_keys=True, separators=(",", ":")) + "\n" for r in rows).encode()
     _atomic_write_0440(path, data)
-    return len(rows), hashlib.sha256(data).hexdigest(), same
+    return len(rows), hashlib.sha256(data).hexdigest(), below
 
 
 # ------------------------------------------------------------------------------------------------------------------------------ pure helpers
@@ -284,11 +303,12 @@ def load_placebo_plan(path, sha256):
     return json.loads(data)["plan"]
 
 
-def placebo_summary(book_n, placebo_n):
-    """5-day look condition (6) input: placebo n beside book n; fewer than 5 placebo trades = not evaluable = NO-GO (ADD1 3)"""
-    ok = placebo_n >= PLACEBO_MIN_N
-    return {"book_n": book_n, "placebo_n": placebo_n, "condition_6_evaluable": ok, "verdict": None if ok else "NO-GO (placebo n < %d: condition 6 not evaluable)" % PLACEBO_MIN_N,
-            "disclosure": PLACEBO_DISCLOSURE}
+def placebo_summary(book_n, placebo_n, plan_sha="<sha>", built="<instant>", through_hour="<H>", placebo_excluded_share=None):
+    """5-day look condition (6) input: placebo n beside book n; fewer than 5 placebo trades, or the placebo run's own excluded share > 20% = not evaluable = NO-GO (ADD1 3, QP 1117 Q11)"""
+    ok = placebo_n >= PLACEBO_MIN_N and not (placebo_excluded_share is not None and placebo_excluded_share > PLACEBO_MAX_EXCLUDED_SHARE)
+    why = "placebo n < %d" % PLACEBO_MIN_N if placebo_n < PLACEBO_MIN_N else "placebo excluded share > %d%%" % round(100 * PLACEBO_MAX_EXCLUDED_SHARE)
+    return {"book_n": book_n, "placebo_n": placebo_n, "condition_6_evaluable": ok, "verdict": None if ok else "NO-GO (%s: condition 6 not evaluable)" % why,
+            "disclosure": PLACEBO_DISCLOSURE.format(sha=plan_sha, built=built, hour=through_hour)}
 
 
 def board_disclosures(counts, exact_open_computed=False):
@@ -310,6 +330,154 @@ def hr_coin(create_row):
         return cr == hr_pda_default(m)
     except Exception:  # noqa: BLE001 - a non-base58 mint cannot be a PDA owner mint
         return False
+
+
+# ------------------------------------------------------------------------------------------------------------------------------ forward fetch (B3, QP 1117 Q2-Q4)
+class ForwardFetch:
+    """fetch_fn(launcher, first_create_slot) -> Table A row, for launchers first graduating from S. ONE append-only journal `<out_root>/u1-fwd-journal.jsonl` (Table A rows with exactly
+    launcher / funder / funding_slot / status, Table B rows with exactly funder / hub_activity, in the order produced; written + flushed + fsynced before the decider uses a row). It is NOT loaded
+    at start: a restart consumes it as a FIFO at the same calls that produced it (the next A line must be the requested launcher, else Refused; a B line is applied right after its A line, so
+    hub_of never returns a later fact). No RPC while replaying a stored hour: a launcher the journal lacks in a stored hour is Refused. One attempt per launcher from S. The fetcher runs unlocked
+    at FORWARD_RPS (2 rps), is seeded with the frozen backfill rows (incl. by_funder), and its per-UTC-day credit use is persisted to `u1-credits-by-day.json` at every counted call.
+    The key is read only when the first live call is made (a dry run, all hours warm-up, makes 0 RPC calls and never touches the key file)."""
+
+    def __init__(self, out_root, table_a_rows=(), table_b_rows=(), *, transport_factory=None, cap_per_day=F.CAPS["forward_day"], rps=F.FORWARD_RPS, clock=time.monotonic,
+                 sleep_fn=time.sleep, day_fn=None):
+        self.root = Path(out_root)
+        self.journal = self.root / FWD_JOURNAL
+        self.credits_path = self.root / FWD_CREDITS
+        self.by_hour_path = self.root / FWD_BY_HOUR
+        self.transport_factory = transport_factory
+        self._transport = None
+        self.day_fn = day_fn or (lambda: datetime.now(timezone.utc).strftime("%Y-%m-%d"))
+        used = json.loads(self.credits_path.read_text()) if self.credits_path.exists() else {}
+        self.meters = F.DailyMeters(cap_per_day, used_by_day=used, on_charge=self._persist_credits)
+        self.fetcher = F.Fetcher(self._rpc, self.meters, rps=rps, clock=clock, sleep_fn=sleep_fn, day_fn=self.day_fn)
+        self.fetcher.seed(table_a_rows, table_b_rows)
+        self.rps = rps
+        self.stored_hours = set()
+        mh = self.root / "md5-by-hour.jsonl"
+        if mh.exists():
+            self.stored_hours = {json.loads(ln)["hour"] for ln in mh.read_text().splitlines() if ln.strip()}
+        self.hour = None
+        self.counters = collections.Counter()
+        self._hub_now = {}
+        self._rfh, self._buf, self._torn_at = None, None, None
+        self._rows_total = 0
+        self._calls_hour0 = 0
+
+    # -- transport (lazy: the key file is touched at the first live call only)
+    def _rpc(self, method, params):
+        if self._transport is None:
+            if self.transport_factory is None:
+                raise F.RpcError("no_transport")
+            self._transport = self.transport_factory()
+        return self._transport(method, params)
+
+    def _persist_credits(self):
+        self.root.mkdir(parents=True, exist_ok=True)
+        tmp = self.credits_path.with_name(self.credits_path.name + ".tmp")
+        tmp.write_text(json.dumps(self.meters.used_by_day(), sort_keys=True))
+        os.replace(tmp, self.credits_path)
+
+    def total_calls(self):
+        return sum(sum(m.calls.values()) for m in self.meters.days.values())
+
+    # -- journal
+    def _peek(self):
+        if self._buf is None:
+            if self._rfh is None:
+                if not self.journal.exists():
+                    return None
+                self._rfh = open(self.journal, "rb")
+            pos = self._rfh.tell()
+            ln = self._rfh.readline()
+            if not ln:
+                return None
+            if not ln.endswith(b"\n"):
+                self._torn_at = pos  # a torn last line (crash mid-write): ignored, cut off at the first append
+                return None
+            self._buf = json.loads(ln)
+        return self._buf
+
+    def _take(self):
+        r, self._buf = self._peek(), None
+        self._rows_total += 1
+        self.counters["u1_fwd_rows"] += 1
+        return r
+
+    def _append(self, rows):
+        if self._rfh is not None:
+            self._rfh.close()
+            self._rfh = None
+        self.root.mkdir(parents=True, exist_ok=True)
+        if self._torn_at is not None:
+            with open(self.journal, "r+b") as fh:
+                fh.truncate(self._torn_at)
+            self._torn_at = None
+        fd = os.open(str(self.journal), os.O_WRONLY | os.O_APPEND | os.O_CREAT, 0o640)
+        with os.fdopen(fd, "ab") as fh:
+            for r in rows:
+                fh.write((json.dumps(r, sort_keys=True, separators=(",", ":")) + "\n").encode())
+            fh.flush()
+            os.fsync(fh.fileno())
+        os.chmod(self.journal, 0o640)
+        self._rows_total += len(rows)
+        self.counters["u1_fwd_rows"] += len(rows)
+
+    # -- fetch_fn interface
+    def set_hour(self, hour):
+        self.hour = hour
+        self._calls_hour0 = self.total_calls()
+
+    def hub_of(self, funder):
+        return self._hub_now.get(funder)
+
+    def __call__(self, launcher, first_create_slot):
+        self._hub_now = {}
+        a = self._peek()
+        if a is not None:  # replay: the journal answers, no RPC
+            if a.get("launcher") != launcher or set(a) != set(F.TABLE_A_KEYS):
+                raise S.Refused("u1 forward journal out of order")
+            self._take()
+            row = {k: a[k] for k in F.TABLE_A_KEYS}
+            self.fetcher.table_a[launcher] = row
+            if row["status"] == "resolved":
+                self.fetcher.by_funder[row["funder"]].append(launcher)
+            b = self._peek()
+            if b is not None and set(b) == set(F.TABLE_B_KEYS):
+                self._take()
+                self.fetcher.table_b[b["funder"]] = b["hub_activity"]
+                self._hub_now[b["funder"]] = b["hub_activity"]
+        else:
+            if self.hour in self.stored_hours:
+                raise S.Refused("u1 forward journal lacks launcher for a stored hour: no RPC while replaying")
+            before = set(self.fetcher.table_b)
+            row = dict(self.fetcher.fetch_launcher(launcher, first_create_slot))
+            row = {k: row[k] for k in F.TABLE_A_KEYS}
+            new_b = [(f, v) for f, v in self.fetcher.table_b.items() if f not in before]
+            self._append([row] + [{"funder": f, "hub_activity": v} for f, v in new_b])
+            for f, v in new_b:
+                self._hub_now[f] = v
+        if row["status"] in ("fetch_error", "fetch_capped"):
+            self.counters["u1_fetch_once_unlinked"] += 1
+        self.counters["u1_rpc_calls"] = self.total_calls()
+        self.counters["u1_n429"] = self.fetcher.counters.get("n429", 0)
+        return row
+
+    def end_hour(self, hour):
+        """per-hour chain (counts only, sidecar `u1-fwd-by-hour.jsonl`, one line per hour, never duplicated by a replay)"""
+        done = set()
+        if self.by_hour_path.exists():
+            done = {json.loads(ln)["hour"] for ln in self.by_hour_path.read_text().splitlines() if ln.strip()}
+        if hour in done:
+            return
+        data = self.journal.read_bytes() if self.journal.exists() else b""
+        rec = {"hour": hour, "fwd_rows_total": self._rows_total, "journal_sha256": hashlib.sha256(data).hexdigest(), "rpc_calls_hour": self.total_calls() - self._calls_hour0,
+               "credits_day": self.meters.used_by_day().get(self.day_fn(), 0)}
+        self.root.mkdir(parents=True, exist_ok=True)
+        with open(self.by_hour_path, "a") as fh:
+            fh.write(json.dumps(rec, sort_keys=True) + "\n")
 
 
 # ------------------------------------------------------------------------------------------------------------------------------ decider
@@ -340,6 +508,7 @@ class U1Decider:
         self.universe_log = []     # [{pool, mint, pc_s}] graduates that entered the universe
         self.c = collections.Counter()
         self.counters_prev = collections.Counter()
+        self.fetch_seen = {}
         self.out_root = Path(out_root) if out_root is not None else None
         self.launcher_hours = []   # [{hour, launchers, sha256}] one record per warm-up hour (rewritten whole: a replay rebuilds it identically)
         self._plan_flushed = [0, 0]  # lines of universe_log / gate_log already in the plan input file
@@ -350,8 +519,8 @@ class U1Decider:
 
     # -- persistence (B1 launcher list, B2 plan input); names / counts / sha256 only leave this class, the files carry addresses
     def _write_launcher_list(self, hour):
-        n, sha, same = write_launcher_list(self.reg, self.out_root / LAUNCHER_LIST)
-        self.c["u1_launchers_listed"], self.c["u1_launchers_first_slot_from_graduate_only"] = n, same
+        n, sha, below = write_launcher_list(self.reg, self.out_root / LAUNCHER_LIST)
+        self.c["u1_launchers_listed"], self.c["u1_first_slot_below_graduate_create"] = n, below
         self.launcher_hours.append({"hour": hour, "launchers": n, "sha256": sha})
         _atomic_write_0440(self.out_root / LAUNCHER_LIST_BY_HOUR, "".join(json.dumps(r, sort_keys=True) + "\n" for r in self.launcher_hours).encode())
 
@@ -378,7 +547,9 @@ class U1Decider:
     # -- funder side
     def _ensure_traced(self, g):
         if self.fetch_fn and g.launcher and g.create_slot is not None and not self.table.known(g.launcher):
-            row = self.fetch_fn(g.launcher, g.create_slot)
+            fs = first_create_slot(self.reg, g.launcher)  # Q1: the same definition as the launcher list (min over ALL create rows), never the graduate's own create slot
+            row = self.fetch_fn(g.launcher, fs if fs is not None else g.create_slot)
+            self.table.mark_seen(g.launcher)
             if row:
                 self.table.add_row(row)
                 if row.get("funder") is not None and hasattr(self.fetch_fn, "hub_of"):
@@ -524,6 +695,8 @@ class U1Decider:
 
     def decide(self, hour_rows, state):
         out = []
+        if hasattr(self.fetch_fn, "set_hour"):
+            self.fetch_fn.set_hour(state.hour)
         for i, row in enumerate(hour_rows):
             t = row.get("t_recv_ms")
             if S._isint(t):
@@ -554,6 +727,11 @@ class U1Decider:
                 self._write_launcher_list(state.hour)
             elif self.mode == "book":
                 self._append_plan_input()
+        if hasattr(self.fetch_fn, "counters"):
+            if not state.warmup:
+                self.fetch_fn.end_hour(state.hour)
+            self.c.update({k: v - self.fetch_seen.get(k, 0) for k, v in self.fetch_fn.counters.items()})
+            self.fetch_seen = dict(self.fetch_fn.counters)
         cnt = collections.Counter(self.c)
         cnt.update(self.reg.c)
         state.counts.update({k: v - self.counters_prev.get(k, 0) for k, v in cnt.items() if v != self.counters_prev.get(k, 0)})
@@ -561,44 +739,68 @@ class U1Decider:
         return out
 
 
+def _checked_file(path, want, key):
+    """file bytes whose sha256 equals the manifest's checked key; Refused on a missing key or a mismatch (QP 1117 Q10)"""
+    if not (isinstance(want, str) and re.fullmatch(r"[0-9a-f]{64}", want)):
+        raise S.Refused("u1.%s_sha256 must be 64 hex" % key)
+    data = Path(path).read_bytes()
+    if hashlib.sha256(data).hexdigest() != want:
+        raise S.Refused("u1.%s file sha256 differs from the pinned one" % key)
+    return data
+
+
 def build_decider(m, table=None, **kw):
-    """runner glue (manifest key decider 'u1' | 'u1_lowrep' | 'u1_placebo'). Tables and the placebo plan come from files named in the manifest `u1` object."""
-    import json
+    """runner glue (manifest key decider 'u1' | 'u1_lowrep' | 'u1_placebo'). Tables, labels and the placebo plan come from files named in the manifest `u1` object; table_a / table_b / labels
+    are checked against table_a_sha256 / table_b_sha256 / labels_sha256 (Refused on mismatch). No labels key = H3 empty. The forward fetch (ForwardFetch) is built here and makes no call and
+    reads no key until the first live fetch."""
     u1 = m.get("u1") or {}
+    a_rows, b_rows = [], []
     if table is None:
-        a = [json.loads(x) for x in Path(u1["table_a"]).read_text().splitlines() if x.strip()]
-        b = [json.loads(x) for x in Path(u1["table_b"]).read_text().splitlines() if x.strip()] if u1.get("table_b") else []
-        table = FunderTable.from_rows(a, b)
-    labels = frozenset(Path(u1["labels"]).read_text().split()) if u1.get("labels") else frozenset()
+        a_rows = [json.loads(x) for x in _checked_file(u1["table_a"], u1.get("table_a_sha256"), "table_a").decode().splitlines() if x.strip()]
+        if u1.get("table_b"):
+            b_rows = [json.loads(x) for x in _checked_file(u1["table_b"], u1.get("table_b_sha256"), "table_b").decode().splitlines() if x.strip()]
+        table = FunderTable.from_rows(a_rows, b_rows)
+    labels = frozenset(_checked_file(u1["labels"], u1.get("labels_sha256"), "labels").decode().split()) if u1.get("labels") else frozenset()
     mode = {"u1": "book", "u1_lowrep": "low_rep", "u1_placebo": "placebo"}[m["decider"]]
     plan = load_placebo_plan(u1["placebo_plan"], u1.get("placebo_plan_sha256")) if mode == "placebo" else None
     kw.setdefault("out_root", m.get("out_root"))
+    if kw.get("out_root") is not None and "fetch_fn" not in kw:
+        kw["fetch_fn"] = ForwardFetch(kw["out_root"], a_rows, b_rows, transport_factory=lambda: F.make_transport(F.load_key()))
     return U1Decider(S.parse_hour(m["start_hour"]), table, mode=mode, labels=labels, plan=plan, lat_s=float(m.get("pricing_lat_entry_s", S.LAT_DECIDING_S)), **kw)
 
 
 # ------------------------------------------------------------------------------------------------------------------------------ plan subcommand (B2)
 def read_plan_input(path, through_hour=None):
-    """-> (universe, entries, gate_passed_mints). through_hour 'YYYY-MM-DDTHH': only rows whose pc_s + 1,800 s lies before the end of that hour (the hour is closed for the plan's window)"""
+    """-> (universe, entries, gate_passed_mints, n_not_ripe). through_hour 'YYYY-MM-DDTHH': a book entry is kept only if the hour containing P + 2,160 s is closed by the end of that hour (Q7 rule 1);
+    the others are counted (placebo_entry_not_ripe). Universe and gate rows are kept whole: for a ripe entry every candidate in its window has reached D, and a ripe entry's draw depends on
+    nothing later, so an extension plan reproduces every earlier draw."""
     end_s = (S.parse_hour(through_hour) + S.HOUR_MS) // 1000 if through_hour else None
-    uni, ents, gate = [], [], set()
+    uni, ents, gate, not_ripe = [], [], set(), 0
     for ln in Path(path).read_text().splitlines():
         if not ln.strip():
             continue
         r = json.loads(ln)
-        if end_s is not None and r["pc_s"] + PLACEBO_WINDOW_S >= end_s:
-            continue
         if r["kind"] == "universe":
             uni.append({"pool": r["pool"], "mint": r["mint"], "pc_s": r["pc_s"]})
         elif r["kind"] == "gate":
             gate.add(r["mint"])
             if r.get("entered"):
-                ents.append({"pool": r["pool"], "mint": r["mint"], "pc_s": r["pc_s"]})
-    return uni, ents, gate
+                if end_s is not None and r["pc_s"] + PLACEBO_RIPE_S >= end_s:
+                    not_ripe += 1
+                else:
+                    ents.append({"pool": r["pool"], "mint": r["mint"], "pc_s": r["pc_s"]})
+    return uni, ents, gate, not_ripe
 
 
-def plan_main(a_in, a_out, through_hour=None):
-    uni, ents, gate = read_plan_input(a_in, through_hour)
+def plan_main(a_in, a_out, through_hour=None, extends=None):
+    uni, ents, gate, not_ripe = read_plan_input(a_in, through_hour)
     plan, c = build_placebo_plan(uni, ents, gate)
+    c["placebo_entry_not_ripe"] += not_ripe
+    if extends:
+        old = json.loads(Path(extends).read_text())["plan"]
+        bad = [k for k, v in old.items() if plan.get(k) != v]
+        if bad:
+            raise ValueError("extension plan changes %d row(s) of the earlier plan: refused (condition 6 is not evaluable = NO-GO)" % len(bad))
     sha = write_placebo_plan(plan, c, a_out)
     return {"plan_sha256": sha, "plan_pools": len(plan), "universe": len(uni), "book_entries": len(ents), "counters": dict(c)}
 
@@ -611,8 +813,9 @@ def main(argv=None):
     pl.add_argument("--in", dest="inp", required=True)
     pl.add_argument("--out", required=True)
     pl.add_argument("--through-hour", default=None)
+    pl.add_argument("--extends", default=None, help="an earlier plan file whose rows must appear unchanged in the new plan (else refused)")
     a = ap.parse_args(argv)
-    print(json.dumps(plan_main(a.inp, a.out, a.through_hour), sort_keys=True))
+    print(json.dumps(plan_main(a.inp, a.out, a.through_hour, a.extends), sort_keys=True))
     return 0
 
 

@@ -1,5 +1,6 @@
 """u1_forward_sim: reputation without look-ahead, hub exclusion, cluster definition, entry/exit constants, zero entries before S, random-pick plan, runner manifest glue.
 Synthetic fixtures only; no real tape, funder, outcome, fill or P&L is opened. Nothing here says any book makes money."""
+import hashlib
 import json
 import sys
 from pathlib import Path
@@ -401,7 +402,7 @@ def test_stop_is_priced_by_the_runner_book_through_the_price_exit_mechanism(tmp_
     T1.write_keep(tmp_path, 3)
     ta = tmp_path / "a.jsonl"
     ta.write_text("")
-    m = T1.manifest(tmp_path, decider="u1", warmup_hours=1, u1={"table_a": str(ta), "hr_exclusion": True})
+    m = T1.manifest(tmp_path, decider="u1", warmup_hours=1, u1={"table_a": str(ta), "table_a_sha256": hashlib.sha256(ta.read_bytes()).hexdigest(), "hr_exclusion": True})
     m.pop("wallet_ledger_root", None)
     assert T1.run(tmp_path, m, StopWrap()) == 0
     st = json.loads((Path(m["out_root"]) / "status.json").read_text())
@@ -447,7 +448,7 @@ def u1_manifest(tmp_path, decider="u1", **extra):
     ta = tmp_path / "a.jsonl"
     ta.write_text(json.dumps({"launcher": "A", "funder": "F", "funding_slot": 1, "status": "resolved"}) + "\n")
     m = {"book_id": "u1-test", "title": "t", "decider": decider, "stakes_sol": [0.1, 0.25, 0.5], "send_lamports": 505_000, "start_hour": START,
-         "tape_dir": S.KEEP_ROOT, "out_root": S.SIM_ROOT + "/u1-test", "u1": {"table_a": str(ta), "hr_exclusion": True}}
+         "tape_dir": S.KEEP_ROOT, "out_root": S.SIM_ROOT + "/u1-test", "u1": {"table_a": str(ta), "table_a_sha256": hashlib.sha256(ta.read_bytes()).hexdigest(), "hr_exclusion": True}}
     m.update(extra)
     return m
 
@@ -594,7 +595,7 @@ def test_launcher_list_min_slot_over_all_creates_sorted_atomic_0440_with_counts(
     assert got[0] == {"launcher": "A", "first_create_slot": 100}            # min over ALL create rows, not the graduate's own create slot
     assert got[1]["first_create_slot"] == (S_S - 3 * DAY + 500 - 600) * 2 and ga_slot > 100
     assert mode_of(path) == 0o440 and not (tmp_path / (U.LAUNCHER_LIST + ".tmp")).exists()
-    assert st.counts["u1_launchers_listed"] == 2 and st.counts["u1_launchers_first_slot_from_graduate_only"] == 1   # B only: A's chosen slot predates its graduate
+    assert st.counts["u1_launchers_listed"] == 2 and st.counts["u1_first_slot_below_graduate_create"] == 1   # A only: its chosen slot predates its graduate's create slot
     by_hour = [json.loads(x) for x in (tmp_path / U.LAUNCHER_LIST_BY_HOUR).read_text().splitlines()]
     assert by_hour == [{"hour": "h", "launchers": 2, "sha256": hashlib.sha256(data).hexdigest()}] and mode_of(tmp_path / U.LAUNCHER_LIST_BY_HOUR) == 0o440
     # a second warm-up hour rewrites (never appends) the list and adds one by-hour record
@@ -613,10 +614,10 @@ def test_launcher_list_slot_rule_is_one_switch_and_the_u1_fetcher_reads_the_list
         U.first_create_slot(dec.reg, "A", rule="nope")
     U.FIRST_CREATE_SLOT_RULE, old = "earliest_graduate", U.FIRST_CREATE_SLOT_RULE
     try:
-        rows, same = U.launcher_list_rows(dec.reg)
+        rows, below = U.launcher_list_rows(dec.reg)
     finally:
         U.FIRST_CREATE_SLOT_RULE = old
-    assert rows[0]["first_create_slot"] == (S_S - 3 * DAY - 600) * 2 and same == 2
+    assert rows[0]["first_create_slot"] == (S_S - 3 * DAY - 600) * 2 and below == 0
     import u1_funder_fetch as F
     n, sha, _ = U.write_launcher_list(dec.reg, tmp_path / "again.jsonl")
     got = F.read_launcher_list(str(tmp_path / "again.jsonl"))
@@ -683,10 +684,11 @@ def test_plan_subcommand_builds_the_plan_prints_sha_and_counters_only_and_never_
     hr_end = S_S + 3600
     late = {"kind": "gate", "pool": "PL", "mint": "L", "pc_s": hr_end - 1000, "entered": True}
     pi.write_text(json.dumps(late) + "\n" + json.dumps({"kind": "universe", "pool": "PL", "mint": "L", "pc_s": hr_end - 1000}) + "\n")
-    uni, ents, gate = U.read_plan_input(pi, through_hour=START)
-    assert ents == [] and gate == set() and uni == []
-    uni, ents, gate = U.read_plan_input(pi, through_hour="2026-11-20T01")
-    assert len(ents) == 1 and gate == {"L"}
+    # P + 2,160 s must lie in a closed hour (Q7): P = hr_end - 1000 -> P + 2160 = hr_end + 1160, in hour 01; through hour 00 -> not ripe (still a gate pass: never drawn), through hour 01 -> ripe
+    uni, ents, gate, nr = U.read_plan_input(pi, through_hour=START)
+    assert ents == [] and gate == {"L"} and nr == 1 and len(uni) == 1
+    uni, ents, gate, nr = U.read_plan_input(pi, through_hour="2026-11-20T01")
+    assert len(ents) == 1 and gate == {"L"} and nr == 0
 
 
 # ---------------------------------------------------------------------------------------------------------------------------- B4 strict gap exclusion for U1
@@ -716,7 +718,7 @@ def test_u1_gap_between_decision_and_exit_removes_the_trade_and_the_disclosure_i
     f.write_text("".join(json.dumps(r) + "\n" for r in rows))
     ta = tmp_path / "a.jsonl"
     ta.write_text("")
-    u1 = {"table_a": str(ta), "hr_exclusion": True}
+    u1 = {"table_a": str(ta), "table_a_sha256": hashlib.sha256(ta.read_bytes()).hexdigest(), "hr_exclusion": True}
     if decider == "u1_placebo":
         plan = tmp_path / "plan.json"
         u1.update(placebo_plan=str(plan), placebo_plan_sha256=U.write_placebo_plan({}, {}, plan))
@@ -743,7 +745,7 @@ def test_u1_has_no_placebo_bot_and_the_engine_default_exclusion_is_not_gap_in_ho
 def test_cap_open_stale_is_never_shown_as_zero_without_an_exact_count():
     for counts in ({}, {"cap_open_stale": 0}, {"cap_open_stale": 7, "cap_open": 7}):
         assert U.board_disclosures(counts) == [U.CAP_OPEN_NOT_COMPUTED]
-    assert U.CAP_OPEN_NOT_COMPUTED == "cap_open_stale not computed; cap_open counts the book's own entries for a full 6 h (stops ignored)"
+    assert U.CAP_OPEN_NOT_COMPUTED == ("cap_open_stale not computed; cap_open counts the book's own entries for a full 6 h (stops ignored), so it may refuse entries an exact count would have taken.")
     dec = new_decider(open_fn=lambda: 10)
     entries, st = flow(dec, history_rows("A", 3), candidate("A"))
     assert entries == [] and st.counts["cap_open"] == 1 and "cap_open_stale" not in st.counts and dec.exact_open_fn is None
