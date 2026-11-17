@@ -1417,3 +1417,51 @@ Written 2026-11-17 (`date -u`) by a records worker for the manager; records only
 - **(d) The #1433 nit.** PR #1433 (Am.9 osb-u4/osb-u2 pin re-issue to `c58f0ee4`) merged 2026-11-17T00:46:27Z after QP OK and REVIEWER APPROVE at `dcf99392`. Reviewer nit, as written: "section header ~l.901 still says re-pinned to 49dbf7ca". QP note, as written: "late start must not move S, skip hours or depend on another book's post-S figure".
 
 No book has cleared the promotion gate. Nothing here says any book makes money.
+
+## Amendment 12 (2026-11-17): floor-lane-1 lifetime budget 2.10 to 4.00 SOL, with an owner wallet top-up; stake, daily stop and open cap unchanged (DRAFT)
+
+**Status: DRAFT until merge. NOT installed. It authorises nothing until QP OK and REVIEWER APPROVE at the exact head, the merge, the owner's word quoted below, every precondition below met and recorded, and a Helm install.** Drafted 2026-11-17 (`date -u` about 21:4xZ) by manager24 at main 784e8aea. No book has cleared the promotion gate, and nothing here says FLOOR makes money. No gate threshold, seal or clock changes.
+
+**Decider.** Vaan (owner).
+
+**The owner's word.** PENDING. The manager asked on 2026-11-17 about 21:1xZ: "Do you approve budget 4.00 plus 1.5 SOL, or the smaller 3.50 plus 1.0?" The answer is quoted here verbatim before review. If the owner picks 3.50 plus 1.0, every 4.00 / 1.5 figure below is replaced by the 3.50 / 1.0 row of the capacity table.
+
+**What this amendment changes, and only this.**
+1. `budget_lamports` (Am.3 full-wipe bound and `committed_loss_stop`) 2,100,000,000 to **4,000,000,000**. This is the code ceiling `LANE_BUDGET_MAX_LAMPORTS` merged in PR #1439 (5fc473b5); no new code ceiling.
+2. The executor code tree moves from `e5fd255b` to a main commit at or after `5fc473b5` (named by sha in the HELM-ASK). That tree carries #1409 (927d140e) and #1410 (d8dad7b9): opt-in batched pre-send reads and per-stage time stamps. The config does **not** set `presend_batch`, so the pre-send reads stay serial as now (absent = false, `parse_presend_batch`). Turning `presend_batch` on is a later, separate step with its own measure window, never in this install.
+3. The owner adds SOL to the lane wallet (1.5 SOL at the recommended row). This is the owner's own transfer, not a config value. The wallet floor (0.75 SOL, held once) is unchanged.
+
+Unchanged: stake 0.25 SOL; daily stop 0.50 SOL (`FLOOR_LANE_DAILY_MAX_LAMPORTS`, checked before an entry only); `max_open` 16; reserve 3,860,000 per position; `rpc_rps` 4.0; rule `l1-floor-v2`; the decision host (never restarted); A3 pauses; every recon band; the promotion gate; §2 limits other than the budget. It overrides §6 for floor-lane-1 only, as Amendments 4 to 6 and 11 did.
+
+**Why (counts from the manager's hourlies; paper figures labelled).**
+- With 8 positions open at 0.25 the budget headroom is 0.241314980 SOL, below the 0.25386 SOL one more open needs, so every new FLOOR signal is refused by the budget (hourlies #2979 to #2985, 2026-11-17).
+- The open-sim recon (book A, paper, no limit layer, window to 2026-11-17T20:00Z) counts 8 `sim_only` rows with reason `executor:lane_budget` on 2026-11-17: signals book A took and live did not. One has closed in book A, osb-a-00021, at its take-profit: **+0.5503 SOL flat / +0.5213 pressure at 0.25 (paper model; SIM OFF, recon FAIL; not decision-grade)**. Seven are still open. Tracker: `ops/manager24/missed-tracker.py`.
+- On the one 0.25 trade closed both live and in book A (osb-a-00022), live netted +0.129651905 SOL and book A +0.089570 SOL.
+
+**Capacity at 0.25** (reserve 3,860,000; full-wipe budget slots = floor(budget / 253,860,000); wallet floor held once: the next open needs 250,000,000 + 160,000 + 2,100,000 + (n + 1) x 1,600,000 + 750,000,000 of free balance, and each landed open takes about 252,260,000; computed from the free balance 1,286,736,501 lamports with n = 8 open at hourly #2985; recomputed at the ask):
+
+| budget | +0 SOL | +0.5 | +1.0 | +1.5 | +2.0 |
+| --- | --- | --- | --- | --- | --- |
+| 2.10 (now) | 8 | 8 | 8 | 8 | 8 |
+| 3.00 | 10 | 11 | 11 | 11 | 11 |
+| 3.50 | 10 | 12 | 13 | 13 | 13 |
+| 4.00 | 10 | 12 | 14 | 15 | 15 |
+
+The budget alone (no top-up) admits at most 10 open, because the wallet floor binds first. At 4.00 with +1.5 SOL: 15 open at once, about 3.78 SOL of stake out. These are structural counts, not a forecast of entries.
+
+**Price impact (§6).** Unchanged per trade: the stake stays 0.25, so Am.6 "Price impact" stands (round-trip about 0.007 SOL per trade, model figures). Positions are in distinct pools (one open per pool), so more concurrent positions add exposure, not impact on each other.
+
+**Risk in plain words.** The lane can lose up to the 4.00 SOL budget over its life, against 2.10 now. With the top-up the wallet holds about 4.8 SOL at cost (free balance plus open stakes, at the ask), above a 0.75 SOL floor. The daily stop (0.50 SOL, marked P&L, checked before an entry only) halts new entries on a dip of about 13% of the marks with 15 open, and one UTC day can lose more than 0.50 SOL. Evidence is thin: live at 0.25 is 1 closed trade before tonight's time stops; the November paper all-entries mean at 0.25 is about zero with a negative ex-top-3 (Am.6 Errata 2 and 3); the missed-signal figure above rests on one paper take-profit. This step buys more live fills at the same size; it is not a measured edge.
+
+**Install preconditions (all recorded in the state file before the HELM-ASK).**
+1. QP OK and REVIEWER APPROVE at the exact head of this amendment's PR, merged; the owner's word quoted above.
+2. The eight 0.25 positions open at drafting have had their exits sent, and no sell failed with a non-transient error (a non-transient sell failure is a lane STOP trigger, HANDOFF section 1). Their realized total is reported to the owner as it is.
+3. Am.6 post-install check: if the 10th closed 0.25 trade has happened before the ask, `tools.floor_fills_vs_model` is run on the ten and must print `FILLS_MATCH_MODEL yes`; a `no` stops this amendment (and Am.6's own rollback applies). If it has not happened, the check runs at the 10th closed 0.25 trade as Am.6 says, under either config.
+4. Tests at the install tree's commit: `tools/test_floor_lane_executor.py` (including the 4.0 ceiling and the 3.0 SOL pre-send test of #1439) and the #1409/#1410 tests, run by a manager job, all passing.
+5. Lane STOP file, wallet-wide STOP and HALT absent; the A3 guard not pausing FLOOR; no install within 15 minutes before a time stop; open positions and lane cash recorded (an executor restart empties the marks, Am.4 item 6).
+6. The owner's top-up has landed and the free balance is recorded; the capacity table is recomputed at that balance and n, and the ask states the lower of the budget and wallet-floor counts.
+7. **Install by Helm, one HELM-ASK**, executor-only restart. It names the install tree by sha, the config = the running `live-e5fd255b43ddfda09eb7cf49f6477cda0bf08797-s025.json` (sha256 `705748817ff35f9a053311487c7250501f56b2aa04c81b532d791d0335103f68`) with exactly one value changed (`budget_lamports` 4000000000) and no `presend_batch` key, the new config path, a new drop-in, and the rollback: remove the new drop-in, daemon-reload, restart the executor only (falls back to `zzzzzz-s025.conf`, tree `e5fd255b`, budget 2.10). The executor start line must read `stake=250000000 rpc_rps=4.0` (plus any field #1410 adds).
+
+**Post-install check.** The first live buy after the install must land with no new refusal word in `entry_refused` / `buy_port_refused`; the item 5 (c) RPC-error count rule of Amendment 10 applies to the new start line (more than 1 counted row = rollback ask). The missed-signal tracker keeps running; it is paper and decides nothing.
+
+**Scaling past this step.** A stake above 0.25 SOL or a budget above 4.00 SOL needs a new amendment with the owner's word and a price-impact estimate (§6); a budget above 4.00 also needs a code-ceiling PR.
