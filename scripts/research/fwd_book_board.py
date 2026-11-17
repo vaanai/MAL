@@ -155,7 +155,7 @@ def read_counts(root):
 
 
 def new_bot():
-    return {"opens": {}, "trades": {}, "excluded": {}, "refused": collections.Counter(), "refused_rows": {}, "malformed": 0, "pre_s": 0}
+    return {"opens": {}, "trades": {}, "excluded": {}, "excluded_written": {}, "refused": collections.Counter(), "refused_rows": {}, "malformed": 0, "pre_s": 0}
 
 
 def read_ledger(root, run, s_ms):
@@ -200,6 +200,7 @@ def read_ledger(root, run, s_ms):
                         b["malformed"] += 1
                 elif k == "excluded":
                     b["excluded"].setdefault(pid, str(r.get("exclusion_reason") or "unknown"))
+                    b["excluded_written"].setdefault(pid, r.get("written_ms") if _isint(r.get("written_ms")) else None)
                 elif k == "refused" and _isint(dm):
                     b["refused_rows"].setdefault(pid, (str(r.get("reason") or r.get("refusal") or "unknown")[:40], dm))
         out[bdir.name] = b
@@ -212,7 +213,7 @@ def clip(b, until):
         return b
     opens = {p: t for p, t in b["opens"].items() if t < until}
     return dict(b, opens=opens, trades={k: t for k, t in b["trades"].items() if _isint(t["entry"]) and t["entry"] < until},
-                excluded={p: r for p, r in b["excluded"].items() if p in opens}, refused_rows={p: v for p, v in b["refused_rows"].items() if v[1] < until})
+                excluded={p: r for p, r in b["excluded"].items() if p in opens and (b["excluded_written"].get(p) is None or b["excluded_written"][p] < until)}, refused_rows={p: v for p, v in b["refused_rows"].items() if v[1] < until})
 
 
 # ------------------------------------------------------------------------------------------------------------------------------ numbers
@@ -277,7 +278,7 @@ def entries_excluded(b, s_ms):
     priced = {p for (p, _s) in b["trades"] if p in ent}
     by = collections.Counter(exc.values())
     return {"forward_entries": len(req), "engine_refused": len(ref), "excluded": len(exc), "excluded_by_reason": dict(sorted(by.items())),
-            "excluded_share": (len(exc) / len(req)) if req else None, "priced_positions": len(priced), "no_trade_row_yet": len(ent - set(exc) - priced),
+            "excluded_share": (len(exc) / len(req)) if req else None, "excluded_without_written_ms": sum(1 for p in exc if p in b["excluded"] and b.get("excluded_written", {}).get(p) is None), "priced_positions": len(priced), "no_trade_row_yet": len(ent - set(exc) - priced),
             "refusals_by_reason": dict(sorted(collections.Counter(ref.values()).items()))}
 
 
@@ -493,6 +494,7 @@ def render(o):
     L += ["", "## Entries and exclusions (the book's own bot)", ""]
     e = o["entries"]
     L += ["- requested forward entries %d (incl. %d engine-refused); excluded %d (engine-excluded + engine-refused; share %s); priced positions %d; no trade row yet %d" % (e["forward_entries"], e["engine_refused"], e["excluded"], f6(e["excluded_share"]), e["priced_positions"], e["no_trade_row_yet"]),
+          "- excluded rows with no written_ms (counted as excluded): %d" % e.get("excluded_without_written_ms", 0),
           "- excluded by reason: %s" % (json.dumps(e["excluded_by_reason"], sort_keys=True) if e["excluded_by_reason"] else "none"),
           "- engine refusals by reason (counted in the excluded share above): %s" % (json.dumps(e["refusals_by_reason"], sort_keys=True) if e["refusals_by_reason"] else "none")]
     g = o["gap_exclusions"]

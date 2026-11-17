@@ -47,14 +47,14 @@ class Fx:
             for r in rows:
                 fh.write(json.dumps(r) + "\n")
 
-    def entry(self, bot, entry_ms, exit_ms, nets, stakes=(0.1, 0.25), excluded=None, run=None):
+    def entry(self, bot, entry_ms, exit_ms, nets, stakes=(0.1, 0.25), excluded=None, run=None, written_ms=None):
         """one position: open row + a trade row per stake (nets: {stake: (flat_lamports, press_lamports)}) or excluded rows"""
         self.n += 1
         pid = "p%d-%s" % (self.n, bot)
         rows = [{"kind": "open", "position_id": pid, "bot_id": bot, "decision_ms": {"entry": entry_ms, "exit": None}}]
         for s in stakes:
             if excluded:
-                rows.append({"kind": "excluded", "position_id": pid, "bot_id": bot, "stake_sol": s, "decision_ms": {"entry": entry_ms, "exit": exit_ms}, "exclusion_reason": excluded, "legs": None})
+                rows.append({"kind": "excluded", "position_id": pid, "bot_id": bot, "stake_sol": s, "decision_ms": {"entry": entry_ms, "exit": exit_ms}, "exclusion_reason": excluded, "legs": None, **({"written_ms": written_ms} if written_ms is not None else {})})
             else:
                 f, p = nets[s] if isinstance(nets, dict) else (nets[0] * s / 0.1, nets[1] * s / 0.1)
                 rows.append({"kind": "trade", "position_id": pid, "bot_id": bot, "stake_sol": s, "decision_ms": {"entry": entry_ms, "exit": exit_ms}, "exit_reason": "timed",
@@ -515,3 +515,31 @@ def test_ledger_files_go_through_the_guard(tmp_path):
     (fx.run / "ledger" / fx.bot / "trades-2026-11-30.jsonl").symlink_to(outside)
     with pytest.raises(B.Refused, match="outside"):
         fx.build(S + 2 * D)
+
+
+def test_exclusion_written_after_read_instant_stays_in_denominator_only(tmp_path):
+    fx = Fx(tmp_path, tape_end=LATE_TAPE)
+    good_book(fx)
+    for i in range(6):
+        fx.entry(fx.bot, S + (i + 1) * H, S + (i + 2) * H, None, excluded="feed_gap_exit", written_ms=L1 + D)     # written after the read instant L1
+    live = fx.build(L1 + 2 * D)
+    assert live["bar"]["frozen"]["entries"]["excluded"] == 0 and live["bar"]["frozen"]["entries"]["forward_entries"] == 16
+    assert live["bar"]["frozen"]["entries"]["excluded_share"] == 0 and live["bar"]["verdict"] == "GO"
+    assert live["entries"]["excluded"] == 6                         # the live (unfrozen) view sees them
+    fx2 = Fx(tmp_path / "w", tape_end=LATE_TAPE)
+    good_book(fx2)
+    for i in range(6):
+        fx2.entry(fx2.bot, S + (i + 1) * H, S + (i + 2) * H, None, excluded="feed_gap_exit", written_ms=L1 - H)   # written before: counted
+    o = fx2.build(L1 + 2 * D)
+    assert o["bar"]["frozen"]["entries"]["excluded"] == 6 and o["bar"]["verdict"] == "NO-GO"
+
+
+def test_exclusion_without_written_ms_counts_and_is_reported(tmp_path):
+    fx = Fx(tmp_path, tape_end=LATE_TAPE)
+    good_book(fx)
+    for i in range(6):
+        fx.entry(fx.bot, S + (i + 1) * H, S + (i + 2) * H, None, excluded="missing_v")
+    o = fx.build(L1 + 2 * D)
+    e = o["bar"]["frozen"]["entries"]
+    assert e["excluded"] == 6 and e["excluded_without_written_ms"] == 6 and o["bar"]["verdict"] == "NO-GO"
+    assert "no written_ms (counted as excluded): 6" in B.render(o)
