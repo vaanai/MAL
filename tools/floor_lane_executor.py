@@ -7,7 +7,7 @@ SWITCHES. A real send needs ALL of: config mode "live", the `--live` flag, the l
 immediately before EVERY buy. Any one missing runs DRY (a DryPort: logged, never sent) or refuses to start. Only the manager starts the book (DEC-035 s3).
 
 LIMITS (DEC-035 s2; the shared ledger is the h5-lane ledger, tools/h5_lane_executor.LaneLedger, taken under its flock and read before every send)
-  1 BUDGET      lane P&L <= -budget: the budget stop writes the lane STOP file and no entry goes. An entry goes only if the full-wipe lane P&L - (new stake + fee reserve per position) > -budget. Code ceiling 2.10 SOL (DEC-035 Am.6; 0.30 at s2, 0.60 Am.4, 1.20 Am.5); the live config sets the value in use.
+  1 BUDGET      lane P&L <= -budget: the budget stop writes the lane STOP file and no entry goes. An entry goes only if the full-wipe lane P&L - (new stake + fee reserve per position) > -budget. Code ceiling 4.0 SOL (budget-raise amendment pending; 2.10 at DEC-035 Am.6, 0.30 at s2, 0.60 Am.4, 1.20 Am.5); the live config sets the value in use.
                 Open positions are marked at the last fresh quote; a mark older than mark_stale_s (<= 60) is worth 0.
   2 STAKE       FLOOR_LANE_STAKE_BOUNDS_LAMPORTS, one named constant (code ceiling 0.02 to 0.25 SOL, DEC-035 Am.6; the live config sets the stake in use). The configured stake outside it: the executor refuses to start. One entry per position.
   3 OPEN        at most LANE_MAX_OPEN (code ceiling 16; the live config sets the value in use, 8 at DEC-035 Amendment 1, 2026-11-08) across the lane, counted in the shared ledger. A full lane refuses the entry with reason `lane_full` (first come, first served).
@@ -55,7 +55,7 @@ LANE_MAX_OPEN_DEFAULT = 8  # what a lane block without max_open gets (unchanged 
 # real limits, so the live port lifts the probe's counters far above anything the lane can reach. FloorLanePort.__init__ applies them to ex.limits.
 LANE_PROBE_MAX_ATTEMPTS = 100_000
 LANE_PROBE_MAX_DAYS = 60.0
-LANE_BUDGET_MAX_LAMPORTS = 2_100_000_000  # a ceiling only (read by floor-lane-1 validation alone; the DSL lane has DSL_LANE_BUDGET_MAX_LAMPORTS); the live config sets budget_lamports. DEC-035 Am.5 (owner, 2026-11-12): 0.60 -> 1.20 SOL lifetime; Am.6: 1.20 -> 2.10 SOL
+LANE_BUDGET_MAX_LAMPORTS = 4_000_000_000  # a ceiling only (read by floor-lane-1 validation alone; the DSL lane has DSL_LANE_BUDGET_MAX_LAMPORTS); the live config sets budget_lamports. DEC-035 Am.5 (owner, 2026-11-12): 0.60 -> 1.20 SOL lifetime; Am.6: 1.20 -> 2.10 SOL; DEC-035 amendment (budget raise), pending: ceiling 2.10 -> 4.0 SOL (the live value stays 2.10 until that amendment, the owner's word and a Helm install)
 LANE_BUDGET_DEFAULT_LAMPORTS = 300_000_000  # what a lane block without budget_lamports gets (unchanged from before the step-up)
 LANE_DAILY_MAX_LAMPORTS = 100_000_000  # the SHARED daily ceiling: the DSL lane (tools/forge/dsl_lane_executor.py, a pinned blob) reads it. DEC-035 Am.5 does not move it
 FLOOR_LANE_DAILY_MAX_LAMPORTS = 500_000_000  # floor-lane-1 only: DEC-035 Am.5 (owner, 2026-11-12) 0.10 -> 0.20 SOL daily stop ceiling; Am.6: 0.20 -> 0.50 SOL
