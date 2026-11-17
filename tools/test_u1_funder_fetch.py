@@ -120,6 +120,66 @@ def test_retry_then_fetch_error_counts_every_request():
     assert f.meter.used == 1 + 4  # one page + 4 attempts
 
 
+def test_version_1_transaction_resolves_and_request_carries_version_1():
+    t = tx([sys_ins("transfer", source=FUNDER, destination=L, lamports=4_000_000)], slot=50)
+    t["version"] = 1
+    m = Mock(sigs={L: [[sig(1)]]}, txs={"s1": t})
+    row = fetcher(m).fetch_launcher(L, 100)
+    assert row["status"] == "resolved" and row["funder"] == FUNDER
+    assert F.MAX_TX_VERSION == 1
+    gt = [c[1][1] for c in m.log if c[0] == "getTransaction"]
+    assert gt and all(o["maxSupportedTransactionVersion"] == 1 and o["encoding"] == "jsonParsed" for o in gt)
+
+
+def test_rpc_32015_is_fetch_error_and_counted_by_code():
+    m = Mock(sigs={L: [[sig(1)]]}, fail={"s1": -32015})
+    f = fetcher(m)
+    assert f.fetch_launcher(L, 100)["status"] == "fetch_error"
+    assert dict(f.rpc_errors) == {("getTransaction", -32015, False): 1}
+    assert f.rpc_errors_by_key() == {"getTransaction|-32015|false": 1}
+    assert F.pilot_record(f, 1000, 1.0)["rpc_errors"] == {"getTransaction|-32015|false": 1}
+
+
+def test_rpc_errors_keyed_by_method_code_retryable():
+    m = Mock(sigs={L: [[sig(1)]]}, fail={"s1": 429})
+    f = fetcher(m)
+    f.fetch_launcher(L, 100)
+    assert f.rpc_errors_by_key() == {"getTransaction|429|true": 4}
+
+
+def test_summary_of_every_mode_carries_rpc_errors(tmp_path, capsys, monkeypatch):
+    import inspect
+    src = inspect.getsource(F.main)
+    assert src.index('"rpc_errors": f.rpc_errors_by_key()') < src.index('summary["pilot_record"]')  # in the base summary, not only the pilot record
+
+
+def _v1(ins, inner=()):
+    t = tx(ins, inner=inner, slot=50)
+    t["version"] = 1
+    return t
+
+
+def _resolve_v1(t):
+    m = Mock(sigs={L: [[sig(1)]]}, txs={"s1": t})
+    return fetcher(m).fetch_launcher(L, 100)["status"]
+
+
+def test_v1_inner_instruction_transfer_resolves():
+    assert _resolve_v1(_v1([], inner=[sys_ins("transfer", source=FUNDER, destination=L, lamports=5_000_000)])) == "resolved"
+
+
+def test_v1_create_account_resolves():
+    assert _resolve_v1(_v1([sys_ins("createAccount", source=FUNDER, newAccount=L, lamports=5_000_000)])) == "resolved"
+
+
+def test_v1_dust_transfer_does_not_count():
+    assert _resolve_v1(_v1([sys_ins("transfer", source=FUNDER, destination=L, lamports=999_999)])) == "no_sol_inflow"
+
+
+def test_v1_nonce_withdrawal_does_not_count():
+    assert _resolve_v1(_v1([sys_ins("withdrawFromNonce", account="N", destination=L, lamports=5_000_000, nonceAuthority="A")])) == "no_sol_inflow"
+
+
 # ---------------------------------------------------------------------------------------------------------------------------- credit cap
 def test_cap_refuses_before_the_call_and_marks_fetch_capped():
     m = Mock(sigs={"L%d" % i: [[sig(1)]] for i in range(10)}, txs={"s1": tx([sys_ins("transfer", source=FUNDER, destination="x", lamports=4_000_000)])})
