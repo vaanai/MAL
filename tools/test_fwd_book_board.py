@@ -29,7 +29,7 @@ class Fx:
         self.sim = tmp / "c1nf-open-sim"
         self.root = self.sim / book_id
         self.book_id = book_id
-        dec = {"c1nf-fwd-v1": "c1nf", "osb-u4": "u4", "osb-u2": "u2", "osb-u1": "u1", "osb-u1-lowrep": "u1_lowrep"}[book_id.split("-lat")[0].split("-send")[0]]
+        dec = {"c1nf-fwd-v1": "c1nf", "osb-u4": "u4", "osb-u2": "u2", "osb-v2-u2": "u2", "osb-u1": "u1", "osb-u1-lowrep": "u1_lowrep"}[book_id.split("-lat")[0].split("-send")[0]]
         self.run = self.root / "runs" / "0001"
         self.run.mkdir(parents=True)
         (self.root / "book").symlink_to(self.run)
@@ -76,7 +76,7 @@ def good_book(fx, n=12, flat=2_000_000, press=1_500_000, plc=(-1_000_000, -1_200
         d = D0 + (i % 6) * D
         e = max(d + 13 * H, S + 1 * H) + i * 60_000
         fx.entry(fx.bot, e, e + 4 * H, (flat, press))
-        if fx.book_id in ("osb-u4", "osb-u2"):
+        if fx.book_id in ("osb-u4", "osb-u2", "osb-v2-u2"):
             fx.entry(fx.bot + "-plc", e, e + 4 * H, plc)
 
 
@@ -259,7 +259,7 @@ def test_labels_and_best_of_n(tmp_path):
     assert "best of 57 rows" in " ".join(d["text"] for d in o["disclosures"]) and o["n_books_watched_source"].startswith("--n-watched")
 
 
-@pytest.mark.parametrize("name", [n for n in dir(T) if n.isupper()])
+@pytest.mark.parametrize("name", [n for n in dir(T) if n.isupper() and not n.startswith("QP1118_")])  # QP1118_* are QP-ruling text, tested below
 def test_disclosure_constants_are_verbatim_in_dec(name):
     assert getattr(T, name) in DEC_TEXT
 
@@ -548,11 +548,12 @@ def test_exclusion_without_written_ms_counts_and_is_reported(tmp_path):
 
 # ------------------------------------------------------------------------------------------------------------------------------ U1 (osb-u1, osb-u1-lowrep)
 # md5 of the board JSON / MD of the three existing books on the fixtures below, taken on the code BEFORE the U1 change (main aa26cba9); they must not move.
+# 2026-11-18 (QP-RULING-1118-u2-v2): the two osb-u2 rows were moved deliberately (osb-u2 now also prints the v1-defect disclosure); the c1nf and u4 rows are unchanged.
 BASELINE_MD5 = {
     'c1nf-fwd-v1/before': ('8d692d61a409ab0d7062338b733d37b1', 'ec6490a1270407d6325fa36ede8ff8e4'),
     'c1nf-fwd-v1/look': ('01209671ca5f5d3020c5f99877d37b50', 'b50a6f89d006697bab7a400bc4e8d8fb'),
-    'osb-u2/before': ('26f549e4595d8f20c7d57711008382d0', 'a87d9ecc7586570ef1e3631ef849214b'),
-    'osb-u2/look': ('8ed78460a10889d2d0e52275a3e49fa9', 'b45e915596dd4596e80d4ea89ade5c37'),
+    'osb-u2/before': ('ad1e4c1326e5a9a6befd94c885fad7a0', 'b1da65ce7fe8c4eaa289cba429ba3fa2'),
+    'osb-u2/look': ('7ccf6cf3d7646d5e50ba1cb48f5553aa', '7c28897aef555623c07e7d4c2f62991a'),
     'osb-u4/before': ('c0068feddabe3d447eccba0d4bb16874', 'f73a0cc12d44e68c9abb359361ace6d0'),
     'osb-u4/look': ('613cf88e9dcc2b2862b82502e213266e', '10f27d0472a44669094ba3f5776aca0d'),
 }
@@ -794,3 +795,68 @@ def test_u1_replay_in_progress_shows_no_cells(tmp_path):
     (fx.root / "status.json").write_text(json.dumps({"last_hour": "warm", "last_hour_end_ms": fx.start - D, "active": False, "run": "0002"}))
     o = fx.build(fx.start + 6 * D, n_watched=39)
     assert o["look_state"] == "replay" and o["cells"] == {} and o["u1_counters_by_day"] == {} and o["bar"]["verdict"] is None
+
+
+# ------------------------------------------------------------------------------------------------------------------------------ osb-v2-u2 (QP-RULING-1118-u2-v2 section 4)
+RULING_FILE = Path("/data/mal/hunt-1008/ops/QP-RULING-1118-u2-v2.md")
+V1_DEFECT_TEXT = ("osb-u2 (U2 v1) has a simulator defect found from code on 2026-11-18 (QP-RULING-1118-u2-v2): its pricing engine was not fed warm-up hours and dropped pools quiet for more than 20,000 slots (about 2.2 h), while U2 picks pools whose last print can be up to 6 h old. Picks the engine had not seen were refused (no_prints), and at the first mark the slot clock was not ready (clock_not_ready). As of <instant>: <r> of <N> forward entries refused (no_prints <a>, clock_not_ready <b>); placebo <r_p> of <N_p>. Its priced trades are a subset biased towards recently active pools. osb-u2 cannot license U2 by itself; its look is reported beside osb-v2-u2 and never pooled with it.")
+V2_TEXT = ("osb-v2-u2 (U2 v2) uses the same decider and constants as osb-u2 (decision md5 equal on fixtures) and differs only in pricing coverage: its engine is fed the 7 h before S2 and never prunes pools (trim_history only). It is the second book of the same rule, started after the first book's early board was visible; treat any good number as shrunk (best of <n_books_watched> rows, osb-u2's 9 included).")
+
+
+def test_ruling_constants_match_ruling_file():
+    assert T.QP1118_U2_V1_DEFECT == V1_DEFECT_TEXT and T.QP1118_V2_U2 == V2_TEXT
+    try:
+        txt = RULING_FILE.read_text()
+    except OSError:
+        pytest.skip("ruling file not readable here")
+    assert '> "' + V1_DEFECT_TEXT + '"' in txt and '> "' + V2_TEXT + '"' in txt
+
+
+def test_v2_u2_builds_like_u2_with_its_disclosure(tmp_path):
+    fx = Fx(tmp_path / "v2", "osb-v2-u2")
+    good_book(fx)
+    fx.refuse_row(fx.bot, S + 3 * H)
+    o = fx.build(L1, n_watched=66)
+    assert o["decider"] == "u2" and o["book_id"] == "osb-v2-u2" and o["bar"]["shown"] and o["n_books_watched"] == 66
+    md = B.render(o)
+    assert V2_TEXT.replace("<n_books_watched>", "66") in md
+    assert "<n_books_watched>" not in md and "osb-u2 (U2 v1) has a simulator defect" not in md
+    assert T.U2_SEC4.replace("<n_books_watched>", "66") in md and T.BOUNDED in md and "Random-pick" in md
+    assert "The 9 rows of this book" in md
+    ids = [d["id"] for d in o["disclosures"]]
+    assert ids.count("osb-v2-u2 (QP-RULING-1118-u2-v2 section 4)") == 1
+    # same board as osb-u2 apart from the id and the disclosures
+    fu = Fx(tmp_path / "v1", "osb-u2")
+    good_book(fu)
+    fu.refuse_row(fu.bot, S + 3 * H)
+    ou = fu.build(L1, n_watched=66)
+    for k in ("cells", "random_pick", "entries", "random_pick_entries", "bar", "forward_complete_days"):
+        assert o[k] == ou[k]
+
+
+def test_v2_u2_n_watched_floor_and_twins_refused(tmp_path):
+    fx = Fx(tmp_path, "osb-v2-u2")
+    with pytest.raises(B.Refused):
+        fx.build(L1, n_watched=29)
+    for sfx in ("-lat3010", "-lat5590", "-send160k"):
+        t = Fx(tmp_path / ("t" + sfx), "osb-v2-u2" + sfx)
+        with pytest.raises(B.Refused):
+            t.build(L1)
+
+
+def test_u2_v1_defect_disclosure_filled_unrounded(tmp_path):
+    fx = Fx(tmp_path, "osb-u2")
+    good_book(fx, n=4)
+    fx.refuse_row(fx.bot, S + 2 * H, "no_prints: no prints seen for pool")
+    fx.refuse_row(fx.bot, S + 3 * H, "no_prints: no prints seen for pool")
+    fx.refuse_row(fx.bot, S + 4 * H, "clock_not_ready")
+    fx.refuse_row(fx.bot + "-plc", S + 2 * H, "no_prints: no prints seen for pool")
+    now = S + 2 * D
+    o = fx.build(now)
+    want = (V1_DEFECT_TEXT.replace("<instant>", o["generated_utc"]).replace("<r>", "3").replace("<N>", "7").replace("<a>", "2").replace("<b>", "1")
+            .replace("<r_p>", "1").replace("<N_p>", "5"))
+    assert o["entries"]["forward_entries"] == 7 and o["random_pick_entries"]["forward_entries"] == 5
+    assert want in B.render(o) and "<r>" not in want
+    # the other boards do not carry it
+    for bid in ("osb-u4", "c1nf-fwd-v1", "osb-v2-u2"):
+        assert "simulator defect found from code" not in B.render(Fx(tmp_path / bid, bid).build(now))

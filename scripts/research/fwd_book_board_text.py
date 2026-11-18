@@ -145,3 +145,13 @@ U1_PILOT_D2 = (
 U1_DISC13 = (
     'U1R ADD1 (3) placebo-lag disclosure is replaced by (5) above for this book (QP-RULING-1117-u1-start Q7).'
 )
+
+
+# QP-RULING-1118-u2-v2 section 4, verbatim (a QP ruling, not DEC text: the DEC-verbatim test skips these two)
+QP1118_U2_V1_DEFECT = (
+    'osb-u2 (U2 v1) has a simulator defect found from code on 2026-11-18 (QP-RULING-1118-u2-v2): its pricing engine was not fed warm-up hours and dropped pools quiet for more than 20,000 slots (about 2.2 h), while U2 picks pools whose last print can be up to 6 h old. Picks the engine had not seen were refused (no_prints), and at the first mark the slot clock was not ready (clock_not_ready). As of <instant>: <r> of <N> forward entries refused (no_prints <a>, clock_not_ready <b>); placebo <r_p> of <N_p>. Its priced trades are a subset biased towards recently active pools. osb-u2 cannot license U2 by itself; its look is reported beside osb-v2-u2 and never pooled with it.'
+)
+
+QP1118_V2_U2 = (
+    "osb-v2-u2 (U2 v2) uses the same decider and constants as osb-u2 (decision md5 equal on fixtures) and differs only in pricing coverage: its engine is fed the 7 h before S2 and never prunes pools (trim_history only). It is the second book of the same rule, started after the first book's early board was visible; treat any good number as shrunk (best of <n_books_watched> rows, osb-u2's 9 included)."
+)

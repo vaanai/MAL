@@ -28,7 +28,7 @@ OUT_ROOTS = (SIM_ROOT + "/board", "~/data/open-sim")
 NEVER_OPEN = ("tape-", "ledger-src", "wallet-ledger", "duckdb-tmp")
 RULE, LAT = "total", "1p9"
 DAY_MS, HOUR_MS, BOOK_LAG_MS = 86_400_000, 3_600_000, 90 * 60_000
-DECIDING = {"c1nf-fwd-v1": "c1nf", "osb-u4": "u4", "osb-u2": "u2", "osb-u1": "u1", "osb-u1-lowrep": "u1_lowrep"}
+DECIDING = {"c1nf-fwd-v1": "c1nf", "osb-u4": "u4", "osb-u2": "u2", "osb-v2-u2": "u2", "osb-u1": "u1", "osb-u1-lowrep": "u1_lowrep"}
 U1_DECIDERS = ("u1", "u1_lowrep")
 SUFFIXES = ("-lat3010", "-lat5590", "-send160k")
 ROWS_PER_BOOK = {"c1nf": 12, "u4": 9, "u2": 9, "u1": 9, "u1_lowrep": 0}  # DEC-035 Am.9 records: 4 stakes x 3 latencies, 3 x 3, 3 x 3 (the 160,000 column does not count)
@@ -148,7 +148,7 @@ def load_book(out_root, roots=None):
         if book_id.endswith(sfx):
             raise Refused("twin / fee out_roots (-lat3010, -lat5590, -send160k) get no figures: their readers (the --compare decision-md5 identity check, ADD2 (a)2; the 160,000 reader, ADD1 (b)) are not built")
     if base not in DECIDING:
-        raise Refused("unknown book id: only c1nf-fwd-v1, osb-u4, osb-u2, osb-u1, osb-u1-lowrep (and their -lat3010 / -lat5590 / -send160k twins)")
+        raise Refused("unknown book id: only c1nf-fwd-v1, osb-u4, osb-u2, osb-v2-u2, osb-u1, osb-u1-lowrep (and their -lat3010 / -lat5590 / -send160k twins)")
     meta, status = read_json(root, "meta.json"), read_json(root, "status.json")
     if meta.get("book_id") != book_id or meta.get("decider") != DECIDING[base]:
         raise Refused("meta.json book_id / decider does not match the out_root")
@@ -489,11 +489,11 @@ def build(out_root, now_ms, n_watched, roots=None):
         out["pools_first_seen_in_warmup"] = None
         out["disclosures"] = u1_disclosures(dec, nw, gtot, ex, summed, look, replay, counts)
         return out
-    out["disclosures"] = disclosures(dec, nw, meta, gtot, ex)
+    out["disclosures"] = disclosures(dec, nw, meta, gtot, ex, bk["book_id"], out["generated_utc"], plc_ex)
     return out
 
 
-def disclosures(dec, nw, meta, gtot, ex):
+def disclosures(dec, nw, meta, gtot, ex, book_id=None, generated_utc=None, plc_ex=None):
     # meta.pools_first_seen_in_warmup counts pools first seen in W; it is the C1-NF warm-up sentence's number. The U4 / U2 sentence asks for mints excluded for history before W, which the runner does not record.
     warm_n = meta.get("pools_first_seen_in_warmup") if dec == "c1nf" else None
     warm_txt = str(warm_n) if warm_n is not None else "not recorded by the runner"
@@ -514,9 +514,23 @@ def disclosures(dec, nw, meta, gtot, ex):
             gap = getattr(T, k + "_GAP") + " [counts: gap_exclusions.json not present yet; the template's <n> <N> <timed> <requested> are unfilled]"
         out += [("2 ADD1 A1 gap", gap), ("3 warm-up (ruling 0.3)", getattr(T, k + "_WARMUP").replace("<n>", warm_txt)), ("bounded state (QP on PR #1432)", T.BOUNDED),
                 ("code.sha256 note (Erratum 1)", T.E1_CODE_SHA)]
+    if book_id == "osb-v2-u2":
+        out.append(("osb-v2-u2 (QP-RULING-1118-u2-v2 section 4)", T.QP1118_V2_U2.replace("<n_books_watched>", str(nw))))
+    if book_id == "osb-u2":
+        out.append(("osb-u2 v1 defect (QP-RULING-1118-u2-v2 section 4)", u2_v1_defect(generated_utc, ex, plc_ex)))
     n_rows = ROWS_PER_BOOK[dec]
     out.append(("rows counted", "The %d rows of this book (stakes x latencies) count in n_books_watched and the best-of-N sentence; the 160,000 column does not." % n_rows))
     return [{"id": a, "text": b} for a, b in out]
+
+
+def u2_v1_defect(generated_utc, ex, plc_ex):
+    """QP-RULING-1118-u2-v2 section 4 osb-u2 disclosure, brackets filled unrounded from this board's own entries and refusal counts"""
+    by = ex.get("refusals_by_reason") or {}
+    a = sum(v for k, v in by.items() if k.startswith("no_prints"))
+    b = sum(v for k, v in by.items() if k.startswith("clock_not_ready"))
+    p = plc_ex or {}
+    return (T.QP1118_U2_V1_DEFECT.replace("<instant>", str(generated_utc)).replace("<r_p>", str(p.get("engine_refused", 0))).replace("<N_p>", str(p.get("forward_entries", 0)))
+            .replace("<r>", str(ex["engine_refused"])).replace("<N>", str(ex["forward_entries"])).replace("<a>", str(a)).replace("<b>", str(b)))
 
 
 # ------------------------------------------------------------------------------------------------------------------------------ U1 additions
