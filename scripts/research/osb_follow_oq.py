@@ -21,7 +21,6 @@ from tools import arena_rule_l1_oq as Q  # noqa: E402
 from tools import floor_lane_host as H  # noqa: E402
 from tools.arena_declog import DecisionLog  # noqa: E402
 from tools.arena_oq_engine import OQEngine, OQHost  # noqa: E402
-from tools.arena_rules_v2 import load_rules_v2  # noqa: E402
 from tools.arena_state import WARM_MIN_DEFAULT, ArenaState  # noqa: E402
 
 UNIVERSES = ("pumpswap_wsol", "pumpswap_other_quote")
@@ -55,7 +54,7 @@ def build_book(m, run_dir, *, table_mode=None, engine_kw=None):
     run_dir = Path(run_dir)
     run_dir.mkdir(parents=True, exist_ok=True)
     ledger, registry = str(run_dir / "ledger"), str(run_dir / "bots.json")
-    rules = load_rules_v2([Q.BOT_ID])
+    rules = [Q.make_rule()]  # not in RULE_MODULES_V2: arena_rules_v2.py is pinned and unedited
     if table_mode is not None:
         for r in rules:
             r.table_mode = table_mode

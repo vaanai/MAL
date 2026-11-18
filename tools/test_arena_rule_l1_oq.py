@@ -253,39 +253,37 @@ def test_checkpoint_roundtrip(tmp_path):
 def test_wsol_table_still_drops_other_quote_rows_and_default_is_unchanged():
     t = PoolTable("first_print")
     assert t.update(row(H0 + 4 * HOUR, "P")) is False and "P" not in t.seen and "P" not in t.prints  # arena_pool_table still drops every non-WSOL row
-    from tools import arena_rules_v2 as R2
-    assert R2.RULE_MODULES_V2["l1-floor-v2"] == "tools.arena_rule_l1"
+    import hashlib
+    from tools import floor_lane_host as FH
+    for rel, want in FH.PINS.items():  # the pinned files the lane host verifies are all unedited by this PR
+        assert hashlib.sha256((REPO / rel).read_bytes()).hexdigest() == want, rel
     assert not hasattr(__import__("tools.arena_rule_l1", fromlist=["x"]).make_rule(), "table_cls")
 
 
-def test_load_rules_v2_builds_the_oq_rule():
-    from tools.arena_rules_v2 import load_rules_v2
-
-    r = load_rules_v2(["l1-floor-oq-v1"])[0]
+def test_rule_object_declares_its_own_table_and_universe():
+    r = O.make_rule()
     assert r.bot_id == "l1-floor-oq-v1" and r.table_mode == "other_quote" and r.table_cls is O.OQTable and r.universe == "pumpswap_other_quote"
 
 
-def test_host_v2_builds_the_oq_table_and_the_universe_fence_blocks_the_buy(tmp_path, monkeypatch):
-    """HostV2 builds the rule's own table class and feeds it; the host's universe fence blocks the entry (FakeEngine: no engine pricing is exercised)."""
+def test_oq_host_builds_the_oq_table_and_admits_the_buy(tmp_path, monkeypatch):
+    """OQHost builds the rule's own table class and its fence admits the other-quote buy (FakeEngine: no engine pricing; see test_osb_follow_oq)."""
     import collections
     from tools.arena_rules import HostConfig, register_rules
     from tools.arena_rules_testkit import FakeEngine, write_tape
-    from tools.arena_rules_v2 import HostV2, load_rules_v2
+    from tools.arena_oq_engine import OQHost
     from tools.arena_state import ArenaState
 
     monkeypatch.setenv("MAL_ARENA_TEST", "1")
     monkeypatch.setattr("tools.arena_paper.shutil.disk_usage", lambda path: collections.namedtuple("Usage", "total used free")(1000, 500, 500))
     tape = tmp_path / "tape"
     write_tape(tape, stream())
-    rules = load_rules_v2(["l1-floor-oq-v1"])
+    rules = [O.make_rule()]
     reg = tmp_path / "bots.json"
     register_rules(rules, str(reg), "abcdef1234567", H0, now_ms=H0 - 1, verify_sha=False)
     cfg = HostConfig(root=str(tmp_path / "rules"), registry=str(reg), frozen_sha="abcdef1234567", clock_start_ms=H0)
-    host = HostV2(cfg, rules, ArenaState(tape, start_ms=0), FakeEngine(tmp_path / "rules"))
+    host = OQHost(cfg, rules, ArenaState(tape, start_ms=0), FakeEngine(tmp_path / "rules"))
     assert isinstance(host.table, O.OQTable)
     host.run(H0, H0 + 34 * HOUR)
     e = [r for r in host.log.rows("l1-floor-oq-v1") if r.get("kind") == "entry"]
     assert not host.hook_errors and host.fatal is None
-    # the v1 host's universe fence (arena_rules.in_universe: only pumpswap_wsol, a pinned file not edited here) still blocks the buy: no book can run this rule by accident.
-    # Lifting it, and pricing in the engine, is the follow-up named in the PR body.
-    assert e == [] and host.counters.get("blocked_universe") == 1
+    assert len(e) == 1 and e[0]["pool"] == "P" and e[0]["meta"]["quote_mint"] == Q1  # OQHost's fence admits an other-quote pool (FakeEngine: pricing is tested in test_osb_follow_oq)

@@ -38,6 +38,10 @@ def oq_in_universe(pool: Any) -> bool:
 
 
 class OQHost(HostV2):
+    def __init__(self, cfg: Any, rules: Any, state: Any, engine: Any, **kw: Any) -> None:
+        kw.setdefault("table", O.OQTable())  # HostV2 builds a PoolTable otherwise (tools/arena_rules_v2.py is pinned by the lane host and is not edited)
+        super().__init__(cfg, rules, state, engine, **kw)
+
     def _buy(self, rule: Any, book: Any, o: Any, dec_ms: int) -> None:
         if getattr(rule, "universe", None) != OQ_UNIVERSE:
             return super()._buy(rule, book, o, dec_ms)
