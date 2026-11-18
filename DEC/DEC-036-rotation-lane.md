@@ -13,7 +13,7 @@ No book has cleared the promotion gate. Nothing here says any book makes money.
 ## 1. Context and the owner's direction
 FLOOR (floor-lane-1, rule `l1-floor-v2`) went live under DEC-035 and is the one book trading live now (no gate read; nothing here says it has an edge); registered paper reads stalled. Each new live book has so far needed its own DEC-035 amendment and a Helm install, so trying a second book takes days. This DEC sets one standing envelope in which the manager can put a new book live at small size, with a method chosen for that book, without a fresh amendment each time. FLOOR stays first priority and untouched.
 
-Owner direction, 2026-11-18 (MiScusi chat, as relayed by manager24 in the drafting brief; the manager quotes the original message with its instant before the owner approves):
+Owner direction (owner message to manager24 in the Claude Code session, 2026-11-18 about 18:00Z (`date -u` at logging); verbatim):
 > "going live is after a sim, one that we believe in. If a sim is negative but we still believe in it, we can just leave it running for a bit longer."
 
 > "every strategy and thing we do needs a different method for it, we can't have a one size fits all approach"
@@ -27,7 +27,7 @@ Basis: that review (checked against the repo); DEC-035 §2, §6, Am.4 item 7, Am
 ## 2. Scope
 1. **Rotation books.** A rotation book is a frozen rule with a live executor path, run under this DEC with its own `bot_id` (never `floor-lane-1`, `h5-lane`, `l1-floor-v2` or an `hv4-` id). DEC-035 §3 holds: a code or prompt change is a new `bot_id`.
 2. **Separate wallet and key.** All rotation books trade from one rotation wallet, separate from FLOOR's. Helm creates it and places its key root-only at the path the rotation unit binds. No Claude session reads, prints or copies it. The owner funds it.
-3. **Separate ledger and limits.** Rotation books share one rotation ledger and lock, at paths that are not FLOOR's, and are limited only by the §5 constants. No rotation book can take FLOOR's wallet room, count in FLOOR's ledger or trip FLOOR's budget, daily stop, open cap or STOP file.
+3. **Separate ledger and limits.** Rotation books share one rotation ledger and lock, at paths that are not FLOOR's, and are limited only by the §5 constants. No rotation book can take FLOOR's wallet room, count in FLOOR's ledger or trip FLOOR's budget, daily stop, open cap or STOP file. The one link is read-only: the same-pool refusal (§9 item 6) reads which pools floor-lane-1 holds open.
 4. **FLOOR unchanged.** floor-lane-1's config, ledger, wallet, limits, decision host, executor tree, decay monitor (QP-RULING-1118-floor-brake §A) and every DEC-035 amendment for it are unchanged by this DEC.
 5. **Shared stops.** Rotation executors honour the wallet-wide STOP Helm uses (`/var/lib/mal-live/STOP`) and A3 pauses (DEC-035 §4), as FLOOR does. The rotation lane STOP file and per-book STOP files stop rotation books only. Any session may create them (DEC-035 §2 item 6 pattern); only the manager removes them, after a notebook note.
 6. **Hosts.** Executors run on mal-fast-0 only. DEC-035 §7 (seal overlap declaration) applies to each rotation book before its first live send.
@@ -49,7 +49,7 @@ DEC-035 Am.9 §2 honesty rules apply to every sim cited on a card.
 A rotation book goes live only when all of these hold:
 1. Its method card is complete, and its sim has run as the card says.
 2. The manager has written a **belief record** in the book's file: the card version, the sim results (labelled in-sample or forward, both fail legs, ex-top-3, per day, "best of n; treat as shrunk"), why the believe-the-sim criteria are met, the first rung, and the instance config sha256.
-3. Quant-proof has posted **OK on that record** at the exact head of the PR that adds it (tier set by the manager; QP OK is required whatever the tier).
+3. Quant-proof has posted **OK on that record** at the exact head of the PR that adds it (T1: separate QP OK and REVIEWER APPROVE at the exact head, §7).
 4. The §5 envelope has room (wallet funded, books live < cap, monthly budget not spent).
 
 Never straight from replay: a replay alone is not a sim we believe in unless the card argues why a forward sim adds nothing for this mechanism and QP accepts that argument. Live rotation trades are never pooled with sim trades. Anything beyond the envelope (above 0.25, a gate claim, a larger budget) still needs the CLAUDE.md promotion gate on a DEC-035 §6 registration, or an amendment with the owner's word.
@@ -88,7 +88,10 @@ Inside the envelope these are **records**, each a state-file line (manager's sta
 
 These need an **amendment** to this DEC (T1, separate QP and reviewer, merged, owner's word where §5 says [owner to set]): any envelope number, a second rotation wallet, a stake above 0.25, any change to §2.
 
-Any **code change** (executor, host, port, monitor) is T1: separate QP and reviewer at the exact head, unit tests, and an md5 decision-equivalence replay proof before deploy (CLAUDE.md). Records go in the daily records batch unless they carry a T1 trigger; a method card or belief record carries kill and read rules, so its PR tier is the manager's call (QP OK on it is required either way).
+Any **code change** (executor, host, port, monitor) is T1: separate QP and reviewer at the exact head, unit tests, and an md5 decision-equivalence replay proof before deploy (CLAUDE.md). **Review tier of record PRs.**
+- A **belief record** (go-live, §4) or a **ladder step-up** record: T1, separate QP OK and REVIEWER APPROVE at the exact head.
+- A **method card** alone, a **decay step-down** or a **retirement** record: T0, with a required QP OK line at the exact head (one combined agent may give both verdicts).
+- Other records (instance start or stop, STOP written or removed) go in the daily records batch unless they carry a T1 trigger.
 
 ## 8. Costs (checked figures; model figures labelled)
 - **Send fee:** 160,000 lamports per send (FLOOR live; DEC-035 capacity blocks: reserve 3,860,000 = rent 2,100,000 + send 160,000 + sell reserve 1,600,000). A round trip has at least two sends: 0.32% of stake at 0.10, 0.128% at 0.25.
@@ -100,13 +103,14 @@ Any **code change** (executor, host, port, monitor) is T1: separate QP and revie
 
 ## 9. Executor change: SPEC only (no code in this PR)
 1. **Rotation class.** A rotation-lane executor (a new module or a `lane_class: "rotation"` path beside `tools/forge/dsl_lane_executor.py`; the code PR picks) that reuses the bridge mechanics (ATA close, STOP/HALT, A3 pause, LIVE_OK, gap hold, backstop) and follows FORGE DSL host rows; own-code books plug in their own decision host and port.
-2. **Stake.** Rotation stakes must be one of `ROTATION_STAKE_RUNGS_LAMPORTS = (50_000_000, 100_000_000, 125_000_000, 250_000_000)`, inside bounds (50_000_000, 250_000_000) [owner to set]; the executor refuses to start otherwise. This replaces `DSL_LANE_STAKE_BOUNDS_LAMPORTS` (20_000_000, 30_000_000) for rotation-class books only; DEC-035-class DSL books keep it unless the owner says to raise it in place.
+2. **Stake.** Rotation stakes must be one of `ROTATION_STAKE_RUNGS_LAMPORTS = (50_000_000, 100_000_000, 125_000_000, 250_000_000)`, inside bounds (50_000_000, 250_000_000) [owner to set]; the executor refuses to start otherwise. The rungs apply to rotation-class books only. DEC-035-class DSL books keep `DSL_LANE_STAKE_BOUNDS_LAMPORTS` (20_000_000, 30_000_000) unchanged.
 3. **Own limits.** `ROTATION_BOOK_LOSS_CAP_MAX_LAMPORTS` 750_000_000, `ROTATION_BOOK_MAX_OPEN` 4, `ROTATION_DAILY_MAX_LAMPORTS` 300_000_000, `ROTATION_OPEN_EXPOSURE_MAX_LAMPORTS` 1_000_000_000, `ROTATION_MONTH_BUDGET_MAX_LAMPORTS` 1_500_000_000, `ROTATION_LIFETIME_BUDGET_MAX_LAMPORTS` 3_000_000_000, `ROTATION_WALLET_SLICE_MAX_BPS` 4000, `ROTATION_WALLET_FLOOR_MIN_LAMPORTS` 250_000_000, `ROTATION_MAX_LIVE_BOOKS` 3: code ceilings set to the owner's §5 numbers; config may only lower them.
 4. **Isolated ledger.** One rotation ledger and lock at a path that is not FLOOR's; per-book limits from that book's rows, lane-wide limits from all rotation rows. Evaluation reads only `ROTATION_*` constants, never `floor_lane_executor`'s `LANE_*` or `FLOOR_LANE_*` at call time (today's DSL executor imports them so "the lane rules move together"; rotation books must not).
 5. **Refusals at start.** `bot_id` reserved or invalid; ledger path or STOP path equal to FLOOR's (a pinned list); wallet public key equal to floor-lane-1's (public key in a pinned constant); a key path set in the instance config (only the unit binds the key).
-6. **Unit.** A systemd template unit `mal-rotation-lane@.service`, installed once by Helm: binds the rotation key root-only, the pinned executor tree, and `<instance>.json` from a root-owned config dir. The manager writes instance configs (sudo on mal-fast-0) and starts or stops instances within the envelope; a new executor tree is a HELM-ASK after its T1 code PR.
-7. **Monitor.** A per-book form of `tools/floor_decay_monitor.py` (`--bot <bot_id>`, rotation ledger, §6 calibration read from the card's pinned file), read-only, run as a manager MiScusi job. FLOOR's monitor and its constants are unchanged.
-8. **Proof.** The code PR changes none of `tools/floor_lane_executor.py`, `tools/arena_live_bridge.py`, `tools/floor_arena_executor.py` (stated with `git diff --stat`), and carries an md5 decision-equivalence replay proof that DEC-035-class DSL executor rows are unchanged on a replay fixture.
+6. **Same-pool refusal (ON).** A rotation book and FLOOR in the same pool would add impact to each other. Before each entry the rotation executor reads floor-lane-1's open pools from FLOOR's lane ledger, read-only: it opens the file for reading only, takes no lock and writes nothing. If the entry's pool has an open floor-lane-1 position, it refuses with reason `floor_pool_open`. If the read fails, it refuses that entry (fails closed). This makes the rotation executor a reader of FLOOR's ledger for pool ids of open positions only. It never uses FLOOR's P&L.
+7. **Unit.** A systemd template unit `mal-rotation-lane@.service`, installed once by Helm: binds the rotation key root-only, the pinned executor tree, and `<instance>.json` from a root-owned config dir. The manager writes instance configs (sudo on mal-fast-0) and starts or stops instances within the envelope; a new executor tree is a HELM-ASK after its T1 code PR.
+8. **Monitor.** A per-book form of `tools/floor_decay_monitor.py` (`--bot <bot_id>`, rotation ledger, §6 calibration read from the card's pinned file), read-only, run as a manager MiScusi job. FLOOR's monitor and its constants are unchanged.
+9. **Proof.** The code PR changes none of `tools/floor_lane_executor.py`, `tools/arena_live_bridge.py`, `tools/floor_arena_executor.py` (stated with `git diff --stat`), and carries an md5 decision-equivalence replay proof that DEC-035-class DSL executor rows are unchanged on a replay fixture.
 
 **Tests that must pin each constant** (names indicative):
 - `test_rotation_stake_rungs_pinned`, `test_rotation_stake_not_a_rung_refuses_start`, `test_dsl_lane_stake_bounds_unchanged_for_dec035_class`;
@@ -116,6 +120,7 @@ Any **code change** (executor, host, port, monitor) is T1: separate QP and revie
 - `test_rotation_wallet_slice`, `test_rotation_wallet_floor_held_once`, `test_rotation_max_live_books`;
 - `test_rotation_limits_independent_of_floor_constants` (monkeypatch every `LANE_*`/`FLOOR_LANE_*`; rotation decisions identical);
 - `test_rotation_refuses_floor_ledger_stop_path_and_pubkey`, `test_rotation_refuses_key_path_in_config`, `test_rotation_reserved_bot_ids`;
+- `test_rotation_refuses_pool_open_in_floor_lane`, `test_rotation_floor_ledger_read_failure_refuses_entry`, `test_rotation_never_opens_floor_ledger_for_write` (only read-only opens of FLOOR's ledger path, no lock taken);
 - `test_rotation_honours_wallet_wide_stop_and_a3_pause`, `test_rotation_book_stop_does_not_stop_other_books`;
 - `test_rotation_decay_cusum_matches_card_calibration`, `test_rotation_decay_warning_halves_alarm_minimum` (monitor flags only; the monitor writes nothing).
 
@@ -125,8 +130,10 @@ Any **code change** (executor, host, port, monitor) is T1: separate QP and revie
 - **Manager:** owns method cards and belief records; gets QP OK; is the only one who starts, stops, configures or restarts a rotation instance, within the envelope; takes ladder and decay steps; writes and removes STOP files; keeps the §7 records; reports each book daily (DEC-035 §5).
 - **Workers:** builders write code PRs, sims and card drafts; quant-proof rules on belief records, ladder steps and calibrations; reviewers review diffs; host-ops reads only. Workers never start, fund, configure or restart a lane executor and never read a wallet key. Workers do not merge.
 
-## 11. Open points for the manager and owner
-1. Every [owner to set] number in §5, §6 and §9.
-2. Whether DEC-035-class DSL books keep 0.02-0.03 or `DSL_LANE_STAKE_BOUNDS_LAMPORTS` is raised in place (§9 item 2).
-3. Same-pool rule: a rotation book and FLOOR could hold the same pool and add impact to each other. Option: the rotation executor reads floor-lane-1's open pools read-only (no lock) and refuses `floor_pool_open`. That makes it a reader of FLOOR's ledger; QP and the owner decide.
-4. Whether a method card plus belief record PR is T1 (separate QP and reviewer) or T0 combined with a required QP OK line.
+## 11. Numbers the owner sets ([owner to set])
+1. §5 item 1: the 0.25 step evidence (20 closed live trades at 0.10, realized ≥ 0); decay-only rungs 0.125 and 0.05.
+2. §5 items 2-3: per-book loss cap 0.40 SOL (0.75 after a 0.25 step); 4 open per book.
+3. §5 items 4-7: lane daily stop 0.30 SOL; open exposure 1.00 SOL; monthly exploration budget 1.50 SOL; lifetime budget 3.00 SOL.
+4. §5 items 8-10: wallet slice 40%; wallet floor 0.25 SOL; 3 books live at once; first funding 1.5 SOL.
+5. §6 items 2, 4 and 6: winsorization at the sim's 2.5th and 97.5th percentiles; false-alarm targets 20% (warning) and 5% (alarm) over 100 trades (QP to confirm); n0 = 25.
+6. §9 items 2-3: the code ceilings, equal to the numbers above.
