@@ -104,7 +104,7 @@ def test_other_quote_pool_trigger_entry_exit_end_to_end(tmp_path):
         assert opens[s]["tokens"] == pytest.approx(e["tokens"], rel=1e-6) and opens[s]["quote_units"] == pytest.approx(e["quote_units"], rel=1e-6)
         assert opens[s]["conv_cost_lamports"] == pytest.approx(e["entry_conv"], rel=1e-4)
         t = trades[s]
-        assert t["sol_out_lamports"] == pytest.approx(e["sol_out"], rel=1e-6) and t["pnl_lamports"] == pytest.approx(e["pnl"], rel=1e-6)
+        assert t["sol_out_lamports"] == pytest.approx(e["sol_out"], rel=1e-6) and t["pnl_lamports"] == pytest.approx(e["pnl"] - 2 * SEND, rel=1e-6)
         assert t["exit_conv_cost_lamports"] == pytest.approx(e["exit_conv"], rel=1e-4) and t["reason"] == Q.REASON_TIME and t["quote_mint"] == TQ.Q1
         assert t["decision_ms"]["exit"] - t["decision_ms"]["entry"] == 86_400_000 + Q.LEG_MS or t["decision_ms"]["exit"] >= t["decision_ms"]["entry"] + 86_400_000
     dec = DecisionLog(str(tmp / "out" / "book")).rows(Q.BOT_ID)
@@ -187,7 +187,9 @@ def test_sell_before_entry_lands_is_refused_early_and_a_time_exit_cancels_cleanl
     eng.sell(Q.BOT_ID, pid, 1.0, 1_000 + Q.HOLD_MS, 3, reason=Q.REASON_TIME)  # no print for 24 h: the time exit closes the unfilled entry
     assert pid not in eng.pending and pid not in eng.positions and eng.counters["entry_unfilled_cancelled"] == 1
     eng.on_row(shift([TQ.row(TQ.H0 + 40 * HOUR, "P", "buy")])[0])  # the next print of the pool no longer raises (2bb40157: KeyError 'legs')
-    assert [(r["kind"], r["reason"]) for r in ledger_rows_dir(tmp_path / "led")] == [("refused", "entry_unfilled_at_exit")]
+    rows = ledger_rows_dir(tmp_path / "led")  # item 1: the unfilled entry is SCORED (no state at the buy here: the sends alone, flagged), not dropped
+    assert [(r["kind"], r["reason"], r["unfilled_roundtrip"], r["unfilled_priced"]) for r in rows] == [("trade", "entry_unfilled_at_exit", True, False)]
+    assert rows[0]["pnl_lamports"] == -4 * SEND and eng.counters["entry_unfilled_unpriced"] == 1
 
 
 def test_second_sell_uses_the_hosts_drop_text(tmp_path):
@@ -203,6 +205,8 @@ def test_entry_refused_at_landing_leaves_no_position_in_the_host_book(tmp_path):
     """the quote's WSOL pool is fresh at the trigger but stale at the landing print (25 min later): the engine refuses the entry and the host drops it from its book"""
     rows = TQ.stream(quote_until=TQ.H0 + 30 * HOUR + 900_000)
     rows.append(TQ.row(TQ.H0 + 30 * HOUR + 900_000 + 25 * 60_000, "P", "sell", q=500_000_000, sol=1_000_000))
+    for k in range(1, 30):  # a busy feed (no silence gap) whose quote pool is silent: only the quote state goes stale
+        rows.append(TQ.row(TQ.H0 + 30 * HOUR + 900_000 + k * 50_000, "FILL", "buy", quote=Q.WSOL, mint="MFILL"))
     tmp = world(tmp_path, sorted(rows, key=lambda r: (r["t_recv_ms"], r["pool"])))
     m = OQ.load_manifest(str(manifest(tmp)))
     host, eng, _ = OQ.build_book(m, tmp / "run", table_mode="other_quote")
