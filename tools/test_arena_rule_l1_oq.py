@@ -287,3 +287,16 @@ def test_oq_host_builds_the_oq_table_and_admits_the_buy(tmp_path, monkeypatch):
     e = [r for r in host.log.rows("l1-floor-oq-v1") if r.get("kind") == "entry"]
     assert not host.hook_errors and host.fatal is None
     assert len(e) == 1 and e[0]["pool"] == "P" and e[0]["meta"]["quote_mint"] == Q1  # OQHost's fence admits an other-quote pool (FakeEngine: pricing is tested in test_osb_follow_oq)
+
+
+def test_row_fee_includes_creator_and_buyback_when_present():
+    r = {"pool_quote_amount": 1_000_000_000, "lp_fee": 5_000_000, "protocol_fee": 2_000_000, "creator_fee": 2_000_000, "buyback_fee": 1_000_000}
+    assert O.row_fee(r) == pytest.approx(0.01)
+    assert O.row_fee({**r, "buyback_fee": None}) == pytest.approx(0.009) and O.row_fee({k: v for k, v in r.items() if k != "creator_fee"}) == pytest.approx(0.008)
+    assert O.row_fee({**r, "creator_fee": -1}) is None and O.row_fee({**r, "creator_fee": True}) is None
+    assert O.row_fee({k: v for k, v in r.items() if k != "lp_fee"}) is None
+    # through the table: the pool's fee is the four-field total, and it prices the legs
+    rr = dict(row(H0 + 5 * HOUR, "P", fee=None), **r)
+    t = O.OQTable()
+    t.update(rr)
+    assert t.pfee["P"] == pytest.approx(0.01)

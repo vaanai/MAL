@@ -18,7 +18,7 @@ PRICING FORMULA (pure functions below; constant product on the pools' virtual re
   exit:   token leg:  Qo = Qe' * T / (Be' + T) * (1-f_p);  conversion leg 2 (sell the quote asset in its WSOL pool):  S' = Qw' * Qo / (Bw' + Qo) * (1-f_w)
   P&L (SOL lamports) = S' - S, before the engine's send / priority / rent stack (a host adds that; see PR body). The quote-conversion cost is the S -> Qu and Qo -> S' legs' fee
   f_w plus their price impact, i.e. mid-vs-fill on the quote's WSOL pool, at the entry state and at the exit state.
-  Fees are per pool, read from the pool's own rows: f = (lp_fee + protocol_fee) / pool_quote_amount of its latest row that has all three; a pool without one refuses the pricing
+  Fees are per pool, read from the pool's own rows: f = (lp_fee + protocol_fee + creator_fee + buyback_fee when present) / pool_quote_amount of its latest row that has lp, protocol and amount; a pool without one refuses the pricing
   (reason no_pool_fee / no_quote_pool_fee). The 1.25% FEE constant is used ONLY in the trigger's vault / spot formulas, exactly as the funnel and FLOOR do.
 WSOL pools never enter: on_row returns [] on a WSOL or empty quote mint, and the table never opens an other-quote pool for them.
 NOT DONE HERE: tools/arena_paper.ArenaEngine prices buys as WSOL pools; this module does not change it. The landing-state pricing (entry latency) is `price_entry` / `price_exit` called
@@ -73,11 +73,21 @@ def _num(x: Any) -> bool:
 
 
 def row_fee(row: Mapping[str, Any]) -> float | None:
-    """The pool's own fee fraction from one row: (lp_fee + protocol_fee) / pool_quote_amount, or None when any of the three is missing or non-positive amount."""
+    """The pool's own fee fraction from one row: (lp_fee + protocol_fee + creator_fee [+ buyback_fee]) / pool_quote_amount. lp_fee, protocol_fee and pool_quote_amount are required
+    (None otherwise: never a default). creator_fee is the decoder's trader-charged creator leg (observe/trade_decode.py, stored on the tape row); buyback_fee is added when a row carries
+    it (the stored row currently does not). A missing or None creator_fee / buyback_fee counts as 0: the decoder reads 0 for events too short to carry it."""
     lp, pf, amt = row.get("lp_fee"), row.get("protocol_fee"), row.get("pool_quote_amount")
     if not (_num(lp) and _num(pf) and _num(amt)) or amt <= 0 or lp < 0 or pf < 0:
         return None
-    f = (lp + pf) / amt
+    extra = 0.0
+    for k in ("creator_fee", "buyback_fee"):
+        v = row.get(k)
+        if v is None:
+            continue
+        if not _num(v) or v < 0:
+            return None
+        extra += v
+    f = (lp + pf + extra) / amt
     return f if 0 <= f < 1 else None
 
 
@@ -356,7 +366,7 @@ class OQRule(Rule):
     def on_row(self, ctx: Ctx, row: Mapping[str, Any]) -> list:
         tab = ctx.table
         orders: list = []
-        if row.get("type") != "trade" or row.get("prog") != "pumpswap" or row.get("venue", "pumpswap") != "pumpswap":
+        if row.get("type") != "trade" or (row.get("venue") or row.get("prog")) != "pumpswap":
             return orders
         qm, pool = row.get("quote_mint"), row.get("pool")
         if not qm or qm == WSOL or not pool:  # WSOL pools never enter this rule (and an unresolved quote is not an other quote)

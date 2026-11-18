@@ -157,3 +157,58 @@ def test_default_universe_is_byte_equal_to_osb_follow(tmp_path):
         assert fn(str(p), once=True, _roots=(str(tmp),), _table_mode="first_print", _engine_kw=EK) == 0
         md5[name] = O.tree_md5(tmp / name / "book" / "ledger")
     assert md5["orig"] == md5["oq"]
+
+
+# ------------------------------------------------------------------------------------------------ engine: sell before the entry lands (QP M1 / reviewer B1), refusal at landing (QP M2)
+def ledger_rows_dir(d):
+    f = Path(d) / "oq-rows.jsonl"
+    return [json.loads(x) for x in f.read_text().splitlines()] if f.exists() else []
+
+
+def _engine(tmp_path):
+    tab = Q.OQTable()
+    for r in shift(oq_rows())[:3]:
+        tab.update(r)
+    eng = E.OQEngine(tmp_path / "led", (0.25,), SEND)
+    eng.table = tab
+    return eng, tab
+
+
+def _buy(eng, t=0):
+    return eng.buy(Q.BOT_ID, "P", 0.25, t, 1, {"quote_mint": TQ.Q1})
+
+
+def test_sell_before_entry_lands_is_refused_early_and_a_time_exit_cancels_cleanly(tmp_path):
+    eng, tab = _engine(tmp_path)
+    pid = _buy(eng, 1_000)
+    with pytest.raises(R.ArenaRefused) as ei:
+        eng.sell(Q.BOT_ID, pid, 1.0, 1_000 + 5_000, 2, reason="tp_1.5x")
+    assert R.SELL_EARLY in str(ei.value) and eng.pending[pid]["state"] == "entry"
+    eng.sell(Q.BOT_ID, pid, 1.0, 1_000 + Q.HOLD_MS, 3, reason=Q.REASON_TIME)  # no print for 24 h: the time exit closes the unfilled entry
+    assert pid not in eng.pending and pid not in eng.positions and eng.counters["entry_unfilled_cancelled"] == 1
+    eng.on_row(shift([TQ.row(TQ.H0 + 40 * HOUR, "P", "buy")])[0])  # the next print of the pool no longer raises (2bb40157: KeyError 'legs')
+    assert [(r["kind"], r["reason"]) for r in ledger_rows_dir(tmp_path / "led")] == [("refused", "entry_unfilled_at_exit")]
+
+
+def test_second_sell_uses_the_hosts_drop_text(tmp_path):
+    eng, tab = _engine(tmp_path)
+    pid = _buy(eng)
+    eng.pending[pid].update(state="exit")
+    with pytest.raises(R.ArenaRefused) as ei:
+        eng.sell(Q.BOT_ID, pid, 1.0, 10, 2)
+    assert any(k in str(ei.value) for k in R.SELL_ENGINE_DROPS)
+
+
+def test_entry_refused_at_landing_leaves_no_position_in_the_host_book(tmp_path):
+    """the quote's WSOL pool is fresh at the trigger but stale at the landing print (25 min later): the engine refuses the entry and the host drops it from its book"""
+    rows = TQ.stream(quote_until=TQ.H0 + 30 * HOUR + 900_000)
+    rows.append(TQ.row(TQ.H0 + 30 * HOUR + 900_000 + 25 * 60_000, "P", "sell", q=500_000_000, sol=1_000_000))
+    tmp = world(tmp_path, sorted(rows, key=lambda r: (r["t_recv_ms"], r["pool"])))
+    m = OQ.load_manifest(str(manifest(tmp)))
+    host, eng, _ = OQ.build_book(m, tmp / "run", table_mode="other_quote")
+    host.run(T0 + 26 * HOUR, T0 + 32 * HOUR)
+    assert host.books[Q.BOT_ID].open == {} and eng.positions == {} and eng.pending == {}
+    assert host.counters.get("entries_refused_at_landing") == 1 and eng.counters.get("entry_refused_stale_quote_price") == 1
+    log = DecisionLog(str(tmp / "run")).rows(Q.BOT_ID)
+    assert any(r.get("kind") == "order_refused" and r["reason"].startswith("entry_refused_at_landing") for r in log) and not host.hook_errors
+    assert [r["kind"] for r in ledger_rows_dir(tmp / "run" / "ledger")] == ["refused"]

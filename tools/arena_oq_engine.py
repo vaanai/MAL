@@ -38,6 +38,16 @@ def oq_in_universe(pool: Any) -> bool:
 
 
 class OQHost(HostV2):
+    def _on_row(self, row: dict) -> None:
+        super()._on_row(row)
+        ref, self.engine.refused = getattr(self.engine, "refused", []), []
+        for bot, pid, why, t in ref:  # an entry the engine refused at its landing print leaves no position: drop it from the book (else it blocks the pool ~24 h)
+            book = self.books.get(bot)
+            if book is not None and pid in book.open:
+                self._refused(bot, t, pid, "buy", R.ArenaRefused(why), reason="entry_refused_at_landing:" + why)
+                book.drop(pid)
+                self._count("entries_refused_at_landing")
+
     def __init__(self, cfg: Any, rules: Any, state: Any, engine: Any, **kw: Any) -> None:
         kw.setdefault("table", O.OQTable())  # HostV2 builds a PoolTable otherwise (tools/arena_rules_v2.py is pinned by the lane host and is not edited)
         super().__init__(cfg, rules, state, engine, **kw)
@@ -68,6 +78,7 @@ class OQEngine:
         self.now_fn = None
         self.counters: dict[str, int] = {}
         self.pending: dict[str, dict[str, Any]] = {}
+        self.refused: list[tuple[str, str, str, int]] = []  # (bot_id, position_id, reason, t_ms) entries refused at landing, drained by the host
 
     # surface used by the host
     def recover(self) -> int:
@@ -98,7 +109,15 @@ class OQEngine:
         if pid not in self.positions or p is None:
             raise R.ArenaRefused(f"no open position {pid} for bot {bot_id}")
         if p["state"] == "exit":
-            raise R.ArenaRefused(f"sell already pending for {pid}")
+            raise R.ArenaRefused(f"{pid} already has a sell")
+        if p["state"] == "entry":  # the entry has not landed: no legs to sell
+            if int(decision_ms) - p["t_dec"] >= O.HOLD_MS:  # the time exit: the entry never landed in 24 h; close it cleanly, counted, no position
+                self._w({"kind": "refused", "position_id": pid, "side": "buy", "reason": "entry_unfilled_at_exit", "t_ms": int(decision_ms)})
+                self._c("entry_unfilled_cancelled")
+                del self.pending[pid]
+                del self.positions[pid]
+                return
+            raise R.ArenaRefused(f"{R.SELL_EARLY}: entry of {pid} has not filled")
         p.update(state="exit", due=int(decision_ms) + EXIT_LAG_MS, exit_dec=int(decision_ms), reason=reason)
 
     def on_row(self, row: Mapping[str, Any]) -> None:
@@ -131,6 +150,7 @@ class OQEngine:
         if got is None:
             self._w({"kind": "refused", "position_id": pid, "side": "buy", "reason": why, "t_ms": t})
             self._c("entry_refused_" + str(why))
+            self.refused.append((self.positions[pid].bot_id, pid, str(why), t))  # the host drops its book entry (OQHost._on_row)
             del self.pending[pid]
             del self.positions[pid]
             return
@@ -162,4 +182,5 @@ class OQEngine:
         self._c("exits_filled")
 
     def status(self) -> dict[str, Any]:
+        """pending counts by state, then the counters (entry_refused_*, entry_unfilled_cancelled, exit_waiting_*, entries_filled, exits_filled)."""
         return {"pending": {k: sum(1 for p in self.pending.values() if p["state"] == k) for k in ("entry", "exit", "open")}, **self.counters}
