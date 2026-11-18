@@ -135,3 +135,186 @@ GOLD_C1NF = {
     "n_hours": 3,
     "n_ledger_rows": 5
 }
+
+
+# ---------------------------------------------------------------------------------------------------------------------------------- the U2 v2 fixture
+# Two cohorts of the T2 shape (11 pools each: buckets of 6 and 5, ages 30 h and 50 h, the residual leaders are the first pool of bucket 1, then buckets 0 and 1):
+#   cohort "P" is decided at the first mark S (T0): every pool's last print is at S - 50 min;
+#   cohort "Q" is decided at the second mark S + 6 h, and its leader Q10 is quiet: its last print is at S + 30 min, i.e. 5 h 30 min before the mark (about 49,500 slots, more than HIST_KEEP_SLOTS = 20,000).
+# A background pool prints every 20 s from S - 56 h to S + 8 h (it has no pool_create row, so the decider never sees it): a ready slot clock for the engine (8 points in its 300 s window). The engine here runs WITHOUT the sps_fn seam.
+QUIET_POOL, QUIET_LAST_S = "Q10", 30 * 60
+W_H, FWD_H = 56, 8
+
+
+def cohort(prefix, mark_s, quiet=None):
+    rows = []
+    for bi, rs in enumerate(T2.COHORT):
+        for k, r in enumerate(rs):
+            pool, mint = "%s%d%d" % (prefix, bi, k), "M%s%d%d" % (prefix, bi, k)
+            ct = mark_s - (30, 50)[bi] * H   # both create rows lie inside W
+            last = QUIET_LAST_S if pool == quiet else mark_s - 3000
+            rows += [T2.create(mint, ct - 100), T2.pool_create(pool, mint, ct), T2.u2_print(pool, mint, mark_s - 24 * H - 100, 1.0), T2.u2_print(pool, mint, last, 1.0 + r)]
+    return rows
+
+
+def fixture_rows():
+    rows = cohort("P", 0) + cohort("Q", 6 * H, quiet=QUIET_POOL)
+    rows += [T2.trade("BGM", "BG", t, "bg", "buy", 0, so=0) for t in range(-W_H * H, FWD_H * H, 20)]
+    return rows
+
+
+def write_keep(tmp, rows):
+    keep = tmp / "keep"
+    keep.mkdir(parents=True)
+    by_hour = collections.defaultdict(list)
+    for r in rows:
+        by_hour[(r["block_time"] - T0) // 3600].append(r)
+    for h in range(-W_H, FWD_H + 1):
+        hr = sorted(by_hour.get(h, []), key=lambda r: (r["block_time"], r["slot"]))
+        (keep / ("tape-%s.jsonl" % S.hour_key(START_MS + h * S.HOUR_MS))).write_text("".join(json.dumps(r) + "\n" for r in hr))
+
+
+def run_u2(tmp, max_hours=None, book_id="t-book", **mkw):
+    """-> (manifest, ledger rows of the book, out root); a fresh tape dir per call. engine_kw is empty: the engine estimates its own slot clock from the rows (no sps seam)."""
+    write_keep(tmp, fixture_rows())
+    m = mf(tmp, "u2", book_id=book_id, warmup_hours=W_H, exit_s=43_200, **mkw)
+    dec = D.U2Decider(START_MS, hr_pda_fn=T2.hr_pda)
+    assert S.follow(m, fixture=True, once=True, max_hours=max_hours, _roots=T1.roots(tmp), decider_factory=lambda mm: dec, ledger_builder=lambda *a: None, engine_kw={}) == 0
+    return m, T1.ledger_rows(m["out_root"]), Path(m["out_root"])
+
+
+def main_rows(rows, kinds):
+    return [r for r in rows if r["kind"] in kinds and not r["bot_id"].endswith("-plc")]
+
+
+def pools_of(rows, kind):
+    return sorted({r["pool"] for r in main_rows(rows, (kind,))})
+
+
+V2 = dict(engine_warmup_h=7, engine_prune=False)
+
+
+def test_a_pool_quiet_5h30_is_priced_under_v2_and_refused_no_prints_under_v1(tmp_path):
+    _, rows1, out1 = run_u2(tmp_path / "v1")
+    _, rows2, out2 = run_u2(tmp_path / "v2", **V2)
+    # the fixture's picks at the second mark: Q10, Q00, Q11 (residual leaders)
+    assert QUIET_POOL in pools_of(rows1, "refused") and [r["reason"] for r in main_rows(rows1, ("refused",)) if r["pool"] == QUIET_POOL] == ["no_prints"]   # v1: the engine pruned it
+    assert QUIET_POOL not in pools_of(rows1, "open")
+    assert QUIET_POOL in pools_of(rows2, "open") and QUIET_POOL not in pools_of(rows2, "refused")                                                          # v2: priced
+    assert {"Q00", "Q11"} <= set(pools_of(rows1, "open"))     # the non-quiet picks of the same mark are priced by both: the quiet pool is the difference
+    assert {"Q00", "Q11"} <= set(pools_of(rows2, "open"))
+    assert pools_of(rows2, "refused") == []                    # v2: not one refusal at either mark
+    b2 = json.loads((out2 / "status.json").read_text())["book_counts"]
+    assert not [k for k in b2 if k.startswith("buy_refused")] and b2["buys"] == 6 and b2["buys_placebo"] == 6
+
+
+def test_engine_prune_false_alone_prices_the_quiet_pool_and_the_warmup_key_alone_does_not(tmp_path):
+    _, rows_p, _ = run_u2(tmp_path / "p", engine_prune=False)
+    assert QUIET_POOL in pools_of(rows_p, "open")                                          # the prune was the cause of the second-mark refusal
+    assert set(pools_of(rows_p, "refused")) == {"P00", "P10", "P11"}                       # without the warm-up feed the first mark's picks are still refused (the engine starts empty at S)
+    _, rows_w, _ = run_u2(tmp_path / "w", engine_warmup_h=7)
+    assert QUIET_POOL in pools_of(rows_w, "refused") and not {"P00", "P10", "P11"} & set(pools_of(rows_w, "refused"))
+
+
+def test_the_pick_at_the_first_mark_is_priced_with_no_clock_not_ready_and_v1_refuses_it(tmp_path):
+    _, rows1, out1 = run_u2(tmp_path / "v1")
+    _, rows2, out2 = run_u2(tmp_path / "v2", **V2)
+    first = {"P00", "P10", "P11"}
+    assert first <= set(pools_of(rows2, "open")) and not first & set(pools_of(rows2, "refused"))
+    assert not any(r.get("reason") == "clock_not_ready" for r in rows2)
+    assert first <= set(pools_of(rows1, "refused")) and set(r["reason"] for r in main_rows(rows1, ("refused",)) if r["pool"] in first) <= {"no_prints", "clock_not_ready"}
+    opens = [r for r in main_rows(rows2, ("open",)) if r["pool"] in first]
+    assert opens and all(r["decision_ms"]["entry"] >= START_MS for r in opens)
+    assert json.loads((out2 / "status.json").read_text())["engine_counters"].get("refused_clock_not_ready", 0) == 0
+
+
+def test_the_engine_warmup_hours_write_no_ledger_row_buy_sell_or_draw(tmp_path):
+    _, rows, out = run_u2(tmp_path, max_hours=W_H, **V2)       # only the W hours
+    hours = [json.loads(ln) for ln in (out / "md5-by-hour.jsonl").read_text().splitlines()]
+    assert len(hours) == W_H and all(h["warmup"] and h["ledger_md5"] == EMPTY_MD5 for h in hours)   # the ledger tree md5 after the E hours equals the empty md5
+    assert [r for r in rows if r["kind"] != "start"] == []
+    counts = [json.loads(ln) for ln in (out / "counts.jsonl").read_text().splitlines()]
+    assert all(c["entries"] == 0 and c["book"] == {} and not c["decider"].get("placebo_entries") and not c["decider"].get("picks") for c in counts)
+    assert json.loads((out / "status.json").read_text())["book_counts"] == {}
+    mem = [json.loads(ln) for ln in (out / "engine-mem.jsonl").read_text().splitlines()]
+    assert [x["engine_pools"] for x in mem[: W_H - 7]] == [0] * (W_H - 7) and all(x["engine_pools"] > 0 for x in mem[W_H - 7:])   # the engine sees exactly E = [S - 7 h, S)
+    assert not (out / "marks.jsonl").exists() or all(json.loads(ln)["mark_s"] >= T0 for ln in (out / "marks.jsonl").read_text().splitlines())
+
+
+def test_the_u2_deciders_own_decisions_are_md5_equal_v1_vs_v2(tmp_path):
+    res = {}
+    for name, kw in (("v1", {}), ("v2", V2)):
+        _, _, out = run_u2(tmp_path / name, **kw)
+        hours = [json.loads(ln) for ln in (out / "md5-by-hour.jsonl").read_text().splitlines()]
+        counts = [json.loads(ln) for ln in (out / "counts.jsonl").read_text().splitlines()]
+        marks = [json.loads(ln) for ln in (out / "marks.jsonl").read_text().splitlines()]
+        res[name] = ([h["decision_md5"] for h in hours], [(c["hour"], c["entries"], c["decider"]) for c in counts], marks)
+    assert res["v1"] == res["v2"] and len(res["v1"][0]) == W_H + FWD_H
+    assert sum(e for _, e, _ in res["v1"][1]) == 12 and [m["picks"] for m in res["v1"][2] if m["picks"]] == [3, 3]    # 3 picks and 3 placebo draws at each of the two marks
+
+
+def test_engine_mem_accounting_is_written_only_for_a_book_with_a_key_and_the_pool_table_does_not_shrink_without_prune(tmp_path):
+    _, _, out2 = run_u2(tmp_path / "v2", **V2)
+    mem = [json.loads(ln) for ln in (out2 / "engine-mem.jsonl").read_text().splitlines()]
+    assert len(mem) == W_H + FWD_H and all(x["rss_kb"] and x["peak_rss_kb"] >= x["rss_kb"] and isinstance(x["engine_counters"], dict) for x in mem)
+    pools = [x["engine_pools"] for x in mem]
+    assert pools == sorted(pools) and pools[-1] >= 23                            # 22 cohort pools + the background pool, never dropped
+    ec = mem[-1]["engine_counters"]
+    assert ec.get("rows_below_trim_floor", 0) == 0 and ec.get("refused_history_trimmed", 0) == 0 and ec.get("refused_no_prints", 0) == 0
+    assert json.loads((out2 / "status.json").read_text())["engine_pools"] == pools[-1]
+    _, _, out1 = run_u2(tmp_path / "v1")
+    assert not (out1 / "engine-mem.jsonl").exists() and "engine_pools" not in json.loads((out1 / "status.json").read_text())
+
+
+# ---------------------------------------------------------------------------------------------------------------------------------- manifest: refusals and the book id
+@pytest.mark.parametrize("kw", [{"engine_warmup_h": v} for v in (0, -1, 25, 7.5, True, False, "7", None, [7])] + [{"engine_prune": v} for v in ("false", 0, 1, None, "no")])
+def test_invalid_values_of_the_two_keys_are_refused(tmp_path, kw):
+    with pytest.raises(S.Refused):
+        S.check_manifest(mf(tmp_path, "u2", exit_s=43_200, **kw))
+
+
+def test_valid_values_pass_and_unset_keys_stay_unset(tmp_path):
+    m = S.check_manifest(mf(tmp_path, "u2", exit_s=43_200, **V2))
+    assert m["engine_warmup_h"] == 7 and m["engine_prune"] is False
+    m = S.check_manifest(mf(tmp_path, "u2", exit_s=43_200, engine_prune=True))
+    assert m["engine_prune"] is True and "engine_warmup_h" not in m
+    m = S.check_manifest(mf(tmp_path, "u2", exit_s=43_200))
+    assert "engine_warmup_h" not in m and "engine_prune" not in m                    # no default is written into a v1 manifest: its canonical sha256 does not move
+    assert S.manifest_sha256(m) != S.manifest_sha256(dict(m, **V2))
+
+
+@pytest.mark.parametrize("decider", ["c1nf", "u1"])
+def test_the_keys_are_refused_for_the_other_deciders(tmp_path, decider):
+    kw = {"u1": {"table_a": "x", "table_a_sha256": "0" * 64, "hr_exclusion": True}} if decider == "u1" else {}
+    S.check_manifest(mf(tmp_path, decider, **kw))   # valid without the key
+    for k, v in (("engine_warmup_h", 7), ("engine_prune", False)):
+        with pytest.raises(S.Refused, match="only for the u4 / u2"):
+            S.check_manifest(mf(tmp_path, decider, **dict(kw, **{k: v})))
+    S.check_manifest(mf(tmp_path, "u4", exit_s=14_400, **V2))   # u4 may carry them (its own ruling decides whether it does)
+
+
+def test_engine_warmup_longer_than_the_warmup_window_is_refused_at_start(tmp_path):
+    m = mf(tmp_path, "u2", warmup_hours=5, exit_s=43_200, engine_warmup_h=7)
+    S.check_manifest(m)
+    with pytest.raises(S.Refused, match="longer than the warm-up window"):
+        S.hours_needed(m)
+    write_keep(tmp_path, fixture_rows())
+    assert S.follow(m, fixture=True, once=True, _roots=T1.roots(tmp_path), decider_factory=lambda mm: D.U2Decider(START_MS, hr_pda_fn=T2.hr_pda), ledger_builder=lambda *a: None, engine_kw={}) == S.EXIT_REFUSED
+    assert S.hours_needed(dict(m, warmup_hours=7))[1] == START_MS
+
+
+def test_book_id_osb_v2_u2_and_its_twins_do_not_collide_with_osb_u2(tmp_path):
+    ids = ["osb-u2", "osb-u2-lat3010", "osb-u2-lat5590", "osb-v2-u2", "osb-v2-u2-lat3010", "osb-v2-u2-lat5590"]
+    bots = []
+    for b in ids:
+        m = S.check_manifest(mf(tmp_path, "u2", book_id=b, exit_s=43_200))
+        bots.append("c1nf-fwd-" + S.re.sub(r"[^A-Za-z0-9_.-]", "-", m["book_id"])[:40])
+    assert len(set(bots)) == 6
+    v1, v2 = bots[:3], bots[3:]
+    assert not any(b.startswith(a) for a in v1 for b in v2) and not any(b.startswith(a) for a in v2 for b in v1)   # v1's engine bot ids are not a prefix of any v2 id (QP-RULING-1118-u2-v2 section 4)
+    m1, m2 = mf(tmp_path, "u2", book_id="osb-u2", exit_s=43_200), mf(tmp_path, "u2", book_id="osb-v2-u2", exit_s=43_200, **V2)
+    assert S.manifest_sha256(S.check_manifest(m1)) != S.manifest_sha256(S.check_manifest(m2))
+
+
+def test_the_ruling_is_cited_in_the_tool():
+    assert "QP-RULING-1118-u2-v2" in Path(S.__file__).read_text()
