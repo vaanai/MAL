@@ -155,3 +155,7 @@ QP1118_U2_V1_DEFECT = (
 QP1118_V2_U2 = (
     "osb-v2-u2 (U2 v2) uses the same decider and constants as osb-u2 (decision md5 equal on fixtures) and differs only in pricing coverage: its engine is fed the 7 h before S2 and never prunes pools (trim_history only). It is the second book of the same rule, started after the first book's early board was visible; treat any good number as shrunk (best of <n_books_watched> rows, osb-u2's 9 included)."
 )
+
+QP1118_V2_ENGINE_WARMUP = (
+    'engine state starts at S2 - 7 h: a pool whose pricing would need a print before then (V fallback) is priced as the engine prices it, or excluded and counted'
+)

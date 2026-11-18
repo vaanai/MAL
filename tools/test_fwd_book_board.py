@@ -809,7 +809,11 @@ def test_ruling_constants_match_ruling_file():
         txt = RULING_FILE.read_text()
     except OSError:
         pytest.skip("ruling file not readable here")
+    assert '"' + ENGINE_WARMUP_TEXT + '"' in txt
     assert '> "' + V1_DEFECT_TEXT + '"' in txt and '> "' + V2_TEXT + '"' in txt
+
+
+ENGINE_WARMUP_TEXT = "engine state starts at S2 - 7 h: a pool whose pricing would need a print before then (V fallback) is priced as the engine prices it, or excluded and counted"
 
 
 def test_v2_u2_builds_like_u2_with_its_disclosure(tmp_path):
@@ -826,6 +830,7 @@ def test_v2_u2_builds_like_u2_with_its_disclosure(tmp_path):
     for br in ("<r_p>", "<N_p>", "<r>", "<N>", "<a>", "<b>"):
         want = want.replace(br, see)
     assert want in md
+    assert T.QP1118_V2_ENGINE_WARMUP in md and T.QP1118_V2_ENGINE_WARMUP == ENGINE_WARMUP_TEXT
     assert T.U2_SEC4.replace("<n_books_watched>", "66") in md and T.BOUNDED in md and "Random-pick" in md
     assert "The 9 rows of this book" in md
     ids = [d["id"] for d in o["disclosures"]]
@@ -843,6 +848,9 @@ def test_v2_u2_n_watched_floor_and_twins_refused(tmp_path):
     fx = Fx(tmp_path, "osb-v2-u2")
     with pytest.raises(B.Refused):
         fx.build(L1, n_watched=29)
+    with pytest.raises(B.Refused):
+        fx.build(L1, n_watched=38)
+    fx.build(L1, n_watched=39)
     for sfx in ("-lat3010", "-lat5590", "-send160k"):
         t = Fx(tmp_path / ("t" + sfx), "osb-v2-u2" + sfx)
         with pytest.raises(B.Refused):
@@ -865,3 +873,17 @@ def test_u2_v1_defect_disclosure_filled_unrounded(tmp_path):
     # the other boards do not carry it
     for bid in ("osb-u4", "c1nf-fwd-v1"):
         assert "simulator defect found from code" not in B.render(Fx(tmp_path / bid, bid).build(now))
+
+
+def test_v2_u2_warmup_window_is_w2_from_its_own_start_hour(tmp_path):
+    fx = Fx(tmp_path / "a", "osb-v2-u2", start_hour="2026-11-18T12")
+    md = B.render(fx.build(B.hour_ms("2026-11-18T12") + 2 * D))
+    part = md.split("Disclosures (verbatim)")[1]
+    assert "W = [2026-11-04T12:00Z, S)" in part and "starts at 2026-11-04T12:00Z" in part and "before 2026-11-04T12:00Z" in part and "2026-11-03T12:00Z" not in part
+    # W2 never starts before 2026-11-03T03:00Z
+    fx = Fx(tmp_path / "b", "osb-v2-u2", start_hour="2026-11-10T00")
+    part = B.render(fx.build(B.hour_ms("2026-11-10T00") + 2 * D)).split("Disclosures (verbatim)")[1]
+    assert "W = [2026-11-03T03:00Z, S)" in part
+    # osb-u2 keeps its own window
+    part = B.render(Fx(tmp_path / "c", "osb-u2", start_hour="2026-11-18T12").build(B.hour_ms("2026-11-18T12") + 2 * D)).split("Disclosures (verbatim)")[1]
+    assert "W = [2026-11-03T12:00Z, S)" in part

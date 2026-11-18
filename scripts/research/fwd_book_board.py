@@ -422,6 +422,8 @@ def build(out_root, now_ms, n_watched, roots=None):
         raise Refused("--n-watched is required and is the board-wide count of watched book rows (at least %d: 12 + 9 + 9 of these three books alone); the best-of-N sentence prints it" % MIN_N_WATCHED)
     bk = load_book(out_root, roots)
     meta, status, dec = bk["meta"], bk["status"], bk["decider"]
+    if bk["book_id"] == "osb-v2-u2" and n_watched < MIN_N_WATCHED_U1:
+        raise Refused("--n-watched is at least %d for osb-v2-u2 (12 + 9 + 9 + the 9 rows osb-v2-u2 adds)" % MIN_N_WATCHED_U1)
     if dec in U1_DECIDERS and n_watched < MIN_N_WATCHED_U1:
         raise Refused("--n-watched is at least %d for the U1 books (12 + 9 + 9 + the 9 rows U1 adds)" % MIN_N_WATCHED_U1)
     if "start_hour" not in meta:
@@ -512,9 +514,10 @@ def disclosures(dec, nw, meta, gtot, ex, book_id=None, generated_utc=None, plc_e
             gap = getattr(T, k + "_GAP").replace("<n>", str(gn)).replace("<N>", str(gtot.get("entries", 0))).replace("<timed>", str(gtot.get("feed_gap_timed", 0))).replace("<requested>", str(gtot.get("feed_gap_requested", 0)))
         else:
             gap = getattr(T, k + "_GAP") + " [counts: gap_exclusions.json not present yet; the template's <n> <N> <timed> <requested> are unfilled]"
-        out += [("2 ADD1 A1 gap", gap), ("3 warm-up (ruling 0.3)", getattr(T, k + "_WARMUP").replace("<n>", warm_txt)), ("bounded state (QP on PR #1432)", T.BOUNDED),
+        out += [("2 ADD1 A1 gap", gap), ("3 warm-up (ruling 0.3)", warmup_text(k, book_id, meta).replace("<n>", warm_txt)), ("bounded state (QP on PR #1432)", T.BOUNDED),
                 ("code.sha256 note (Erratum 1)", T.E1_CODE_SHA)]
     if book_id == "osb-v2-u2":
+        out.append(("engine warm-up (QP-RULING-1118-u2-v2 section 2)", T.QP1118_V2_ENGINE_WARMUP))
         out.append(("osb-v2-u2 (QP-RULING-1118-u2-v2 section 4)", T.QP1118_V2_U2.replace("<n_books_watched>", str(nw))))
     if book_id == "osb-u2":
         out.append(("osb-u2 v1 defect (QP-RULING-1118-u2-v2 section 4)", u2_v1_defect(generated_utc, ex, plc_ex)))
@@ -528,6 +531,15 @@ def disclosures(dec, nw, meta, gtot, ex, book_id=None, generated_utc=None, plc_e
     n_rows = ROWS_PER_BOOK[dec]
     out.append(("rows counted", "The %d rows of this book (stakes x latencies) count in n_books_watched and the best-of-N sentence; the 160,000 column does not." % n_rows))
     return [{"id": a, "text": b} for a, b in out]
+
+
+def warmup_text(k, book_id, meta):
+    """the book's warm-up disclosure; osb-v2-u2 prints its own W2 start = max(2026-11-03T03:00Z, S2 - 336 h), from its own manifest start_hour"""
+    t = getattr(T, k + "_WARMUP")
+    if book_id == "osb-v2-u2":
+        w2 = max(hour_ms("2026-11-03T03"), hour_ms(meta["start_hour"]) - 336 * HOUR_MS)
+        t = t.replace("2026-11-03T12:00Z", utc(w2)[:16] + "Z")
+    return t
 
 
 def u2_v1_defect(generated_utc, ex, plc_ex):
