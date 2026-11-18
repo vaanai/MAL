@@ -417,7 +417,7 @@ def n_at(main, plc, s_ms, tape_end, cut):
     return c[DECIDING_STAKE]["n"] if DECIDING_STAKE in c else 0
 
 
-def build(out_root, now_ms, n_watched, roots=None):
+def build(out_root, now_ms, n_watched, roots=None, companion=None):
     if not _isint(n_watched) or n_watched < MIN_N_WATCHED:
         raise Refused("--n-watched is required and is the board-wide count of watched book rows (at least %d: 12 + 9 + 9 of these three books alone); the best-of-N sentence prints it" % MIN_N_WATCHED)
     bk = load_book(out_root, roots)
@@ -491,11 +491,13 @@ def build(out_root, now_ms, n_watched, roots=None):
         out["pools_first_seen_in_warmup"] = None
         out["disclosures"] = u1_disclosures(dec, nw, gtot, ex, summed, look, replay, counts)
         return out
-    out["disclosures"] = disclosures(dec, nw, meta, gtot, ex, bk["book_id"], out["generated_utc"], plc_ex)
+    if companion is not None and bk["book_id"] != "osb-v2-u2":
+        raise Refused("--companion-board is only for the osb-v2-u2 board")
+    out["disclosures"] = disclosures(dec, nw, meta, gtot, ex, bk["book_id"], out["generated_utc"], plc_ex, companion)
     return out
 
 
-def disclosures(dec, nw, meta, gtot, ex, book_id=None, generated_utc=None, plc_ex=None):
+def disclosures(dec, nw, meta, gtot, ex, book_id=None, generated_utc=None, plc_ex=None, companion=None):
     # meta.pools_first_seen_in_warmup counts pools first seen in W; it is the C1-NF warm-up sentence's number. The U4 / U2 sentence asks for mints excluded for history before W, which the runner does not record.
     warm_n = meta.get("pools_first_seen_in_warmup") if dec == "c1nf" else None
     warm_txt = str(warm_n) if warm_n is not None else "not recorded by the runner"
@@ -515,19 +517,22 @@ def disclosures(dec, nw, meta, gtot, ex, book_id=None, generated_utc=None, plc_e
         else:
             gap = getattr(T, k + "_GAP") + " [counts: gap_exclusions.json not present yet; the template's <n> <N> <timed> <requested> are unfilled]"
         out += [("2 ADD1 A1 gap", gap), ("3 warm-up (ruling 0.3)", warmup_text(k, book_id, meta).replace("<n>", warm_txt)), ("bounded state (QP on PR #1432)", T.BOUNDED),
-                ("code.sha256 note (Erratum 1)", T.E1_CODE_SHA)]
+                ("code.sha256 note (Erratum 1)", T.E1_CODE_SHA_V2 if book_id == "osb-v2-u2" else T.E1_CODE_SHA)]
     if book_id == "osb-v2-u2":
         out.append(("engine warm-up (QP-RULING-1118-u2-v2 section 2)", T.QP1118_V2_ENGINE_WARMUP))
         out.append(("osb-v2-u2 (QP-RULING-1118-u2-v2 section 4)", T.QP1118_V2_U2.replace("<n_books_watched>", str(nw))))
     if book_id == "osb-u2":
         out.append(("osb-u2 v1 defect (QP-RULING-1118-u2-v2 section 4)", u2_v1_defect(generated_utc, ex, plc_ex)))
     elif book_id == "osb-v2-u2":
-        # no cross-book ledger read: the brackets point at the osb-u2 board of the same instant
-        see = "see osb-u2 board %s" % generated_utc
-        t = T.QP1118_U2_V1_DEFECT.replace("<instant>", str(generated_utc))
-        for br in ("<r_p>", "<N_p>", "<r>", "<N>", "<a>", "<b>"):
-            t = t.replace(br, "[" + see + "]")
-        out.append(("osb-u2 v1 defect (QP-RULING-1118-u2-v2 section 4; figures on the osb-u2 board)", t))
+        if companion is not None:   # the six real numbers from the osb-u2 board built at the same instant (its JSON)
+            out.append(("osb-u2 v1 defect (QP-RULING-1118-u2-v2 section 4; figures from the osb-u2 board built at the same instant)",
+                        u2_v1_defect(companion["generated_utc"], companion["entries"], companion["random_pick_entries"])))
+        else:   # no cross-book ledger read: the brackets point at the osb-u2 board of the same instant
+            see = "[see osb-u2 board %s]" % generated_utc
+            t = T.QP1118_U2_V1_DEFECT.replace("<instant>", str(generated_utc))
+            for br in ("<r_p>", "<N_p>", "<r>", "<N>", "<a>", "<b>"):
+                t = t.replace(br, see)
+            out.append(("osb-u2 v1 defect (QP-RULING-1118-u2-v2 section 4; figures on the osb-u2 board)", t))
     n_rows = ROWS_PER_BOOK[dec]
     out.append(("rows counted", "The %d rows of this book (stakes x latencies) count in n_books_watched and the best-of-N sentence; the 160,000 column does not." % n_rows))
     return [{"id": a, "text": b} for a, b in out]
@@ -782,6 +787,20 @@ def atomic(path, text):
     os.replace(tmp, path)
 
 
+def load_companion(path):
+    """the osb-u2 board JSON (written by this tool); only its generated_utc, entries and random_pick_entries counts are read"""
+    if path is None:
+        return None
+    p = Path(path).expanduser().resolve()
+    if p.suffix != ".json" or any(n in str(p) for n in NEVER_OPEN):
+        raise Refused("--companion-board must be the osb-u2 board .json")
+    c = json.loads(p.read_text())
+    e, pe = c.get("entries"), c.get("random_pick_entries")
+    if c.get("schema") != SCHEMA or c.get("book_id") != "osb-u2" or not isinstance(e, dict) or not isinstance(pe, dict) or not all(_isint(x.get("forward_entries")) and _isint(x.get("engine_refused")) for x in (e, pe)):
+        raise Refused("--companion-board is not an osb-u2 board JSON of this tool")
+    return {"generated_utc": str(c["generated_utc"]), "entries": e, "random_pick_entries": pe}
+
+
 def write(o, out_dir, out_roots=None):
     out_roots = out_roots or OUT_ROOTS
     d = Path(out_dir).expanduser().resolve()
@@ -801,10 +820,11 @@ def main(argv=None):
     ap.add_argument("out_root")
     ap.add_argument("--out-dir", required=True)
     ap.add_argument("--now-ms", type=int, default=None)
+    ap.add_argument("--companion-board", default=None, help="osb-v2-u2 only: JSON of the osb-u2 board built at the same instant; its six counts fill the v1-defect disclosure")
     ap.add_argument("--n-watched", type=int, required=True, help="board-wide count of watched book rows (each book adds its rows; at least 30)")
     a = ap.parse_args(argv)
     try:
-        o = build(a.out_root, a.now_ms if a.now_ms is not None else int(time.time() * 1000), a.n_watched)
+        o = build(a.out_root, a.now_ms if a.now_ms is not None else int(time.time() * 1000), a.n_watched, companion=load_companion(a.companion_board))
         o2 = write(o, a.out_dir)
     except (Refused, OSError, ValueError, KeyError, TypeError, AttributeError) as e:
         print("refused: %s" % (e if isinstance(e, Refused) else "unreadable book files (%s)" % type(e).__name__), file=sys.stderr)

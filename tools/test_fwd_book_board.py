@@ -259,7 +259,7 @@ def test_labels_and_best_of_n(tmp_path):
     assert "best of 57 rows" in " ".join(d["text"] for d in o["disclosures"]) and o["n_books_watched_source"].startswith("--n-watched")
 
 
-@pytest.mark.parametrize("name", [n for n in dir(T) if n.isupper() and not n.startswith("QP1118_")])  # QP1118_* are QP-ruling text, tested below
+@pytest.mark.parametrize("name", [n for n in dir(T) if n.isupper() and not n.startswith("QP1118_") and n != "E1_CODE_SHA_V2"])  # QP1118_* are QP-ruling text, tested below
 def test_disclosure_constants_are_verbatim_in_dec(name):
     assert getattr(T, name) in DEC_TEXT
 
@@ -887,3 +887,31 @@ def test_v2_u2_warmup_window_is_w2_from_its_own_start_hour(tmp_path):
     # osb-u2 keeps its own window
     part = B.render(Fx(tmp_path / "c", "osb-u2", start_hour="2026-11-18T12").build(B.hour_ms("2026-11-18T12") + 2 * D)).split("Disclosures (verbatim)")[1]
     assert "W = [2026-11-03T12:00Z, S)" in part
+
+
+def test_v2_code_sha_note_is_book_specific(tmp_path):
+    v2 = B.render(Fx(tmp_path / "v2", "osb-v2-u2").build(L1))
+    v1 = B.render(Fx(tmp_path / "v1", "osb-u2").build(L1))
+    assert T.E1_CODE_SHA_V2 in v2 and "equals the C1-NF book's at 6faf1d4b" not in v2 and T.E1_CODE_SHA in v1 and "d15ff87d" in v2
+
+
+def test_v2_companion_board_fills_the_six_numbers(tmp_path):
+    fu = Fx(tmp_path / "v1", "osb-u2")
+    good_book(fu, n=4)
+    fu.refuse_row(fu.bot, S + 2 * H, "no_prints: no prints seen for pool")
+    fu.refuse_row(fu.bot, S + 4 * H, "clock_not_ready")
+    fu.refuse_row(fu.bot + "-plc", S + 2 * H, "no_prints: no prints seen for pool")
+    ou = fu.build(S + 2 * D)
+    p = tmp_path / "osb-u2.json"
+    p.write_text(json.dumps(ou))
+    comp = B.load_companion(str(p))
+    fx = Fx(tmp_path / "v2", "osb-v2-u2")
+    md = B.render(B.build(str(fx.root), S + 2 * D, 66, roots=(str(fx.sim),), companion=comp))
+    want = (V1_DEFECT_TEXT.replace("<instant>", ou["generated_utc"]).replace("<r>", "2").replace("<N>", "6").replace("<a>", "1").replace("<b>", "1").replace("<r_p>", "1").replace("<N_p>", "5"))
+    assert want in md and "[see osb-u2" not in md
+    bad = tmp_path / "x.json"
+    bad.write_text(json.dumps({"schema": B.SCHEMA, "book_id": "osb-u4", "entries": {}, "random_pick_entries": {}}))
+    with pytest.raises(B.Refused):
+        B.load_companion(str(bad))
+    with pytest.raises(B.Refused):
+        B.build(str(fu.root), S + 2 * D, 66, roots=(str(fu.sim),), companion=comp)

@@ -159,3 +159,9 @@ QP1118_V2_U2 = (
 QP1118_V2_ENGINE_WARMUP = (
     'engine state starts at S2 - 7 h: a pool whose pricing would need a print before then (V fallback) is priced as the engine prices it, or excluded and counted'
 )
+
+E1_CODE_SHA_V2 = (
+    "the runner's `code_sha256()` hashes a fixed file list that does not include `u4_u2_deciders.py`, so this value"
+    " is the d15ff87d runner's (it does not equal the C1-NF book's at 6faf1d4b: c1nf_forward_sim.py changed since) and the runner's \"simulator version changed\" refusal does not cover the d"
+    "ecider file."
+)
