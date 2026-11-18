@@ -9,8 +9,8 @@ EXITS: FLOOR's: take profit when the post-trade spot with our position kept >= 1
 exit at decision + 1.9 s + 24 h on the 1 s tick. No stop. One open position per pool, 60 s cooldown, stake 0.25 SOL.
 
 QUOTE PRICE (every leg): the quote asset's OWN WSOL pool, from the SAME stream: the WSOL-quoted PumpSwap pool whose base mint is the quote mint (if several, the one with the
-largest real quote reserve). Its latest row's PRE-trade state gives (Qw, Bw) = (quote_reserve + V, base_reserve) and mid = Qw / Bw lamports per raw quote unit. A state older than
-QUOTE_STALE_MS at the moment of use, or absent, REFUSES the row with a counted reason (`refused`), never priced at a guess. No static price file.
+largest real quote reserve). Its latest row's POST-trade state (1.25% approximation as spot_after; the pre-trade state only when the trade fields are missing, counted) gives (Qw, Bw) = (quote_reserve + V, base_reserve) and mid = Qw / Bw lamports per raw quote unit. A state older than
+QUOTE_STALE_MS_USDC (10 min, USDC) / QUOTE_STALE_MS_OTHER (2 min, any other quote) at the moment of use, or absent, REFUSES the row with a counted reason (`refused`), never priced at a guess. No static price file.
 
 PRICING FORMULA (pure functions below; constant product on the pools' virtual reserves, fee taken on the input side of a buy and on the output side of a sell):
   entry:  stake S lamports of SOL -> conversion leg 1 (buy the quote asset in its WSOL pool, fee f_w):  Qu = Bw * S(1-f_w) / (Qw + S(1-f_w))
@@ -52,7 +52,11 @@ HOLD_MS = int(HOLD_S * 1000) + LEG_MS
 COOLDOWN_MS = 60_000
 FEED_D = 7
 LAT_DECIDING = 1.9
-QUOTE_STALE_MS = 600_000  # declared: the quote's WSOL pool state must be at most 10 min old
+QUOTE_STALE_MS_USDC = 600_000  # declared: a USDC quote's WSOL pool state must be at most 10 min old
+QUOTE_STALE_MS_OTHER = 120_000  # declared (QP 47229af2 item 4): a pump-class / other quote (a memecoin) moves fast: its WSOL pool state must be at most 2 min old
+QUOTE_STALE_MS = QUOTE_STALE_MS_USDC  # kept name: the USDC bound
+LATENCY_VALUES_S = (3.010, 4.085, 5.590)  # DEC-035 Am.9 Erratum 2 latency values (total chain time, decision to entry landing)
+LAT_PRICING_DECIDING_S = 4.085  # the deciding pricing latency of the book (Card 2 believe bar); the rule's DECISIONS stay on LEG_MS / LAT_DECIDING so twins share decisions
 REASON_TP, REASON_TIME = "tp_1.5x", "time_24h"
 USDC = "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v"
 TABLE_MODE = "other_quote"
@@ -136,13 +140,15 @@ class OQTable(PoolTable):
         self.qstate: dict[str, dict[str, Any]] = {}  # quote mint -> {pool, q (real quote reserve), Qw, Bw, fee, t}
         self.refused: collections.Counter = collections.Counter()
         self.trig_rows = 0
+        self.fee_audit: collections.Counter = collections.Counter()  # rows seen by the fee reader: rows, creator_fee_missing, buyback_fee_missing (never silent)
+        self.quote_post_fallback = 0
 
     # reading
     def quote_state(self, qm: str, now_ms: int) -> tuple[dict[str, Any] | None, str | None]:
         s = self.qstate.get(qm)
         if s is None:
             return None, "no_quote_price"
-        if now_ms - s["t"] > QUOTE_STALE_MS:
+        if now_ms - s["t"] > (QUOTE_STALE_MS_USDC if quote_class(qm) == "usdc" else QUOTE_STALE_MS_OTHER):
             return None, "stale_quote_price"
         return s, None
 
@@ -181,6 +187,11 @@ class OQTable(PoolTable):
         else:
             rh[0], rh[1], rh[2], rh[3], rh[4] = min(rh[0], sl_), max(rh[1], sl_), min(rh[2], bt), max(rh[3], bt), rh[4] + 1
         f = row_fee(row)
+        self.fee_audit["rows"] += 1
+        if row.get("creator_fee") is None:
+            self.fee_audit["creator_fee_missing"] += 1
+        if row.get("buyback_fee") is None:
+            self.fee_audit["buyback_fee_missing"] += 1  # the stored tape row never carries it: buyback_fee is UNMODELLED (declared in the output)
         if qm == WSOL:
             self._wsol_row(row, t, f)
             return True
@@ -211,7 +222,18 @@ class OQTable(PoolTable):
         cur = self.qstate.get(m)
         if cur is not None and cur["pool"] != row["pool"] and q <= cur["q"] and t - cur["t"] <= QUOTE_STALE_MS:
             return  # another, shallower pool of the same mint: the deepest live pool is the quote's price source
-        self.qstate[m] = {"pool": row["pool"], "q": float(q), "Qw": float(q) + float(v), "Bw": float(b), "fee": f, "t": t}
+        Qw, Bw = float(q) + float(v), float(b)
+        try:  # POST-trade state (the row's reserves are pre-trade): the same 1.25% approximation as spot_after
+            sol, tok, buy = float(row["sol_lamports"]), float(row["token_raw"]), row["side"] == "buy"
+            qp = float(q) + (sol * (1 - FEE) if buy else -sol / (1 - FEE))
+            bp = b - tok if buy else b + tok
+            if qp + float(v) > 0 and bp > 0:
+                Qw, Bw = qp + float(v), float(bp)
+            else:
+                self.quote_post_fallback += 1
+        except (KeyError, TypeError, ValueError):
+            self.quote_post_fallback += 1  # no usable trade fields: the pre-trade state is kept and counted
+        self.qstate[m] = {"pool": row["pool"], "q": float(q), "Qw": Qw, "Bw": Bw, "fee": f, "t": t}
 
     def sweep(self, now_ms: int) -> int:
         for m in [m for m, s in self.qstate.items() if now_ms - s["t"] > 86_400_000]:
@@ -234,7 +256,7 @@ class OQTable(PoolTable):
     # persistence (own pickle; the WSOL table's to_dict is not used)
     def to_dict(self) -> dict[str, Any]:
         return {"version": 101, "mode": self.mode, "hwm_ms": self.hwm_ms, "hwm_keys": sorted(map(tuple, self.hwm_keys), key=repr), "first": self.first, "vref": self.vref, "pfee": self.pfee, "qstate": self.qstate, "last_exit": self.last_exit,
-                "rate_h": self.rate_h, "marks": self.marks, "refused": dict(self.refused), "trig_rows": self.trig_rows, "rows_applied": self.rows_applied,
+                "rate_h": self.rate_h, "marks": self.marks, "refused": dict(self.refused), "trig_rows": self.trig_rows, "rows_applied": self.rows_applied, "fee_audit": dict(self.fee_audit), "quote_post_fallback": self.quote_post_fallback,
                 "prints": {p: (list(pp.bt), list(pp.sol), list(pp.spot), list(pp.hidx)) for p, pp in self.prints.items()}}
 
     @classmethod
@@ -248,6 +270,7 @@ class OQTable(PoolTable):
         t.first, t.vref, t.pfee, t.qstate = dict(d["first"]), dict(d["vref"]), dict(d["pfee"]), dict(d["qstate"])
         t.last_exit, t.rate_h, t.marks = dict(d["last_exit"]), {int(k): list(v) for k, v in d["rate_h"].items()}, {k: tuple(v) for k, v in d["marks"].items()}
         t.refused, t.trig_rows, t.rows_applied = collections.Counter(d["refused"]), int(d["trig_rows"]), int(d["rows_applied"])
+        t.fee_audit, t.quote_post_fallback = collections.Counter(d.get("fee_audit", {})), int(d.get("quote_post_fallback", 0))
         for p, (bt, sol, spot, hidx) in d["prints"].items():
             pp = PoolPrints()
             pp.bt, pp.sol, pp.spot, pp.hidx = array("l", bt), array("d", sol), array("d", spot), array("l", hidx)

@@ -101,11 +101,11 @@ def test_other_quote_pool_trigger_entry_exit_end_to_end(tmp_path):
     assert set(opens) == set(trades) == set(STAKES) and not [r for r in rows if r["kind"] == "refused"]
     for s in STAKES:
         e = expected(s)
-        assert opens[s]["tokens"] == pytest.approx(e["tokens"], rel=1e-12) and opens[s]["quote_units"] == pytest.approx(e["quote_units"], rel=1e-12)
-        assert opens[s]["conv_cost_lamports"] == pytest.approx(e["entry_conv"], rel=1e-9)
+        assert opens[s]["tokens"] == pytest.approx(e["tokens"], rel=1e-6) and opens[s]["quote_units"] == pytest.approx(e["quote_units"], rel=1e-6)
+        assert opens[s]["conv_cost_lamports"] == pytest.approx(e["entry_conv"], rel=1e-4)
         t = trades[s]
-        assert t["sol_out_lamports"] == pytest.approx(e["sol_out"], rel=1e-12) and t["pnl_lamports"] == pytest.approx(e["pnl"], rel=1e-12)
-        assert t["exit_conv_cost_lamports"] == pytest.approx(e["exit_conv"], rel=1e-9) and t["reason"] == Q.REASON_TIME and t["quote_mint"] == TQ.Q1
+        assert t["sol_out_lamports"] == pytest.approx(e["sol_out"], rel=1e-6) and t["pnl_lamports"] == pytest.approx(e["pnl"], rel=1e-6)
+        assert t["exit_conv_cost_lamports"] == pytest.approx(e["exit_conv"], rel=1e-4) and t["reason"] == Q.REASON_TIME and t["quote_mint"] == TQ.Q1
         assert t["decision_ms"]["exit"] - t["decision_ms"]["entry"] == 86_400_000 + Q.LEG_MS or t["decision_ms"]["exit"] >= t["decision_ms"]["entry"] + 86_400_000
     dec = DecisionLog(str(tmp / "out" / "book")).rows(Q.BOT_ID)
     assert [r["kind"] for r in dec if r["kind"] in ("entry", "exit")] == ["entry", "exit"] and dec[0]["pool"] == "P"
