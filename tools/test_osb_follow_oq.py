@@ -238,3 +238,32 @@ def test_gap_hold_twin_manifest_sets_the_engine_gap_mode(tmp_path):
     assert OQ.build_book(m, tmp / "rgh", table_mode="other_quote")[1].gap_mode == "hold"
     m = OQ.load_manifest(str(manifest(tmp, out="gs")))
     assert OQ.build_book(m, tmp / "rgs", table_mode="other_quote")[1].gap_mode == "on"  # the WSOL default
+
+
+def _restart_twice(tmp_path, monkeypatch, status_in_ledger):
+    tmp = world(tmp_path, oq_rows())
+    mp = manifest(tmp)
+    if status_in_ledger:  # the pre-fix layout: status.json inside the hashed ledger dir
+        orig = E.OQEngine.__init__
+
+        def init(self, *a, **k):
+            orig(self, *a, **k)
+            self.status_path = self.root / "status.json"
+        monkeypatch.setattr(E.OQEngine, "__init__", init)
+    ticks = iter(range(1_700_000_000, 1_700_100_000, 997))
+    monkeypatch.setattr(E.time, "time", lambda: float(next(ticks)))  # the wall clock differs between the runs, as in production
+    assert OQ.follow(str(mp), once=True, _roots=(str(tmp),), _table_mode="other_quote") == 0
+    return OQ.follow(str(mp), once=True, _roots=(str(tmp),), _table_mode="other_quote"), tmp
+
+
+def test_restart_md5_matches_with_status_outside_the_ledger_dir(tmp_path, monkeypatch):
+    rc, tmp = _restart_twice(tmp_path, monkeypatch, False)
+    assert rc == 0
+    run = (tmp / "out" / "book").resolve()
+    assert (run / "oq-status.json").exists() and not (run / "ledger" / "status.json").exists()
+    assert json.loads((run / "oq-status.json").read_text())["written_unix_s"] > 0
+
+
+def test_restart_md5_mismatch_reproduced_when_status_is_inside_the_ledger_dir(tmp_path, monkeypatch):
+    rc, _ = _restart_twice(tmp_path, monkeypatch, True)
+    assert rc == 4  # the old failure: ledger_md5 differs only through the wall-clock status file
