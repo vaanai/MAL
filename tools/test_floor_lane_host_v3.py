@@ -42,8 +42,8 @@ def run_rule(tmp, rows, rule_id=H.RULE_V2, q=None, hours=60):
 
 
 def norm(rows, bot):
-    """Rows with the chain fields dropped and the rule id mapped to v2's, as canonical strings."""
-    return [canon({k: v for k, v in r.items() if k not in ("prev", "sha")}).replace(bot, "l1-floor-v2") for r in rows]
+    """Rows with the chain fields and order_id dropped (order_id is a hash that includes the rule id) and the rule id mapped to v2's, as canonical strings."""
+    return [canon({k: v for k, v in r.items() if k not in ("prev", "sha", "order_id")}).replace(bot, "l1-floor-v2") for r in rows]
 
 
 def mid_vault_rows():
@@ -86,6 +86,8 @@ def test_v3_at_half_sol_equals_v2_except_the_rule_id(tmp_path):
     assert len([r for r in lb if r["kind"] == "entry"]) == 3 and len([r for r in lb if r["kind"] == "exit"]) == 3  # non-vacuous
     assert all(r["meta"]["rule"] == V3_ID for r in lb if r["kind"] == "entry") and all(r["meta"]["rule"] == L.BOT_ID for r in la if r["kind"] == "entry")
     assert norm(la, L.BOT_ID) == norm(lb, V3_ID)
+    ida, idb = [r["order_id"] for r in la], [r["order_id"] for r in lb]  # the ids differ (they hash the rule id) but pair entry to exit identically
+    assert all(x != y for x, y in zip(ida, idb)) and [ida.index(x) for x in ida] == [idb.index(y) for y in idb]
 
 
 # ------------------------------------------------------------------------------------------------ v3 at 1.0 admits what v2 refuses
