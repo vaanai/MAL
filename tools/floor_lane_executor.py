@@ -414,7 +414,7 @@ class FloorLaneBridge(F.FloorBridge):
     """FloorBridge plus the lane. With a DRY config it adds nothing (no ledger is read or written). With a live config the shared lane ledger is read under its lock before every send."""
 
     def __init__(self, cfg: B.Config, port: B.OrderPort, lane_cfg: H.LaneConfig, *, now_ms: Callable[[], int] | None = None, live_ok_path: str | Path = LIVE_OK_DEFAULT,
-                 tier_path: Path = B.TIER_PATH, root_checks: bool = True, close_blocked: Callable[[str], bool | None] | None = None, dry_replay_caps: bool = False, a3_record_file: str = "", bot_lock: Any = None, a3_floor_flag_list: bool = False) -> None:
+                 tier_path: Path = B.TIER_PATH, root_checks: bool = True, close_blocked: Callable[[str], bool | None] | None = None, dry_replay_caps: bool = False, a3_record_file: str = "", bot_lock: Any = None, a3_floor_flag_list: bool = False, expected_q_star: int | None = None) -> None:
         self.lane_cfg = lane_cfg
         self.lane: FloorLaneLedger | None = None
         self._lane_bot_lock: Any = None
@@ -433,7 +433,7 @@ class FloorLaneBridge(F.FloorBridge):
             self.lane = FloorLaneLedger(lane_cfg)
             self._lane_bot_lock = bot_lock if bot_lock is not None else take_bot_lock(self.lane)
         try:
-            super().__init__(cfg, port, now_ms=now_ms, live_ok_path=Path(live_ok_path), tier_path=tier_path, root_checks=root_checks, close_blocked=close_blocked, dry_replay_caps=dry_replay_caps)
+            super().__init__(cfg, port, now_ms=now_ms, live_ok_path=Path(live_ok_path), tier_path=tier_path, root_checks=root_checks, close_blocked=close_blocked, dry_replay_caps=dry_replay_caps, expected_q_star=expected_q_star)
         except BaseException:
             self.release_lane_lock()
             raise
@@ -441,7 +441,7 @@ class FloorLaneBridge(F.FloorBridge):
             assert isinstance(port, FloorLanePort)
             port.pre_buy = self._lane_pre_buy
             port.on_error = self._latch
-            self._lane_record("start", "", code_sha256=hashlib.sha256(Path(__file__).read_bytes()).hexdigest(), frozen_sha=FROZEN_SHA, book=BOOK_BOT_ID,
+            self._lane_record("start", "", code_sha256=hashlib.sha256(Path(__file__).read_bytes()).hexdigest(), frozen_sha=FROZEN_SHA, book=cfg.bot_id,
                               lane={"bot_id": LANE_BOT_ID, "stake_lamports": lane_cfg.stake_lamports, "max_open": lane_cfg.max_open, "budget_lamports": lane_cfg.budget_lamports,
                                     "daily_loss_lamports": lane_cfg.daily_loss_lamports, "fee_reserve_lamports": lane_cfg.fee_reserve_lamports, "mark_stale_s": lane_cfg.mark_stale_s},
                               **({"a3_floor_flag_list": True} if self.a3_floor_flag_list else {}))
@@ -760,7 +760,7 @@ def run(raw: Mapping[str, Any], *, live_flag: bool, once: bool = False, root_che
             print(f"floor_lane_executor ALERT startup_refused {exc}", flush=True)
             return 2
     port = (port_factory or functools.partial(build_live_port, rpc_rps=rpc_rps, **({"presend_batch": True} if parse_presend_batch(raw) else {})))(cfg) if live_flag else B.DryPort(cfg.dry_balance_lamports)
-    br = FloorLaneBridge(cfg, port, lane, now_ms=now_ms, live_ok_path=live_ok, root_checks=root_checks, a3_record_file=a3_file, bot_lock=lock, a3_floor_flag_list=a3_fl)
+    br = FloorLaneBridge(cfg, port, lane, now_ms=now_ms, live_ok_path=live_ok, root_checks=root_checks, a3_record_file=a3_file, bot_lock=lock, a3_floor_flag_list=a3_fl, expected_q_star=F.expected_q_star(raw))
     print(f"floor_lane_executor mode={cfg.mode} lane_bot={LANE_BOT_ID} book={cfg.bot_id} stake={cfg.stake_lamports} rpc_rps={rpc_rps} presend_batch={str(parse_presend_batch(raw)).lower()}", flush=True)
     kw = {"sleep": sleep} if sleep is not None else {}
     br.run(once=once, **kw)
