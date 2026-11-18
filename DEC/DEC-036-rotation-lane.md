@@ -11,7 +11,7 @@
 No book has cleared the promotion gate. Nothing here says any book makes money.
 
 ## 1. Context and the owner's direction
-FLOOR (floor-lane-1, rule `l1-floor-v2`) went live under DEC-035 and is the only live earner; registered paper reads stalled. Each new live book has so far needed its own DEC-035 amendment and a Helm install, so trying a second book takes days. This DEC sets one standing envelope in which the manager can put a new book live at small size, with a method chosen for that book, without a fresh amendment each time. FLOOR stays first priority and untouched.
+FLOOR (floor-lane-1, rule `l1-floor-v2`) went live under DEC-035 and is the one book trading live now (no gate read; nothing here says it has an edge); registered paper reads stalled. Each new live book has so far needed its own DEC-035 amendment and a Helm install, so trying a second book takes days. This DEC sets one standing envelope in which the manager can put a new book live at small size, with a method chosen for that book, without a fresh amendment each time. FLOOR stays first priority and untouched.
 
 Owner direction, 2026-11-18 (MiScusi chat, as relayed by manager24 in the drafting brief; the manager quotes the original message with its instant before the owner approves):
 > "going live is after a sim, one that we believe in. If a sim is negative but we still believe in it, we can just leave it running for a bit longer."
@@ -22,7 +22,7 @@ Owner direction, 2026-11-18 (MiScusi chat, as relayed by manager24 in the drafti
 
 Capital is the bottleneck: a 2 SOL top-up is pending, and FLOOR at 0.25 with 15 open needs about 3.8 SOL against a wallet of about 3.2 SOL after the top-up (review, host file `/data/mal/hunt-1008/ops/reports/2026-11-18/rotation-plan-review.md`). Hence §5 item 10: the rotation wallet is funded only after FLOOR's room.
 
-Basis: that review (checked against the repo); DEC-035 §2, §6, Am.4 item 7, Am.6 "Capacity at 0.25" and "Price impact", Am.9 §1-§3, Am.12; `tools/forge/dsl_lane_executor.py` (header and `DslLaneLedger`); `tools/floor_decay_monitor.py`; QP-RULING-1118-floor-brake (host `/data/mal/hunt-1008/ops/`, sha256 prefix 4f9333c3); `ARTIFACTS/lab/probe-final-2026-10-07.md`.
+Basis: that review (checked against the repo); DEC-035 §2, §6, Am.4 item 7, Am.6 "Capacity at 0.25" and "Price impact", Am.9 §1-§3, Am.12; `tools/forge/dsl_lane_executor.py` (header and `DslLaneLedger`); `tools/floor_decay_monitor.py`; QP-RULING-1118-floor-brake (host `/data/mal/hunt-1008/ops/`, sha256 4f9333c322fce3ced980c0165e0038117b2c0775f6f969319b31b12ea0c6418b at drafting); `ARTIFACTS/lab/probe-final-2026-10-07.md`.
 
 ## 2. Scope
 1. **Rotation books.** A rotation book is a frozen rule with a live executor path, run under this DEC with its own `bot_id` (never `floor-lane-1`, `h5-lane`, `l1-floor-v2` or an `hv4-` id). DEC-035 §3 holds: a code or prompt change is a new `bot_id`.
