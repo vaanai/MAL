@@ -4,7 +4,10 @@ Plumbing only. PAPER decisions only. Nothing here says any cap makes money; goin
 
   * Entry, take profit, time exit, cooldown, stake and every other constant are l1-floor-v2's, by inheritance. The v2 `on_row` is called unchanged with the module constant
     `arena_rule_l1.Q_STAR` swapped for this rule's value for the duration of that one call (single-threaded host; restored in a finally), so v3 at 0.5 SOL is v2 by construction.
-  * The only other change is the rule id: bot_id and the `rule` field of a Buy's meta say `l1-floor-v3`.
+  * The only other changes are the rule id (bot_id and the `rule` field of a Buy's meta say `l1-floor-v3`) and one extra meta key, `q_star_lamports`, on every entry.
+    The lane host also writes it into the start-row binding and refuses to resume a root whose log carries another value (tools/floor_lane_host.py).
+  * NOT DONE here (disclosed): `register` records v3 under FLOOR's frozen commit (v2's), which does not contain this file; the bots.json line has no free field (tools/arena_paper.py
+    is pinned), so q_star is recorded in the start row and every entry's meta instead. The v3 file's sha256 is pinned in the host (PINS_V3_EXTRA) and goes in the start row's pins.
   * q_star is in lamports and must be one of Q_STAR_ALLOWED (0.5, 0.75, 1.0 SOL). There is NO default: make_rule() without a value refuses. Anything else refuses.
 """
 
@@ -40,7 +43,7 @@ class L1V3Rule(V2.L1Rule):
             orders = super().on_row(ctx, row)
         finally:
             V2.Q_STAR = saved
-        return [Buy(o.pool, {**o.meta, "rule": BOT_ID}, o.attempt_key) if isinstance(o, Buy) else o for o in orders]
+        return [Buy(o.pool, {**o.meta, "rule": BOT_ID, "q_star_lamports": self.q_star}, o.attempt_key) if isinstance(o, Buy) else o for o in orders]
 
 
 def make_rule(q_star_lamports: Any = None, table_mode: str = V2.TABLE_MODE) -> L1V3Rule:

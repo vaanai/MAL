@@ -43,7 +43,12 @@ def run_rule(tmp, rows, rule_id=H.RULE_V2, q=None, hours=60):
 
 def norm(rows, bot):
     """Rows with the chain fields and order_id dropped (order_id is a hash that includes the rule id) and the rule id mapped to v2's, as canonical strings."""
-    return [canon({k: v for k, v in r.items() if k not in ("prev", "sha", "order_id")}).replace(bot, "l1-floor-v2") for r in rows]
+    def one(r):
+        r = {k: v for k, v in r.items() if k not in ("prev", "sha", "order_id")}
+        if "meta" in r:
+            r["meta"] = {k: v for k, v in r["meta"].items() if k != "q_star_lamports"}  # v3's one added meta key
+        return canon(r).replace(bot, "l1-floor-v2")
+    return [one(r) for r in rows]
 
 
 def mid_vault_rows():
@@ -73,6 +78,28 @@ def test_the_frozen_rule_module_is_not_edited_and_q_star_is_restored():
     r = V3.make_rule(1_000_000_000)
     assert r.on_row.__func__ is not L.L1Rule.on_row
     assert L.Q_STAR == 0.5e9 and r.bot_id == V3_ID and L.BOT_ID == "l1-floor-v2"
+
+
+def cooldown_rows(tmp):
+    """The three-pool fixture plus two drained-pool sells on A after its take profit, 30 s and 70 s later: the first is inside the 60 s cooldown, the second is not."""
+    rows = _host_log_scenarios(tmp)
+    t = max(r["t_recv_ms"] for r in rows if r["pool"] == "A" and r["quote_reserve"] == 60 * SOLX)
+    rows.append(row(t + 30_000, "A", "sell", q=600_000_000, sol=200_000_000, n=1))
+    rows.append(row(t + 70_000, "A", "sell", q=600_000_000, sol=200_000_000, n=2))
+    return sorted(rows, key=lambda r: r["t_recv_ms"])
+
+
+# recorded with the v2 path as it is before the q_star commit (the v2 path is byte-identical to origin/main by the pin above); COOLDOWN_MS 20000 or 0 gives ddca8067adf5fb03e934a3a790f2c413
+V2_COOLDOWN_DIGEST = "ec7befe8cdfe360b1e622a5872eb797d"
+
+
+def test_v2_cooldown_fixture_pins_cooldown_ms(tmp_path):
+    h = lane_host(tmp_path, cooldown_rows(tmp_path))
+    h.resume()
+    h.run(H0, H0 + 60 * HOUR)
+    ent = [r for r in DecisionLog(str(tmp_path / "rules")).rows(L.BOT_ID) if r["kind"] == "entry"]
+    assert len(ent) == 4 and all(r["stake_sol"] == L.STAKE_SOL for r in ent)  # A re-enters once, only at the 70 s print
+    assert H.decision_digest(tmp_path / "rules") == V2_COOLDOWN_DIGEST
 
 
 # ------------------------------------------------------------------------------------------------ v3 == v2 at 0.5
@@ -155,3 +182,54 @@ def test_main_refuses_v3_with_a_bad_q_star(tmp_path, capsys):
     p.write_text(json.dumps({"root": str(tmp_path / "r"), "tape_dir": "x", "clock_start_ms": 1, "rule_id": V3_ID, "q_star_lamports": 999}))
     assert H.main(["verify", "--config", str(p)]) == 2
     assert "q_star_lamports" in capsys.readouterr().err
+
+
+# ------------------------------------------------------------------------------------------------ q_star is recorded and checked on resume (reviewer B1)
+def test_v3_entry_meta_and_start_row_carry_q_star(tmp_path):
+    run_rule(tmp_path, mid_vault_rows(), V3_ID, 1_000_000_000, hours=34)
+    log = DecisionLog(str(tmp_path / "rules")).rows(V3_ID)
+    ent = [r for r in log if r["kind"] == "entry"]
+    start = [r for r in log if r["kind"] == "start"]
+    assert len(ent) == 1 and ent[0]["meta"]["q_star_lamports"] == 1_000_000_000
+    assert start and all(r["binding"]["q_star_lamports"] == 1_000_000_000 for r in start)
+
+
+def test_resume_with_a_different_q_star_refuses_and_the_same_continues(tmp_path):
+    run_rule(tmp_path, mid_vault_rows(), V3_ID, 750_000_000, hours=34)
+    root = tmp_path / "rules"
+    before = DecisionLog(str(root)).rows(V3_ID)
+    with pytest.raises(HostError, match="q_star_lamports"):
+        run_rule(tmp_path, mid_vault_rows(), V3_ID, 1_000_000_000, hours=1)
+    assert DecisionLog(str(root)).rows(V3_ID) == before  # a start refusal: no decision row was written
+    run_rule(tmp_path, mid_vault_rows(), V3_ID, 750_000_000, hours=1)  # the same q_star continues
+    after = DecisionLog(str(root)).rows(V3_ID)
+    assert len(after) > len(before) and after[:len(before)] == before
+
+
+def test_v2_rows_carry_no_q_star(tmp_path):
+    run_rule(tmp_path, mid_vault_rows(), H.RULE_V2, hours=34)
+    log = DecisionLog(str(tmp_path / "rules")).rows(L.BOT_ID)
+    assert log and all("q_star_lamports" not in (r.get("meta") or {}) and "q_star_lamports" not in (r.get("binding") or {}) for r in log)
+
+
+def test_q_star_is_restored_when_on_row_raises():
+    r = V3.make_rule(1_000_000_000)
+
+    class Ctx:
+        positions: list = []
+
+        @property
+        def state(self):
+            raise RuntimeError("boom")
+    row_ = {"type": "trade", "prog": "pumpswap", "venue": "pumpswap", "quote_mint": L.WSOL, "pool": "P", "side": "sell"}
+    with pytest.raises(RuntimeError):
+        r.on_row(Ctx(), row_)
+    assert L.Q_STAR == 0.5e9
+
+
+def test_v2_config_refuses_a_null_q_star_key_too(tmp_path):
+    p = tmp_path / "c.json"
+    p.write_text(json.dumps({"root": str(tmp_path / "r"), "tape_dir": "x", "clock_start_ms": 1, "q_star_lamports": None}))
+    with pytest.raises(HostError):
+        H._load_cfg(str(p))
+    assert H.RULE_V3 == V3.BOT_ID

@@ -64,7 +64,6 @@ from tools.arena_pool_table import PoolTable
 from tools.arena_rule_l1 import BOT_ID, COOLDOWN_MS as L_COOLDOWN_MS, HOLD_MS as L_HOLD_MS  # L_HOLD_MS: 24 h + 1.9 s, the paper position's longest life
 from tools.arena_rules import Buy, Ctx, Rule
 from tools.arena_rules_v2 import CtxV2, HostV2, load_rules_v2, rebuild_table
-from tools import arena_rule_l1_v3 as V3
 from tools.arena_stack_v2 import stack_config_for
 from tools.arena_state import WARM_MIN_DEFAULT, ArenaState
 
@@ -107,8 +106,8 @@ PINS: dict[str, str] = {
 # v3 = v2 with Q_STAR from config `q_star_lamports`, one of V3.Q_STAR_ALLOWED. v2 REFUSES a q_star_lamports key (a stray key must never look like it did something). The v3 module is
 # pinned only when v3 runs, so the v2 start row (binding.pins) is byte-unchanged.
 RULE_V2 = BOT_ID
-RULE_V3 = V3.BOT_ID
-PINS_V3_EXTRA: dict[str, str] = {"tools/arena_rule_l1_v3.py": "f60f49b141f3ffe6399048c271f23c36a87c140a5c8c666c3f47fff2f2330b6c"}
+RULE_V3 = "l1-floor-v3"  # equals tools.arena_rule_l1_v3.BOT_ID (tested); that module is imported only when v3 runs, so a v2 run executes only what PINS covers
+PINS_V3_EXTRA: dict[str, str] = {"tools/arena_rule_l1_v3.py": "733cdf19d91352b5744d7bea9ff6bbe104f677bdc516202273185c93e2fff28c"}
 IDENTICAL_AT_FROZEN = ("tools/arena_rule_l1.py", "tools/arena_pool_table.py", "tools/arena_rules.py", "tools/arena_state.py", "tools/arena_paper.py", "tools/arena_stack.py")
 
 
@@ -375,7 +374,21 @@ class LaneHost(HostV2):
                 n_new += 1
         self._reblock = {"reblocked": n_new, "unparseable": n_bad}
 
+    def _q_star(self) -> int | None:
+        return getattr(self.rules[0].inner, "q_star", None)
+
+    def _check_q_star(self) -> None:
+        """v3 only: refuse (no decisions written) when the log already holds a start row or an entry decided at another q_star, or a start row / entry with none."""
+        q = self._q_star()
+        if q is None:
+            return
+        for r in self.log.rows(self.rules[0].bot_id):
+            got = (r.get("binding") or {}).get("q_star_lamports") if r.get("kind") == "start" else (r.get("meta") or {}).get("q_star_lamports") if r.get("kind") == "entry" else q
+            if got != q:
+                raise R.HostError(f"decision log was written at q_star_lamports {got!r}, configured {q}: refusing to resume (a new q_star is a new root)")
+
     def resume(self) -> dict[str, int]:
+        self._check_q_star()
         n = self._block_open_pools()
         if self.cheap_restart and self._now0 is not None:
             self._reblock_from_refusals()
@@ -403,6 +416,7 @@ class LaneHost(HostV2):
     def lane_start(self, now_ms: int) -> dict[str, Any]:
         """Load the checkpoint, add the downtime as a host_down span, refuse a checkpoint that does not belong to this book or whose log is shorter than it says."""
         info: dict[str, Any] = {"checkpoint": False}
+        self._check_q_star()
         if not self.ckpt_path.exists():
             if self.log.files(self.rules[0].bot_id):
                 raise R.HostError("a decision log exists but the lane checkpoint is missing: downtime and blocked pools are unknown; refusing to start (restore the checkpoint or "
@@ -615,11 +629,15 @@ def check_rule_cfg(rule_id: Any, q_star_lamports: Any) -> tuple[str, int | None]
         if q_star_lamports is not None:
             raise R.HostError(f"config q_star_lamports is only for {RULE_V3!r}; {RULE_V2!r} has its fixed vault cap")
         return rule_id, None
+    from tools import arena_rule_l1_v3 as V3
     return rule_id, V3.check_q_star(q_star_lamports)
 
 
 def _load_rule(rule_id: str, q_star: int | None) -> Rule:
-    return load_rules_v2([BOT_ID])[0] if rule_id == RULE_V2 else V3.make_rule(q_star)
+    if rule_id == RULE_V2:
+        return load_rules_v2([BOT_ID])[0]
+    from tools import arena_rule_l1_v3 as V3
+    return V3.make_rule(q_star)
 
 
 def build_rules(table_mode: str | None, lookback_s: int, host_ref: list, rule_id: str = RULE_V2, q_star_lamports: Any = None) -> list[Rule]:
@@ -641,6 +659,8 @@ def make_lane_host(*, root: str, ledger_root: str, registry: str, tape_dir: str,
                    status_span_no_loss: bool = False, cheap_restart: bool = False, rule_id: str = RULE_V2, q_star_lamports: Any = None) -> LaneHost:
     ref: list = [None]
     rules = build_rules(table_mode, lookback_s, ref, rule_id, q_star_lamports)
+    if rule_id == RULE_V3:
+        binding = {**(binding or {}), "q_star_lamports": q_star_lamports}  # v3 only: the start row says which cap decided this run (v2 start row bytes unchanged)
     state = ArenaState(tape_dir, start_ms=start_ms, warm_min=warm_min)  # live: start_ms None = warm up on the last warm_min minutes, then tail
     eng = engine if engine is not None else ArenaEngine(ledger_root, registry, cfg=stack_config_for(stack_version, feed_delay_slots))
     cfg = R.HostConfig(root=root, registry=registry, frozen_sha=FROZEN_SHA, clock_start_ms=clock_start_ms, live=live, verbose=verbose)
@@ -664,6 +684,8 @@ def _load_cfg(path: str) -> dict[str, Any]:
             raise R.HostError(f"config {k} is required")
     if d.get("frozen_sha", FROZEN_SHA) != FROZEN_SHA:
         raise R.HostError("frozen_sha must be FLOOR's frozen sha")
+    if d.get("rule_id", RULE_V2) == RULE_V2 and "q_star_lamports" in d:
+        raise R.HostError(f"config q_star_lamports is only for {RULE_V3!r}; {RULE_V2!r} has its fixed vault cap (remove the key, even if null)")
     d["rule_id"], d["q_star_lamports"] = check_rule_cfg(d.get("rule_id", RULE_V2), d.get("q_star_lamports"))
     root = str(d["root"])
     d.setdefault("ledger_root", str(Path(root) / "ledger"))
