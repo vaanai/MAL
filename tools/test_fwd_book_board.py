@@ -29,7 +29,7 @@ class Fx:
         self.sim = tmp / "c1nf-open-sim"
         self.root = self.sim / book_id
         self.book_id = book_id
-        dec = {"c1nf-fwd-v1": "c1nf", "osb-u4": "u4", "osb-u2": "u2"}[book_id.split("-lat")[0].split("-send")[0]]
+        dec = {"c1nf-fwd-v1": "c1nf", "osb-u4": "u4", "osb-u2": "u2", "osb-u1": "u1", "osb-u1-lowrep": "u1_lowrep"}[book_id.split("-lat")[0].split("-send")[0]]
         self.run = self.root / "runs" / "0001"
         self.run.mkdir(parents=True)
         (self.root / "book").symlink_to(self.run)
@@ -47,17 +47,18 @@ class Fx:
             for r in rows:
                 fh.write(json.dumps(r) + "\n")
 
-    def entry(self, bot, entry_ms, exit_ms, nets, stakes=(0.1, 0.25), excluded=None, run=None, written_ms=None):
+    def entry(self, bot, entry_ms, exit_ms, nets, stakes=(0.1, 0.25), excluded=None, run=None, written_ms=None, cluster=None):
         """one position: open row + a trade row per stake (nets: {stake: (flat_lamports, press_lamports)}) or excluded rows"""
         self.n += 1
         pid = "p%d-%s" % (self.n, bot)
-        rows = [{"kind": "open", "position_id": pid, "bot_id": bot, "decision_ms": {"entry": entry_ms, "exit": None}}]
+        meta = {"meta": {"cluster": cluster}} if cluster else {}
+        rows = [{"kind": "open", "position_id": pid, "bot_id": bot, "decision_ms": {"entry": entry_ms, "exit": None}, **meta}]
         for s in stakes:
             if excluded:
                 rows.append({"kind": "excluded", "position_id": pid, "bot_id": bot, "stake_sol": s, "decision_ms": {"entry": entry_ms, "exit": exit_ms}, "exclusion_reason": excluded, "legs": None, **({"written_ms": written_ms} if written_ms is not None else {})})
             else:
                 f, p = nets[s] if isinstance(nets, dict) else (nets[0] * s / 0.1, nets[1] * s / 0.1)
-                rows.append({"kind": "trade", "position_id": pid, "bot_id": bot, "stake_sol": s, "decision_ms": {"entry": entry_ms, "exit": exit_ms}, "exit_reason": "timed",
+                rows.append({"kind": "trade", "position_id": pid, "bot_id": bot, "stake_sol": s, "decision_ms": {"entry": entry_ms, "exit": exit_ms}, "exit_reason": "timed", **meta,
                              "legs": {"total": {"flat_1p9": {"state": "filled", "net_lamports": int(f)}, "press_1p9": {"state": "filled", "net_lamports": int(p)}}}})
         self.rows(bot, rows, day=B.day_of(entry_ms), run=run)
 
@@ -75,7 +76,7 @@ def good_book(fx, n=12, flat=2_000_000, press=1_500_000, plc=(-1_000_000, -1_200
         d = D0 + (i % 6) * D
         e = max(d + 13 * H, S + 1 * H) + i * 60_000
         fx.entry(fx.bot, e, e + 4 * H, (flat, press))
-        if fx.book_id != "c1nf-fwd-v1":
+        if fx.book_id in ("osb-u4", "osb-u2"):
             fx.entry(fx.bot + "-plc", e, e + 4 * H, plc)
 
 
@@ -543,3 +544,253 @@ def test_exclusion_without_written_ms_counts_and_is_reported(tmp_path):
     e = o["bar"]["frozen"]["entries"]
     assert e["excluded"] == 6 and e["excluded_without_written_ms"] == 6 and o["bar"]["verdict"] == "NO-GO"
     assert "no written_ms (counted as excluded): 6" in B.render(o)
+
+
+# ------------------------------------------------------------------------------------------------------------------------------ U1 (osb-u1, osb-u1-lowrep)
+# md5 of the board JSON / MD of the three existing books on the fixtures below, taken on the code BEFORE the U1 change (main aa26cba9); they must not move.
+BASELINE_MD5 = {
+    'c1nf-fwd-v1/before': ('8d692d61a409ab0d7062338b733d37b1', 'ec6490a1270407d6325fa36ede8ff8e4'),
+    'c1nf-fwd-v1/look': ('01209671ca5f5d3020c5f99877d37b50', 'b50a6f89d006697bab7a400bc4e8d8fb'),
+    'osb-u2/before': ('26f549e4595d8f20c7d57711008382d0', 'a87d9ecc7586570ef1e3631ef849214b'),
+    'osb-u2/look': ('8ed78460a10889d2d0e52275a3e49fa9', 'b45e915596dd4596e80d4ea89ade5c37'),
+    'osb-u4/before': ('c0068feddabe3d447eccba0d4bb16874', 'f73a0cc12d44e68c9abb359361ace6d0'),
+    'osb-u4/look': ('613cf88e9dcc2b2862b82502e213266e', '10f27d0472a44669094ba3f5776aca0d'),
+}
+
+
+def existing_book_hashes(tmp_path):
+    """c1nf / u4 / u2 fixtures incl. 0.5 and 1 SOL stakes, a gap file and a counts row; md5 of board JSON and MD before the look and at the look"""
+    got = {}
+    for bid in ("c1nf-fwd-v1", "osb-u4", "osb-u2"):
+        fx = Fx(tmp_path / bid, bid, extra_meta={"pools_first_seen_in_warmup": 77})
+        good_book(fx)
+        for k in range(3):
+            e = S + (k + 2) * H
+            fx.entry(fx.bot, e, e + 3 * H, {0.1: (1e6, 1e6), 0.25: (2e6, 2e6), 0.5: (3e6, 3e6), 1.0: (4e6, 4e6)}, stakes=(0.1, 0.25, 0.5, 1.0))
+        (fx.root / "gap_exclusions.json").write_text(json.dumps({"main": {"total": {"entries": 40, "feed_gap_timed": 3, "feed_gap_requested": 4},
+                                                                         "by_day": {"2026-11-17": {"entries": 5, "feed_gap_timed": 1, "feed_gap_requested": 0, "excluded_share": 0.2}}}}))
+        (fx.root / "counts.jsonl").write_text(json.dumps({"hour": "2026-11-17T12", "warmup": False, "entries": 1, "decider": {"a": 2}, "book": {"b": 3}}) + "\n")
+        for nm, now in (("before", L1 - 1), ("look", L1)):
+            o = fx.build(now)
+            assert {"0.5", "1"} <= set(o["cells"])
+            got[bid + "/" + nm] = (hashlib.md5(json.dumps(o, sort_keys=True).encode()).hexdigest(), hashlib.md5(B.render(o).encode()).hexdigest())
+    return got
+
+
+def test_existing_three_books_byte_identical_before_and_after_u1(tmp_path):
+    assert existing_book_hashes(tmp_path) == BASELINE_MD5
+
+
+U1_COUNTS = [
+    {"hour": "2026-11-17T22", "warmup": True, "entries": 0, "decider": {"u1_launchers_listed": 2890, "graduates_seen": 9}, "book": {}},
+    {"hour": "2026-11-18T01", "warmup": False, "entries": 1, "decider": {"graduates_seen": 10, "universe_graduates": 8, "gate_pass": 3, "gate_fail": 5, "entries": 2, "cap_open": 1, "cap_open_stale": 7,
+                                                                       "mean_hist_sum": 12, "entry_hist_own": 2, "entry_hist_funder": 1, "u1_fetch_once_unlinked": 4, "hub_H1": 1, "stop_exits": 1, "u1_rpc_calls": 6}, "book": {}},
+    {"hour": "2026-11-19T01", "warmup": False, "entries": 0, "decider": {"graduates_seen": 10, "universe_graduates": 9, "u1_fetch_once_unlinked": 1}, "book": {}},
+]
+
+
+def u1_fx(tmp, bid="osb-u1", counts=U1_COUNTS):
+    fx = Fx(tmp, bid, start_hour="2026-11-18T00")
+    fx.start = B.hour_ms("2026-11-18T00")
+    (fx.root / "counts.jsonl").write_text("".join(json.dumps(r) + "\n" for r in counts))
+    return fx
+
+
+def u1_book(fx, n=12):
+    for i in range(n):
+        e = fx.start + H + (i % 5) * D + i * 60_000
+        fx.entry(fx.bot, e, e + 4 * H, (2_000_000, 1_500_000), stakes=(0.1, 0.25, 0.5))
+
+
+def test_u1_before_look_no_verdict_no_random_pick_columns(tmp_path):
+    fx = u1_fx(tmp_path)
+    u1_book(fx)
+    o = fx.build(fx.start + 2 * D, n_watched=39)
+    assert o["decider"] == "u1" and o["deciding"] is True and o["status"] == B.BEFORE_LOOK and o["random_pick"] is None
+    assert o["placebo"]["state"] == "placebo: built once at the look"
+    md = B.render(o)
+    assert "placebo: built once at the look" in md and "Random-pick (placebo) book" not in md and "U1 board: osb-u1" in md
+    assert "**Verdict: none (before the look instant: not a read)**" in md
+    assert {"0.1", "0.25", "0.5"} <= set(o["cells"]) and o["cells"]["0.5"]["label"] == B.LABEL_EXTRAP and o["cells"]["0.1"]["label"] == "model; no live fills for this rule"
+    assert o["S_utc"] == "2026-11-18T00:00:00Z" and o["L1_utc"] == "2026-11-23T00:00:00Z"
+
+
+def test_u1_n_watched_floor_is_39_and_rows(tmp_path):
+    fx = u1_fx(tmp_path)
+    for bad in (None, 30, 38):
+        with pytest.raises(B.Refused, match="n-watched"):
+            fx.build(L1, n_watched=bad)
+    o = fx.build(fx.start + D, n_watched=39)
+    assert "best of 39 book rows" in B.render(o) and "adds none" in B.render(o)
+    assert fx.build(fx.start + D, n_watched=57)["n_books_watched"] == 57
+    assert B.ROWS_PER_BOOK["u1"] == 9 and B.ROWS_PER_BOOK["u1_lowrep"] == 0
+    fx2 = Fx(tmp_path / "u4", "osb-u4")
+    assert fx2.build(S + D, n_watched=30)["n_books_watched"] == 30       # the existing floor of 30 is unchanged for the other three books
+
+
+def test_u1_thirteen_disclosures_verbatim_from_runner_and_dec(tmp_path):
+    import c1nf_forward_sim as C
+    import u1_forward_sim as U
+    fx = u1_fx(tmp_path)
+    (fx.root / "gap_exclusions.json").write_text(json.dumps({"main": {"total": {"entries": 40, "feed_gap_timed": 3, "feed_gap_requested": 4}, "by_day": {}}}))
+    o = fx.build(fx.start + D, n_watched=57)
+    txt = {d["id"].split(" ")[0]: d["text"] for d in o["disclosures"]}
+    assert [d["id"].split(" ")[0] for d in o["disclosures"]][:13] == [str(i) for i in range(1, 14)]
+    credits = txt["1"].split("Helius credits used to date: ")[1][:-1]
+    assert txt["1"] == T.U1_SEC9.replace("<n_books_watched>", "57").replace("<n>", credits) and "best of 57 rows" in txt["1"]
+    assert "credits file is never opened" in txt["1"] and "forward RPC calls so far (u1_rpc_calls): 6" in txt["1"]
+    for i, c in (("2", U.FWD_DISCLOSURE), ("3", U.FETCH_ONCE_DISCLOSURE), ("4", U.RATE_DISCLOSURE), ("7", U.H4_DISCLOSURE), ("9", U.LOWREP_DISCLOSURE), ("10", U.PLACEBO_NO_RPC_DISCLOSURE)):
+        assert txt[i] == c
+    assert txt["6"] == U.CAP_OPEN_NOT_COMPUTED
+    assert txt["8"] == C.GAP_DISCLOSURE.format(n=7, N=40, timed=3, requested=4) and "excluded 7 of 40 entries (3/4)" in txt["8"]
+    assert txt["5"].endswith(U.PLACEBO_DISCLOSURE) and "[not built:" in txt["5"]
+    assert txt["11"] == T.U1_PILOT_D1 and txt["12"] == T.U1_PILOT_D2 and "(5)" in txt["13"]
+    md = B.render(o)
+    for c in (U.FWD_DISCLOSURE, U.H4_DISCLOSURE, U.CAP_OPEN_NOT_COMPUTED, T.U1_PILOT_D1, T.U1_PILOT_D2):
+        assert c in md
+    # the constants held in the text module and the imported ones are verbatim in the DEC-035 record
+    for c in (T.U1_SEC9, T.U1_PILOT_D1, T.U1_PILOT_D2, U.FWD_DISCLOSURE, U.FETCH_ONCE_DISCLOSURE, U.RATE_DISCLOSURE, U.H4_DISCLOSURE, U.LOWREP_DISCLOSURE, U.PLACEBO_NO_RPC_DISCLOSURE, U.CAP_OPEN_NOT_COMPUTED):
+        assert c in DEC_TEXT
+    assert U.PLACEBO_DISCLOSURE.split("{sha}")[0] in DEC_TEXT and C.GAP_DISCLOSURE.split("{n}")[0] in DEC_TEXT
+
+
+def test_u1_cap_open_stale_never_a_number(tmp_path):
+    fx = u1_fx(tmp_path)
+    o = fx.build(fx.start + 2 * D, n_watched=39)
+    assert "cap_open_stale" not in o["counters_forward_hours_summed"] and "cap_open_stale" not in json.dumps(o["u1_counters_by_day"])
+    assert "cap_open_stale not computed" in B.render(o) and "7 entries were refused" not in B.render(o)
+    assert o["counters_forward_hours_summed"]["cap_open"] == 1
+
+
+def test_u1_fetch_once_unlinked_funder_incomplete_and_coverage_not_built(tmp_path):
+    fx = u1_fx(tmp_path)
+    o = fx.build(fx.start + 3 * D, n_watched=39)
+    assert o["u1_fetch_once_unlinked"]["total"] == 5 and o["u1_fetch_once_unlinked"]["by_day"] == {"2026-11-18": 4, "2026-11-19": 1}
+    assert o["funder_incomplete_days"]["days"] == ["2026-11-18"]            # 4 of 10 > 20%; 1 of 10 is not
+    assert o["entry_history"]["mean_abs_H_at_gate_passes"] == pytest.approx(4.0) and o["entry_history"]["funder_linked_share"] == pytest.approx(1 / 3)
+    cov = o["coverage_final"]
+    assert cov["built"] is False and cov["u1_launchers_listed_all_rows_summed"] == 2890
+    md = B.render(o)
+    assert "u1_fetch_once_unlinked" in md and "W coverage (final figure): not built" in md and "hub_H1" in md
+    assert any("coverage" in x and "not built" in x for x in o["not_built"])
+
+
+def test_u1_bar_never_prints_go_and_conditions_6_7_not_evaluated(tmp_path):
+    fx = u1_fx(tmp_path, counts=[])
+    u1_book(fx)
+    o = fx.build(fx.start + 5 * D, n_watched=39)
+    assert o["look_state"] == "look" and o["bar"]["shown"] is True
+    assert o["bar"]["verdict"] == B.U1_NOT_DECIDED and o["bar"]["verdict"] != "GO"
+    for leg in ("flat", "press"):
+        c = o["bar"]["legs"][leg]
+        assert [k for k, v in c.items() if v["met"] is None] == ["6_book_mean_sol_per_trade_gt_placebo_mean", "7_total_net_sol_gt_0_after_dropping_the_largest_cluster"]   # fixture rows carry no meta.cluster
+        assert all(v["met"] for k, v in c.items() if k[0] in "12345")
+        assert "meta.cluster missing on 10 of 10" in c["7_total_net_sol_gt_0_after_dropping_the_largest_cluster"]["value"]
+    md = B.render(o)
+    assert "not evaluated here" in md and "**Verdict: GO**" not in md and "NOT DECIDED HERE" in md
+
+
+def test_u1_condition_1_5_failure_is_no_go(tmp_path):
+    fx = u1_fx(tmp_path, counts=[])
+    for i in range(12):
+        e = fx.start + H + (i % 5) * D + i * 60_000
+        fx.entry(fx.bot, e, e + 4 * H, (-2_000_000, -1_500_000), stakes=(0.1,))
+    o = fx.build(fx.start + 5 * D, n_watched=39)
+    assert o["bar"]["verdict"] == "NO-GO"
+
+
+def u1_cluster_book(fx, plan):
+    """plan: [(cluster, flat_lamports, press_lamports)] one closed 0.1/0.25/0.5 position each, spread over the first 5 days"""
+    for i, (c, f, p) in enumerate(plan):
+        e = fx.start + H + (i % 5) * D + i * 60_000
+        fx.entry(fx.bot, e, e + 4 * H, (f, p), stakes=(0.1, 0.25, 0.5), cluster=c)
+
+
+def test_u1_condition_7_from_meta_cluster_and_cluster_counts(tmp_path):
+    fx = u1_fx(tmp_path, counts=[])
+    # cluster A: 4 trades of +3 millis; B: 2 of +1; C..F: 1 of +1 each (12 trades, 6 clusters). Without ALL of A the total is still > 0.
+    u1_cluster_book(fx, [("aaaaaaaaaaaa", 3_000_000, 3_000_000)] * 4 + [("bbbbbbbbbbbb", 1_000_000, 1_000_000)] * 2 + [(c * 12, 1_000_000, 1_000_000) for c in "cdef"] + [("gggggggggggg", 1_000_000, 1_000_000)] * 2)
+    o = fx.build(fx.start + 5 * D, n_watched=39)
+    cl = o["clusters"]
+    assert cl["entries"]["distinct_clusters_entered"] == 7 and cl["entries"]["entries_with_cluster"] == 12 and cl["entries"]["largest_cluster_share_of_entries"] == pytest.approx(4 / 12)
+    assert cl["legs"]["flat"]["total_sol"] == pytest.approx(0.020) and cl["legs"]["flat"]["total_ex_largest_cluster_sol"] == pytest.approx(0.008)
+    for leg in ("flat", "press"):
+        c7 = o["bar"]["legs"][leg]["7_total_net_sol_gt_0_after_dropping_the_largest_cluster"]
+        assert c7["met"] is True and c7["value"] == pytest.approx(0.006)   # frozen at L1: day 5 is not complete, 10 of 12 trades closed
+    assert o["bar"]["verdict"] == B.U1_NOT_DECIDED and o["bar"]["frozen"]["clusters_0.1"]["legs"]["flat"]["total_ex_largest_cluster_sol"] == pytest.approx(0.006)
+    md = B.render(o)
+    assert "7 distinct over 12 forward entries" in md and "aaaaaaaaaaaa" not in md and "aaaaaaaaaaaa" not in json.dumps(o)   # never an identifier
+
+
+def test_u1_condition_7_fails_when_one_cluster_carries_the_total(tmp_path):
+    fx = u1_fx(tmp_path, counts=[])
+    u1_cluster_book(fx, [("aaaaaaaaaaaa", 5_000_000, 5_000_000)] * 4 + [(c * 12, -500_000, -500_000) for c in "bcdefghi"])
+    o = fx.build(fx.start + 5 * D, n_watched=39)
+    assert o["bar"]["legs"]["flat"]["1_total_net_sol_gt_0"]["met"] is True
+    assert o["bar"]["legs"]["flat"]["7_total_net_sol_gt_0_after_dropping_the_largest_cluster"]["met"] is False and o["bar"]["verdict"] == "NO-GO"
+
+
+def test_u1_n429_per_day_status_counts_not_built_and_partial_day(tmp_path):
+    counts = [{"hour": "2026-11-18T01", "warmup": False, "decider": {"graduates_seen": 10, "u1_fetch_once_unlinked": 4, "u1_n429": 2, "status_resolved": 99}},
+              {"hour": "2026-11-20T01", "warmup": False, "decider": {"graduates_seen": 10, "u1_fetch_once_unlinked": 5, "u1_n429": 0}}]
+    fx = u1_fx(tmp_path, counts=counts)
+    fx.root.joinpath("status.json").write_text(json.dumps({"last_hour": "x", "last_hour_end_ms": fx.start + 2 * D + 90 * 60_000 + 5 * H, "active": True, "run": "0001"}))   # 11-18 and 11-19 complete; 11-20 in progress
+    o = fx.build(fx.start + 3 * D, n_watched=39)
+    assert o["u1_counters_by_day"]["2026-11-18"]["u1_n429"] == 2 and "status_resolved" not in json.dumps(o["u1_counters_by_day"])
+    assert o["funder_incomplete_days"]["days"] == ["2026-11-18"] and o["funder_incomplete_days"]["partial_days_flagged_so_far"] == ["2026-11-20"]
+    assert any("funder status counts" in x and "not built" in x for x in o["not_built"]) and "partial days flagged so far" in B.render(o)
+
+
+def test_u1_disclosure_13_verbatim_in_dec(tmp_path):
+    assert T.U1_DISC13 in DEC_TEXT and "(5) above for this book" in T.U1_DISC13
+    o = u1_fx(tmp_path).build(S, n_watched=39)
+    assert [d["text"] for d in o["disclosures"] if d["id"] == "13"] == [T.U1_DISC13]
+
+
+def test_u1_lowrep_shown_beside_no_bar(tmp_path):
+    fx = u1_fx(tmp_path, "osb-u1-lowrep", counts=[])
+    u1_book(fx)
+    o = fx.build(fx.start + 5 * D, n_watched=39)
+    assert o["decider"] == "u1_lowrep" and o["deciding"] is False and o["bar"]["verdict"] is None and o["bar"]["applicable"] is False
+    md = B.render(o)
+    assert "bar: not applicable" in md and "Verdict:" not in md and "Conditions" not in md and "shown beside the book" in md
+    assert "adds no row to n_books_watched" in " ".join(d["text"] for d in o["disclosures"])
+    assert len(o["disclosures"]) >= 13
+
+
+def test_u1_twin_and_mismatch_refused(tmp_path):
+    fx = u1_fx(tmp_path)
+    with pytest.raises(B.Refused):
+        Fx(tmp_path / "t", "osb-u1-lat3010", extra_meta={"decider": "u1"}).build(L1)
+    (fx.root / "meta.json").write_text(json.dumps({"book_id": "osb-u1", "decider": "u4", "start_hour": "2026-11-18T00"}))
+    with pytest.raises(B.Refused, match="does not match"):
+        fx.build(L1, n_watched=39)
+
+
+def test_u1_output_board_safe_and_written(tmp_path):
+    fx = u1_fx(tmp_path)
+    u1_book(fx)
+    o = fx.build(fx.start + 5 * D, n_watched=39)
+    keys = set()
+
+    def walk(x):
+        if isinstance(x, dict):
+            for k, v in x.items():
+                keys.add(k)
+                walk(v)
+        elif isinstance(x, list):
+            for v in x:
+                walk(v)
+    walk(o)
+    assert not (B.FORBIDDEN_KEYS & keys)
+    B.output_guard(B.render(o), o)
+    o2 = B.write(o, tmp_path / "board", out_roots=(str(tmp_path / "board"),))
+    assert json.loads((tmp_path / "board" / "osb-u1.json").read_text())["md_sha256"] == o2["md_sha256"]
+
+
+def test_u1_replay_in_progress_shows_no_cells(tmp_path):
+    fx = u1_fx(tmp_path)
+    u1_book(fx)
+    (fx.root / "status.json").write_text(json.dumps({"last_hour": "warm", "last_hour_end_ms": fx.start - D, "active": False, "run": "0002"}))
+    o = fx.build(fx.start + 6 * D, n_watched=39)
+    assert o["look_state"] == "replay" and o["cells"] == {} and o["u1_counters_by_day"] == {} and o["bar"]["verdict"] is None

@@ -1,4 +1,4 @@
-"""fwd_book_board_text: the verbatim disclosure texts of the forward open-sim books c1nf-fwd-v1, osb-u4 and osb-u2.
+"""fwd_book_board_text: the verbatim disclosure texts of the forward open-sim books c1nf-fwd-v1, osb-u4, osb-u2 and the U1 pair (osb-u1, osb-u1-lowrep).
 Each constant is copied exactly from DEC/DEC-035-live-learning-lane.md (Amendment 9 book-list records of 2026-11-16, the pin records of 2026-11-16 / 2026-11-17 and Erratum 1 of 2026-11-17);
 tests/test_fwd_book_board.py checks every one of them as a substring of that file, so a drift fails a test. Placeholders in angle brackets are filled by fwd_book_board.py.
 Paper only; no sentence here says any book makes money. No book has cleared the promotion gate."""
@@ -111,4 +111,37 @@ E1_CODE_SHA = (
     "the runner's `code_sha256()` hashes a fixed file list that does not include `u4_u2_deciders.py`, so this value"
     ' equals the C1-NF book\'s at 6faf1d4b and the runner\'s "simulator version changed" refusal does not cover the d'
     'ecider file.'
+)
+
+
+# --- U1 (osb-u1, osb-u1-lowrep): DEC-035 Amendment 9 book-list record of 2026-11-17, disclosures (1), (11), (12). The other U1 disclosures are imported from the runner modules by fwd_book_board.py, never retyped.
+
+U1_SEC9 = (
+    'U1 has no measured number of any kind before this book: the rule and every constant were fixed a '
+    'priori in QP-RULING-1116-u1-forward-spec before any of its data was read. The nearest library priors'
+    ' are dead (lib-a-A22 launch count; dev-events-7 counts only). Clusters are first-funder links, one '
+    "hop, with hub funders removed by a fixed rule; exchanges and shared wallets below the rule's "
+    "thresholds can still merge unrelated creators. This book's figures are forward paper from S at 4.085"
+    ' s entry with honest costs; they are not a gate read and not out-of-sample evidence of an edge. '
+    'Treat any good number as shrunk (best of <n_books_watched> rows). Decode equality of post-2026-11-15'
+    ' rows for the fields used is not shown. Helius credits used to date: <n>.'
+)
+
+U1_PILOT_D1 = (
+    'The U1 funder pilot ran twice. The first run (#2947, 9d117de7) failed criterion (c): 3 of 10 '
+    'launchers were fetch_error from RPC code -32015, because the fetcher asked for transaction version 0'
+    ' and those transactions were version 1. QP-RULING-1117-u1-pilot changed only that request parameter,'
+    ' from 0 to 1. The funder definition did not change. The re-run on the same 10 launchers is the pilot'
+    ' of record, and its result was known in advance from counts-only diagnostics (#2948-#2950, 83 '
+    'credits).'
+)
+
+U1_PILOT_D2 = (
+    'Funder links are System Program transfers, transferWithSeed and createAccount only. Nonce '
+    'withdrawals, token-account closes and program transfers do not count, so launchers funded that way '
+    'have own history only. In the 10-launcher pilot, 3 of 10 were no_sol_inflow.'
+)
+
+U1_DISC13 = (
+    'U1R ADD1 (3) placebo-lag disclosure is replaced by (5) above for this book (QP-RULING-1117-u1-start Q7).'
 )
