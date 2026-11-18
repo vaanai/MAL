@@ -102,6 +102,12 @@ PINS: dict[str, str] = {
     "tools/arena_stack_v2.py": "95876c94d7e029e3959d8a3aed05ee64f1d461bc002ec62d035e74763587acb3",
     "tools/arena_declog.py": "b4b67f8d203722a16b2d5238f4a0f2b38776995130cd4b5691ee649c043a0783",
 }
+# l1-floor-v3 (plumbing only; a DEC-035 amendment + Helm install are still owed before it can run live): the rule id is config `rule_id` (absent = "l1-floor-v2", today's host exactly).
+# v3 = v2 with Q_STAR from config `q_star_lamports`, one of V3.Q_STAR_ALLOWED. v2 REFUSES a q_star_lamports key (a stray key must never look like it did something). The v3 module is
+# pinned only when v3 runs, so the v2 start row (binding.pins) is byte-unchanged.
+RULE_V2 = BOT_ID
+RULE_V3 = "l1-floor-v3"  # equals tools.arena_rule_l1_v3.BOT_ID (tested); that module is imported only when v3 runs, so a v2 run executes only what PINS covers
+PINS_V3_EXTRA: dict[str, str] = {"tools/arena_rule_l1_v3.py": "733cdf19d91352b5744d7bea9ff6bbe104f677bdc516202273185c93e2fff28c"}
 IDENTICAL_AT_FROZEN = ("tools/arena_rule_l1.py", "tools/arena_pool_table.py", "tools/arena_rules.py", "tools/arena_state.py", "tools/arena_paper.py", "tools/arena_stack.py")
 
 
@@ -368,7 +374,21 @@ class LaneHost(HostV2):
                 n_new += 1
         self._reblock = {"reblocked": n_new, "unparseable": n_bad}
 
+    def _q_star(self) -> int | None:
+        return getattr(self.rules[0].inner, "q_star", None)
+
+    def _check_q_star(self) -> None:
+        """v3 only: refuse (no decisions written) when the log already holds a start row or an entry decided at another q_star, or a start row / entry with none."""
+        q = self._q_star()
+        if q is None:
+            return
+        for r in self.log.rows(self.rules[0].bot_id):
+            got = (r.get("binding") or {}).get("q_star_lamports") if r.get("kind") == "start" else (r.get("meta") or {}).get("q_star_lamports") if r.get("kind") == "entry" else q
+            if got != q:
+                raise R.HostError(f"decision log was written at q_star_lamports {got!r}, configured {q}: refusing to resume (a new q_star is a new root)")
+
     def resume(self) -> dict[str, int]:
+        self._check_q_star()
         n = self._block_open_pools()
         if self.cheap_restart and self._now0 is not None:
             self._reblock_from_refusals()
@@ -396,6 +416,7 @@ class LaneHost(HostV2):
     def lane_start(self, now_ms: int) -> dict[str, Any]:
         """Load the checkpoint, add the downtime as a host_down span, refuse a checkpoint that does not belong to this book or whose log is shorter than it says."""
         info: dict[str, Any] = {"checkpoint": False}
+        self._check_q_star()
         if not self.ckpt_path.exists():
             if self.log.files(self.rules[0].bot_id):
                 raise R.HostError("a decision log exists but the lane checkpoint is missing: downtime and blocked pools are unknown; refusing to start (restore the checkpoint or "
@@ -596,11 +617,35 @@ class LaneHost(HostV2):
                 self.checkpoint(self._last_T, ended)
 
 
-def build_rules(table_mode: str | None, lookback_s: int, host_ref: list) -> list[Rule]:
+def pins_for(rule_id: str) -> dict[str, str]:
+    return dict(PINS) if rule_id == RULE_V2 else {**PINS, **PINS_V3_EXTRA}
+
+
+def check_rule_cfg(rule_id: Any, q_star_lamports: Any) -> tuple[str, int | None]:
+    """(rule_id, q_star) from the config values. v2: a q_star key is refused. v3: q_star must be one of the pinned values; there is no default."""
+    if rule_id not in (RULE_V2, RULE_V3):
+        raise R.HostError(f"config rule_id must be {RULE_V2!r} or {RULE_V3!r} (got {rule_id!r})")
+    if rule_id == RULE_V2:
+        if q_star_lamports is not None:
+            raise R.HostError(f"config q_star_lamports is only for {RULE_V3!r}; {RULE_V2!r} has its fixed vault cap")
+        return rule_id, None
+    from tools import arena_rule_l1_v3 as V3
+    return rule_id, V3.check_q_star(q_star_lamports)
+
+
+def _load_rule(rule_id: str, q_star: int | None) -> Rule:
+    if rule_id == RULE_V2:
+        return load_rules_v2([BOT_ID])[0]
+    from tools import arena_rule_l1_v3 as V3
+    return V3.make_rule(q_star)
+
+
+def build_rules(table_mode: str | None, lookback_s: int, host_ref: list, rule_id: str = RULE_V2, q_star_lamports: Any = None) -> list[Rule]:
     """The frozen rule behind the lane guard. `host_ref` is filled with the LaneHost once built (the guard calls back into it)."""
     if not LOOKBACK_MIN_S <= int(lookback_s) <= LOOKBACK_MAX_S:
         raise R.HostError(f"gap_lookback_s must be in [{LOOKBACK_MIN_S}, {LOOKBACK_MAX_S}]")
-    inner = load_rules_v2([BOT_ID])[0]
+    rule_id, q_star = check_rule_cfg(rule_id, q_star_lamports)
+    inner = _load_rule(rule_id, q_star)
     if table_mode is not None:
         inner.table_mode = table_mode  # tests only: synthetic tapes have no create / complete rows
     g = GapGuardRule(inner, lambda c, r, b: host_ref[0].refuse(c, r, b))
@@ -611,9 +656,11 @@ def build_rules(table_mode: str | None, lookback_s: int, host_ref: list) -> list
 def make_lane_host(*, root: str, ledger_root: str, registry: str, tape_dir: str, clock_start_ms: int, live: bool, binding: Mapping[str, Any] | None, stack_version: int = 2,
                    feed_delay_slots: int = R.DEFAULT_FEED_DELAY_SLOTS, warm_min: int = WARM_MIN_DEFAULT, start_ms: int | None = None, lookback_s: int = LOOKBACK_MIN_S,
                    table_mode: str | None = None, engine: Any = None, now_fn: Callable[[], int] | None = None, table: PoolTable | None = None, verbose: bool = False,
-                   status_span_no_loss: bool = False, cheap_restart: bool = False) -> LaneHost:
+                   status_span_no_loss: bool = False, cheap_restart: bool = False, rule_id: str = RULE_V2, q_star_lamports: Any = None) -> LaneHost:
     ref: list = [None]
-    rules = build_rules(table_mode, lookback_s, ref)
+    rules = build_rules(table_mode, lookback_s, ref, rule_id, q_star_lamports)
+    if rule_id == RULE_V3:
+        binding = {**(binding or {}), "q_star_lamports": q_star_lamports}  # v3 only: the start row says which cap decided this run (v2 start row bytes unchanged)
     state = ArenaState(tape_dir, start_ms=start_ms, warm_min=warm_min)  # live: start_ms None = warm up on the last warm_min minutes, then tail
     eng = engine if engine is not None else ArenaEngine(ledger_root, registry, cfg=stack_config_for(stack_version, feed_delay_slots))
     cfg = R.HostConfig(root=root, registry=registry, frozen_sha=FROZEN_SHA, clock_start_ms=clock_start_ms, live=live, verbose=verbose)
@@ -623,9 +670,9 @@ def make_lane_host(*, root: str, ledger_root: str, registry: str, tape_dir: str,
     return host
 
 
-def decision_digest(root: str | os.PathLike, kinds: Sequence[str] = ("entry", "exit")) -> str:
+def decision_digest(root: str | os.PathLike, kinds: Sequence[str] = ("entry", "exit"), bot_id: str = BOT_ID) -> str:
     """md5 of the canonical entry/exit rows of the lane book (chain fields included: equal digests mean equal chains when no other kind is interleaved)."""
-    rows = [r for r in DecisionLog(root).rows(BOT_ID) if r.get("kind") in kinds]
+    rows = [r for r in DecisionLog(root).rows(bot_id) if r.get("kind") in kinds]
     return hashlib.md5(canon(rows).encode()).hexdigest()
 
 
@@ -637,6 +684,9 @@ def _load_cfg(path: str) -> dict[str, Any]:
             raise R.HostError(f"config {k} is required")
     if d.get("frozen_sha", FROZEN_SHA) != FROZEN_SHA:
         raise R.HostError("frozen_sha must be FLOOR's frozen sha")
+    if d.get("rule_id", RULE_V2) == RULE_V2 and "q_star_lamports" in d:
+        raise R.HostError(f"config q_star_lamports is only for {RULE_V3!r}; {RULE_V2!r} has its fixed vault cap (remove the key, even if null)")
+    d["rule_id"], d["q_star_lamports"] = check_rule_cfg(d.get("rule_id", RULE_V2), d.get("q_star_lamports"))
     root = str(d["root"])
     d.setdefault("ledger_root", str(Path(root) / "ledger"))
     d.setdefault("registry", str(Path(root) / "bots.json"))
@@ -667,12 +717,12 @@ def main(argv: list[str] | None = None) -> int:
     try:
         d = _load_cfg(a.config)
         if a.mode == "verify":
-            head, seq = DecisionLog(d["root"]).verify(BOT_ID)
+            head, seq = DecisionLog(d["root"]).verify(d["rule_id"])
             print(canon({"head": head, "seq": seq, "genesis": head == GENESIS}))
             return 0
-        pins = verify_pins()
+        pins = verify_pins(pins=pins_for(d["rule_id"]))
         if a.mode == "register":
-            rules = load_rules_v2([BOT_ID])
+            rules = [_load_rule(d["rule_id"], d["q_star_lamports"])]
             regs = R.register_rules(rules, d["registry"], FROZEN_SHA, int(d["clock_start_ms"]))
             print(canon({"n_bots": len(regs), "registry": d["registry"]}))
             return 0
@@ -683,7 +733,7 @@ def main(argv: list[str] | None = None) -> int:
         kw = dict(root=d["root"], ledger_root=d["ledger_root"], registry=d["registry"], tape_dir=d["tape_dir"], clock_start_ms=int(d["clock_start_ms"]), live=live,
                   stack_version=int(d.get("stack_version", 2)), feed_delay_slots=int(d.get("feed_delay_slots", R.DEFAULT_FEED_DELAY_SLOTS)),
                   warm_min=int(d.get("warm_min", WARM_MIN_DEFAULT)), lookback_s=int(d.get("gap_lookback_s", LOOKBACK_MIN_S)), verbose=True,
-                  status_span_no_loss=_cfg_flag(d, "status_span_no_loss"), cheap_restart=_cfg_flag(d, "cheap_restart"))
+                  status_span_no_loss=_cfg_flag(d, "status_span_no_loss"), cheap_restart=_cfg_flag(d, "cheap_restart"), rule_id=d["rule_id"], q_star_lamports=d["q_star_lamports"])
         binding = lane_binding(pins, guard={"status_span_no_loss": kw["status_span_no_loss"], "cheap_restart": kw["cheap_restart"]}) if live else None
         has_ckpt = (Path(d["root"]) / "lane" / "checkpoint.json").exists() and (Path(d["root"]) / "pooltable" / "pooltable.pkl").exists()
         if live and not has_ckpt and not a.since_hour:
@@ -711,7 +761,7 @@ def main(argv: list[str] | None = None) -> int:
             host.run(start - start % R.TICK_MS, int(d.get("end_ms") or 2 ** 62))
         else:
             host.run(a.from_ms, a.to_ms)
-        print(canon({"done": host.status(), "decision_md5": decision_digest(d["root"])}), flush=True)
+        print(canon({"done": host.status(), "decision_md5": decision_digest(d["root"], bot_id=d["rule_id"])}), flush=True)
         return 0
     except (R.HostError, R.HostFatal, LogChainError) as e:
         print(f"floor_lane_host: {type(e).__name__}: {str(e)[:300]}", file=sys.stderr)
