@@ -136,19 +136,51 @@ def test_capped_exit_with_no_known_state_scores_zero_out(tmp_path):
 
 
 # ---------------------------------------------------------------------------------------------------------------- item 5: gaps, rent, strands
-def test_feed_silence_in_the_hold_excludes_the_trade(tmp_path):
-    eng, tab = mk(tmp_path)
-    seed(eng, tab)
-    td = T0 + 1_000
+def _open_position(eng, tab, td):
     pid = buy(eng, td)
     feed(eng, tab, TQ.qrow(td + 4_000))
     feed(eng, tab, TQ.row(td + 4_200, "P", "sell", **P_ROWS))
-    eng.sell(Q.BOT_ID, pid, 1.0, td + 200_000, 9, reason="tp_1.5x")
-    feed(eng, tab, TQ.qrow(td + 200_100))  # 196 s of silence between the entry and now: a data_loss gap in the hold
+    return pid
+
+
+def test_silence_elsewhere_in_the_hold_is_flagged_not_excluded(tmp_path):
+    eng, tab = mk(tmp_path)
+    seed(eng, tab)
+    td = T0 + 1_000
+    pid = _open_position(eng, tab, td)
+    feed(eng, tab, TQ.qrow(td + 200_000))  # 196 s of silence in the middle of the hold: a gap, but not on a leg window
+    eng.sell(Q.BOT_ID, pid, 1.0, td + 200_100, 9, reason="tp_1.5x")
+    feed(eng, tab, TQ.qrow(td + 200_500))
     feed(eng, tab, TQ.row(td + 200_800, "P", "sell", **P_ROWS))
-    k = [r["kind"] for r in ledger(eng)]
-    assert k.count("trade") == 0 and eng.counters["gap_silence"] >= 1 and eng.counters["excluded_feed_gap"] == 1
-    assert [r for r in ledger(eng) if r["kind"] == "excluded"][0]["reason"] == "feed_gap" and eng.status()["pending"] == {"entry": 0, "exit": 0, "open": 0}
+    tr = [r for r in ledger(eng) if r["kind"] == "trade"]
+    assert len(tr) == 1 and tr[0]["gap_in_hold"] is True and not [r for r in ledger(eng) if r["kind"] == "excluded"] and eng.counters["gap_silence"] == 1
+
+
+def test_time_exits_are_not_dropped_more_than_take_profits(tmp_path):
+    """same gap in the middle of the hold, one position exits by take profit and one by the time exit: both are priced (neither is excluded)"""
+    for reason, k in (("tp_1.5x", 0), (Q.REASON_TIME, 1)):
+        eng, tab = mk(tmp_path / reason)
+        seed(eng, tab)
+        td = T0 + 1_000
+        pid = _open_position(eng, tab, td)
+        feed(eng, tab, TQ.qrow(td + 300_000))  # gap
+        eng.sell(Q.BOT_ID, pid, 1.0, td + 300_100, 9, reason=reason)
+        feed(eng, tab, TQ.qrow(td + 300_500))
+        feed(eng, tab, TQ.row(td + 300_800, "P", "sell", **P_ROWS))
+        assert [r["reason"] for r in ledger(eng) if r["kind"] == "trade"] == [reason] and not [r for r in ledger(eng) if r["kind"] == "excluded"]
+
+
+def test_gap_on_the_exit_leg_excludes(tmp_path):
+    eng, tab = mk(tmp_path)
+    seed(eng, tab)
+    td = T0 + 1_000
+    pid = _open_position(eng, tab, td)
+    feed(eng, tab, TQ.qrow(td + 5_000))
+    eng.sell(Q.BOT_ID, pid, 1.0, td + 5_100, 9, reason="tp_1.5x")
+    eng.on_row({"type": "gap", "kind": "feed_restart", "data_loss": True, "t_recv_ms": td + 5_300})  # inside exit decision .. exit fill
+    feed(eng, tab, TQ.qrow(td + 5_600))
+    feed(eng, tab, TQ.row(td + 5_800, "P", "sell", **P_ROWS))
+    assert eng.counters["excluded_feed_gap_exit"] == 1 and [r["reason"] for r in ledger(eng) if r["kind"] == "excluded"] == ["feed_gap_exit"] and not [r for r in ledger(eng) if r["kind"] == "trade"]
 
 
 def test_gap_row_and_start_row_open_a_gap(tmp_path):
@@ -202,12 +234,28 @@ def test_missing_creator_fee_is_counted_and_buyback_is_declared_unmodelled(tmp_p
 
 
 # ---------------------------------------------------------------------------------------------------------------- item 2: fail models
-def test_flat_expected_value_by_hand():
-    f, send, P, ec = 0.15, 160_000.0, 10_000_000.0, 1_000_000.0
-    ok2 = (1 - f) ** 2
-    want = -f * send + (1 - f) * f * (-2 * ec - 3 * send) + ok2 * (ok2 * P - (1 - ok2) * send)
-    assert S.expected_pnl(np.array([P]), np.array([ec]), f, send)[0] == pytest.approx(want)
-    assert S.expected_pnl(np.array([P]), np.array([ec]), 0.0, send)[0] == pytest.approx(P)  # no failure: the filled P&L
+def test_flat_leg_is_the_wsol_per_trip_blend():
+    """QP numbers: P = -0.050 SOL, send 505,000 lamports: -0.042576 SOL (the WSOL leg), not the per-tx blend's -0.02673"""
+    send = 505_000.0
+    t = _tr(0, -0.05e9)
+    fl = S.fail_legs([t], send)
+    assert fl["flat"][0] == pytest.approx(0.85 * -0.05e9 - 0.15 * send) and fl["flat"][0] / 1e9 == pytest.approx(-0.042576, abs=1e-6)
+    w = F.fail_legs(np.array([-0.05e9]), np.array([True]), np.array([0.0]), np.array([0.0]), send)
+    assert fl["flat"][0] == w[0][0] and fl["press"][0] == w[1][0]  # identical to arena_stack.fail_legs
+    assert S.fail_legs([_tr(0, 0.0)], send)["flat"][0] == pytest.approx(-0.15 * send)
+
+
+def test_losing_book_scores_no_better_than_the_wsol_legs_and_pressure_is_not_doubled():
+    send = 505_000.0
+    tr = [_tr(86_400 * i, -0.06e9 if i < 50 else 0.05e9, ssb=5.0 if i < 50 else 0.0, nb=3e9 if i < 50 else 0.0) for i in range(100)]
+    fl = S.fail_legs(tr, send)
+    P = np.array([t["pnl_lamports"] for t in tr])
+    w_flat, w_press, _, _ = F.fail_legs(P, np.ones(100, bool), np.array([t["ssb"] for t in tr]), np.array([t["nearby_lamports"] for t in tr]), send)
+    assert np.array_equal(fl["flat"], w_flat) and np.array_equal(fl["press"], w_press)
+    assert P.mean() == pytest.approx(-0.005e9) and fl["flat"].mean() == pytest.approx(-0.0043258e9, rel=1e-4)  # QP: WSOL flat -0.00433 on this set
+    losers = fl["flat"][:50]
+    assert np.all(losers <= 0.85 * P[:50])  # a loss is never shrunk toward zero by the blend
+    assert fl["press"].mean() == pytest.approx(w_press.mean())  # the same sign behaviour the WSOL gate legs have: nothing added by the OQ reader
 
 
 def _tr(day_s, pnl, ssb=0.0, nb=0.0, creator="c1", qm="q1"):
@@ -223,8 +271,8 @@ def test_pressure_leg_refits_intercept_to_the_target_mean_p_and_differs_from_fla
 
 
 def test_report_has_both_models_flags_and_drop_top_reads():
-    rows = [_tr(86_400 * i, p, creator=c, qm=m) for i, (p, c, m) in enumerate([(9e8, "A", "q1"), (1e8, "B", "q2"), (-5e7, "B", "q2"), (-4e7, "C", "q1"), (3e7, "C", "q3"), (2e7, "D", "q3"), (1e7, None, "q3")])]
-    rows += [{"kind": "excluded", "reason": "feed_gap"}, {"kind": "refused", "reason": "x"}]
+    rows = [dict(_tr(86_400 * i, p, creator=c, qm=m), position_id="p%d" % i) for i, (p, c, m) in enumerate([(9e8, "A", "q1"), (1e8, "B", "q2"), (-5e7, "B", "q2"), (-4e7, "C", "q1"), (3e7, "C", "q3"), (2e7, "D", "q3"), (1e7, None, "q3")])]
+    rows += [{"kind": "excluded", "position_id": "x1", "reason": "feed_gap"}, {"kind": "refused", "reason": "x"}]
     rows[1]["unfilled_roundtrip"], rows[1]["unfilled_priced"] = True, False
     rows[2]["stale_exit_capped"], rows[2]["stale_priced"] = True, True
     rep = S.report(rows, 0.25, status={"pending": {"entry": 0, "exit": 1, "open": 2}, "fee_audit": {"rows": 1}})
@@ -238,7 +286,45 @@ def test_report_has_both_models_flags_and_drop_top_reads():
     assert ng["drop_top_creator"]["total_sol_after"] == pytest.approx(ng["total_sol"] - 0.9) and ng["drop_top_quote_mint"]["total_sol_after"] == pytest.approx(0.1 - 0.05 + 0.03 + 0.02 + 0.01)
     assert rep["flags"]["unfilled_roundtrips"] == 1 and rep["flags"]["unfilled_unpriced"] == 1 and rep["flags"]["stale_exit_capped"] == 1 and rep["flags"]["excluded_rows"] == 1
     assert rep["flags"]["buyback_fee_modelled"] is False and rep["status"]["pending"]["exit"] == 1
+    assert rep["excluded"]["positions_excluded"] == 1 and rep["excluded"]["share"] == pytest.approx(1 / 8) and rep["excluded"]["verdict"] == "NOT_DECIDABLE"
     assert math.isfinite(rep["flat"]["total_sol"]) and rep["flat"]["total_sol"] < rep["filled_no_fail"]["total_sol"]
+
+
+def test_excluded_share_at_or_below_5_percent_is_ok():
+    rows = [dict(_tr(86_400 * i, 1e6), position_id="p%d" % i) for i in range(19)] + [{"kind": "excluded", "position_id": "x", "reason": "feed_gap_exit"}]
+    assert S.report(rows, 0.25)["excluded"]["verdict"] == "ok"  # 1 / 20 = 5%, not above
+
+
+def test_cli_prints_status_and_refuses_without_it(tmp_path, capsys):
+    eng, tab = mk(tmp_path)
+    seed(eng, tab)
+    eng.expire(T0 + 5)  # writes status.json once an hour
+    assert (eng.root / "status.json").exists()
+    assert S.main([str(eng.root), "--stake", "0.25"]) == 0
+    out = json.loads(capsys.readouterr().out)
+    assert out["status"]["pending"] == {"entry": 0, "exit": 0, "open": 0} and out["status"]["fee_audit"]["rows"] == 2 and out["excluded"]["verdict"] == "ok"
+    (eng.root / "status.json").unlink()
+    assert S.main([str(eng.root)]) == 2 and "refused" in capsys.readouterr().out
+
+
+# ---------------------------------------------------------------------------------------------------------------- twins: decisions
+def test_take_profit_inside_the_landing_window_is_retried_so_twin_exit_decisions_can_differ(tmp_path):
+    """DOCUMENTED, not hidden: the rule decides on LEG_MS (1.9 s); a sell decided before a twin's entry lands is refused with SELL_EARLY and the host retries it, so the exit decision_ms
+    the host writes depends on the latency. Entry decisions and the 24 h time exit are identical across twins. A twin's decisions md5 can therefore differ when a take profit falls in the window."""
+    outcome = {}
+    for lat in (3.010, 4.085, 5.590):
+        eng, tab = mk(tmp_path / str(lat), lat)
+        seed(eng, tab)
+        td = T0 + 1_000
+        pid = buy(eng, td)
+        try:
+            eng.sell(Q.BOT_ID, pid, 1.0, td + 3_500, 5, reason="tp_1.5x")
+            outcome[lat] = "accepted"
+        except Exception as e:  # noqa: BLE001
+            assert Q.R.SELL_EARLY in str(e) if hasattr(Q, "R") else "slower entry leg" in str(e)
+            outcome[lat] = "sell_early"
+        eng.sell(Q.BOT_ID, pid, 1.0, td + Q.HOLD_MS, 6, reason=Q.REASON_TIME) if outcome[lat] == "sell_early" else None
+    assert outcome == {3.010: "sell_early", 4.085: "sell_early", 5.590: "sell_early"}
 
 
 def test_report_with_no_trades_is_empty_not_a_crash():

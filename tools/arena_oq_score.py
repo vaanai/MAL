@@ -2,15 +2,13 @@
 
 Why a reader: as in the WSOL book (tools/arena_stack.fail_legs, arena_paper.book_fail_legs) the engine writes the FILLED P&L and the pressure inputs; the two fail models are applied here.
 
-FAIL MODELS (both always reported, QP 47229af2 item 1):
-  flat     every tx fails with f = FAIL_FLAT = 0.15 (arena_stack.FAIL_FLAT);
-  pressure per-trade p = sigmoid(c + 0.8 ln(1 + ssb) + 0.35 ln(1 + nearby_lamports / 1e9)), slope scale 1, the intercept c refit on THIS set of trades so that the mean p is PRESS_P_TARGET
-           (arena_stack.fail_legs / press_intercept, called as is).
-A trip has four txs (quote buy, token buy, token sell, quote sell), each failing with f (or p). A failed tx pays one send and changes nothing else, except the one case that matters:
-  quote buy fails (prob f)                      -> -send;
-  quote buy lands, token buy fails ((1-f) f)    -> the quote asset is STRANDED and sold back at the entry state: -(2 x entry_conv_cost) - 3 send (declared; the conversion round trip at the entry state; rent is report-only);
-  both entry txs land ((1-f)^2)                 -> the filled P&L with the exit blend of the WSOL book per tx: (1-f)^2 P - (1 - (1-f)^2) send, P = filled P&L net of the engine's N_SENDS sends.
-  E = -f send + (1-f) f (-(2 ec) - 3 send) + (1-f)^2 [ (1-f)^2 P - (1 - (1-f)^2) send ].   A stale-capped exit and an unfilled round trip are scored as filled trips (their P is already the declared score).
+FAIL MODELS (both always reported): EXACTLY the WSOL book's per-trip blend, arena_stack.fail_legs / arena_paper.book_fail_legs, called as is: one draw per filled trip,
+  flat     (1-f) P - f send with f = FAIL_FLAT = 0.15;
+  pressure (1-p) P - p send, p = sigmoid(c + 0.8 ln(1 + ssb) + 0.35 ln(1 + nearby_lamports / 1e9)) (slope scale 1), c refit on THIS set of trades so that the mean p is PRESS_P_TARGET.
+  P is the filled P&L net of the engine's N_SENDS sends. A stale-capped exit and an unfilled round trip are scored as filled trips (their P is already the declared score).
+  DECLARED ON THE METHOD CARD, NOT MODELLED: a separate failure of each conversion tx (a stranded quote asset), the retry sends of a failed sell, rent of a stuck quote leg (ATA rent is a
+  report-only field, as RENT_REPORT in the WSOL deciding stack), priority fee beyond the manifest's send_lamports (WSOL deciding: 505,000 per send inside it), fee-tier change between the
+  quote leg and the token leg, the conversion leg's own earlier landing, quote drift over 24 h in the unfilled round trip.
 Read rules (declared; CI 1,000 bootstrap draws, seed 1, 5th percentile as the gate): per model n, total SOL, mean, lower 90% CI bound (arena_stack.boot_lo), UTC days of the entry decision with the number of
 positive days, total after dropping the top 3 trades, total after dropping the top creator and after dropping the top quote mint (the creator / quote mint with the largest total; trades with no creator are
 one group "unknown" and counted). Also reported next to P&L: unfilled round trips, stale-capped exits, unpriced rows, excluded rows, pending counts when given.
@@ -29,7 +27,7 @@ import numpy as np
 
 from tools import arena_stack as F
 
-STRANDED_SENDS = 3
+EXCLUDED_MAX_SHARE = 0.05  # arena_paper: > 5% of a book excluded -> NOT_DECIDABLE
 
 
 def load_rows(path: str | Path) -> list[dict[str, Any]]:
@@ -42,24 +40,16 @@ def trade_rows(rows: Iterable[Mapping[str, Any]], stake_sol: float) -> list[Mapp
     return [r for r in rows if r.get("kind") == "trade" and abs(float(r["stake_sol"]) - stake_sol) < 1e-12]
 
 
-def expected_pnl(P: np.ndarray, ec: np.ndarray, f: np.ndarray | float, send: float) -> np.ndarray:
-    """the per-trade expected lamports under per-tx fail probability f (see the module docstring)"""
-    f = np.asarray(f, float)
-    ok2 = (1 - f) ** 2
-    return -f * send + (1 - f) * f * (-2 * ec - STRANDED_SENDS * send) + ok2 * (ok2 * P - (1 - ok2) * send)
-
-
 def fail_legs(trades: Sequence[Mapping[str, Any]], send: float) -> dict[str, Any]:
-    """-> {"flat": lamports array, "press": lamports array, "c": intercept, "p": array} for the given trade rows"""
+    """-> {"flat": lamports array, "press": lamports array, "c": intercept, "p": array}: arena_stack.fail_legs on the filled P&L (every OQ trade is a filled trip; strands are not modelled)"""
     if not trades:
         z = np.zeros(0)
         return {"flat": z, "press": z, "c": None, "p": z}
     P = np.array([float(t["pnl_lamports"]) for t in trades])
-    ec = np.array([float(t["entry_conv_cost_lamports"]) for t in trades])
     ssb = np.array([float(t.get("ssb", 0.0)) for t in trades])
     nb = np.array([float(t.get("nearby_lamports", 0.0)) for t in trades])
-    c, p = F.press_intercept(ssb, nb, np.ones(len(P), bool))
-    return {"flat": expected_pnl(P, ec, F.FAIL_FLAT, send), "press": expected_pnl(P, ec, p, send), "c": float(c), "p": p}
+    flat, press, c, p = F.fail_legs(P, np.ones(len(P), bool), ssb, nb, send)
+    return {"flat": flat, "press": press, "c": float(c), "p": p}
 
 
 def _day(t: Mapping[str, Any]) -> str:
@@ -109,6 +99,13 @@ def report(rows: Sequence[Mapping[str, Any]], stake_sol: float, send: float | No
                                      "stale_exit_capped": sum(1 for t in tr if t.get("stale_exit_capped")), "stale_unpriced": sum(1 for t in tr if t.get("stale_exit_capped") and not t.get("stale_priced")),
                                      "excluded_rows": sum(1 for r in rows if r.get("kind") == "excluded"), "refused_rows": sum(1 for r in rows if r.get("kind") == "refused"),
                                      "rent_report_lamports_total": sum(int(t.get("rent_report_lamports", 0)) for t in tr), "buyback_fee_modelled": False}}
+    pids_t = {t["position_id"] for t in rows if t.get("kind") == "trade"}
+    pids_x = {t["position_id"] for t in rows if t.get("kind") == "excluded"}
+    share = len(pids_x) / (len(pids_t) + len(pids_x)) if (pids_t or pids_x) else 0.0
+    out["excluded"] = {"positions_traded": len(pids_t), "positions_excluded": len(pids_x), "share": share, "max_share": EXCLUDED_MAX_SHARE, "verdict": "NOT_DECIDABLE" if share > EXCLUDED_MAX_SHARE else "ok"}
+    byr: dict[str, int] = collections.Counter(str(t.get("reason")) for t in tr if t.get("gap_in_hold"))
+    out["flags"]["gap_in_hold_by_exit_reason"] = dict(byr)
+    out["flags"]["gap_in_hold"] = sum(byr.values())
     if status is not None:
         out["status"] = {k: status[k] for k in ("pending", "fee_audit", "quote_post_fallback", "lat_entry_s") if k in status}
     if not all(math.isfinite(v) for v in fl["flat"]):
@@ -122,8 +119,13 @@ def main(argv: Sequence[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description="declared read of an other-quote open-sim ledger: both fail models, drop-top-3 / creator / quote mint")
     ap.add_argument("ledger", help="the engine's ledger dir (oq-rows.jsonl) or the file")
     ap.add_argument("--stake", type=float, default=0.25)
+    ap.add_argument("--status", default=None, help="the engine's status.json (default: status.json next to the ledger); a read without it is refused")
     a = ap.parse_args(argv)
-    print(json.dumps(report(load_rows(a.ledger), a.stake), indent=1, sort_keys=True, default=float))
+    sp = Path(a.status) if a.status else (Path(a.ledger) if Path(a.ledger).is_dir() else Path(a.ledger).parent) / "status.json"
+    if not sp.exists():
+        print("refused: no engine status (pending counts, fee audit): %s" % sp)
+        return 2
+    print(json.dumps(report(load_rows(a.ledger), a.stake, status=json.loads(sp.read_text())), indent=1, sort_keys=True, default=float))
     return 0
 
 

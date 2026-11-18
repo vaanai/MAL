@@ -11,15 +11,17 @@ OQEngine = the engine surface the host uses, pricing in the pool's quote units w
   * exit: priced at the first print at or after the exit decision + EXIT_LAG_MS (0.55 s, arena_stack.EXIT_LAG_S), same state sources, reverse trip;
   * a landing without a resolvable quote state or pool fee is REFUSED (entry: a `refused` row and no position; exit: the position waits for the next print that has them);
   * P&L per stake (filled, no fail blend) = SOL out - SOL in - N_SENDS x send_lamports; N_SENDS = 4 (two token txs and two quote-conversion txs per trip; the WSOL book pays 2).
-    The fail models (flat 15% and pressure, per tx, incl. a stranded quote asset) are the READER's, as in the WSOL book: tools/arena_oq_score.py over these rows. The rows carry the pressure inputs
+    The fail models (flat 15% and pressure, the WSOL per-trip blend; no stranded-quote model) are the READER's, as in the WSOL book: tools/arena_oq_score.py over these rows. The rows carry the pressure inputs
     (`ssb`, `nearby_lamports`, from the pool's buys at the landing print, same-slot count and buy SOL over the 2 s before it).
   * HONESTY RULES (declared): (1) an entry that never lands in 24 h is a ROUND TRIP at the post-trigger state (both conversion legs, fees, sends): a `trade` row with unfilled_roundtrip=true,
     never dropped; (2) the entry latency is 4.085 s (the deciding cell), twins 3.010 / 5.590 (tools.arena_rule_l1_oq.LATENCY_VALUES_S), a pricing-only change (decisions equal); the
     conversion leg is read at the same landing print (its own earlier landing is NOT modelled); (3) an exit that finds no usable quote state WAITS at most EXIT_WAIT_CAP_MS after its decision, then
     is SCORED (`stale_exit_capped`): the last known pool and quote states priced, proceeds x (1 - STALE_EXIT_HAIRCUT), or 0 SOL out when there is no last state; never left unscored;
-    (4) feed gaps (a `gap` row with data_loss / process_restart / feed_restart / feed_start, a `start` row, or silence between trade rows > GAP_SILENCE_MS) overlapping decision..fill exclude the
-    trade (`excluded` row, counted, never priced), as the WSOL book; (5) ATA rent is report-only (`rent_report_lamports`, as RENT_REPORT in the WSOL stack; the deciding stack refunds it) and a
-    stranded leg loses it (reader); (6) buyback_fee is UNMODELLED (absent from the stored tape row) and a missing creator_fee counts as 0: both counted in `status()` under `fee_audit`.
+    (4) feed gaps (a `gap` row with data_loss / process_restart / feed_restart / feed_start, a `start` row, or silence between trade rows > GAP_SILENCE_MS) exclude a trade only on a LEG window, as
+    the WSOL GapRangeEngine does by default: the entry window (entry decision .. landing print) or the exit window (exit decision .. exit fill); `excluded` row, counted, never priced. A gap
+    elsewhere in the hold does NOT exclude (that would drop long holds, mostly time exits, more than quick take profits): the trade is priced at the first fresh print after it and flagged
+    gap_in_hold (reported by exit reason); (5) ATA rent is report-only (`rent_report_lamports`, as RENT_REPORT in the WSOL stack; the deciding stack refunds it) (no rent is charged on a stuck quote leg: the quote
+    conversion is not modelled as failing, declared on the method card); (6) buyback_fee is UNMODELLED (absent from the stored tape row) and a missing creator_fee counts as 0: both counted in `status()` under `fee_audit`.
     NOT modelled: priority fee beyond `send_lamports`, fee-tier changes between the quote leg and the token leg. A position with no later print stays `pending` and is counted in `status()`.
 Ledger rows (JSONL, deterministic: no wall clock, no pid): kind `open` (one per stake), `trade` (one per stake, at the exit fill), `refused`. decisions_md5_from_rows of osb_follow reads
 open/trade rows by `position_id` and `decision_ms.{entry,exit}`.
@@ -99,6 +101,7 @@ class OQEngine:
         self.pending: dict[str, dict[str, Any]] = {}
         self.gaps: list[tuple[int, int]] = []
         self.last_t: int | None = None
+        self._status_hour = -1
         self.last_state: dict[str, dict[str, Any]] = {}  # pool -> its latest print (post-trade reserves, quote mint, creator), for the post-trigger state of an entry
         self.hist: dict[str, list[tuple[int, Any, str, float]]] = {}  # pool -> recent prints (t, slot, side, sol_lamports) of pools with a pending position, for the pressure inputs
         self.refused: list[tuple[str, str, str, int]] = []  # (bot_id, position_id, reason, t_ms) entries refused at landing, drained by the host
@@ -162,6 +165,10 @@ class OQEngine:
         """Called by the host on every row: an exit whose wait passed EXIT_WAIT_CAP_MS is scored now (stale_exit_capped)."""
         for pid in [k for k, p in self.pending.items() if p["state"] == "exit" and now_ms >= p["cap"]]:
             self._stale_exit(pid, self.pending[pid], now_ms)
+        h = now_ms // 3_600_000
+        if h != self._status_hour:  # status.json next to the ledger once an hour: the scorer's CLI needs pending counts and the fee audit
+            self._status_hour = h
+            (self.root / "status.json").write_text(json.dumps(self.status(), sort_keys=True, default=float))
 
     def on_row(self, row: Mapping[str, Any]) -> None:
         t, typ = row.get("t_recv_ms"), row.get("type")
@@ -274,16 +281,16 @@ class OQEngine:
         if got is None:
             self._c("exit_waiting_" + str(why))
             return  # wait for a later print with a resolvable quote state and pool fee (at most until `cap`, see expire)
-        if self._gap_between(p["t_dec"], t):
-            self._w({"kind": "excluded", "position_id": pid, "side": "sell", "reason": "feed_gap", "t_ms": t})
-            self._c("excluded_feed_gap")
+        if self._gap_between(p["exit_dec"], t):  # the exit leg only; a gap elsewhere in the hold is flagged on the trade row (gap_in_hold), not an exclusion
+            self._w({"kind": "excluded", "position_id": pid, "side": "sell", "reason": "feed_gap_exit", "t_ms": t})
+            self._c("excluded_feed_gap_exit")
             del self.pending[pid]
             del self.positions[pid]
             return
         qs, ps = got
         for s, e in p["legs"].items():
             x = O.price_exit(e["tokens"], qs, ps)
-            self._trade_row(pid, p, s, e, x, O.trip_pnl(s * 1e9, e, x) - N_SENDS * self.send, t)
+            self._trade_row(pid, p, s, e, x, O.trip_pnl(s * 1e9, e, x) - N_SENDS * self.send, t, **({"gap_in_hold": True} if self._gap_between(p["t_dec"], t) else {}))
         del self.pending[pid]
         del self.positions[pid]
         self._c("exits_filled")
