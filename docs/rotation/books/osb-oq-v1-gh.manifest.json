@@ -1,0 +1,18 @@
+{
+ "book_id": "osb-oq-v1-gh",
+ "gap_exclusion": "hold",
+ "host": "hostv2",
+ "out_root": "/data2/mal/scratch/floor-open-sim/books/osb-oq-v1-gh",
+ "rule_overrides": {},
+ "seed_from_hour": "<set at start: start_hour minus 201 h, YYYY-MM-DDTHH>",
+ "send_lamports": 505000,
+ "stakes_sol": [
+  0.1,
+  0.25
+ ],
+ "start_hour": "<set at start: next full hour after merge + warm-up, YYYY-MM-DDTHH>",
+ "tape_dir": "/data2/mal/scratch/floor-open-sim/keep",
+ "title": "open sim book osb-oq-v1-gh: gap-in-hold twin of osb-oq-v1, same rule and entry decisions, entry lands 4.085 s after the decision, only entry or exit window gaps excluded (hold)",
+ "twin_of": "osb-oq-v1",
+ "universe": "pumpswap_other_quote"
+}
