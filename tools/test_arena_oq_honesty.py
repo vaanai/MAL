@@ -245,7 +245,13 @@ def test_missing_creator_fee_is_counted_and_buyback_is_declared_unmodelled(tmp_p
     r["creator_fee"] = 5_000
     feed(eng, tab, r)
     st = eng.status()
-    assert st["fee_audit"]["rows"] == 3 and st["fee_audit"]["creator_fee_missing"] == 2 and st["fee_audit"]["buyback_fee_missing"] == 3 and st["buyback_fee_modelled"] is False
+    fa = st["fee_audit"]
+    assert fa["rows"] == 3 and fa.get("creator_fee_missing", 0) == 0 and fa["buyback_fee_missing"] == 3 and st["buyback_fee_modelled"] is False and fa["fee_src_row"] == 3
+    r2 = TQ.row(T0 + 400, "P", "sell", **P_ROWS)
+    r2.pop("creator_fee")  # a tip-style row: priced by the tier model, counted as such
+    feed(eng, tab, r2)
+    fa = eng.status()["fee_audit"]
+    assert fa["rows"] == 4 and fa["creator_fee_missing"] == 1 and fa["fee_src_row"] == 3 and fa["fee_src_tier"] == 1
     t2 = Q.OQTable.from_dict(json.loads(json.dumps(tab.to_dict(), default=list)))
     assert t2.fee_audit == tab.fee_audit
 

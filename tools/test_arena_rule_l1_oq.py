@@ -10,6 +10,7 @@ from types import SimpleNamespace
 import pytest
 
 from tools import arena_rule_l1_oq as O
+from tools import paper_curve_math as PCM
 from tools.arena_pool_table import WSOL, PoolTable
 from tools.arena_rules import Buy, Sell
 
@@ -29,7 +30,7 @@ FEE_P = 0.01     # lp 7e6 + protocol 3e6 over 1e9 (not the 1.25% constant)
 
 def fee_fields(f):
     amt = 1_000_000_000
-    return {"pool_quote_amount": amt, "lp_fee": int(amt * f * 0.8), "protocol_fee": int(amt * f * 0.2)}
+    return {"pool_quote_amount": amt, "lp_fee": int(amt * f * 0.8), "protocol_fee": int(amt * f * 0.2), "creator_fee": 0}  # creator_fee present (feed-style row): priced from its own fields
 
 
 def row(t, pool, side="buy", q=10 * SOLX, sol=200_000_000, v=V, mint=None, quote=Q1, fee=FEE_P, b=10**12, tok=None):
@@ -179,19 +180,48 @@ def test_stale_quote_price_is_refused_and_counted():
     assert buys(out) == [] and tab.refused["stale_quote_price"] >= 1
 
 
-def test_quote_pool_row_without_fee_fields_gives_no_price():
+def test_rows_without_fee_fields_are_priced_by_the_tier_model_and_counted():
+    """tip-style rows (no lp / protocol / creator fee / amount): the fee is the PumpSwap tier model's, never 0 and never refused for it"""
     rows = [dict(x) for x in stream()]
     for x in rows:
-        if x["pool"] == "QW":
-            for k in ("lp_fee", "protocol_fee", "pool_quote_amount"):
-                x.pop(k)
+        for k in ("lp_fee", "protocol_fee", "pool_quote_amount", "creator_fee"):
+            x.pop(k, None)
     tab, out = play(rows)
-    assert buys(out) == [] and tab.refused["no_quote_price"] >= 1
+    assert len(buys(out)) == 1 and tab.fee_audit["fee_src_tier"] == tab.fee_audit["rows"] and tab.fee_audit["fee_src_row"] == 0 and tab.fee_audit["fee_src_none"] == 0
+    meta = buys(out)[0][1].meta
+    assert meta["pool_fee"] in {p / 1e6 for _, p in PCM.PUMPSWAP_SOL_FEE_TIERS} and meta["quote_pool_fee"] in {p / 1e6 for _, p in PCM.PUMPSWAP_SOL_FEE_TIERS}
 
 
-def test_pool_without_fee_fields_is_refused_not_defaulted():
-    tab, out = play(stream(pool_fee=None))
-    assert buys(out) == [] and tab.refused["no_pool_fee"] == 1
+def test_tip_row_without_creator_fee_gets_the_tier_fee_not_the_creator_leg_at_zero():
+    r = row(H0 + 5 * HOUR, "P", fee=FEE_P)
+    r.pop("creator_fee")
+    f_row = O.row_fee(r)  # fields only: lp + protocol, creator leg 0
+    qmid = 1.0
+    f, src = O.price_fee(r, qmid)
+    mcap = (r["quote_reserve"] + r["virtual_quote_reserves"]) / r["base_reserve"] * qmid * 1e6
+    assert src == "tier" and f == PCM.pumpswap_sol_fee_ppm(mcap) / 1e6 and f != f_row
+
+
+def test_feed_row_with_creator_fee_uses_its_own_fields():
+    r = row(H0 + 5 * HOUR, "P", fee=FEE_P)
+    f, src = O.price_fee(r, 1.0)
+    assert src == "row" and f == O.row_fee(r) and f == pytest.approx(FEE_P)
+    assert O.price_fee(r, None) == (O.row_fee(r), "row")  # own fields need no quote price
+    r.pop("creator_fee")
+    assert O.price_fee(r, None) == (None, "none")  # no fields and no quote price: nothing priced, never a default
+
+
+def test_fee_audit_counts_both_sources_and_survives_a_checkpoint():
+    t = O.OQTable()
+    a, b = row(H0 + 5 * HOUR, "P", fee=FEE_P), row(H0 + 5 * HOUR + 1000, "P", fee=FEE_P)
+    b.pop("creator_fee")
+    t.update(qrow(H0 + 5 * HOUR - 500))
+    t.update(a)
+    t.update(b)
+    fa = t.fee_audit
+    assert fa["fee_src_row"] == 2 and fa["fee_src_tier"] == 1 and fa["rows"] == 3 and fa["creator_fee_missing"] == 1
+    t2 = O.OQTable.from_dict(__import__("json").loads(__import__("json").dumps(t.to_dict(), default=list)))
+    assert t2.fee_audit == t.fee_audit
 
 
 def test_deepest_quote_pool_is_the_price_source():
