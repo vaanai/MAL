@@ -5,7 +5,7 @@
  "out_root": "/data2/mal/scratch/floor-open-sim/books/osb-oq-v1-lat3010",
  "pricing_lat_entry_s": 3.01,
  "rule_overrides": {},
- "seed_from_hour": "<set at start: start_hour minus 201 h, YYYY-MM-DDTHH>",
+ "seed_from_hour": "2026-11-03T03",
  "send_lamports": 505000,
  "stakes_sol": [
   0.1,
