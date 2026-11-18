@@ -17,10 +17,10 @@ OQEngine = the engine surface the host uses, pricing in the pool's quote units w
     never dropped; (2) the entry latency is 4.085 s (the deciding cell), twins 3.010 / 5.590 (tools.arena_rule_l1_oq.LATENCY_VALUES_S), a pricing-only change: twins share the ENTRY decisions, but an exit decision_ms may differ by design (a sell decided before a twin's entry lands is refused SELL_EARLY and retried by the host); the
     conversion leg is read at the same landing print (its own earlier landing is NOT modelled); (3) an exit that finds no usable quote state WAITS at most EXIT_WAIT_CAP_MS after its decision, then
     is SCORED (`stale_exit_capped`): the last known pool and quote states priced, proceeds x (1 - STALE_EXIT_HAIRCUT), or 0 SOL out when there is no last state; never left unscored;
-    (4) feed gaps (a `gap` row with data_loss / process_restart / feed_restart / feed_start, a `start` row, or silence between trade rows > GAP_SILENCE_MS) exclude a trade only on a LEG window, as
-    the WSOL GapRangeEngine does by default: the entry window (entry decision .. landing print) or the exit window (exit decision .. exit fill); `excluded` row, counted, never priced. A gap
-    elsewhere in the hold does NOT exclude (that would drop long holds, mostly time exits, more than quick take profits): the trade is priced at the first fresh print after it and flagged
-    gap_in_hold (reported by exit reason); (5) ATA rent is report-only (`rent_report_lamports`, as RENT_REPORT in the WSOL stack; the deciding stack refunds it) (no rent is charged on a stuck quote leg: the quote
+    (4) feed gaps (a `gap` row with data_loss / process_restart / feed_restart / feed_start, a `start` row, or silence between trade rows > GAP_SILENCE_MS), the WSOL gap modes with the same
+    names: gap_mode "on" (the WSOL default, the strict book) excludes a trade with ANY gap from the entry decision to the exit fill (`excluded` row, counted, never priced); gap_mode "hold"
+    (the WSOL gap-in-hold twin) excludes only a gap on the entry window (decision .. landing print) or the exit window (exit decision .. fill) and prices a gap elsewhere in the hold at the
+    first fresh print, flagged gap_in_hold on the trade row. A book runs "hold" beside the deciding "on" cell (the "on" rule drops long holds, mostly time exits, more often than quick take profits); (5) ATA rent is report-only (`rent_report_lamports`, as RENT_REPORT in the WSOL stack; the deciding stack refunds it) (no rent is charged on a stuck quote leg: the quote
     conversion is not modelled as failing, declared on the method card); (6) buyback_fee is UNMODELLED (absent from the stored tape row) and a missing creator_fee counts as 0: both counted in `status()` under `fee_audit`.
     NOT modelled: priority fee beyond `send_lamports`, fee-tier changes between the quote leg and the token leg. A position with no later print stays `pending` and is counted in `status()`.
 Ledger rows (JSONL, deterministic: no wall clock, no pid): kind `open` (one per stake), `trade` (one per stake, at the exit fill), `refused`. decisions_md5_from_rows of osb_follow reads
@@ -30,6 +30,8 @@ open/trade rows by `position_id` and `decision_ms.{entry,exit}`.
 from __future__ import annotations
 
 import json
+import os
+import time
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, Mapping
@@ -89,7 +91,10 @@ def _jline(r: Mapping[str, Any]) -> str:
 
 
 class OQEngine:
-    def __init__(self, ledger_root: str | Path, stakes_sol: tuple[float, ...], send_lamports: int, lat_entry_s: float = O.LAT_PRICING_DECIDING_S) -> None:
+    def __init__(self, ledger_root: str | Path, stakes_sol: tuple[float, ...], send_lamports: int, lat_entry_s: float = O.LAT_PRICING_DECIDING_S, gap_mode: str = "on") -> None:
+        if gap_mode not in ("on", "hold"):
+            raise ValueError("gap_mode must be 'on' or 'hold'")
+        self.gap_mode = gap_mode
         self.root = Path(ledger_root)
         self.root.mkdir(parents=True, exist_ok=True)
         self.path = self.root / "oq-rows.jsonl"
@@ -168,7 +173,9 @@ class OQEngine:
         h = now_ms // 3_600_000
         if h != self._status_hour:  # status.json next to the ledger once an hour: the scorer's CLI needs pending counts and the fee audit
             self._status_hour = h
-            (self.root / "status.json").write_text(json.dumps(self.status(), sort_keys=True, default=float))
+            tmp = self.root / "status.json.tmp"  # atomic: tmp + rename, with the wall clock (the ledger rows stay deterministic, this file is not a ledger)
+            tmp.write_text(json.dumps({**self.status(), "written_unix_s": time.time(), "gap_mode": self.gap_mode}, sort_keys=True, default=float))
+            os.replace(tmp, self.root / "status.json")
 
     def on_row(self, row: Mapping[str, Any]) -> None:
         t, typ = row.get("t_recv_ms"), row.get("type")
@@ -281,9 +288,11 @@ class OQEngine:
         if got is None:
             self._c("exit_waiting_" + str(why))
             return  # wait for a later print with a resolvable quote state and pool fee (at most until `cap`, see expire)
-        if self._gap_between(p["exit_dec"], t):  # the exit leg only; a gap elsewhere in the hold is flagged on the trade row (gap_in_hold), not an exclusion
-            self._w({"kind": "excluded", "position_id": pid, "side": "sell", "reason": "feed_gap_exit", "t_ms": t})
-            self._c("excluded_feed_gap_exit")
+        leg = self._gap_between(p["exit_dec"], t)
+        if (self.gap_mode == "on" and self._gap_between(p["t_dec"], t)) or leg:  # "on": any gap in the hold; "hold": the exit leg only (a mid-hold gap is flagged on the trade row)
+            why = "feed_gap_exit" if leg else "feed_gap"
+            self._w({"kind": "excluded", "position_id": pid, "side": "sell", "reason": why, "t_ms": t, "gap_mode": self.gap_mode})
+            self._c("excluded_" + why)
             del self.pending[pid]
             del self.positions[pid]
             return

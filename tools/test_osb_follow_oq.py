@@ -138,7 +138,7 @@ def test_fence_admits_other_quote_only_and_restores_the_pinned_function():
 
 def test_oq_manifest_refusals(tmp_path):
     tmp = world(tmp_path, oq_rows())
-    for over in ({"host": "lane"}, {"rule_overrides": {"TP": 1.3}}, {"universe": "bogus"}, {"gap_exclusion": "hold"}):
+    for over in ({"host": "lane"}, {"rule_overrides": {"TP": 1.3}}, {"universe": "bogus"}, {"gap_exclusion": "bogus"}):
         assert OQ.follow(str(manifest(tmp, **over)), once=True, _roots=(str(tmp),), _table_mode="other_quote") == 2
 
 
@@ -230,3 +230,11 @@ def test_latency_twin_manifest_is_accepted_and_sets_the_engine_latency(tmp_path)
         OQ.load_manifest(str(manifest(tmp, out="bad", book_id="oq-tw", twin_of="oq-a")))  # twin_of without a latency value
     with pytest.raises(O.Refused):
         OQ.load_manifest(str(manifest(tmp, out="bad2", book_id="oq-tw", twin_of="oq-a", pricing_lat_entry_s=2.0)))
+
+
+def test_gap_hold_twin_manifest_sets_the_engine_gap_mode(tmp_path):
+    tmp = world(tmp_path, oq_rows())
+    m = OQ.load_manifest(str(manifest(tmp, out="gh", book_id="oq-gh", twin_of="oq-a", gap_exclusion="hold")))
+    assert OQ.build_book(m, tmp / "rgh", table_mode="other_quote")[1].gap_mode == "hold"
+    m = OQ.load_manifest(str(manifest(tmp, out="gs")))
+    assert OQ.build_book(m, tmp / "rgs", table_mode="other_quote")[1].gap_mode == "on"  # the WSOL default

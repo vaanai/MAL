@@ -19,9 +19,9 @@ T0 = TQ.H0
 P_ROWS = dict(q=500_000_000, sol=1_000_000)
 
 
-def mk(tmp_path, lat=None, stakes=(0.25,)):
+def mk(tmp_path, lat=None, stakes=(0.25,), gap_mode="on"):
     tab = Q.OQTable()
-    eng = E.OQEngine(tmp_path / "led", stakes, SEND, *(() if lat is None else (lat,)))
+    eng = E.OQEngine(tmp_path / "led", stakes, SEND, *((E.O.LAT_PRICING_DECIDING_S if lat is None else lat),), gap_mode=gap_mode)
     eng.table = tab
     return eng, tab
 
@@ -143,8 +143,8 @@ def _open_position(eng, tab, td):
     return pid
 
 
-def test_silence_elsewhere_in_the_hold_is_flagged_not_excluded(tmp_path):
-    eng, tab = mk(tmp_path)
+def test_silence_elsewhere_in_the_hold_is_flagged_not_excluded_in_hold_mode(tmp_path):
+    eng, tab = mk(tmp_path, gap_mode="hold")
     seed(eng, tab)
     td = T0 + 1_000
     pid = _open_position(eng, tab, td)
@@ -159,7 +159,7 @@ def test_silence_elsewhere_in_the_hold_is_flagged_not_excluded(tmp_path):
 def test_time_exits_are_not_dropped_more_than_take_profits(tmp_path):
     """same gap in the middle of the hold, one position exits by take profit and one by the time exit: both are priced (neither is excluded)"""
     for reason, k in (("tp_1.5x", 0), (Q.REASON_TIME, 1)):
-        eng, tab = mk(tmp_path / reason)
+        eng, tab = mk(tmp_path / reason, gap_mode="hold")
         seed(eng, tab)
         td = T0 + 1_000
         pid = _open_position(eng, tab, td)
@@ -170,8 +170,8 @@ def test_time_exits_are_not_dropped_more_than_take_profits(tmp_path):
         assert [r["reason"] for r in ledger(eng) if r["kind"] == "trade"] == [reason] and not [r for r in ledger(eng) if r["kind"] == "excluded"]
 
 
-def test_gap_on_the_exit_leg_excludes(tmp_path):
-    eng, tab = mk(tmp_path)
+def test_gap_on_the_exit_leg_excludes_in_both_modes(tmp_path):
+    eng, tab = mk(tmp_path, gap_mode="hold")
     seed(eng, tab)
     td = T0 + 1_000
     pid = _open_position(eng, tab, td)
@@ -181,6 +181,23 @@ def test_gap_on_the_exit_leg_excludes(tmp_path):
     feed(eng, tab, TQ.qrow(td + 5_600))
     feed(eng, tab, TQ.row(td + 5_800, "P", "sell", **P_ROWS))
     assert eng.counters["excluded_feed_gap_exit"] == 1 and [r["reason"] for r in ledger(eng) if r["kind"] == "excluded"] == ["feed_gap_exit"] and not [r for r in ledger(eng) if r["kind"] == "trade"]
+
+
+def test_mode_on_is_the_wsol_default_and_excludes_any_gap_in_the_hold(tmp_path):
+    for mode, excluded in (("on", True), ("hold", False)):
+        eng, tab = mk(tmp_path / mode, gap_mode=mode)
+        seed(eng, tab)
+        td = T0 + 1_000
+        pid = _open_position(eng, tab, td)
+        feed(eng, tab, TQ.qrow(td + 200_000))  # a gap in the middle of the hold, none on a leg window
+        eng.sell(Q.BOT_ID, pid, 1.0, td + 200_100, 9, reason=Q.REASON_TIME)
+        feed(eng, tab, TQ.qrow(td + 200_500))
+        feed(eng, tab, TQ.row(td + 200_800, "P", "sell", **P_ROWS))
+        k = [(r["kind"], r.get("reason")) for r in ledger(eng) if r["kind"] in ("trade", "excluded")]
+        assert (k == [("excluded", "feed_gap")]) if excluded else (k == [("trade", Q.REASON_TIME)])
+    assert E.OQEngine(tmp_path / "d", (0.25,), SEND).gap_mode == "on"
+    with pytest.raises(ValueError):
+        E.OQEngine(tmp_path / "e", (0.25,), SEND, gap_mode="off")
 
 
 def test_gap_row_and_start_row_open_a_gap(tmp_path):
@@ -286,7 +303,7 @@ def test_report_has_both_models_flags_and_drop_top_reads():
     assert ng["drop_top_creator"]["total_sol_after"] == pytest.approx(ng["total_sol"] - 0.9) and ng["drop_top_quote_mint"]["total_sol_after"] == pytest.approx(0.1 - 0.05 + 0.03 + 0.02 + 0.01)
     assert rep["flags"]["unfilled_roundtrips"] == 1 and rep["flags"]["unfilled_unpriced"] == 1 and rep["flags"]["stale_exit_capped"] == 1 and rep["flags"]["excluded_rows"] == 1
     assert rep["flags"]["buyback_fee_modelled"] is False and rep["status"]["pending"]["exit"] == 1
-    assert rep["excluded"]["positions_excluded"] == 1 and rep["excluded"]["share"] == pytest.approx(1 / 8) and rep["excluded"]["verdict"] == "NOT_DECIDABLE"
+    assert rep["excluded"]["positions_excluded_or_refused"] == 1 and rep["excluded"]["share"] == pytest.approx(1 / 8) and rep["excluded"]["verdict"] == "NOT_DECIDABLE"
     assert math.isfinite(rep["flat"]["total_sol"]) and rep["flat"]["total_sol"] < rep["filled_no_fail"]["total_sol"]
 
 
@@ -298,13 +315,38 @@ def test_excluded_share_at_or_below_5_percent_is_ok():
 def test_cli_prints_status_and_refuses_without_it(tmp_path, capsys):
     eng, tab = mk(tmp_path)
     seed(eng, tab)
-    eng.expire(T0 + 5)  # writes status.json once an hour
-    assert (eng.root / "status.json").exists()
+    eng.expire(T0 + 5)  # writes status.json once an hour, atomically (tmp + rename), with the wall clock
+    assert (eng.root / "status.json").exists() and not (eng.root / "status.json.tmp").exists()
+    ts = json.loads((eng.root / "status.json").read_text())["written_unix_s"]
     assert S.main([str(eng.root), "--stake", "0.25"]) == 0
     out = json.loads(capsys.readouterr().out)
     assert out["status"]["pending"] == {"entry": 0, "exit": 0, "open": 0} and out["status"]["fee_audit"]["rows"] == 2 and out["excluded"]["verdict"] == "ok"
+    assert out["status_written_unix_s"] == ts and out["status"]["written_unix_s"] == ts and out["status"]["gap_mode"] == "on"
+    S._now = lambda: ts + 7_201  # a status.json older than 2 h is refused
+    try:
+        assert S.main([str(eng.root)]) == 2 and "old" in capsys.readouterr().out
+        S._now = lambda: ts + 7_199
+        assert S.main([str(eng.root)]) == 0
+        capsys.readouterr()
+    finally:
+        S._now = lambda: __import__("time").time()
     (eng.root / "status.json").unlink()
     assert S.main([str(eng.root)]) == 2 and "refused" in capsys.readouterr().out
+
+
+def test_strict_any_gap_share_is_reported_whatever_the_mode_and_sensitivity_has_two_numbers():
+    rows = [dict(_tr(86_400 * i, 1e7, ssb=1.0), position_id="p%d" % i) for i in range(20)]
+    for r in rows[:3]:
+        r["gap_in_hold"] = True  # priced in hold mode, but a strict "on" book would have excluded them
+    rep = S.report(rows, 0.25)
+    e = rep["excluded"]
+    assert e["share"] == 0 and e["verdict"] == "ok" and e["strict_any_gap_in_hold_share"] == pytest.approx(3 / 20) and e["strict_verdict"] == "NOT_DECIDABLE"
+    sn = rep["sensitivity_stranded_quote_leg"]
+    assert "stranded-quote" in sn["label"] and sn["flat"]["leg_at_0_total_sol"] == rep["flat"]["total_sol"]
+    assert sn["flat"]["leg_full_loss_total_sol"] == pytest.approx(rep["flat"]["total_sol"] - 20 * 0.15 * 0.25)
+    assert sn["press"]["leg_full_loss_total_sol"] < sn["press"]["leg_at_0_total_sol"]
+    rows.append({"kind": "refused", "position_id": "r1", "reason": "no_pool_fee"})  # engine-refused counts toward the excluded share, as the WSOL board does
+    assert S.report(rows, 0.25)["excluded"]["positions_excluded_or_refused"] == 1
 
 
 # ---------------------------------------------------------------------------------------------------------------- twins: decisions

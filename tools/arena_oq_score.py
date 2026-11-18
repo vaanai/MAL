@@ -20,6 +20,7 @@ import collections
 import datetime as dt
 import json
 import math
+import time
 from pathlib import Path
 from typing import Any, Iterable, Mapping, Sequence
 
@@ -27,7 +28,12 @@ import numpy as np
 
 from tools import arena_stack as F
 
+STATUS_MAX_AGE_S = 7200
 EXCLUDED_MAX_SHARE = 0.05  # arena_paper: > 5% of a book excluded -> NOT_DECIDABLE
+
+
+def _now() -> float:
+    return time.time()
 
 
 def load_rows(path: str | Path) -> list[dict[str, Any]]:
@@ -100,14 +106,25 @@ def report(rows: Sequence[Mapping[str, Any]], stake_sol: float, send: float | No
                                      "excluded_rows": sum(1 for r in rows if r.get("kind") == "excluded"), "refused_rows": sum(1 for r in rows if r.get("kind") == "refused"),
                                      "rent_report_lamports_total": sum(int(t.get("rent_report_lamports", 0)) for t in tr), "buyback_fee_modelled": False}}
     pids_t = {t["position_id"] for t in rows if t.get("kind") == "trade"}
-    pids_x = {t["position_id"] for t in rows if t.get("kind") == "excluded"}
-    share = len(pids_x) / (len(pids_t) + len(pids_x)) if (pids_t or pids_x) else 0.0
-    out["excluded"] = {"positions_traded": len(pids_t), "positions_excluded": len(pids_x), "share": share, "max_share": EXCLUDED_MAX_SHARE, "verdict": "NOT_DECIDABLE" if share > EXCLUDED_MAX_SHARE else "ok"}
+    pids_x = {t["position_id"] for t in rows if t.get("kind") in ("excluded", "refused") and t.get("position_id")}  # as the WSOL board: engine-excluded + engine-refused over requested
+    gap_t = {t["position_id"] for t in tr if t.get("gap_in_hold")}
+    gap_x = {t["position_id"] for t in rows if t.get("kind") == "excluded" and str(t.get("reason", "")).startswith("feed_gap")}
+    tot = len(pids_t | pids_x)
+    share = len(pids_x) / tot if tot else 0.0
+    strict = len(gap_t | gap_x) / tot if tot else 0.0  # any gap in the hold, whatever the mode (what the strict "on" book would exclude, at least)
+    out["excluded"] = {"positions_traded": len(pids_t), "positions_excluded_or_refused": len(pids_x), "share": share, "strict_any_gap_in_hold_share": strict, "max_share": EXCLUDED_MAX_SHARE,
+                       "verdict": "NOT_DECIDABLE" if share > EXCLUDED_MAX_SHARE else "ok", "strict_verdict": "NOT_DECIDABLE" if strict > EXCLUDED_MAX_SHARE else "ok"}
+    stake = np.array([float(t["stake_sol"]) for t in tr])
+    pf = np.full(len(tr), F.FAIL_FLAT)
+    out["sensitivity_stranded_quote_leg"] = {  # NOT part of the read: the unmodelled leg priced two ways; full loss = the quote bought (about the stake) lost with the blend's probability
+        "label": "stranded-quote leg (token buy fails after the quote buy lands): priced at 0 = the read above; full loss = the stake lost with probability f (flat) / p (pressure), an upper bound",
+        "flat": {"leg_at_0_total_sol": out["flat"].get("total_sol"), "leg_full_loss_total_sol": float(fl["flat"].sum() / 1e9 - (pf * stake).sum())},
+        "press": {"leg_at_0_total_sol": out["press"].get("total_sol"), "leg_full_loss_total_sol": float(fl["press"].sum() / 1e9 - (fl["p"] * stake).sum())}} if len(tr) else {}
     byr: dict[str, int] = collections.Counter(str(t.get("reason")) for t in tr if t.get("gap_in_hold"))
     out["flags"]["gap_in_hold_by_exit_reason"] = dict(byr)
     out["flags"]["gap_in_hold"] = sum(byr.values())
     if status is not None:
-        out["status"] = {k: status[k] for k in ("pending", "fee_audit", "quote_post_fallback", "lat_entry_s") if k in status}
+        out["status"] = {k: status[k] for k in ("pending", "fee_audit", "quote_post_fallback", "lat_entry_s", "gap_mode", "written_unix_s") if k in status}
     if not all(math.isfinite(v) for v in fl["flat"]):
         raise ValueError("non-finite P&L")
     return out
@@ -125,7 +142,14 @@ def main(argv: Sequence[str] | None = None) -> int:
     if not sp.exists():
         print("refused: no engine status (pending counts, fee audit): %s" % sp)
         return 2
-    print(json.dumps(report(load_rows(a.ledger), a.stake, status=json.loads(sp.read_text())), indent=1, sort_keys=True, default=float))
+    st = json.loads(sp.read_text())
+    age = _now() - float(st.get("written_unix_s", 0.0))
+    if age > STATUS_MAX_AGE_S:
+        print("refused: status.json is %.0f s old (written_unix_s %s), more than %d s" % (age, st.get("written_unix_s"), STATUS_MAX_AGE_S))
+        return 2
+    rep = report(load_rows(a.ledger), a.stake, status=st)
+    rep["status_written_unix_s"] = st.get("written_unix_s")
+    print(json.dumps(rep, indent=1, sort_keys=True, default=float))
     return 0
 
 

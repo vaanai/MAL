@@ -41,8 +41,8 @@ def load_manifest(path):
         tmp.write_text(json.dumps(raw))
         m = _orig_load(str(tmp))
     if u == "pumpswap_other_quote":
-        if m["host"] != "hostv2" or m["rule_overrides"] or "lane" in m or m.get("gap_exclusion", "on") != "on" or ("twin_of" in m and "pricing_lat_entry_s" not in m):
-            raise O.Refused("universe pumpswap_other_quote: host 'hostv2', rule_overrides {}, no lane, twin_of only as a latency twin (pricing_lat_entry_s 3.010 / 4.085 / 5.590), gap_exclusion 'on' or absent")
+        if m["host"] != "hostv2" or m["rule_overrides"] or "lane" in m or m.get("gap_exclusion", "on") not in ("on", "hold") or ("twin_of" in m and "pricing_lat_entry_s" not in m and m.get("gap_exclusion") != "hold"):
+            raise O.Refused("universe pumpswap_other_quote: host 'hostv2', rule_overrides {}, no lane, twin_of only as a latency twin (pricing_lat_entry_s 3.010 / 4.085 / 5.590) or a gap-in-hold twin, gap_exclusion 'on' (default, the strict book) or 'hold' (the gap-in-hold twin, as osb_follow)")
         m["universe"] = u
     return m
 
@@ -59,14 +59,14 @@ def build_book(m, run_dir, *, table_mode=None, engine_kw=None):
         for r in rules:
             r.table_mode = table_mode
     (run_dir / "variant.json").write_text(json.dumps({"variant": {}, "universe": m["universe"], "send": m["send_lamports"], "book_id": m["book_id"], "host": m["host"],
-                                                       "lat_entry_s": m.get("pricing_lat_entry_s", Q.LAT_PRICING_DECIDING_S)}, indent=1, sort_keys=True) + "\n")
+                                                       "lat_entry_s": m.get("pricing_lat_entry_s", Q.LAT_PRICING_DECIDING_S), "gap_exclusion": m.get("gap_exclusion", "on")}, indent=1, sort_keys=True) + "\n")
     os.environ["MAL_ARENA_TEST"] = "1"  # scratch registry only, as floor_replay_proof_reg.scratch_register
     try:
         R.register_rules(rules, registry, H.FROZEN_SHA, start_ms, now_ms=start_ms - 1, verify_sha=False)
     finally:
         os.environ.pop("MAL_ARENA_TEST", None)
     stakes = tuple(float(x) for x in m["stakes_sol"])
-    engine = OQEngine(ledger, stakes, m["send_lamports"], float(m.get("pricing_lat_entry_s", Q.LAT_PRICING_DECIDING_S)))
+    engine = OQEngine(ledger, stakes, m["send_lamports"], float(m.get("pricing_lat_entry_s", Q.LAT_PRICING_DECIDING_S)), m.get("gap_exclusion", "on"))
     warm_ms = start_ms - WARM_MIN_DEFAULT * R.MIN_MS
     hc = R.HostConfig(root=str(run_dir), registry=registry, frozen_sha=H.FROZEN_SHA, clock_start_ms=start_ms, live=False, verbose=False)
     host = OQHost(hc, rules, ArenaState(m["tape_dir"], start_ms=warm_ms, warm_min=WARM_MIN_DEFAULT), engine)
