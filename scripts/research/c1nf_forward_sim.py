@@ -50,7 +50,7 @@ EXIT_S_DEFAULT = 300.0
 WSOL = "So11111111111111111111111111111111111111112"
 EXIT_OK, EXIT_REFUSED, EXIT_FATAL, EXIT_MISMATCH = 0, 2, 3, 4
 MANIFEST_KEYS = {"book_id", "title", "decider", "stakes_sol", "send_lamports", "start_hour", "warmup_hours", "tape_dir", "out_root", "exit_s", "pricing_lat_entry_s",
-                 "pick_oracle", "feed_delay_slots", "wallet_ledger_root", "model_manifest", "model_manifest_sha256", "duckdb_pin", "rent_mode", "u1"}
+                 "pick_oracle", "feed_delay_slots", "wallet_ledger_root", "model_manifest", "model_manifest_sha256", "duckdb_pin", "rent_mode", "u1", "engine_warmup_h", "engine_prune"}
 REQUIRED_KEYS = {"book_id", "title", "decider", "stakes_sol", "send_lamports", "start_hour", "tape_dir", "out_root"}
 DECIDERS = ("c1nf", "u4", "u2", "u1", "u1_lowrep", "u1_placebo")
 U1_DECIDERS = ("u1", "u1_lowrep", "u1_placebo")      # scripts/research/u1_forward_sim.py (QP-RULING-1116-u1-forward-spec); no model, no wallet ledger; each is its own book run (bot "main")
@@ -58,6 +58,7 @@ WARMUP_MIN_BY_DECIDER = {"u4": 168, "u2": 192, "u1": 168, "u1_lowrep": 168, "u1_
 EXIT_S_MAX = {"c1nf": 3600, "u4": 259_200, "u2": 259_200, "u1": 3600, "u1_lowrep": 3600, "u1_placebo": 3600}  # ruling 0.2 item 2: exit_s up to 72 h for the mark-clock books; c1nf stays at 3600
 GAP_DISCLOSURE = ("Strict feed-gap exclusion: any data_loss gap between decision and exit removes the trade (engine default; gap-in-hold mode cannot be combined with the 19-slot latency). "
                   "Exclusion odds rise with hold length, so early exits (stops, takes, share-fall) are over-represented among priced trades; excluded {n} of {N} entries ({timed}/{requested}).")  # ADD1 A1, verbatim
+ENGINE_WARMUP_H_MAX = 24                             # QP-RULING-1118-u2-v2 section 2: engine_warmup_h (U2 v2: 7) feeds the pricing engine the last N warm-up hours; absent = today's behaviour (engine starts empty at S)
 PLACEBO_DECIDERS = ("u4", "u2")                      # ruling 0.7: a second bot_id whose entries the decider draws; it never enters the decider's view of the deciding book
 
 
@@ -507,6 +508,15 @@ def check_manifest(m):
     fd = m.get("feed_delay_slots", R.DEFAULT_FEED_DELAY_SLOTS)
     if not (_isint(fd) and 0 <= fd <= 100):
         raise Refused("feed_delay_slots must be a whole number of slots")
+    # QP-RULING-1118-u2-v2 section 2: the two engine keys of the U2 v2 book. Absent = today's behaviour, byte for byte. Only the mark-clock books (u4, u2) may carry them.
+    for k in ("engine_warmup_h", "engine_prune"):
+        if k in m and m["decider"] not in PLACEBO_DECIDERS:
+            raise Refused("manifest key %s is only for the u4 / u2 deciders" % k)
+    ew = m.get("engine_warmup_h")
+    if "engine_warmup_h" in m and not (_isint(ew) and 1 <= ew <= ENGINE_WARMUP_H_MAX):
+        raise Refused("engine_warmup_h must be a whole number of hours in [1, %d] (U2 v2: 7)" % ENGINE_WARMUP_H_MAX)
+    if "engine_prune" in m and not isinstance(m["engine_prune"], bool):
+        raise Refused("engine_prune must be true or false (false = the engine never drops quiet pools; trim_history only)")
     return m
 
 
@@ -523,6 +533,8 @@ def hours_needed(m):
     need = max(MIN_WARMUP_H, WARMUP_MIN_BY_DECIDER.get(m["decider"], 0))
     if w > avail or w < need:
         raise Refused("warm-up window: %d h wanted, %d h available from %s (minimum %d for decider %s): S moves later" % (w, avail, WARMUP_START_MIN, need, m["decider"]))
+    if m.get("engine_warmup_h") is not None and m["engine_warmup_h"] > w:
+        raise Refused("engine_warmup_h %d h is longer than the warm-up window W (%d h): refused" % (m["engine_warmup_h"], w))
     return [hour_key(start - (w - i) * HOUR_MS) for i in range(w)], start
 
 
@@ -760,7 +772,8 @@ class Book:
                 self.clock = t
         for s in sells_by_row.get(n, ()):  # a trigger on the hour's last row: handed over at the hour end
             self.sell_req(s)
-        self.engine.prune()
+        if self.m.get("engine_prune", True):  # QP-RULING-1118-u2-v2: engine_prune false = never drop quiet pools (prune() is not pricing-neutral and drops pools U2 can still pick); trim_history() stays
+            self.engine.prune()
         self.engine.trim_history()
 
     def gap_exclusion_split(self):
@@ -884,6 +897,8 @@ def _locked(m, out_root, once, max_hours, sleep_fn, decider_factory, ledger_buil
     status = {"book_id": m["book_id"], "manifest_sha256": sha, "code_sha256": csha, "run": run_dir.name, "stakes_sol": list(m["stakes_sol"])}
     waiting_since = None
     pools_seen, creators_seen, warm_pools = set(), set(), 0
+    engine_warm_ms = int(m.get("engine_warmup_h") or 0) * HOUR_MS
+    engine_keys = "engine_warmup_h" in m or "engine_prune" in m  # memory accounting only for a book that carries a key (an absent-key book writes no new file or field)
     while True:
         f, nxt = hour_file(m["tape_dir"], cursor), hour_file(m["tape_dir"], cursor + HOUR_MS)
         f = link_hour(m, out_root, cursor) if f is not None else None
@@ -922,8 +937,11 @@ def _locked(m, out_root, once, max_hours, sleep_fn, decider_factory, ledger_buil
                         lw.write(a[1])
                 yield r
         if is_warm:
-            for _ in observe(iter_hour_rows(f)):
-                pass
+            if engine_warm_ms and cursor >= start_ms - engine_warm_ms:  # QP-RULING-1118-u2-v2: the last engine_warmup_h hours of W go through the pricing engine as forward hours do, with no entry, sell or draw
+                book.run_hour(observe(iter_hour_rows(f)), [], [])
+            else:
+                for _ in observe(iter_hour_rows(f)):
+                    pass
             warm_pools = len(pools_seen)
         else:
             book.run_hour(observe(iter_hour_rows(f)), entries, sells)
@@ -954,10 +972,15 @@ def _locked(m, out_root, once, max_hours, sleep_fn, decider_factory, ledger_buil
                         fh.write(canon(dict(rec, hour=key)) + "\n")
             with open(out_root / "counts.jsonl", "a") as fh:
                 fh.write(canon({"hour": key, "warmup": is_warm, "entries": len(entries), "decider": dict(st.counts), "book": dict(book.c)}) + "\n")
+            if engine_keys:  # QP-RULING-1118-u2-v2 sections 2 and 5: per hour len(engine.pools), RSS and the engine's counters (rows_below_trim_floor, refused_*); counts only
+                with open(out_root / "engine-mem.jsonl", "a") as fh:
+                    fh.write(canon(dict(engine_mem(book.engine), hour=key)) + "\n")
         if verified and not is_warm:
             O._atomic_text(out_root / "decisions.md5", O.decisions_md5(run_dir) + "\n")
         status.update(last_hour=key, last_hour_end_ms=end, warmup_hour=is_warm, wall_time_utc=datetime.now(timezone.utc).isoformat(), active=verified, open_positions=book.open_positions(),
                       ledger_days_built=list(lstep.built), ledger_days_incomplete=list(lstep.incomplete), decision_md5=dmd5, ledger_md5=lmd5, book_counts=dict(book.c))
+        if engine_keys:
+            status.update(engine_mem(book.engine))
         O._atomic_json(out_root / "status.json", status)
         if (m["decider"] in PLACEBO_DECIDERS or m["decider"] in U1_DECIDERS) and not is_warm:  # U1: strict exclusion + GAP_DISCLOSURE (QP verdict item 2); no placebo bot, "main" only
             O._atomic_json(out_root / "gap_exclusions.json", book.gap_exclusion_split())
@@ -971,6 +994,20 @@ def _locked(m, out_root, once, max_hours, sleep_fn, decider_factory, ledger_buil
         if max_hours is not None and done >= max_hours:
             break
     return EXIT_OK
+
+
+def engine_mem(engine):
+    """memory accounting of the pricing engine (QP-RULING-1118-u2-v2): pool table size, current and peak RSS in kB, and the engine's own counters. No pool, price or fill."""
+    rss = peak = None
+    try:
+        for ln in Path("/proc/self/status").read_text().splitlines():
+            if ln.startswith("VmRSS:"):
+                rss = int(ln.split()[1])
+            elif ln.startswith("VmHWM:"):
+                peak = int(ln.split()[1])
+    except (OSError, ValueError):
+        pass
+    return {"engine_pools": len(engine.pools), "rss_kb": rss, "peak_rss_kb": peak, "engine_counters": dict(engine.counters)}
 
 
 def main(argv=None):
