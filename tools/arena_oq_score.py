@@ -114,3 +114,18 @@ def report(rows: Sequence[Mapping[str, Any]], stake_sol: float, send: float | No
     if not all(math.isfinite(v) for v in fl["flat"]):
         raise ValueError("non-finite P&L")
     return out
+
+
+def main(argv: Sequence[str] | None = None) -> int:
+    import argparse
+
+    ap = argparse.ArgumentParser(description="declared read of an other-quote open-sim ledger: both fail models, drop-top-3 / creator / quote mint")
+    ap.add_argument("ledger", help="the engine's ledger dir (oq-rows.jsonl) or the file")
+    ap.add_argument("--stake", type=float, default=0.25)
+    a = ap.parse_args(argv)
+    print(json.dumps(report(load_rows(a.ledger), a.stake), indent=1, sort_keys=True, default=float))
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
