@@ -18,6 +18,8 @@ PRICING FORMULA (pure functions below; constant product on the pools' virtual re
   exit:   token leg:  Qo = Qe' * T / (Be' + T) * (1-f_p);  conversion leg 2 (sell the quote asset in its WSOL pool):  S' = Qw' * Qo / (Bw' + Qo) * (1-f_w)
   P&L (SOL lamports) = S' - S, before the engine's send / priority / rent stack (a host adds that; see PR body). The quote-conversion cost is the S -> Qu and Qo -> S' legs' fee
   f_w plus their price impact, i.e. mid-vs-fill on the quote's WSOL pool, at the entry state and at the exit state.
+  FEE SOURCE (price_fee): a row carrying creator_fee and valid lp / protocol / amount is priced from its own fields (source row); a row WITHOUT creator_fee (every tip-tape row) is priced whole by the PumpSwap fee-tier model
+  (tier_fee, tools.paper_curve_math.pumpswap_sol_fee_ppm by market cap, as the WSOL books do), never with the creator leg at 0; fee_audit counts fee_src_row / fee_src_tier / fee_src_none.
   Fees are per pool, read from the pool's own rows: f = (lp_fee + protocol_fee + creator_fee + buyback_fee when present) / pool_quote_amount of its latest row that has lp, protocol and amount; a pool without one refuses the pricing
   (reason no_pool_fee / no_quote_pool_fee). The 1.25% FEE constant is used ONLY in the trigger's vault / spot formulas, exactly as the funnel and FLOOR do.
 WSOL pools never enter: on_row returns [] on a WSOL or empty quote mint, and the table never opens an other-quote pool for them.
@@ -36,6 +38,7 @@ from typing import Any, Mapping
 
 from tools.arena_pool_table import FEE, HIST_HOURS, HOUR_MS, V_HI, V_LO, WSOL, PoolPrints, PoolTable, spot_after
 from tools.arena_rules import Buy, Ctx, Rule, Sell
+from tools.paper_curve_math import pumpswap_sol_fee_ppm
 
 BOT_ID = "l1-floor-oq-v1"
 CELL = "l1oq"
@@ -79,7 +82,7 @@ def _num(x: Any) -> bool:
 def row_fee(row: Mapping[str, Any]) -> float | None:
     """The pool's own fee fraction from one row: (lp_fee + protocol_fee + creator_fee [+ buyback_fee]) / pool_quote_amount. lp_fee, protocol_fee and pool_quote_amount are required
     (None otherwise: never a default). creator_fee is the decoder's trader-charged creator leg (observe/trade_decode.py, stored on the tape row); buyback_fee is added when a row carries
-    it (the stored row currently does not). A missing or None creator_fee / buyback_fee counts as 0: the decoder reads 0 for events too short to carry it."""
+    it (the stored row currently does not). Used by price_fee only when the row carries creator_fee; a None buyback_fee counts as 0 (UNMODELLED). A row without creator_fee is NOT priced here (see price_fee)."""
     lp, pf, amt = row.get("lp_fee"), row.get("protocol_fee"), row.get("pool_quote_amount")
     if not (_num(lp) and _num(pf) and _num(amt)) or amt <= 0 or lp < 0 or pf < 0:
         return None
@@ -93,6 +96,27 @@ def row_fee(row: Mapping[str, Any]) -> float | None:
         extra += v
     f = (lp + pf + extra) / amt
     return f if 0 <= f < 1 else None
+
+
+def tier_fee(row: Mapping[str, Any], quote_mid: float | None) -> float | None:
+    """The PumpSwap fee-tier model (creator + protocol + LP, tools.paper_curve_math.pumpswap_sol_fee_ppm), the SAME model the WSOL open-sim books price with
+    (tools/arena_h5_cost.py fee_ppm / _h5_fee: tier by market cap in SOL = (Q incl. V) / B * 1e6, on the row's PRE-trade state). `quote_mid` = SOL lamports per raw quote unit
+    (Qw / Bw of the quote's WSOL pool; 1.0 for a WSOL row). None when the row has no usable reserves or no quote price: never a default."""
+    q, v, b = row.get("quote_reserve"), row.get("virtual_quote_reserves"), row.get("base_reserve")
+    if quote_mid is None or not (_num(q) and _num(v) and _num(b)) or b <= 0 or q + v <= 0 or quote_mid <= 0:
+        return None
+    return pumpswap_sol_fee_ppm((q + v) / b * quote_mid * 1e6) / 1e6
+
+
+def price_fee(row: Mapping[str, Any], quote_mid: float | None) -> tuple[float | None, str]:
+    """(fee fraction, source). Source "row": the row carries creator_fee and valid lp_fee / protocol_fee / pool_quote_amount: row_fee (its own fields). Otherwise "tier": the
+    whole fee from tier_fee (a row without creator_fee, e.g. every tip-tape row, is NOT priced with the creator leg at 0). "none": neither is available (the row prices nothing)."""
+    if row.get("creator_fee") is not None:
+        f = row_fee(row)
+        if f is not None:
+            return f, "row"
+    f = tier_fee(row, quote_mid)
+    return f, ("tier" if f is not None else "none")
 
 
 # ------------------------------------------------------------------------------------------------------------------------------ pricing (pure)
@@ -186,8 +210,13 @@ class OQTable(PoolTable):
                 del self.rate_h[old]
         else:
             rh[0], rh[1], rh[2], rh[3], rh[4] = min(rh[0], sl_), max(rh[1], sl_), min(rh[2], bt), max(rh[3], bt), rh[4] + 1
-        f = row_fee(row)
+        if qm == WSOL:
+            qmid: float | None = 1.0
+        else:
+            qmid = self.quote_mid(qm, t)
+        f, src = price_fee(row, qmid)
         self.fee_audit["rows"] += 1
+        self.fee_audit["fee_src_" + src] += 1  # which model priced the row's fee: its own fields, the tier model, or none (never 0 silently)
         if row.get("creator_fee") is None:
             self.fee_audit["creator_fee_missing"] += 1
         if row.get("buyback_fee") is None:
