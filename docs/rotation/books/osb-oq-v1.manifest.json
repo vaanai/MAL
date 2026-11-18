@@ -1,0 +1,17 @@
+{
+ "book_id": "osb-oq-v1",
+ "gap_exclusion": "on",
+ "host": "hostv2",
+ "out_root": "/data2/mal/scratch/floor-open-sim/books/osb-oq-v1",
+ "rule_overrides": {},
+ "seed_from_hour": "2026-11-03T03",
+ "send_lamports": 505000,
+ "stakes_sol": [
+  0.1,
+  0.25
+ ],
+ "start_hour": "<set at start: next full hour after merge + warm-up, YYYY-MM-DDTHH>",
+ "tape_dir": "/data2/mal/scratch/floor-open-sim/keep",
+ "title": "open sim book osb-oq-v1: FLOOR-style rule l1-floor-oq-v1 on other-quote PumpSwap graduates, deciding cell: entry lands 4.085 s after the decision, send 505,000 per send, strict gap rule (on)",
+ "universe": "pumpswap_other_quote"
+}

@@ -1,0 +1,19 @@
+{
+ "book_id": "osb-oq-v1-lat5590",
+ "gap_exclusion": "on",
+ "host": "hostv2",
+ "out_root": "/data2/mal/scratch/floor-open-sim/books/osb-oq-v1-lat5590",
+ "pricing_lat_entry_s": 5.59,
+ "rule_overrides": {},
+ "seed_from_hour": "2026-11-03T03",
+ "send_lamports": 505000,
+ "stakes_sol": [
+  0.1,
+  0.25
+ ],
+ "start_hour": "<set at start: next full hour after merge + warm-up, YYYY-MM-DDTHH>",
+ "tape_dir": "/data2/mal/scratch/floor-open-sim/keep",
+ "title": "open sim book osb-oq-v1-lat5590: latency twin of osb-oq-v1, same entry decisions, entry lands 5.590 s after the decision (DEC-035 Am.9 Erratum 2 values)",
+ "twin_of": "osb-oq-v1",
+ "universe": "pumpswap_other_quote"
+}
