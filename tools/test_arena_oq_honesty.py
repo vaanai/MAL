@@ -322,8 +322,8 @@ def test_cli_prints_status_and_refuses_without_it(tmp_path, capsys):
     eng, tab = mk(tmp_path)
     seed(eng, tab)
     eng.expire(T0 + 5)  # writes status.json once an hour, atomically (tmp + rename), with the wall clock
-    assert (eng.root / "status.json").exists() and not (eng.root / "status.json.tmp").exists()
-    ts = json.loads((eng.root / "status.json").read_text())["written_unix_s"]
+    assert eng.status_path.exists() and not eng.status_path.with_name("oq-status.json.tmp").exists()
+    ts = json.loads(eng.status_path.read_text())["written_unix_s"]
     assert S.main([str(eng.root), "--stake", "0.25"]) == 0
     out = json.loads(capsys.readouterr().out)
     assert out["status"]["pending"] == {"entry": 0, "exit": 0, "open": 0} and out["status"]["fee_audit"]["rows"] == 2 and out["excluded"]["verdict"] == "ok"
@@ -336,7 +336,7 @@ def test_cli_prints_status_and_refuses_without_it(tmp_path, capsys):
         capsys.readouterr()
     finally:
         S._now = lambda: __import__("time").time()
-    (eng.root / "status.json").unlink()
+    eng.status_path.unlink()
     assert S.main([str(eng.root)]) == 2 and "refused" in capsys.readouterr().out
 
 

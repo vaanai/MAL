@@ -136,16 +136,17 @@ def main(argv: Sequence[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description="declared read of an other-quote open-sim ledger: both fail models, drop-top-3 / creator / quote mint")
     ap.add_argument("ledger", help="the engine's ledger dir (oq-rows.jsonl) or the file")
     ap.add_argument("--stake", type=float, default=0.25)
-    ap.add_argument("--status", default=None, help="the engine's status.json (default: status.json next to the ledger); a read without it is refused")
+    ap.add_argument("--status", default=None, help="the engine's status.json (default: oq-status.json next to the ledger dir, in the run dir); a read without it is refused")
     a = ap.parse_args(argv)
-    sp = Path(a.status) if a.status else (Path(a.ledger) if Path(a.ledger).is_dir() else Path(a.ledger).parent) / "status.json"
+    ld = Path(a.ledger) if Path(a.ledger).is_dir() else Path(a.ledger).parent
+    sp = Path(a.status) if a.status else ld.parent / "oq-status.json"
     if not sp.exists():
         print("refused: no engine status (pending counts, fee audit): %s" % sp)
         return 2
     st = json.loads(sp.read_text())
     age = _now() - float(st.get("written_unix_s", 0.0))
     if age > STATUS_MAX_AGE_S:
-        print("refused: status.json is %.0f s old (written_unix_s %s), more than %d s" % (age, st.get("written_unix_s"), STATUS_MAX_AGE_S))
+        print("refused: oq-status.json is %.0f s old (written_unix_s %s), more than %d s" % (age, st.get("written_unix_s"), STATUS_MAX_AGE_S))
         return 2
     rep = report(load_rows(a.ledger), a.stake, status=st)
     rep["status_written_unix_s"] = st.get("written_unix_s")
