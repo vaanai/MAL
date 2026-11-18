@@ -216,3 +216,17 @@ def test_entry_refused_at_landing_leaves_no_position_in_the_host_book(tmp_path):
     log = DecisionLog(str(tmp / "run")).rows(Q.BOT_ID)
     assert any(r.get("kind") == "order_refused" and r["reason"].startswith("entry_refused_at_landing") for r in log) and not host.hook_errors
     assert [r["kind"] for r in ledger_rows_dir(tmp / "run" / "ledger")] == ["refused"]
+
+
+def test_latency_twin_manifest_is_accepted_and_sets_the_engine_latency(tmp_path):
+    tmp = world(tmp_path, oq_rows())
+    for lat in (3.010, 5.590):
+        m = OQ.load_manifest(str(manifest(tmp, out="tw%s" % lat, book_id="oq-tw", twin_of="oq-a", pricing_lat_entry_s=lat)))
+        host, eng, _ = OQ.build_book(m, tmp / ("run%s" % lat), table_mode="other_quote")
+        assert eng.lat_ms == int(round(lat * 1000))
+    m = OQ.load_manifest(str(manifest(tmp, out="strict")))
+    assert OQ.build_book(m, tmp / "runs", table_mode="other_quote")[1].lat_ms == 4085  # the deciding cell
+    with pytest.raises(O.Refused):
+        OQ.load_manifest(str(manifest(tmp, out="bad", book_id="oq-tw", twin_of="oq-a")))  # twin_of without a latency value
+    with pytest.raises(O.Refused):
+        OQ.load_manifest(str(manifest(tmp, out="bad2", book_id="oq-tw", twin_of="oq-a", pricing_lat_entry_s=2.0)))
