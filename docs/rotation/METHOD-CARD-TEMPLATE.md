@@ -19,7 +19,7 @@ Nothing on a card says the book makes money. In-sample numbers are labelled in-s
 ## 2. Which sim it needs
 Pick one or more, and say why that sim fits this mechanism:
 - [ ] Open simulation book on arriving tape (DEC-035 Am.9 §1), from a recorded start instant.
-- [ ] Replay on closed hours (in-sample unless the hours are held out; say which).
+- [ ] Replay on closed hours (in-sample unless the hours are held out; say which). A go-live from replay alone needs held-out hours checked against `docs/HOLDOUT_LEDGER.md`, an argument why a forward sim adds nothing, and QP's acceptance (DEC-036 §4).
 - [ ] Twin of FLOOR (pricing-only twin or sibling config on FLOOR's host decisions).
 - [ ] Other (describe).
 
@@ -39,6 +39,7 @@ Answer each with the number used and its source. A blank is a reason not to beli
 ## 4. Believe-the-sim criteria for this book
 What this book's sim must show before the manager writes a belief record. Set these from the mechanism, not from a generic bar. Examples of things to state: minimum forward trades or days the mechanism needs to show itself (a rare-event book needs more days, a frequent one more trades); the sign and size of the ex-top-3 total; per-day pattern; what the matched FLOOR control book shows on the same days.
 
+- Shrunk net sim mean per trade under the flat 15% leg and the pressure leg (both must be > 0 to go live; ≤ 0 under either means the sim keeps running, §5 below; DEC-036 §4 item 2):
 - Criteria:
 - Why these fit this mechanism:
 
@@ -50,9 +51,9 @@ The owner's rule: a negative sim we still believe in may run longer. Answer:
 4. Parameters stay fixed during an extension. A change is a new book with a new start instant (DEC-035 Am.9 §2 item 1).
 
 ## 6. Live kill and retire rule
-1. Per-book loss cap at each rung (inside DEC-036 §5).
-2. Decay monitor calibration (DEC-036 §6): winsorization bounds from the sim distribution; CUSUM reference values; warning and alarm thresholds with their false-alarm rates over 100 trades; the sim run used to calibrate them (path and sha256).
-3. Retire check: prior weight n0 and prior mean for the shrunk mean; check points (closed trade 50 to 100).
+1. Per-book loss cap (DEC-036 §5 item 2: 0.40 SOL without a 0.25 start row, 0.75 after; full-wipe with R = 3,860,000 per position) or a lower value.
+2. Decay monitor calibration (DEC-036 §6 items 2-4): winsorization bounds L and U from the sim distribution; μ0 (> 0) and δ > 0, so μ1 = min(0, μ0 − δ) < μ0; warning and alarm thresholds h_w, h_a from 10,000 day-block bootstrap paths re-centred on μ0, with their false-alarm rates over 100 trades; number of sim days with trades (below 10, trades resampled one by one, and say so); the calibration run (path and sha256).
+3. Retire check (DEC-036 §6 item 6): raw x, not winsorized; prior weight n0 (default 25) and prior mean −c̄ at the book's stakes; checked at every close from closed live trade 50 on, no end.
 4. Anything mechanism-specific that should stop the book at once (e.g. the program change named in §1.2).
 
 ## 7. Decision host path
@@ -63,7 +64,7 @@ Frozen sha:
 
 ## 8. Ladder plan
 - First rung (0.10 unless the card argues for less):
-- What evidence moves it to 0.25 (DEC-036 §5 item 1 minimum, plus anything this book needs, e.g. live fill slip within its sim's assumption):
+- Step condition for 0.25 (DEC-036 §5 item 1 minimum, plus anything this book needs, e.g. live fill slip within its sim's assumption). A step condition, not edge evidence:
 - Above 0.25: not in the envelope (owner's word and an impact estimate).
 
 ## 9. Records
