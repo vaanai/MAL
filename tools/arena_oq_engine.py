@@ -98,6 +98,7 @@ class OQEngine:
         self.root = Path(ledger_root)
         self.root.mkdir(parents=True, exist_ok=True)
         self.path = self.root / "oq-rows.jsonl"
+        self.status_path = self.root.parent / "oq-status.json"  # next to the ledger dir (the run dir), NOT inside it
         self.stakes, self.send, self.lat_ms = tuple(stakes_sol), int(send_lamports), int(round(lat_entry_s * 1000))
         self.table: O.OQTable | None = None  # set by the driver after the host is built (the host owns the table)
         self.positions: dict[str, Any] = {}
@@ -173,9 +174,9 @@ class OQEngine:
         h = now_ms // 3_600_000
         if h != self._status_hour:  # status.json next to the ledger once an hour: the scorer's CLI needs pending counts and the fee audit
             self._status_hour = h
-            tmp = self.root / "status.json.tmp"  # atomic: tmp + rename, with the wall clock (the ledger rows stay deterministic, this file is not a ledger)
+            tmp = self.status_path.with_name("oq-status.json.tmp")  # outside the hashed ledger dir (osb_follow hashes run_dir/ledger for ledger_md5; the wall clock must not enter it). Atomic: tmp + rename, with the wall clock (the ledger rows stay deterministic, this file is not a ledger)
             tmp.write_text(json.dumps({**self.status(), "written_unix_s": time.time(), "gap_mode": self.gap_mode}, sort_keys=True, default=float))
-            os.replace(tmp, self.root / "status.json")
+            os.replace(tmp, self.status_path)
 
     def on_row(self, row: Mapping[str, Any]) -> None:
         t, typ = row.get("t_recv_ms"), row.get("type")
