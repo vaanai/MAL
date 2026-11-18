@@ -26,6 +26,10 @@ class Fx:
         self.rows.append({"schema": "x", "bot_id": BOT, "row_id": f"r{len(self.rows)}", "ev": ev, "ts_ms": self.t, "mint": mint,
                           "sol_in_lamports": 0, "sol_out_lamports": 0, **kw})
 
+    def start(self, stake):
+        self.row("start", "", stake_lamports=stake)
+        return self
+
     def trade(self, r, stake=S25, intent=True):
         self.i += 1
         m = f"M{self.i}"
@@ -38,6 +42,19 @@ class Fx:
     def many(self, rs, stake=S25):
         for r in rs:
             self.trade(r, stake)
+        return self
+
+    def open(self, stake):
+        """open a position (intent + ok fill) and return its mint; close it later with close(). Used for carried-over positions."""
+        self.i += 1
+        m = f"M{self.i}"
+        self.row("send_intent", m, stake_lamports=stake)
+        self.row("fill", m, ok=True, sol_out_lamports=stake + 1000)
+        return m, stake
+
+    def close(self, pos, r):
+        m, stake = pos
+        self.row("exit", m, sol_in_lamports=stake + 1000 + r)
         return self
 
     def write(self):
@@ -108,7 +125,7 @@ def test_y1_boundary_exactly_minus_0_15_s(tmp_path):
     r = run(Fx(tmp_path).many([0] * 19 + [-3 * S10], stake=S10))
     assert r["flags"]["Y1"] and r["exit_code"] == 20 and not r["flags"]["Y2"]
     r = run(Fx(sub(tmp_path, "b")).many([0] * 19 + [-3 * S10 + 1], stake=S10))
-    assert not r["flags"]["Y1"] and r["flags"]["X1"] and r["exit_code"] == 10
+    assert not r["flags"]["Y1"] and r["flags"]["X1"] and r["x_at_0_10_is_stop"] and r["exit_code"] == 20  # X at 0.10 is STOP (A4 row 3)
 
 
 def test_window_is_last_20_only(tmp_path):
@@ -145,3 +162,58 @@ def test_json_cli_and_error_exit_and_read_only(tmp_path, capsys):
     assert json.loads(capsys.readouterr().out)["n_closed_lane"] == 2
     assert sorted(x.name for x in tmp_path.iterdir()) == before
     assert M.main(["--ledger-file", str(tmp_path / "nope.jsonl")]) == 2
+
+
+def test_qp_case_a_carried_over_010_close_does_not_empty_the_window(tmp_path):
+    # 25 losing 0.25 closes (each -0.06 s), a carried-over 0.10 position opened before, one 0.10 close after; start row says 0.25
+    fx = Fx(tmp_path).start(S25)
+    old = fx.open(S10)
+    fx.many([-S25 * 6 // 100] * 25, stake=S25).close(old, -1)
+    r = run(fx)
+    assert r["stake_lamports"] == S25 and r["n_closed_population"] == 25 and r["n_closed_other_stake_or_before_start"] == 1
+    assert r["flags"]["X1"] and r["exit_code"] == 10 and "X1" in r["fired_ms"]
+
+
+def test_qp_case_b_after_step_down_22_losing_010_then_one_025_close(tmp_path):
+    # stake 0.25 start, a 0.25 position carried over, step-down start at 0.10, 22 trades at -0.06 s, then the 0.25 close
+    fx = Fx(tmp_path).start(S25)
+    old = fx.open(S25)
+    fx.start(S10).many([-S10 * 6 // 100] * 22, stake=S10).close(old, 5)
+    r = run(fx)
+    assert r["stake_lamports"] == S10 and r["n_closed_population"] == 22 and r["n_closed_other_stake_or_before_start"] == 1
+    assert r["flags"]["X1"] and r["x_at_0_10_is_stop"] and r["exit_code"] == 20  # ruling A4 row 3
+    assert "STOP (X at 0.10" in M.render(r, BOT)
+
+
+def test_reviewer_case_old_stake_close_does_not_reset_hwm_x2_still_fires(tmp_path):
+    fx = Fx(tmp_path).start(S25)
+    old = fx.open(S10)
+    fx.many([1_000_000_000, -750_000_000], stake=S25).close(old, 900_000_000)  # an old-stake gain must not enter the 0.25 population HWM
+    r = run(fx)
+    assert r["population_hwm_lamports"] == 1_000_000_000 and r["population_drawdown_lamports"] == 750_000_000 and r["flags"]["X2"]
+    assert r["realized_lifetime_lamports"] == 1_000_000_000 - 750_000_000 + 900_000_000  # the old-stake close counts toward lifetime only
+
+
+def test_restart_at_same_stake_continues_population_and_start_row_changes_it(tmp_path):
+    fx = Fx(tmp_path).start(S25).many([1, 1], stake=S25).start(S25).many([1], stake=S25)
+    assert run(fx)["n_closed_population"] == 3
+    (tmp_path / "b").mkdir()
+    fx = Fx(tmp_path / "b").start(S25).many([1, 1], stake=S25).start(S10).many([1], stake=S10)
+    r = run(fx)
+    assert r["n_closed_population"] == 1 and r["stake_lamports"] == S10
+
+
+def test_no_stake_known_is_exit_2(tmp_path, capsys):
+    p = tmp_path / "lane-ledger.jsonl"
+    p.write_text("")
+    assert M.main(["--ledger-file", str(p), "--json"]) == 2
+    assert M.main(["--ledger-file", str(p)]) == 2
+    assert "no stake known" in capsys.readouterr().err
+
+
+def test_a5_fields_are_printed(tmp_path):
+    fx = Fx(tmp_path).start(S25).many([0] * 19 + [-S25], stake=S25)
+    fx.open(S25)
+    out = M.render(run(fx), BOT)
+    for need in ("median r", "take-profit exits in the last 20: n/a", "open positions: 1", "margin to threshold", "FIRED", "population start", "live vs book A: not printed (no matched list in the lane ledger)"):
+        assert need in out
