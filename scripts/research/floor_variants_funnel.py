@@ -15,6 +15,16 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspa
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import tools.arena_pool_table as PT
 args = sys.argv[1:]
+if "--universe" in args:  # counts-only custom-pair universe: separate module, the default path below is untouched
+    i = args.index("--universe"); universe = args[i + 1]; del args[i:i + 2]
+    if universe != "other-quote":
+        sys.exit("--universe: only other-quote (the default, WSOL, is selected by omitting the flag)")
+    if "--quote-sol-prices" not in args:
+        sys.exit("--universe other-quote needs --quote-sol-prices FILE")
+    i = args.index("--quote-sol-prices"); pf = args[i + 1]; del args[i:i + 2]
+    import floor_other_quote_funnel
+    floor_other_quote_funnel.main([pf] + args)
+    sys.exit(0)
 vband = "narrow"
 if "--vband" in args:
     i = args.index("--vband"); vband = args[i + 1]; del args[i:i + 2]
