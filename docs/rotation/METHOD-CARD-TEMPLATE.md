@@ -39,7 +39,8 @@ Answer each with the number used and its source. A blank is a reason not to beli
 ## 4. Believe-the-sim criteria for this book
 What this book's sim must show before the manager writes a belief record. Set these from the mechanism, not from a generic bar. Examples of things to state: minimum forward trades or days the mechanism needs to show itself (a rare-event book needs more days, a frequent one more trades); the sign and size of the ex-top-3 total; per-day pattern; what the matched FLOOR control book shows on the same days.
 
-- Shrunk net sim mean per trade under the flat 15% leg and the pressure leg (both must be > 0 to go live; ≤ 0 under either means the sim keeps running, §5 below; DEC-036 §4 item 2):
+- Shrunk net sim mean per trade under the flat 15% leg and the pressure leg, and μ0 at 0.10 (pressure leg, winsorized, net at 0.10, at the deciding latency cell named here). All three must be > 0 to go live; otherwise the sim keeps running (§5 below; DEC-036 §4 item 2):
+- Deciding latency cell:
 - Criteria:
 - Why these fit this mechanism:
 
@@ -52,7 +53,7 @@ The owner's rule: a negative sim we still believe in may run longer. Answer:
 
 ## 6. Live kill and retire rule
 1. Per-book loss cap (DEC-036 §5 item 2: 0.40 SOL without a 0.25 start row, 0.75 after; full-wipe with R = 3,860,000 per position) or a lower value.
-2. Decay monitor calibration (DEC-036 §6 items 2-4): winsorization bounds L and U from the sim distribution; μ0 (> 0) and δ > 0, so μ1 = min(0, μ0 − δ) < μ0; warning and alarm thresholds h_w, h_a from 10,000 day-block bootstrap paths re-centred on μ0, with their false-alarm rates over 100 trades; number of sim days with trades (below 10, trades resampled one by one, and say so); the calibration run (path and sha256).
+2. Decay monitor calibration (DEC-036 §6 items 2-4): winsorization bounds L and U from the sim distribution; μ0 for each rung the book can reach (DEC-036 §6 item 3: pressure leg, winsorized, net at that rung's stake, at the deciding latency cell) and δ > 0, so μ1 = min(0, μ0 − δ) < μ0; warning and alarm thresholds h_w, h_a from 10,000 day-block bootstrap paths re-centred on μ0, with their false-alarm rates over 100 trades; number of sim days with trades (below 10, trades resampled one by one, and say so); the calibration run (path and sha256).
 3. Retire check (DEC-036 §6 item 6): raw x, not winsorized; prior weight n0 (default 25) and prior mean −c̄ at the book's stakes; checked at every close from closed live trade 50 on, no end.
 4. Anything mechanism-specific that should stop the book at once (e.g. the program change named in §1.2).
 
@@ -63,8 +64,8 @@ The owner's rule: a negative sim we still believe in may run longer. Answer:
 Frozen sha:
 
 ## 8. Ladder plan
-- First rung (0.10 unless the card argues for less):
-- Step condition for 0.25 (DEC-036 §5 item 1 minimum, plus anything this book needs, e.g. live fill slip within its sim's assumption). A step condition, not edge evidence:
+- First rung: 0.10 (every book; DEC-036 §5 item 1). 0.125 and 0.05 are decay rungs only.
+- Up-step condition, one rung at a time (0.05 → 0.10 → 0.25; 0.125 → 0.25): the DEC-036 §5 item 1 minimum at the current rung, plus anything this book needs (e.g. live fill slip within its sim's assumption). A step condition, not edge evidence:
 - Above 0.25: not in the envelope (owner's word and an impact estimate).
 
 ## 9. Records
