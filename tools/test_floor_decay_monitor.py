@@ -217,3 +217,90 @@ def test_a5_fields_are_printed(tmp_path):
     out = M.render(run(fx), BOT)
     for need in ("median r", "take-profit exits in the last 20: n/a", "open positions: 1", "margin to threshold", "FIRED", "population start", "live vs book A: not printed (no matched list in the lane ledger)"):
         assert need in out
+
+
+# --- --since-ms: per-close evaluation (ruling A4) ---
+
+def _close_ts(fx, n):
+    """ts of the n-th (1-based) exit row."""
+    return [r["ts_ms"] for r in fx.rows if r["ev"] == "exit"][n - 1]
+
+
+def test_since_ms_step_down_at_a_past_close_recovered_by_latest(tmp_path, capsys):
+    fx = Fx(tmp_path).start(S25).many([-13_000_000] * 20).many([20_000_000] * 20)
+    p = fx.write()
+    assert M.main(["--ledger-file", str(p)]) == 0
+    assert "fired_at_close" not in capsys.readouterr().out
+    assert M.main(["--ledger-file", str(p), "--since-ms", "0"]) == 10
+    out = capsys.readouterr().out
+    assert f"fired_at_close ts={_close_ts(fx, 20)} flags=X1" in out
+    assert len([ln for ln in out.splitlines() if ln.startswith("fired_at_close ts=")]) == 1
+    # a since after that close does not see it
+    assert M.main(["--ledger-file", str(p), "--since-ms", str(_close_ts(fx, 21))]) == 0
+
+
+def test_since_ms_stop_fires_mid_window_exit_20(tmp_path, capsys):
+    fx = Fx(tmp_path).start(S25).many([-40_000_000] * 20).many([100_000_000] * 20)
+    p = fx.write()
+    assert M.main(["--ledger-file", str(p)]) == 0
+    capsys.readouterr()
+    assert M.main(["--ledger-file", str(p), "--since-ms", "0"]) == 20
+    lines = [ln for ln in capsys.readouterr().out.splitlines() if ln.startswith("fired_at_close ts=")]
+    assert any("Y1" in ln and f"ts={_close_ts(fx, 20)} " in ln for ln in lines)
+    assert any(f"ts={_close_ts(fx, 19)} flags=X2 exit=10" in ln for ln in lines)
+
+
+def test_since_ms_x_at_010_past_close_is_stop(tmp_path, capsys):
+    fx = Fx(tmp_path).start(S10).many([-6_000_000] * 20, stake=S10).many([10_000_000] * 20, stake=S10)
+    p = fx.write()
+    assert M.main(["--ledger-file", str(p)]) == 0
+    capsys.readouterr()
+    assert M.main(["--ledger-file", str(p), "--since-ms", "0"]) == 20
+    assert "flags=X1 exit=20" in capsys.readouterr().out
+
+
+def test_since_ms_no_closes_since_equals_latest(tmp_path, capsys):
+    ok = Fx(tmp_path).start(S25).many([1_000_000] * 5)
+    p = ok.write()
+    assert M.main(["--ledger-file", str(p), "--since-ms", str(ok.t + 1)]) == 0
+    capsys.readouterr()
+    bad = Fx(sub(tmp_path, "b")).start(S25).many([-13_000_000] * 20)
+    p = bad.write()
+    base = M.main(["--ledger-file", str(p)])
+    capsys.readouterr()
+    assert base == 10 and M.main(["--ledger-file", str(p), "--since-ms", str(bad.t + 1)]) == base
+    assert "closes with a flag 0" in capsys.readouterr().out
+
+
+def test_since_ms_json_and_window_start_inclusive(tmp_path, capsys):
+    fx = Fx(tmp_path).start(S25).many([-13_000_000] * 20).many([20_000_000] * 20)
+    p = fx.write()
+    capsys.readouterr()
+    assert M.main(["--ledger-file", str(p), "--since-ms", str(_close_ts(fx, 20)), "--json"]) == 10
+    d = json.loads(capsys.readouterr().out)
+    assert d["exit_code_latest"] == 0 and d["exit_code"] == 10 and d["fired_at_close"][0]["ts_ms"] == _close_ts(fx, 20)
+
+
+DEFAULT_MD5 = "f225b57f1bf2a077325ac734c5198d63"  # recorded on main before --since-ms was added
+
+
+def test_default_output_md5_unchanged(tmp_path, capsys):
+    import hashlib
+    fx = Fx(tmp_path).start(S25).many([-30_000_000] * 8 + [5_000_000] * 14 + [-40_000_000] * 3)
+    p = fx.write()
+    out = []
+    for extra in ([], ["--json"]):
+        rc = M.main(["--ledger-file", str(p)] + extra)
+        out.append((rc, capsys.readouterr().out))
+    assert hashlib.md5(repr(out).encode()).hexdigest() == DEFAULT_MD5
+
+
+def test_since_ms_ignores_start_rows_after_the_close(tmp_path, capsys):
+    """Stake-change seam: a 0.25 step-down at a past close, then a LATER 0.10 start row. Per-close evaluation must cut start rows at the close (exit 10);
+    with all starts the past 0.25 close would be judged at 0.10 and be missed (exit 0)."""
+    fx = Fx(tmp_path).start(S25).many([-13_000_000] * 20).start(S10).many([1_000_000] * 3, stake=S10)
+    p = fx.write()
+    assert M.main(["--ledger-file", str(p)]) == 0
+    capsys.readouterr()
+    assert M.main(["--ledger-file", str(p), "--since-ms", "0"]) == 10
+    assert f"fired_at_close ts={_close_ts(fx, 20)} flags=X1 exit=10" in capsys.readouterr().out
