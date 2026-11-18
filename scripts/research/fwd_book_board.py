@@ -518,6 +518,13 @@ def disclosures(dec, nw, meta, gtot, ex, book_id=None, generated_utc=None, plc_e
         out.append(("osb-v2-u2 (QP-RULING-1118-u2-v2 section 4)", T.QP1118_V2_U2.replace("<n_books_watched>", str(nw))))
     if book_id == "osb-u2":
         out.append(("osb-u2 v1 defect (QP-RULING-1118-u2-v2 section 4)", u2_v1_defect(generated_utc, ex, plc_ex)))
+    elif book_id == "osb-v2-u2":
+        # no cross-book ledger read: the brackets point at the osb-u2 board of the same instant
+        see = "see osb-u2 board %s" % generated_utc
+        t = T.QP1118_U2_V1_DEFECT.replace("<instant>", str(generated_utc))
+        for br in ("<r_p>", "<N_p>", "<r>", "<N>", "<a>", "<b>"):
+            t = t.replace(br, "[" + see + "]")
+        out.append(("osb-u2 v1 defect (QP-RULING-1118-u2-v2 section 4; figures on the osb-u2 board)", t))
     n_rows = ROWS_PER_BOOK[dec]
     out.append(("rows counted", "The %d rows of this book (stakes x latencies) count in n_books_watched and the best-of-N sentence; the 160,000 column does not." % n_rows))
     return [{"id": a, "text": b} for a, b in out]

@@ -820,7 +820,12 @@ def test_v2_u2_builds_like_u2_with_its_disclosure(tmp_path):
     assert o["decider"] == "u2" and o["book_id"] == "osb-v2-u2" and o["bar"]["shown"] and o["n_books_watched"] == 66
     md = B.render(o)
     assert V2_TEXT.replace("<n_books_watched>", "66") in md
-    assert "<n_books_watched>" not in md and "osb-u2 (U2 v1) has a simulator defect" not in md
+    assert "<n_books_watched>" not in md
+    see = "[see osb-u2 board %s]" % o["generated_utc"]
+    want = V1_DEFECT_TEXT.replace("<instant>", o["generated_utc"])
+    for br in ("<r_p>", "<N_p>", "<r>", "<N>", "<a>", "<b>"):
+        want = want.replace(br, see)
+    assert want in md
     assert T.U2_SEC4.replace("<n_books_watched>", "66") in md and T.BOUNDED in md and "Random-pick" in md
     assert "The 9 rows of this book" in md
     ids = [d["id"] for d in o["disclosures"]]
@@ -858,5 +863,5 @@ def test_u2_v1_defect_disclosure_filled_unrounded(tmp_path):
     assert o["entries"]["forward_entries"] == 7 and o["random_pick_entries"]["forward_entries"] == 5
     assert want in B.render(o) and "<r>" not in want
     # the other boards do not carry it
-    for bid in ("osb-u4", "c1nf-fwd-v1", "osb-v2-u2"):
+    for bid in ("osb-u4", "c1nf-fwd-v1"):
         assert "simulator defect found from code" not in B.render(Fx(tmp_path / bid, bid).build(now))
