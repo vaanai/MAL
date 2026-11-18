@@ -1,8 +1,12 @@
 """floor_decay_monitor: part (A) of QP-RULING-1118-floor-brake (sha256 4f9333c3...): the FLOOR decay monitor for LIVE floor-lane-1 closed trades.
 
-  python -m tools.floor_decay_monitor [--ledger-file PATH | --ledger-dir DIR] [--bot floor-lane-1] [--stake-lamports N] [--json]
+  python -m tools.floor_decay_monitor [--ledger-file PATH | --ledger-dir DIR] [--bot floor-lane-1] [--stake-lamports N] [--since-ms MS] [--json]
 
 Exit code: 0 normal, 10 a STEP-DOWN flag (X1 or X2 at a stake above 0.10), 20 a STOP flag (Y1, Y2, or X at 0.10 per ruling A4 row 3), 2 input error.
+
+--since-ms MS (ruling A4: the ladder is checked at every close): also evaluate the flags as they stood right after each closed trade with close ts >= MS, using only the rows
+up to that close (start rows after the close are not seen), and print one `fired_at_close ts=<ms> flags=...` line per close at which a flag fired (or X held at 0.10). The exit code is the
+worst of the latest state and every evaluated close (20 > 10 > 0; 2 on error). Without --since-ms nothing changes.
 
 READ-ONLY. It opens the lane ledger for reading, prints to stdout, and nothing else: no file written, no STOP/HALT touched, no RPC, no network.
 Per-trade realized (after all fees, nothing dropped) comes from tools.lane_daily_report.bot_report, imported and called, not copied: a position's r is the change
@@ -152,6 +156,18 @@ def evaluate(events: list[dict[str, Any]], stake_default: int | None = None, sta
     return out
 
 
+def evaluate_closes(events: list[dict[str, Any]], stake_default: int | None, starts: Sequence[tuple[int, int]], since_ms: int) -> list[dict[str, Any]]:
+    """The state right after each closed trade with ts_ms >= since_ms, from events[:i+1] and the start rows at or before that close; only closes with exit_code > 0 are returned."""
+    out = []
+    for i, e in enumerate(events):
+        if not e["trade"] or e["ts_ms"] < since_ms:
+            continue
+        res = evaluate(events[:i + 1], stake_default, [x for x in starts if x[0] <= e["ts_ms"]], True)
+        if res["exit_code"]:
+            out.append({"ts_ms": e["ts_ms"], "flags": [k for k, v in res["flags"].items() if v], "x_at_0_10_is_stop": res["x_at_0_10_is_stop"], "exit_code": res["exit_code"]})
+    return out
+
+
 def render(res: dict[str, Any], bot: str) -> str:
     sol = R.sol
     L = [f"floor_decay_monitor (QP-RULING-1118-floor-brake part A) bot {bot}: stake {res['stake_lamports']} lamports",
@@ -175,11 +191,12 @@ def render(res: dict[str, Any], bot: str) -> str:
     return "\n".join(L)
 
 
-def run(ledger: Path, bot: str = BOT, stake_default: int | None = None) -> dict[str, Any]:
+def run(ledger: Path, bot: str = BOT, stake_default: int | None = None, since_ms: int | None = None) -> dict[str, Any]:
     if not ledger.is_file():
         raise FileNotFoundError(f"lane ledger not found: {ledger}")
     rows = [r for r in R.dedupe(R.read_jsonl(ledger)) if r.get("bot_id") == bot]
-    res = evaluate(closed_events(rows), stake_default, start_stakes(rows))
+    events, starts = closed_events(rows), start_stakes(rows)
+    res = evaluate(events, stake_default, starts)
     if not res["stake_lamports"]:
         raise ValueError("no stake known: no `start` row with a stake and no send_intent stake in the ledger; give --stake-lamports")
     o = R.bot_report(rows, 0, FAR)["open_at_day_end"]
@@ -187,6 +204,10 @@ def run(ledger: Path, bot: str = BOT, stake_default: int | None = None) -> dict[
     ref = R.bot_report(rows, 0, FAR)["lifetime_realized_lamports"]
     if ref != res["realized_lifetime_lamports"]:
         raise ValueError(f"monitor total {res['realized_lifetime_lamports']} != lane report lifetime realized {ref}")
+    if since_ms is not None:
+        res["fired_at_close"] = evaluate_closes(events, stake_default, starts, since_ms)
+        res["exit_code_latest"] = res["exit_code"]
+        res["exit_code"] = max([res["exit_code"]] + [c["exit_code"] for c in res["fired_at_close"]])
     return res
 
 
@@ -196,15 +217,20 @@ def main(argv: Sequence[str] | None = None) -> int:
     ap.add_argument("--ledger-dir", type=Path, help=f"directory holding {R.LEDGER_NAME}")
     ap.add_argument("--bot", default=BOT)
     ap.add_argument("--stake-lamports", type=int, help="stake for trades whose send_intent is not in the ledger")
+    ap.add_argument("--since-ms", type=int, help="also evaluate the flags right after each closed trade with close ts >= this (ruling A4); exit code = worst over latest and those closes")
     ap.add_argument("--json", action="store_true")
     a = ap.parse_args(argv)
     lp = a.ledger_file or (a.ledger_dir / R.LEDGER_NAME if a.ledger_dir else Path("/var/lib/mal-live/h5-lane") / R.LEDGER_NAME)  # the lane config example's ledger_path
     try:
-        res = run(lp, a.bot, a.stake_lamports)
+        res = run(lp, a.bot, a.stake_lamports, a.since_ms)
     except (FileNotFoundError, ValueError) as exc:
         print(f"floor_decay_monitor: ERROR {exc}", file=sys.stderr)
         return 2
     print(json.dumps(res, indent=2, sort_keys=True) if a.json else render(res, a.bot))
+    if a.since_ms is not None and not a.json:
+        for c in res["fired_at_close"]:
+            print(f"fired_at_close ts={c['ts_ms']} flags={','.join(c['flags'])} exit={c['exit_code']}")
+        print(f"since-ms {a.since_ms}: closes with a flag {len(res['fired_at_close'])}; latest exit {res['exit_code_latest']}; worst exit {res['exit_code']}")
     return res["exit_code"]
 
 
