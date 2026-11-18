@@ -317,6 +317,8 @@ def test_take_profit_inside_the_landing_window_is_retried_so_twin_exit_decisions
         seed(eng, tab)
         td = T0 + 1_000
         pid = buy(eng, td)
+        feed(eng, tab, TQ.qrow(td + 3_150))
+        feed(eng, tab, TQ.row(td + 3_200, "P", "sell", **P_ROWS))  # a print between 3.010 s and 3.5 s: only the 3.010 twin has landed
         try:
             eng.sell(Q.BOT_ID, pid, 1.0, td + 3_500, 5, reason="tp_1.5x")
             outcome[lat] = "accepted"
@@ -324,7 +326,7 @@ def test_take_profit_inside_the_landing_window_is_retried_so_twin_exit_decisions
             assert Q.R.SELL_EARLY in str(e) if hasattr(Q, "R") else "slower entry leg" in str(e)
             outcome[lat] = "sell_early"
         eng.sell(Q.BOT_ID, pid, 1.0, td + Q.HOLD_MS, 6, reason=Q.REASON_TIME) if outcome[lat] == "sell_early" else None
-    assert outcome == {3.010: "sell_early", 4.085: "sell_early", 5.590: "sell_early"}
+    assert outcome == {3.010: "accepted", 4.085: "sell_early", 5.590: "sell_early"}
 
 
 def test_report_with_no_trades_is_empty_not_a_crash():

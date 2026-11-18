@@ -14,7 +14,7 @@ OQEngine = the engine surface the host uses, pricing in the pool's quote units w
     The fail models (flat 15% and pressure, the WSOL per-trip blend; no stranded-quote model) are the READER's, as in the WSOL book: tools/arena_oq_score.py over these rows. The rows carry the pressure inputs
     (`ssb`, `nearby_lamports`, from the pool's buys at the landing print, same-slot count and buy SOL over the 2 s before it).
   * HONESTY RULES (declared): (1) an entry that never lands in 24 h is a ROUND TRIP at the post-trigger state (both conversion legs, fees, sends): a `trade` row with unfilled_roundtrip=true,
-    never dropped; (2) the entry latency is 4.085 s (the deciding cell), twins 3.010 / 5.590 (tools.arena_rule_l1_oq.LATENCY_VALUES_S), a pricing-only change (decisions equal); the
+    never dropped; (2) the entry latency is 4.085 s (the deciding cell), twins 3.010 / 5.590 (tools.arena_rule_l1_oq.LATENCY_VALUES_S), a pricing-only change: twins share the ENTRY decisions, but an exit decision_ms may differ by design (a sell decided before a twin's entry lands is refused SELL_EARLY and retried by the host); the
     conversion leg is read at the same landing print (its own earlier landing is NOT modelled); (3) an exit that finds no usable quote state WAITS at most EXIT_WAIT_CAP_MS after its decision, then
     is SCORED (`stale_exit_capped`): the last known pool and quote states priced, proceeds x (1 - STALE_EXIT_HAIRCUT), or 0 SOL out when there is no last state; never left unscored;
     (4) feed gaps (a `gap` row with data_loss / process_restart / feed_restart / feed_start, a `start` row, or silence between trade rows > GAP_SILENCE_MS) exclude a trade only on a LEG window, as
