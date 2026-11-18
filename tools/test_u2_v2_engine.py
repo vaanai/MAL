@@ -30,6 +30,7 @@ RULING_SHA256_PREFIX = "d79c319d"
 def _env(monkeypatch):
     monkeypatch.setattr(S, "MIN_WARMUP_H", 1)
     monkeypatch.setattr(S, "WARMUP_MIN_BY_DECIDER", {})
+    monkeypatch.setattr(S, "code_sha256", lambda extra=(): "c" * 64)  # the code hash is in every ledger row (code_head, frozen_sha): pinned, so per-hour ledger md5s compare across the code change
     monkeypatch.setattr("tools.arena_paper.shutil.disk_usage", lambda path: collections.namedtuple("Usage", "total used free")(1000, 500, 500))
 
 
@@ -82,7 +83,7 @@ GOLD_LONG = {
         "counts": "f08da550d8e22d23718b74d509516229",
         "decisions": "0b6078cbb64779c0747f3b9c3cc75d6b",
         "hour_decision_md5s": "8e4207f33490fd450fce61766a39fd2e",
-        "hour_ledger_md5s": "0998f6a35bb51e9ed71d4837d24b970b",
+        "hour_ledger_md5s": "489b516bfadf745b28ea48503662f0d0",
         "ledger_rows": "b9131f9b3151c102ea69701f82eb153e",
         "marks": "d751713988987e9331980363e24189ce",
         "n_hours": 144,
@@ -93,7 +94,7 @@ GOLD_LONG = {
         "counts": "1ae9ed262af534b2c5676e6a55baae8d",
         "decisions": "96d59dc8eeec9ea57c2a9982f39f11f2",
         "hour_decision_md5s": "8d1b999bac78bcbfedec75b2b365c213",
-        "hour_ledger_md5s": "6048bea6fbd6f41bc5ab460ee1a852dc",
+        "hour_ledger_md5s": "7f9bf82e5cb9389c5517799d07e1daef",
         "ledger_rows": "a17c77ba58b3ef0ecd10000fe6b37c2f",
         "marks": "d097efd7f46b1c4b62026e5061329959",
         "n_hours": 144,
@@ -128,7 +129,7 @@ GOLD_C1NF = {
     "counts": "38c144556ce6914723acccd1c10342ad",
     "decisions": "c7174b4aa2cface8569618b48862954d",
     "hour_decision_md5s": "ab7120fcb9a85c1f28873c25c5a5740d",
-    "hour_ledger_md5s": "17a993b600df0565913f310f6d6c05bd",
+    "hour_ledger_md5s": "d1076263fc224bb64e3b5b9a1436f8c3",
     "ledger_rows": "6e729f60a463d944bae1b7c4f855cc75",
     "marks": "d751713988987e9331980363e24189ce",
     "n_hours": 3,
