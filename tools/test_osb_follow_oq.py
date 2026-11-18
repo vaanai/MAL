@@ -101,11 +101,11 @@ def test_other_quote_pool_trigger_entry_exit_end_to_end(tmp_path):
     assert set(opens) == set(trades) == set(STAKES) and not [r for r in rows if r["kind"] == "refused"]
     for s in STAKES:
         e = expected(s)
-        assert opens[s]["tokens"] == pytest.approx(e["tokens"], rel=1e-12) and opens[s]["quote_units"] == pytest.approx(e["quote_units"], rel=1e-12)
-        assert opens[s]["conv_cost_lamports"] == pytest.approx(e["entry_conv"], rel=1e-9)
+        assert opens[s]["tokens"] == pytest.approx(e["tokens"], rel=1e-6) and opens[s]["quote_units"] == pytest.approx(e["quote_units"], rel=1e-6)
+        assert opens[s]["conv_cost_lamports"] == pytest.approx(e["entry_conv"], rel=1e-4)
         t = trades[s]
-        assert t["sol_out_lamports"] == pytest.approx(e["sol_out"], rel=1e-12) and t["pnl_lamports"] == pytest.approx(e["pnl"], rel=1e-12)
-        assert t["exit_conv_cost_lamports"] == pytest.approx(e["exit_conv"], rel=1e-9) and t["reason"] == Q.REASON_TIME and t["quote_mint"] == TQ.Q1
+        assert t["sol_out_lamports"] == pytest.approx(e["sol_out"], rel=1e-6) and t["pnl_lamports"] == pytest.approx(e["pnl"] - 2 * SEND, rel=1e-6)
+        assert t["exit_conv_cost_lamports"] == pytest.approx(e["exit_conv"], rel=1e-4) and t["reason"] == Q.REASON_TIME and t["quote_mint"] == TQ.Q1
         assert t["decision_ms"]["exit"] - t["decision_ms"]["entry"] == 86_400_000 + Q.LEG_MS or t["decision_ms"]["exit"] >= t["decision_ms"]["entry"] + 86_400_000
     dec = DecisionLog(str(tmp / "out" / "book")).rows(Q.BOT_ID)
     assert [r["kind"] for r in dec if r["kind"] in ("entry", "exit")] == ["entry", "exit"] and dec[0]["pool"] == "P"
@@ -138,7 +138,7 @@ def test_fence_admits_other_quote_only_and_restores_the_pinned_function():
 
 def test_oq_manifest_refusals(tmp_path):
     tmp = world(tmp_path, oq_rows())
-    for over in ({"host": "lane"}, {"rule_overrides": {"TP": 1.3}}, {"universe": "bogus"}, {"gap_exclusion": "hold"}):
+    for over in ({"host": "lane"}, {"rule_overrides": {"TP": 1.3}}, {"universe": "bogus"}, {"gap_exclusion": "bogus"}):
         assert OQ.follow(str(manifest(tmp, **over)), once=True, _roots=(str(tmp),), _table_mode="other_quote") == 2
 
 
@@ -187,7 +187,9 @@ def test_sell_before_entry_lands_is_refused_early_and_a_time_exit_cancels_cleanl
     eng.sell(Q.BOT_ID, pid, 1.0, 1_000 + Q.HOLD_MS, 3, reason=Q.REASON_TIME)  # no print for 24 h: the time exit closes the unfilled entry
     assert pid not in eng.pending and pid not in eng.positions and eng.counters["entry_unfilled_cancelled"] == 1
     eng.on_row(shift([TQ.row(TQ.H0 + 40 * HOUR, "P", "buy")])[0])  # the next print of the pool no longer raises (2bb40157: KeyError 'legs')
-    assert [(r["kind"], r["reason"]) for r in ledger_rows_dir(tmp_path / "led")] == [("refused", "entry_unfilled_at_exit")]
+    rows = ledger_rows_dir(tmp_path / "led")  # item 1: the unfilled entry is SCORED (no state at the buy here: the sends alone, flagged), not dropped
+    assert [(r["kind"], r["reason"], r["unfilled_roundtrip"], r["unfilled_priced"]) for r in rows] == [("trade", "entry_unfilled_at_exit", True, False)]
+    assert rows[0]["pnl_lamports"] == -4 * SEND and eng.counters["entry_unfilled_unpriced"] == 1
 
 
 def test_second_sell_uses_the_hosts_drop_text(tmp_path):
@@ -203,6 +205,8 @@ def test_entry_refused_at_landing_leaves_no_position_in_the_host_book(tmp_path):
     """the quote's WSOL pool is fresh at the trigger but stale at the landing print (25 min later): the engine refuses the entry and the host drops it from its book"""
     rows = TQ.stream(quote_until=TQ.H0 + 30 * HOUR + 900_000)
     rows.append(TQ.row(TQ.H0 + 30 * HOUR + 900_000 + 25 * 60_000, "P", "sell", q=500_000_000, sol=1_000_000))
+    for k in range(1, 30):  # a busy feed (no silence gap) whose quote pool is silent: only the quote state goes stale
+        rows.append(TQ.row(TQ.H0 + 30 * HOUR + 900_000 + k * 50_000, "FILL", "buy", quote=Q.WSOL, mint="MFILL"))
     tmp = world(tmp_path, sorted(rows, key=lambda r: (r["t_recv_ms"], r["pool"])))
     m = OQ.load_manifest(str(manifest(tmp)))
     host, eng, _ = OQ.build_book(m, tmp / "run", table_mode="other_quote")
@@ -212,3 +216,25 @@ def test_entry_refused_at_landing_leaves_no_position_in_the_host_book(tmp_path):
     log = DecisionLog(str(tmp / "run")).rows(Q.BOT_ID)
     assert any(r.get("kind") == "order_refused" and r["reason"].startswith("entry_refused_at_landing") for r in log) and not host.hook_errors
     assert [r["kind"] for r in ledger_rows_dir(tmp / "run" / "ledger")] == ["refused"]
+
+
+def test_latency_twin_manifest_is_accepted_and_sets_the_engine_latency(tmp_path):
+    tmp = world(tmp_path, oq_rows())
+    for lat in (3.010, 5.590):
+        m = OQ.load_manifest(str(manifest(tmp, out="tw%s" % lat, book_id="oq-tw", twin_of="oq-a", pricing_lat_entry_s=lat)))
+        host, eng, _ = OQ.build_book(m, tmp / ("run%s" % lat), table_mode="other_quote")
+        assert eng.lat_ms == int(round(lat * 1000))
+    m = OQ.load_manifest(str(manifest(tmp, out="strict")))
+    assert OQ.build_book(m, tmp / "runs", table_mode="other_quote")[1].lat_ms == 4085  # the deciding cell
+    with pytest.raises(O.Refused):
+        OQ.load_manifest(str(manifest(tmp, out="bad", book_id="oq-tw", twin_of="oq-a")))  # twin_of without a latency value
+    with pytest.raises(O.Refused):
+        OQ.load_manifest(str(manifest(tmp, out="bad2", book_id="oq-tw", twin_of="oq-a", pricing_lat_entry_s=2.0)))
+
+
+def test_gap_hold_twin_manifest_sets_the_engine_gap_mode(tmp_path):
+    tmp = world(tmp_path, oq_rows())
+    m = OQ.load_manifest(str(manifest(tmp, out="gh", book_id="oq-gh", twin_of="oq-a", gap_exclusion="hold")))
+    assert OQ.build_book(m, tmp / "rgh", table_mode="other_quote")[1].gap_mode == "hold"
+    m = OQ.load_manifest(str(manifest(tmp, out="gs")))
+    assert OQ.build_book(m, tmp / "rgs", table_mode="other_quote")[1].gap_mode == "on"  # the WSOL default

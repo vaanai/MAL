@@ -32,9 +32,9 @@ def fee_fields(f):
     return {"pool_quote_amount": amt, "lp_fee": int(amt * f * 0.8), "protocol_fee": int(amt * f * 0.2)}
 
 
-def row(t, pool, side="buy", q=10 * SOLX, sol=200_000_000, v=V, mint=None, quote=Q1, fee=FEE_P, b=10**12):
+def row(t, pool, side="buy", q=10 * SOLX, sol=200_000_000, v=V, mint=None, quote=Q1, fee=FEE_P, b=10**12, tok=None):
     r = {"v": 1, "type": "trade", "prog": "pumpswap", "venue": "pumpswap", "slot": 1000 + (t - H0) // 400, "t_recv_ms": t, "signature": f"s{t}-{pool}", "event_index": 0,
-         "pool": pool, "mint": mint or "M" + pool, "trader": "tr", "side": side, "sol_lamports": sol, "token_raw": sol * 1000, "quote_reserve": q, "base_reserve": b,
+         "pool": pool, "mint": mint or "M" + pool, "trader": "tr", "side": side, "sol_lamports": sol, "token_raw": sol * 1000 if tok is None else tok, "quote_reserve": q, "base_reserve": b,
          "virtual_quote_reserves": v, "quote_mint": quote, "event_ts": t // 1000}
     if fee is not None:
         r.update(fee_fields(fee))
@@ -42,18 +42,18 @@ def row(t, pool, side="buy", q=10 * SOLX, sol=200_000_000, v=V, mint=None, quote
 
 
 def qrow(t, fee=FEE_W):
-    """a print of the quote's own WSOL pool (base mint = Q1): its pre-trade state is the quote price source"""
-    return row(t, "QW", "buy", q=QW_Q, sol=1_000_000, v=0, mint=Q1, quote=WSOL, fee=fee, b=QW_B)
+    """a print of the quote's own WSOL pool (base mint = Q1): its post-trade state is the quote price source"""
+    return row(t, "QW", "buy", q=QW_Q, sol=1000, tok=1000, v=0, mint=Q1, quote=WSOL, fee=fee, b=QW_B)  # tiny trade: the POST-trade mid is 1 + 2e-8
 
 
 def stream(drop_quote=Q1, quote_rows=True, drop_q=600_000_000, pool_fee=FEE_P, v_drop=V, quote_until=None, p="P"):
-    """a filler WSOL pool, the quote's WSOL pool printing every 5 min (price source), pool P: first print at 4 h, every 30 min to 29 h, then a drained SELL at 30 h 15 min"""
+    """a filler WSOL pool, the quote's WSOL pool printing every 1 min (price source), pool P: first print at 4 h, every 30 min to 29 h, then a drained SELL at 30 h 15 min"""
     rows = [qrow(H0 + 1000)] if quote_rows else []
     end = H0 + 31 * HOUR if quote_until is None else quote_until
-    t = H0 + 5 * 60_000
+    t = H0 + 60_000
     while quote_rows and t <= end:
         rows.append(qrow(t))
-        t += 300_000
+        t += 60_000
     t = H0 + 4 * HOUR
     while t <= H0 + 29 * HOUR:
         rows.append(row(t + 1, p, "buy" if (t // 1800000) % 2 else "sell", fee=pool_fee))
@@ -133,7 +133,7 @@ def test_entry_once_with_quote_pricing_in_meta():
     assert len(b) == 1 and b[0][1].pool == "P"
     m = b[0][1].meta
     assert m["rule"] == "l1-floor-oq-v1" and m["quote_class"] == "other" and m["quote_mint"] == Q1
-    assert m["quote_mid_lamports_per_raw"] == 1.0 and m["pool_fee"] == pytest.approx(FEE_P) and m["quote_pool_fee"] == pytest.approx(FEE_W)
+    assert m["quote_mid_lamports_per_raw"] == pytest.approx(1.0, rel=1e-6) and m["pool_fee"] == pytest.approx(FEE_P) and m["quote_pool_fee"] == pytest.approx(FEE_W)
     assert m["age_s"] >= O.AGE_LO and m["r6"] < 0.8 and m["vol24_sol"] >= 1.0
     assert tab.refused == {} and tab.trig_rows == 1
 
