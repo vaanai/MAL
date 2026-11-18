@@ -150,8 +150,17 @@ class OQTable(PoolTable):
         qm, pool, ts, side = row.get("quote_mint"), row.get("pool"), row.get("event_ts"), row.get("side")
         if not qm or not pool or row.get("slot") is None or side not in ("buy", "sell") or not _num(ts) or ts <= 0:
             return False
+        key = (row.get("signature"), row.get("type"), row.get("event_index"))
+        if self.skip_before:  # right after a rebuild / load only: rows the table already holds are skipped once (the host's warm-up replay feeds them again)
+            if t < self.skip_before or (t == self.skip_before and key in self.hwm_keys):
+                return False
+            if t > self.skip_before:
+                self.skip_before = 0
+        if t > self.hwm_ms:
+            self.hwm_ms, self.hwm_keys = t, set()
+        if t == self.hwm_ms:
+            self.hwm_keys.add(key)
         bt, hidx = int(ts), t // HOUR_MS
-        self.hwm_ms = max(self.hwm_ms, t)
         self.rows_applied += 1
         sl_ = int(row["slot"])
         rh = self.rate_h.get(hidx)  # the slot rate over every PumpSwap row (the WSOL table uses WSOL rows only; the rate only sets the landing-slot k)
@@ -214,7 +223,7 @@ class OQTable(PoolTable):
 
     # persistence (own pickle; the WSOL table's to_dict is not used)
     def to_dict(self) -> dict[str, Any]:
-        return {"version": 101, "mode": self.mode, "hwm_ms": self.hwm_ms, "first": self.first, "vref": self.vref, "pfee": self.pfee, "qstate": self.qstate, "last_exit": self.last_exit,
+        return {"version": 101, "mode": self.mode, "hwm_ms": self.hwm_ms, "hwm_keys": sorted(map(tuple, self.hwm_keys), key=repr), "first": self.first, "vref": self.vref, "pfee": self.pfee, "qstate": self.qstate, "last_exit": self.last_exit,
                 "rate_h": self.rate_h, "marks": self.marks, "refused": dict(self.refused), "trig_rows": self.trig_rows, "rows_applied": self.rows_applied,
                 "prints": {p: (list(pp.bt), list(pp.sol), list(pp.spot), list(pp.hidx)) for p, pp in self.prints.items()}}
 
@@ -225,7 +234,8 @@ class OQTable(PoolTable):
         if d.get("version") != 101:
             raise ValueError("other-quote pool table checkpoint: unknown version")
         t = cls(d["mode"])
-        t.hwm_ms, t.first, t.vref, t.pfee, t.qstate = int(d["hwm_ms"]), dict(d["first"]), dict(d["vref"]), dict(d["pfee"]), dict(d["qstate"])
+        t.hwm_ms, t.hwm_keys, t.skip_before = int(d["hwm_ms"]), {tuple(k) for k in d.get("hwm_keys", [])}, int(d["hwm_ms"])
+        t.first, t.vref, t.pfee, t.qstate = dict(d["first"]), dict(d["vref"]), dict(d["pfee"]), dict(d["qstate"])
         t.last_exit, t.rate_h, t.marks = dict(d["last_exit"]), {int(k): list(v) for k, v in d["rate_h"].items()}, {k: tuple(v) for k, v in d["marks"].items()}
         t.refused, t.trig_rows, t.rows_applied = collections.Counter(d["refused"]), int(d["trig_rows"]), int(d["rows_applied"])
         for p, (bt, sol, spot, hidx) in d["prints"].items():
@@ -250,7 +260,36 @@ class OQTable(PoolTable):
             return cls.from_dict(pickle.load(fh))
 
     def rebuild(self, tape_dir: str | os.PathLike, to_ms: int) -> int:
-        raise NotImplementedError("l1-floor-oq-v1: the table is rebuilt by replaying the closed hours through update(); the host's rebuild path is not wired (see PR body)")
+        """Apply every PumpSwap trade row of the hour files of `tape_dir` with t_recv_ms < to_ms (the walk of PoolTable.rebuild, minus create/complete rows)."""
+        import json
+        from datetime import datetime, timezone
+
+        from tools.arena_pool_table import _lines
+
+        n0 = self.rows_applied
+        self.skip_before = self.hwm_ms
+        files: dict[str, list[Path]] = {}
+        for f in Path(tape_dir).iterdir():
+            nm = f.name
+            if nm.startswith("tape-") and (nm.endswith(".jsonl") or nm.endswith(".jsonl.zst")):
+                files.setdefault(nm.split(".")[0], []).append(f)
+        for h in sorted(files):
+            f = sorted(files[h], key=lambda x: x.name.endswith(".zst"))[0]
+            hs = int(datetime.strptime(h[5:], "%Y-%m-%dT%H").replace(tzinfo=timezone.utc).timestamp() * 1000)
+            if hs + HOUR_MS <= self.hwm_ms or hs >= to_ms:
+                continue
+            for line in _lines(f):
+                if b'"trade"' not in line or b"pumpfun" in line:
+                    continue
+                try:
+                    r = json.loads(line)
+                except ValueError:
+                    continue
+                t = r.get("t_recv_ms")
+                if isinstance(t, int) and t < to_ms:
+                    self.update(r)
+        self.skip_before = self.hwm_ms
+        return self.rows_applied - n0
 
 
 # ------------------------------------------------------------------------------------------------------------------------------ rule
