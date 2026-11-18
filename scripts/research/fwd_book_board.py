@@ -51,14 +51,15 @@ LABEL_MODEL = {"c1nf": "model; no live C1-NF fills", "u4": "model; no live fills
 LABEL_EXTRAP = "model only, extrapolated; not for steering"
 EXTRAP_STAKES = {"c1nf": {"0.5", "1"}, "u4": {"0.5", "1"}, "u2": {"0.5", "1"}, "u1": {"0.5", "1"}, "u1_lowrep": {"0.5", "1"}}
 U1_COUNTER_KEYS = ("graduates_seen", "universe_graduates", "gate_pass", "gate_fail", "low_rep_no", "entries", "cap_open", "stop_exits", "scored_priors", "unscored_priors", "mean_hist_sum",
-                   "entry_hist_own", "entry_hist_funder", "hub_launcher", "launcher_from_creator", "trader_ne_creator", "hr_coin_excluded", "no_create_row", "non_wsol", "u1_fetch_once_unlinked", "u1_rpc_calls")
-U1_COUNTER_PREFIXES = ("hub_", "status_")   # hubs by rule (H1..H4) and the funder status counts, whatever the runner names them
+                   "entry_hist_own", "entry_hist_funder", "hub_launcher", "launcher_from_creator", "trader_ne_creator", "hr_coin_excluded", "no_create_row", "non_wsol", "u1_fetch_once_unlinked", "u1_rpc_calls", "u1_n429")
+U1_COUNTER_PREFIXES = ("hub_",)   # hubs by rule (H1..H4); the funder status counts (status_*) stay in the fetcher's own counters and never reach counts.jsonl: not built
 U1_HIDDEN_COUNTERS = ("cap_open_stale",)     # QP-RULING-1117-u1-start Q8: never a number while exact_open_fn is None
 FUNDER_INCOMPLETE = 0.20                     # U1R 1.5: fetch_capped + fetch_error > 20% of the day's forward graduates
 U1_NOT_BUILT = ["latency-twin and send160k out_roots: refused (the --compare decision-md5 identity check and the 160,000-lamport reader are not built)",
-                "U1 GO / NO-GO conditions (6) placebo and (7) ex-top-cluster: not built here. Placebo: built once at the look (QP-RULING-1117-u1-start Q7), so no random-pick columns before L1; (7) needs per-trade cluster identity, which the ledger rows this board reads do not carry. No GO is ever printed",
+                "U1 GO condition (6) placebo: not built here. Placebo is built once at the look (QP-RULING-1117-u1-start Q7), so no random-pick columns before L1. No GO is ever printed (condition 6 is not evaluated)",
+                "funder status counts (resolved, no_sol_inflow, deep, funding_after_create, fetch_error, fetch_capped; U1R section 7): not built; the runner keeps status_<status> in the fetcher's own counters and they never reach counts.jsonl. Only u1_fetch_once_unlinked (error + capped) is shown",
                 "final W-coverage figure (QP-RULING-1117-u1-start Q5): not built; its numerator needs Table A (never opened by this board). Only the denominator-side counter u1_launchers_listed is shown; the figure is measured and recorded by the manager at the first board build",
-                "distinct clusters entered and the largest cluster's share of entries; credits used today and cumulative (credits file never opened; u1_rpc_calls only); the placebo and the low-reputation line are separate out_roots / boards",
+                "credits used today and cumulative (credits file never opened; u1_rpc_calls and u1_n429 only); the placebo and the low-reputation line are separate out_roots / boards",
                 "peak capital at risk per rung",
                 "pre-S row scan of earlier runs (only the active run is scanned)"]
 SEPT_LABEL = ("The September figures are never shown beside the forward figures without the label \"in-sample, post-hoc filter, September\"; this board shows none. "
@@ -169,7 +170,14 @@ def read_counts(root):
 
 
 def new_bot():
-    return {"opens": {}, "trades": {}, "excluded": {}, "excluded_written": {}, "refused": collections.Counter(), "refused_rows": {}, "malformed": 0, "pre_s": 0}
+    return {"opens": {}, "trades": {}, "excluded": {}, "excluded_written": {}, "refused": collections.Counter(), "refused_rows": {}, "malformed": 0, "pre_s": 0, "clusters": {}}
+
+
+def cluster_of(r):
+    """the row's meta.cluster (U1: a 12-hex sha256 prefix of the funder / launcher key, not an address); None when the row has none. Used for counts and sums only, never printed."""
+    m = r.get("meta")
+    c = m.get("cluster") if isinstance(m, dict) else None
+    return c if isinstance(c, str) and c else None
 
 
 def read_ledger(root, run, s_ms):
@@ -205,11 +213,12 @@ def read_ledger(root, run, s_ms):
                     b["pre_s"] += 1
                 if k == "open" and _isint(dm):
                     b["opens"][pid] = dm
+                    b["clusters"][pid] = cluster_of(r)
                 elif k == "trade":
                     try:
                         leg = r["legs"][RULE]
                         b["trades"][(pid, float(r["stake_sol"]))] = {"entry": dm, "exit": r["decision_ms"].get("exit"), "flat": leg["flat_" + LAT]["net_lamports"],
-                                                                      "press": leg["press_" + LAT]["net_lamports"], "reason": str(r.get("exit_reason") or "")}
+                                                                      "press": leg["press_" + LAT]["net_lamports"], "reason": str(r.get("exit_reason") or ""), "cluster": cluster_of(r)}
                     except (KeyError, TypeError, AttributeError, ValueError):
                         b["malformed"] += 1
                 elif k == "excluded":
@@ -272,6 +281,26 @@ def cell(trades, stake, days, tape_end, s_ms):
     return res
 
 
+def cluster_stats(b, days, tape_end, s_ms):
+    """U1 only. From the rows' meta.cluster: counts and sums, no cluster id leaves this function. Deciding stake, the closed forward trades of `cell`.
+    -> legs: total, the largest cluster's net and the total without ALL that cluster's trades; entries: distinct clusters entered and the largest cluster's share of forward entries."""
+    mine = [t for (pid, st), t in b["trades"].items() if st == float(DECIDING_STAKE) and _isint(t["entry"]) and t["entry"] >= s_ms and _isint(t["exit"]) and t["exit"] < tape_end and day_of(t["exit"]) in days]
+    legs = {}
+    for leg in ("flat", "press"):
+        by = collections.Counter()
+        for t in mine:
+            by[t["cluster"] or "?"] += t[leg]
+        known = {c: v for c, v in by.items() if c != "?"}
+        tot = sum(by.values())
+        top = max(known.values()) if known else None
+        legs[leg] = {"n_closed": len(mine), "total_sol": sol(tot), "largest_cluster_net_sol": sol(top) if top is not None else None,
+                     "total_ex_largest_cluster_sol": sol(tot - top) if top is not None else None, "trades_without_cluster": sum(1 for t in mine if not t["cluster"])}
+    ents = [p for p, t in b["opens"].items() if t >= s_ms]
+    ec = collections.Counter(b["clusters"].get(p) for p in ents if b["clusters"].get(p))
+    return {"legs": legs, "entries": {"forward_entries": len(ents), "entries_with_cluster": sum(ec.values()), "distinct_clusters_entered": len(ec),
+                                      "largest_cluster_share_of_entries": (max(ec.values()) / sum(ec.values())) if ec else None}}
+
+
 def stake_key(s):
     return ("%g" % s)
 
@@ -300,7 +329,7 @@ def entries_excluded(b, s_ms):
 THE_LOOK_RULE = ("THE look is the first build at or after the read instant (L1 when n >= 10 at L1; else the first completed UTC day in (L1, L2] that brings n to 10, capped at L2); the verdict below is the frozen result as of that instant (rows decided before it only). "
                  "A verdict from any other build is not the read; the manager records the read build with its generated time and md sha256.")
 REPLAY = "replay in progress: not a read"
-U1_NOT_DECIDED = "NOT DECIDED HERE: conditions 1-5 are met, conditions 6 (placebo, built once at the look) and 7 are not evaluated by this board; no GO is printed"
+U1_NOT_DECIDED = "NOT DECIDED HERE: conditions 1-5 and 7 are met (or 7 has no cluster data), condition 6 (placebo, built once at the look) is not evaluated by this board; no GO is printed"
 LOWREP_BAR = "bar: not applicable. The low-reputation line is shown beside the book and is not in the GO bar (QP-RULING-1116-u1-forward-spec section 5); its excluded share is shown beside"
 
 
@@ -333,7 +362,7 @@ def look_status(now_ms, s_ms, tape_end, n_fn):
     return dict(base, state="too_rare", evaluate=True, read_ms=l2, verdict="NO-GO", text="NO-GO (too rare to judge): n < 10 at L2 judged as of L2, whatever n is now; the owner may override only in his own quoted words")
 
 
-def bar(decider, cells, plc_cells, ex, pre_s):
+def bar(decider, cells, plc_cells, ex, pre_s, clx=None):
     """GO iff all conditions hold under BOTH legs (deciding cell: stake 0.10). -> {leg: {cond: {met, value}}, verdict}"""
     c = cells.get(DECIDING_STAKE)
     legs = {}
@@ -349,7 +378,15 @@ def bar(decider, cells, plc_cells, ex, pre_s):
         cond["5_zero_rows_decided_before_S"] = {"value": pre_s, "met": pre_s == 0}
         if decider == "u1":   # U1R section 6 (6) and (7): not evaluated by this board; "met": None means not evaluated (never a pass)
             cond["6_book_mean_sol_per_trade_gt_placebo_mean"] = {"value": "placebo: built once at the look; not built here", "met": None}
-            cond["7_total_net_sol_gt_0_after_dropping_the_largest_cluster"] = {"value": "not built here (no per-trade cluster in the ledger rows read)", "met": None}
+            cx = ((clx or {}).get("legs") or {}).get(leg) or {}
+            v7, miss = cx.get("total_ex_largest_cluster_sol"), cx.get("trades_without_cluster", 0)
+            if not cx.get("n_closed"):
+                c7 = {"value": "no closed trade at the deciding stake", "met": False}
+            elif miss:
+                c7 = {"value": "meta.cluster missing on %d of %d closed trades" % (miss, cx["n_closed"]), "met": None}
+            else:
+                c7 = {"value": v7, "met": v7 is not None and v7 > 0}
+            cond["7_total_net_sol_gt_0_after_dropping_the_largest_cluster"] = c7
         if decider in ("u4", "u2"):
             pc = (plc_cells or {}).get(DECIDING_STAKE)
             bm = L["mean_sol"] if L else None
@@ -409,11 +446,12 @@ def build(out_root, now_ms, n_watched, roots=None):
         bar_out = {"shown": False, "verdict": None, "applicable": False, "note": LOWREP_BAR}
     elif look["evaluate"]:
         fdays, fcells, fplc, fex, _fp = analyse(main, plc, s_ms, look["read_ms"], until=look["read_ms"])
-        b = bar(dec, fcells, fplc, fex, pre_s)
+        clx_f = cluster_stats(clip(main, look["read_ms"]), fdays, look["read_ms"], s_ms) if dec == "u1" else None
+        b = bar(dec, fcells, fplc, fex, pre_s, clx_f)
         bar_out = dict(b, shown=True, verdict=look.get("verdict") or b["verdict"], read_instant_utc=utc(look["read_ms"]), rule=THE_LOOK_RULE,
-                       frozen={"days_complete": len(fdays), "cell_0.1": fcells.get(DECIDING_STAKE), "random_pick_cell_0.1": (fplc or {}).get(DECIDING_STAKE), "entries": fex})
+                       frozen={"days_complete": len(fdays), "cell_0.1": fcells.get(DECIDING_STAKE), "random_pick_cell_0.1": (fplc or {}).get(DECIDING_STAKE), "entries": fex, **({"clusters_0.1": clx_f} if dec == "u1" else {})})
     if not look["evaluate"] and not replay and dec != "u1_lowrep":
-        bar_out["provisional"] = bar(dec, cells, plc_cells, ex, pre_s)["legs"]
+        bar_out["provisional"] = bar(dec, cells, plc_cells, ex, pre_s, cluster_stats(main, days, tape_end or 0, s_ms) if dec == "u1" else None)["legs"]
     nw = n_watched
     counts = [] if replay else read_counts(bk["root"])
     fwd_counts = [r for r in counts if not r.get("warmup")]
@@ -441,7 +479,8 @@ def build(out_root, now_ms, n_watched, roots=None):
            "pools_first_seen_in_warmup": meta.get("pools_first_seen_in_warmup") if dec == "c1nf" else None, "malformed_ledger_rows": main["malformed"] + (plc["malformed"] if plc else 0),
            "not_built": NOT_BUILT}
     if dec in U1_DECIDERS:
-        out.update(u1_extras(dec, counts, replay, s_ms, summed))
+        out.update(u1_extras(dec, counts, replay, s_ms, summed, days))
+        out["clusters"] = cluster_stats(main, days, tape_end or 0, s_ms)   # counts and sums only; no cluster id
         out["not_built"] = U1_NOT_BUILT
         out["deciding"] = dec == "u1"
         out["role"] = "deciding" if dec == "u1" else "shown beside the book (low-reputation line); not in the GO bar"
@@ -488,7 +527,7 @@ def u1_modules():
     return C, U
 
 
-def u1_extras(dec, counts, replay, s_ms, summed):
+def u1_extras(dec, counts, replay, s_ms, summed, complete_days_list=()):
     """board counters of QP-RULING-1116-u1-forward-spec section 7 and QP-RULING-1117-u1-start Q3 from counts.jsonl (counts only; no address, no price)"""
     by_day = {}
     listed = 0
@@ -503,7 +542,7 @@ def u1_extras(dec, counts, replay, s_ms, summed):
             if _isint(v) and k not in U1_HIDDEN_COUNTERS and (k in U1_COUNTER_KEYS or k.startswith(U1_COUNTER_PREFIXES)):
                 row[k] += v
     days = {}
-    incomplete = []
+    incomplete, partial = [], []
     for day in sorted(by_day):
         row = {k: by_day[day].get(k, 0) for k in U1_COUNTER_KEYS}
         row.update({k: v for k, v in by_day[day].items() if k not in row})
@@ -511,13 +550,13 @@ def u1_extras(dec, counts, replay, s_ms, summed):
         grads = row["graduates_seen"]
         unl = row["u1_fetch_once_unlinked"]
         if grads and unl / grads > FUNDER_INCOMPLETE:
-            incomplete.append(day)
+            (incomplete if day in complete_days_list else partial).append(day)
     n_gate = summed.get("gate_pass", 0)
     n_hist = summed.get("entry_hist_own", 0) + summed.get("entry_hist_funder", 0)
     return {"u1_counters_by_day": days,
             "u1_fetch_once_unlinked": {"total": summed.get("u1_fetch_once_unlinked", 0), "by_day": {d: v["u1_fetch_once_unlinked"] for d, v in days.items()},
                                        "note": "fetch_error + fetch_capped among forward launchers (one fetch per launcher from S); a missing key in counts.jsonl is a zero"},
-            "funder_incomplete_days": {"days": incomplete, "rule": "a day is funder-incomplete when u1_fetch_once_unlinked > 20% of that day's forward graduates_seen (U1R 1.5; the runner's graduates_seen is the denominator here)"},
+            "funder_incomplete_days": {"days": incomplete, "partial_days_flagged_so_far": partial, "rule": "a day is funder-incomplete when u1_fetch_once_unlinked > 20% of that day's forward graduates_seen (U1R 1.5; the day's graduates_seen is the denominator; a day still in progress is listed apart as partial and is not a funder-incomplete day yet)"},
             "entry_history": {"mean_abs_H_at_gate_passes": (summed.get("mean_hist_sum", 0) / n_gate) if n_gate else None, "gate_passes": n_gate,
                               "own_launcher_only": summed.get("entry_hist_own", 0), "funder_linked": summed.get("entry_hist_funder", 0),
                               "funder_linked_share": (summed.get("entry_hist_funder", 0) / n_hist) if n_hist else None},
@@ -544,7 +583,7 @@ def u1_disclosures(dec, nw, gtot, ex, summed, look, replay, counts):
     out = [("1 (U1R section 9)", sec9), ("2 (Q2)", U.FWD_DISCLOSURE), ("3 (Q3)", U.FETCH_ONCE_DISCLOSURE), ("4 (Q4)", U.RATE_DISCLOSURE), ("5 (Q7, at the look)", placebo),
            ("6 (Q8)", cap), ("7 (Q9)", U.H4_DISCLOSURE), ("8 (Q11, GAP_DISCLOSURE)", gap), ("9 (ADD1, low-rep)", U.LOWREP_DISCLOSURE), ("10 (ADD1, placebo)", U.PLACEBO_NO_RPC_DISCLOSURE),
            ("11 (pilot D1)", T.U1_PILOT_D1), ("12 (pilot D2)", T.U1_PILOT_D2),
-           ("13", "U1R ADD1 (3) placebo-lag disclosure is replaced by (5) for this book (QP-RULING-1117-u1-start Q7)."), ("rows counted", rows)]
+           ("13", T.U1_DISC13), ("rows counted", rows)]
     return [{"id": a, "text": b} for a, b in out]
 
 
@@ -663,7 +702,11 @@ def render_u1(o):
     L = ["## U1 counters (runner counters from counts.jsonl; forward hours only; a key absent from the runner's row is a zero)", "",
          "- placebo: %s (%s)" % (o["placebo"]["state"], o["placebo"]["note"]),
          "- u1_fetch_once_unlinked (error + capped, forward launchers): total %d" % o["u1_fetch_once_unlinked"]["total"],
-         "- funder-incomplete days: %s (%s)" % (", ".join(o["funder_incomplete_days"]["days"]) or "none", o["funder_incomplete_days"]["rule"]),
+         "- funder-incomplete days: %s; partial days flagged so far (not yet a day): %s (%s)" % (", ".join(o["funder_incomplete_days"]["days"]) or "none", ", ".join(o["funder_incomplete_days"]["partial_days_flagged_so_far"]) or "none", o["funder_incomplete_days"]["rule"]),
+         "- clusters entered (counts only, no identifier): %d distinct over %d forward entries with a cluster (%d forward entries in all); largest cluster's share of entries %s" % (
+             o["clusters"]["entries"]["distinct_clusters_entered"], o["clusters"]["entries"]["entries_with_cluster"], o["clusters"]["entries"]["forward_entries"], f6(o["clusters"]["entries"]["largest_cluster_share_of_entries"])),
+         "- deciding stake, closed forward trades, total net SOL after dropping ALL trades of the largest-net cluster: flat %s, pressure %s (n closed %d)" % (
+             f6(o["clusters"]["legs"]["flat"]["total_ex_largest_cluster_sol"]), f6(o["clusters"]["legs"]["press"]["total_ex_largest_cluster_sol"]), o["clusters"]["legs"]["flat"]["n_closed"]),
          "- at gate passes: mean |H| %s over %d passes; history own-launcher only %d, funder-linked %d (share %s)" % (f6(o["entry_history"]["mean_abs_H_at_gate_passes"]), o["entry_history"]["gate_passes"], o["entry_history"]["own_launcher_only"],
                                                                                                                       o["entry_history"]["funder_linked"], f6(o["entry_history"]["funder_linked_share"])),
          "- W coverage (final figure): not built; %s. Launchers listed (all rows summed): %d" % (o["coverage_final"]["note"], o["coverage_final"]["u1_launchers_listed_all_rows_summed"]), ""]

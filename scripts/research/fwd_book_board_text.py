@@ -141,3 +141,7 @@ U1_PILOT_D2 = (
     'withdrawals, token-account closes and program transfers do not count, so launchers funded that way '
     'have own history only. In the 10-launcher pilot, 3 of 10 were no_sol_inflow.'
 )
+
+U1_DISC13 = (
+    'U1R ADD1 (3) placebo-lag disclosure is replaced by (5) above for this book (QP-RULING-1117-u1-start Q7).'
+)

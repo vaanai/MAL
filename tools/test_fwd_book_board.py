@@ -47,17 +47,18 @@ class Fx:
             for r in rows:
                 fh.write(json.dumps(r) + "\n")
 
-    def entry(self, bot, entry_ms, exit_ms, nets, stakes=(0.1, 0.25), excluded=None, run=None, written_ms=None):
+    def entry(self, bot, entry_ms, exit_ms, nets, stakes=(0.1, 0.25), excluded=None, run=None, written_ms=None, cluster=None):
         """one position: open row + a trade row per stake (nets: {stake: (flat_lamports, press_lamports)}) or excluded rows"""
         self.n += 1
         pid = "p%d-%s" % (self.n, bot)
-        rows = [{"kind": "open", "position_id": pid, "bot_id": bot, "decision_ms": {"entry": entry_ms, "exit": None}}]
+        meta = {"meta": {"cluster": cluster}} if cluster else {}
+        rows = [{"kind": "open", "position_id": pid, "bot_id": bot, "decision_ms": {"entry": entry_ms, "exit": None}, **meta}]
         for s in stakes:
             if excluded:
                 rows.append({"kind": "excluded", "position_id": pid, "bot_id": bot, "stake_sol": s, "decision_ms": {"entry": entry_ms, "exit": exit_ms}, "exclusion_reason": excluded, "legs": None, **({"written_ms": written_ms} if written_ms is not None else {})})
             else:
                 f, p = nets[s] if isinstance(nets, dict) else (nets[0] * s / 0.1, nets[1] * s / 0.1)
-                rows.append({"kind": "trade", "position_id": pid, "bot_id": bot, "stake_sol": s, "decision_ms": {"entry": entry_ms, "exit": exit_ms}, "exit_reason": "timed",
+                rows.append({"kind": "trade", "position_id": pid, "bot_id": bot, "stake_sol": s, "decision_ms": {"entry": entry_ms, "exit": exit_ms}, "exit_reason": "timed", **meta,
                              "legs": {"total": {"flat_1p9": {"state": "filled", "net_lamports": int(f)}, "press_1p9": {"state": "filled", "net_lamports": int(p)}}}})
         self.rows(bot, rows, day=B.day_of(entry_ms), run=run)
 
@@ -548,27 +549,36 @@ def test_exclusion_without_written_ms_counts_and_is_reported(tmp_path):
 # ------------------------------------------------------------------------------------------------------------------------------ U1 (osb-u1, osb-u1-lowrep)
 # md5 of the board JSON / MD of the three existing books on the fixtures below, taken on the code BEFORE the U1 change (main aa26cba9); they must not move.
 BASELINE_MD5 = {
-    "c1nf-fwd-v1/before": ("37bcc6541f7a53becd2b234c335eb608", "fd077307037a9246a9d19ea91b5ebe15"),
-    "c1nf-fwd-v1/look": ("5e0fa79e45cf1a13ed87c4a8748db68c", "cd318c3c4403ae63ceb4871f4b7bbf47"),
-    "osb-u2/before": ("9bb047e6c80a3702766659dd91e91bc3", "e158f7d5750250dd5d75cca1bb9d5474"),
-    "osb-u2/look": ("343465136a41e8e0510a86ebb305e8a7", "8970542b8fb358562743541208ce3351"),
-    "osb-u4/before": ("6d2d1c6503061999d7146fd8c99182f3", "4e2a55fe52c2c377f123598334246acb"),
-    "osb-u4/look": ("cf58d01749a740a72d2cfca6ce4a7a23", "5787581a45517fb8b91952ca80880a2a"),
+    'c1nf-fwd-v1/before': ('8d692d61a409ab0d7062338b733d37b1', 'ec6490a1270407d6325fa36ede8ff8e4'),
+    'c1nf-fwd-v1/look': ('01209671ca5f5d3020c5f99877d37b50', 'b50a6f89d006697bab7a400bc4e8d8fb'),
+    'osb-u2/before': ('26f549e4595d8f20c7d57711008382d0', 'a87d9ecc7586570ef1e3631ef849214b'),
+    'osb-u2/look': ('8ed78460a10889d2d0e52275a3e49fa9', 'b45e915596dd4596e80d4ea89ade5c37'),
+    'osb-u4/before': ('c0068feddabe3d447eccba0d4bb16874', 'f73a0cc12d44e68c9abb359361ace6d0'),
+    'osb-u4/look': ('613cf88e9dcc2b2862b82502e213266e', '10f27d0472a44669094ba3f5776aca0d'),
 }
 
 
-def test_existing_three_books_byte_identical_before_and_after_u1(tmp_path):
+def existing_book_hashes(tmp_path):
+    """c1nf / u4 / u2 fixtures incl. 0.5 and 1 SOL stakes, a gap file and a counts row; md5 of board JSON and MD before the look and at the look"""
     got = {}
     for bid in ("c1nf-fwd-v1", "osb-u4", "osb-u2"):
         fx = Fx(tmp_path / bid, bid, extra_meta={"pools_first_seen_in_warmup": 77})
         good_book(fx)
+        for k in range(3):
+            e = S + (k + 2) * H
+            fx.entry(fx.bot, e, e + 3 * H, {0.1: (1e6, 1e6), 0.25: (2e6, 2e6), 0.5: (3e6, 3e6), 1.0: (4e6, 4e6)}, stakes=(0.1, 0.25, 0.5, 1.0))
         (fx.root / "gap_exclusions.json").write_text(json.dumps({"main": {"total": {"entries": 40, "feed_gap_timed": 3, "feed_gap_requested": 4},
                                                                          "by_day": {"2026-11-17": {"entries": 5, "feed_gap_timed": 1, "feed_gap_requested": 0, "excluded_share": 0.2}}}}))
         (fx.root / "counts.jsonl").write_text(json.dumps({"hour": "2026-11-17T12", "warmup": False, "entries": 1, "decider": {"a": 2}, "book": {"b": 3}}) + "\n")
         for nm, now in (("before", L1 - 1), ("look", L1)):
             o = fx.build(now)
+            assert {"0.5", "1"} <= set(o["cells"])
             got[bid + "/" + nm] = (hashlib.md5(json.dumps(o, sort_keys=True).encode()).hexdigest(), hashlib.md5(B.render(o).encode()).hexdigest())
-    assert got == BASELINE_MD5
+    return got
+
+
+def test_existing_three_books_byte_identical_before_and_after_u1(tmp_path):
+    assert existing_book_hashes(tmp_path) == BASELINE_MD5
 
 
 U1_COUNTS = [
@@ -673,8 +683,9 @@ def test_u1_bar_never_prints_go_and_conditions_6_7_not_evaluated(tmp_path):
     assert o["bar"]["verdict"] == B.U1_NOT_DECIDED and o["bar"]["verdict"] != "GO"
     for leg in ("flat", "press"):
         c = o["bar"]["legs"][leg]
-        assert [k for k, v in c.items() if v["met"] is None] == ["6_book_mean_sol_per_trade_gt_placebo_mean", "7_total_net_sol_gt_0_after_dropping_the_largest_cluster"]
+        assert [k for k, v in c.items() if v["met"] is None] == ["6_book_mean_sol_per_trade_gt_placebo_mean", "7_total_net_sol_gt_0_after_dropping_the_largest_cluster"]   # fixture rows carry no meta.cluster
         assert all(v["met"] for k, v in c.items() if k[0] in "12345")
+        assert "meta.cluster missing on 10 of 10" in c["7_total_net_sol_gt_0_after_dropping_the_largest_cluster"]["value"]
     md = B.render(o)
     assert "not evaluated here" in md and "**Verdict: GO**" not in md and "NOT DECIDED HERE" in md
 
@@ -686,6 +697,54 @@ def test_u1_condition_1_5_failure_is_no_go(tmp_path):
         fx.entry(fx.bot, e, e + 4 * H, (-2_000_000, -1_500_000), stakes=(0.1,))
     o = fx.build(fx.start + 5 * D, n_watched=39)
     assert o["bar"]["verdict"] == "NO-GO"
+
+
+def u1_cluster_book(fx, plan):
+    """plan: [(cluster, flat_lamports, press_lamports)] one closed 0.1/0.25/0.5 position each, spread over the first 5 days"""
+    for i, (c, f, p) in enumerate(plan):
+        e = fx.start + H + (i % 5) * D + i * 60_000
+        fx.entry(fx.bot, e, e + 4 * H, (f, p), stakes=(0.1, 0.25, 0.5), cluster=c)
+
+
+def test_u1_condition_7_from_meta_cluster_and_cluster_counts(tmp_path):
+    fx = u1_fx(tmp_path, counts=[])
+    # cluster A: 4 trades of +3 millis; B: 2 of +1; C..F: 1 of +1 each (12 trades, 6 clusters). Without ALL of A the total is still > 0.
+    u1_cluster_book(fx, [("aaaaaaaaaaaa", 3_000_000, 3_000_000)] * 4 + [("bbbbbbbbbbbb", 1_000_000, 1_000_000)] * 2 + [(c * 12, 1_000_000, 1_000_000) for c in "cdef"] + [("gggggggggggg", 1_000_000, 1_000_000)] * 2)
+    o = fx.build(fx.start + 5 * D, n_watched=39)
+    cl = o["clusters"]
+    assert cl["entries"]["distinct_clusters_entered"] == 7 and cl["entries"]["entries_with_cluster"] == 12 and cl["entries"]["largest_cluster_share_of_entries"] == pytest.approx(4 / 12)
+    assert cl["legs"]["flat"]["total_sol"] == pytest.approx(0.020) and cl["legs"]["flat"]["total_ex_largest_cluster_sol"] == pytest.approx(0.008)
+    for leg in ("flat", "press"):
+        c7 = o["bar"]["legs"][leg]["7_total_net_sol_gt_0_after_dropping_the_largest_cluster"]
+        assert c7["met"] is True and c7["value"] == pytest.approx(0.006)   # frozen at L1: day 5 is not complete, 10 of 12 trades closed
+    assert o["bar"]["verdict"] == B.U1_NOT_DECIDED and o["bar"]["frozen"]["clusters_0.1"]["legs"]["flat"]["total_ex_largest_cluster_sol"] == pytest.approx(0.006)
+    md = B.render(o)
+    assert "7 distinct over 12 forward entries" in md and "aaaaaaaaaaaa" not in md and "aaaaaaaaaaaa" not in json.dumps(o)   # never an identifier
+
+
+def test_u1_condition_7_fails_when_one_cluster_carries_the_total(tmp_path):
+    fx = u1_fx(tmp_path, counts=[])
+    u1_cluster_book(fx, [("aaaaaaaaaaaa", 5_000_000, 5_000_000)] * 4 + [(c * 12, -500_000, -500_000) for c in "bcdefghi"])
+    o = fx.build(fx.start + 5 * D, n_watched=39)
+    assert o["bar"]["legs"]["flat"]["1_total_net_sol_gt_0"]["met"] is True
+    assert o["bar"]["legs"]["flat"]["7_total_net_sol_gt_0_after_dropping_the_largest_cluster"]["met"] is False and o["bar"]["verdict"] == "NO-GO"
+
+
+def test_u1_n429_per_day_status_counts_not_built_and_partial_day(tmp_path):
+    counts = [{"hour": "2026-11-18T01", "warmup": False, "decider": {"graduates_seen": 10, "u1_fetch_once_unlinked": 4, "u1_n429": 2, "status_resolved": 99}},
+              {"hour": "2026-11-20T01", "warmup": False, "decider": {"graduates_seen": 10, "u1_fetch_once_unlinked": 5, "u1_n429": 0}}]
+    fx = u1_fx(tmp_path, counts=counts)
+    fx.root.joinpath("status.json").write_text(json.dumps({"last_hour": "x", "last_hour_end_ms": fx.start + 2 * D + 90 * 60_000 + 5 * H, "active": True, "run": "0001"}))   # 11-18 and 11-19 complete; 11-20 in progress
+    o = fx.build(fx.start + 3 * D, n_watched=39)
+    assert o["u1_counters_by_day"]["2026-11-18"]["u1_n429"] == 2 and "status_resolved" not in json.dumps(o["u1_counters_by_day"])
+    assert o["funder_incomplete_days"]["days"] == ["2026-11-18"] and o["funder_incomplete_days"]["partial_days_flagged_so_far"] == ["2026-11-20"]
+    assert any("funder status counts" in x and "not built" in x for x in o["not_built"]) and "partial days flagged so far" in B.render(o)
+
+
+def test_u1_disclosure_13_verbatim_in_dec(tmp_path):
+    assert T.U1_DISC13 in DEC_TEXT and "(5) above for this book" in T.U1_DISC13
+    o = u1_fx(tmp_path).build(S, n_watched=39)
+    assert [d["text"] for d in o["disclosures"] if d["id"] == "13"] == [T.U1_DISC13]
 
 
 def test_u1_lowrep_shown_beside_no_bar(tmp_path):
