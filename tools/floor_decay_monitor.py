@@ -5,8 +5,8 @@
 Exit code: 0 normal, 10 a STEP-DOWN flag (X1 or X2 at a stake above 0.10), 20 a STOP flag (Y1, Y2, or X at 0.10 per ruling A4 row 3), 2 input error.
 
 --since-ms MS (ruling A4: the ladder is checked at every close): also evaluate the flags as they stood right after each closed trade with close ts >= MS, using only the rows
-up to that close (start rows after the close are not seen), and print one `fired_at_close ts=<ms> flags=...` line per close at which a flag fired (or X held at 0.10). The exit code is the
-worst of the latest state and every evaluated close (20 > 10 > 0; 2 on error). Without --since-ms nothing changes.
+up to that close (start rows after the close are not seen: cut by ts_ms, so a start row with the same ms as a close but written after it is counted as at or before it), and print one `fired_at_close ts=<ms> flags=...` line per close at which a flag fired (or X held at 0.10). The exit code is the
+worst of the latest state and every evaluated close. Only closed trades are evaluated: a flag that crosses at a fee-only realized event is seen at the next close or the latest state (20 > 10 > 0; 2 on error). Without --since-ms nothing changes.
 
 READ-ONLY. It opens the lane ledger for reading, prints to stdout, and nothing else: no file written, no STOP/HALT touched, no RPC, no network.
 Per-trade realized (after all fees, nothing dropped) comes from tools.lane_daily_report.bot_report, imported and called, not copied: a position's r is the change

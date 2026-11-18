@@ -267,8 +267,9 @@ def test_since_ms_no_closes_since_equals_latest(tmp_path, capsys):
     bad = Fx(sub(tmp_path, "b")).start(S25).many([-13_000_000] * 20)
     p = bad.write()
     base = M.main(["--ledger-file", str(p)])
+    capsys.readouterr()
     assert base == 10 and M.main(["--ledger-file", str(p), "--since-ms", str(bad.t + 1)]) == base
-    assert "fired_at_close ts=" not in capsys.readouterr().out.split("since-ms")[-1]
+    assert "closes with a flag 0" in capsys.readouterr().out
 
 
 def test_since_ms_json_and_window_start_inclusive(tmp_path, capsys):
@@ -292,3 +293,14 @@ def test_default_output_md5_unchanged(tmp_path, capsys):
         rc = M.main(["--ledger-file", str(p)] + extra)
         out.append((rc, capsys.readouterr().out))
     assert hashlib.md5(repr(out).encode()).hexdigest() == DEFAULT_MD5
+
+
+def test_since_ms_ignores_start_rows_after_the_close(tmp_path, capsys):
+    """Stake-change seam: a 0.25 step-down at a past close, then a LATER 0.10 start row. Per-close evaluation must cut start rows at the close (exit 10);
+    with all starts the past 0.25 close would be judged at 0.10 and be missed (exit 0)."""
+    fx = Fx(tmp_path).start(S25).many([-13_000_000] * 20).start(S10).many([1_000_000] * 3, stake=S10)
+    p = fx.write()
+    assert M.main(["--ledger-file", str(p)]) == 0
+    capsys.readouterr()
+    assert M.main(["--ledger-file", str(p), "--since-ms", "0"]) == 10
+    assert f"fired_at_close ts={_close_ts(fx, 20)} flags=X1 exit=10" in capsys.readouterr().out
