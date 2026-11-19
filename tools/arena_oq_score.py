@@ -12,6 +12,10 @@ FAIL MODELS (both always reported): EXACTLY the WSOL book's per-trip blend, aren
 Read rules (declared; CI 1,000 bootstrap draws, seed 1, 5th percentile as the gate): per model n, total SOL, mean, lower 90% CI bound (arena_stack.boot_lo), UTC days of the entry decision with the number of
 positive days, total after dropping the top 3 trades, total after dropping the top creator and after dropping the top quote mint (the creator / quote mint with the largest total; trades with no creator are
 one group "unknown" and counted). Also reported next to P&L: unfilled round trips, stale-capped exits, unpriced rows, excluded rows, pending counts when given.
+
+P1-P3 (card docs/rotation/books/osb-oq-v1.md, read prerequisites; PR #1458 item 5): P1 `window=(S_ms, L_ms)` keeps only positions whose entry decision (`decision_ms.entry`) is in [S, L); every count and total is on that set, rows outside are counted by reason only (`window`).
+P2 `conversion_costs` on the windowed set: conversion-leg cost totals (entry_conv_cost_lamports + exit_conv_cost_lamports), sends, mean cost over stake, under no-fail and both fail legs. P3 the drop-top reads carry the top
+creator / quote-mint ADDRESSES (`key`); `strip_addresses(rep)` / `--strip-addresses` gives the copy form with no address. Without a window the output is the old one plus the new `conversion_costs` and `window` (null) fields.
 """
 
 from __future__ import annotations
@@ -58,6 +62,80 @@ def fail_legs(trades: Sequence[Mapping[str, Any]], send: float) -> dict[str, Any
     return {"flat": flat, "press": press, "c": float(c), "p": p}
 
 
+def _entry_ms(r: Mapping[str, Any]) -> int | None:
+    d = r.get("decision_ms")
+    return int(d["entry"]) if isinstance(d, Mapping) and d.get("entry") is not None else None
+
+
+def window_rows(rows: Sequence[Mapping[str, Any]], start_ms: int, end_ms: int) -> tuple[list[Mapping[str, Any]], dict[str, Any]]:
+    """P1: rows of positions whose entry decision is in [start_ms, end_ms). A position's entry decision comes from its trade / open row (any stake); a refused or excluded row of a position with neither
+    (an entry that never opened) falls back to its own t_ms, the only time it carries. `open` rows are dropped from the scored set (the scorer never read them). Returns (kept, outside counts by reason)."""
+    dec: dict[str, int] = {}
+    for r in rows:
+        e = _entry_ms(r)
+        if r.get("kind") in ("trade", "open") and e is not None and r.get("position_id") is not None:
+            dec.setdefault(r["position_id"], e)
+    kept: list[Mapping[str, Any]] = []
+    before: collections.Counter = collections.Counter()
+    after: collections.Counter = collections.Counter()
+    unresolved = 0
+    for r in rows:
+        k = r.get("kind")
+        if k not in ("trade", "excluded", "refused"):
+            continue
+        t = dec.get(r.get("position_id"))
+        if t is None:
+            t = _entry_ms(r) if k == "trade" else (int(r["t_ms"]) if r.get("t_ms") is not None else None)
+        if t is None:
+            unresolved += 1  # no time at all: cannot be placed in the window, so not scored
+            continue
+        key = "%s:%s" % (k, r.get("reason"))
+        if t < start_ms:
+            before[key] += 1
+        elif t >= end_ms:
+            after[key] += 1
+        else:
+            kept.append(r)
+    return kept, {"start_ms": start_ms, "end_ms": end_ms, "rule": "decision_ms.entry in [start_ms, end_ms)", "kept_rows": len(kept), "outside_before_by_reason": dict(sorted(before.items())),
+                  "outside_at_or_after_end_by_reason": dict(sorted(after.items())), "unresolved_time_rows": unresolved}
+
+
+def conversion_costs(tr: Sequence[Mapping[str, Any]], stake_sol: float, fl: Mapping[str, Any]) -> dict[str, Any]:
+    """P2: conversion-leg costs (other quote -> SOL and back; value lost to the conversion pools' fees and impact, sends NOT included) totalled on `tr`, no-fail and under both fail legs: the blend
+    scales a trip's whole P by (1 - f) / (1 - p), so the leg's expected cost carries the same weight. `flat_total_before_conv_cost_sol` = flat total + flat-weighted conversion cost (card section 5 test (a));
+    conv_sends_lamports (2 of the 4 sends) is shown separately and NOT added back."""
+    n = len(tr)
+    if n == 0:
+        return {"n": 0}
+    ent = np.array([float(t.get("entry_conv_cost_lamports", 0.0)) for t in tr])
+    ext = np.array([float(t.get("exit_conv_cost_lamports", 0.0)) for t in tr])
+    conv = ent + ext
+    sends = np.array([float(t.get("send_lamports_total", 0.0)) for t in tr])
+    send1 = np.array([float(t.get("send_lamports", 0.0)) for t in tr])
+    w_flat, w_press = np.full(n, 1 - F.FAIL_FLAT), 1 - fl["p"]
+    stake_l = stake_sol * 1e9
+    flat_conv, press_conv = float((conv * w_flat).sum()), float((conv * w_press).sum())
+    flat_total = float(fl["flat"].sum())
+    return {"n": n, "entry_conv_cost_lamports": float(ent.sum()), "exit_conv_cost_lamports": float(ext.sum()), "conv_cost_lamports_total": float(conv.sum()),
+            "sends_lamports_total": float(sends.sum()), "conv_sends_lamports": float((2 * send1).sum()), "stake_sol": stake_sol,
+            "mean_conv_cost_per_trade_lamports": float(conv.mean()), "mean_conv_cost_over_stake": float(conv.mean() / stake_l),
+            "mean_conv_plus_sends_over_stake": float((conv + sends).mean() / stake_l),
+            "flat": {"conv_cost_lamports_expected": flat_conv, "flat_total_before_conv_cost_sol": (flat_total + flat_conv) / 1e9},
+            "press": {"conv_cost_lamports_expected": press_conv, "press_total_before_conv_cost_sol": (float(fl["press"].sum()) + press_conv) / 1e9}}
+
+
+def strip_addresses(rep: Mapping[str, Any]) -> dict[str, Any]:
+    """P3: the copy form: the top creator / quote-mint keys (addresses) removed, totals kept. The input is not changed."""
+    out = json.loads(json.dumps(rep, default=float))
+    for m in ("flat", "press", "filled_no_fail"):
+        for d in ("drop_top_creator", "drop_top_quote_mint"):
+            if isinstance(out.get(m), dict) and isinstance(out[m].get(d), dict) and "key" in out[m][d]:
+                out[m][d]["key"] = None
+                out[m][d]["key_stripped"] = True
+    out["addresses_stripped"] = True
+    return out
+
+
 def _day(t: Mapping[str, Any]) -> str:
     return dt.datetime.fromtimestamp(int(t["decision_ms"]["entry"]) / 1000.0, dt.timezone.utc).strftime("%Y-%m-%d")
 
@@ -88,8 +166,12 @@ def summarize(vals_sol: np.ndarray, trades: Sequence[Mapping[str, Any]]) -> dict
             "creator_unknown": sum(1 for t in trades if not t.get("creator"))}
 
 
-def report(rows: Sequence[Mapping[str, Any]], stake_sol: float, send: float | None = None, status: Mapping[str, Any] | None = None) -> dict[str, Any]:
-    """the declared read of one stake: both fail models, the flags, the counts. `send` defaults to the rows' own send_lamports (all rows must agree)."""
+def report(rows: Sequence[Mapping[str, Any]], stake_sol: float, send: float | None = None, status: Mapping[str, Any] | None = None,
+           window: tuple[int, int] | None = None) -> dict[str, Any]:
+    """the declared read of one stake: both fail models, the flags, the counts. `send` defaults to the rows' own send_lamports (all rows must agree). `window` = (S_ms, L_ms): P1, see window_rows."""
+    win = None
+    if window is not None:
+        rows, win = window_rows(rows, int(window[0]), int(window[1]))
     tr = trade_rows(rows, stake_sol)
     sends = {int(t["send_lamports"]) for t in tr}
     if send is None:
@@ -105,6 +187,8 @@ def report(rows: Sequence[Mapping[str, Any]], stake_sol: float, send: float | No
                                      "stale_exit_capped": sum(1 for t in tr if t.get("stale_exit_capped")), "stale_unpriced": sum(1 for t in tr if t.get("stale_exit_capped") and not t.get("stale_priced")),
                                      "excluded_rows": sum(1 for r in rows if r.get("kind") == "excluded"), "refused_rows": sum(1 for r in rows if r.get("kind") == "refused"),
                                      "rent_report_lamports_total": sum(int(t.get("rent_report_lamports", 0)) for t in tr), "buyback_fee_modelled": False}}
+    out["window"] = win
+    out["conversion_costs"] = conversion_costs(tr, stake_sol, fl)
     pids_t = {t["position_id"] for t in rows if t.get("kind") == "trade"}
     pids_x = {t["position_id"] for t in rows if t.get("kind") in ("excluded", "refused") and t.get("position_id")}  # as the WSOL board: engine-excluded + engine-refused over requested
     gap_t = {t["position_id"] for t in tr if t.get("gap_in_hold")}
@@ -130,6 +214,16 @@ def report(rows: Sequence[Mapping[str, Any]], stake_sol: float, send: float | No
     return out
 
 
+def _parse_instant(x: str) -> int:
+    """ms since epoch from an integer ms or an ISO instant (YYYY-MM-DDTHH[:MM[:SS]][Z], UTC)"""
+    if x.lstrip("-").isdigit():
+        return int(x)
+    z = x.rstrip("Z")
+    if len(z) == 13:
+        z += ":00"
+    return int(dt.datetime.fromisoformat(z).replace(tzinfo=dt.timezone.utc).timestamp() * 1000)
+
+
 def main(argv: Sequence[str] | None = None) -> int:
     import argparse
 
@@ -137,7 +231,14 @@ def main(argv: Sequence[str] | None = None) -> int:
     ap.add_argument("ledger", help="the engine's ledger dir (oq-rows.jsonl) or the file")
     ap.add_argument("--stake", type=float, default=0.25)
     ap.add_argument("--status", default=None, help="the engine's status.json (default: oq-status.json next to the ledger dir, in the run dir); a read without it is refused")
+    ap.add_argument("--start", default=None, help="P1 window start S (ms or ISO UTC, e.g. the manifest's start_hour 2026-11-19T03); needs --look")
+    ap.add_argument("--look", default=None, help="P1 window end L, exclusive (ms or ISO UTC)")
+    ap.add_argument("--out", default=None, help="write the FULL output (with addresses) to this file, mode 0600; keep it in the book's 0700 out root")
+    ap.add_argument("--strip-addresses", action="store_true", help="P3: print the copy form (no creator / quote-mint address); --out still gets the full form")
     a = ap.parse_args(argv)
+    if (a.start is None) != (a.look is None):
+        print("refused: --start and --look go together")
+        return 2
     ld = Path(a.ledger) if Path(a.ledger).is_dir() else Path(a.ledger).parent
     sp = Path(a.status) if a.status else ld.parent / "oq-status.json"
     if not sp.exists():
@@ -148,9 +249,17 @@ def main(argv: Sequence[str] | None = None) -> int:
     if age > STATUS_MAX_AGE_S:
         print("refused: oq-status.json is %.0f s old (written_unix_s %s), more than %d s" % (age, st.get("written_unix_s"), STATUS_MAX_AGE_S))
         return 2
-    rep = report(load_rows(a.ledger), a.stake, status=st)
+    win = (_parse_instant(a.start), _parse_instant(a.look)) if a.start is not None else None
+    rep = report(load_rows(a.ledger), a.stake, status=st, window=win)
     rep["status_written_unix_s"] = st.get("written_unix_s")
-    print(json.dumps(rep, indent=1, sort_keys=True, default=float))
+    if a.out:
+        import os
+
+        fd = os.open(a.out, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        with os.fdopen(fd, "w") as fh:
+            fh.write(json.dumps(rep, indent=1, sort_keys=True, default=float))
+        os.chmod(a.out, 0o600)
+    print(json.dumps(strip_addresses(rep) if a.strip_addresses else rep, indent=1, sort_keys=True, default=float))
     return 0
 
 
