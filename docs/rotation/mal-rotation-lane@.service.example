@@ -1,0 +1,61 @@
+# EXAMPLE TEXT ONLY (DEC-036 section 9 item 7). Not installed by merging this file. Helm installs the template unit once, places the rotation wallet key root-only and binds it
+# (a Claude session never reads it). The manager writes <instance>.json in the root-owned config dir and starts and stops instances inside the DEC-036 envelope. This file holds no key.
+# Instance = the rotation bot_id. DRY by default (config "mode": "dry", no --live). The live switch is the drop-in at the bottom + config "mode": "live" + the root-created LIVE_OK.
+# The unit needs READ permission on floor-lane-1's lane ledger (/var/lib/mal-live/h5-lane/lane-ledger.jsonl) for the same-pool refusal (section 9 item 6): read-only, no lock.
+# Its ledger, lock, lane STOP and per-book STOP live under /var/lib/mal-live/rotation-lane (NOT /var/lib/mal-live/h5-lane, NOT /var/lib/mal-live/STOP|HALT).
+[Unit]
+Description=MAL rotation lane (DEC-036) book %i, live-learning lane executor (example; DRY by default)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=mal-live
+Nice=10
+WorkingDirectory=/usr/local/lib/mal-rotation-lane/current
+Environment=PYTHONUNBUFFERED=1
+Environment=LC_ALL=C.UTF-8
+EnvironmentFile=/etc/mal-probe-rpc/helius.env
+ExecStart=/usr/local/lib/mal-h5-exec/venv/bin/python -E -s -B -u -m tools.forge.rotation_lane_executor run --config /etc/mal-rotation-lane/%i.json
+Restart=on-failure
+RestartSec=10
+RestartPreventExitStatus=2
+NoNewPrivileges=true
+ProtectSystem=strict
+ReadWritePaths=/var/lib/mal-live/rotation-lane
+ReadOnlyPaths=/usr/local/lib/mal-rotation-lane /etc/mal-rotation-lane /etc/mal-arena-live /var/lib/mal-live/h5-lane
+ProtectHome=tmpfs
+PrivateTmp=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+LockPersonality=true
+RestrictAddressFamilies=AF_INET AF_INET6
+CapabilityBoundingSet=
+PrivateDevices=true
+ProtectProc=invisible
+SystemCallFilter=@system-service
+SystemCallArchitectures=native
+RestrictNamespaces=true
+UMask=0077
+LimitCORE=0
+MemoryMax=1G
+MemorySwapMax=0
+
+[Install]
+WantedBy=multi-user.target
+
+# ---- live drop-in: /etc/systemd/system/mal-rotation-lane@.service.d/live.conf (a separate file; hands the process the ROTATION key; the instance config must also say "mode": "live") ----
+# [Service]
+# LoadCredential=probe-wallet:/etc/mal-rotation/rotation-wallet.json
+# ExecStart=
+# ExecStart=/usr/local/lib/mal-h5-exec/venv/bin/python -E -s -B -u -m tools.forge.rotation_lane_executor run --config /etc/mal-rotation-lane/%i.json --live
+#
+# Instance config (no key path: the executor refuses any key-like config key; `wallet_pubkey` is the PUBLIC key, checked against the bound key and against floor-lane-1's wallet):
+# {"mode": "live", "bot_id": "<rotation bot_id>", "frozen_sha": "<40 hex>", "spec_sha256": "<64 hex>", "max_hold_s": 900, "root": "...", "state_dir": "...", "end_ms": <ms>,
+#  "funded_lamports": 1500000000, "wallet_floor_lamports": 250000000, "wallet_pubkey": "<rotation wallet public key>",
+#  "floor_ledger_read_path": "/var/lib/mal-live/h5-lane/lane-ledger.jsonl", "a3_record_file": "/var/lib/mal/a3/a3-daily.jsonl", "live_ok_path": "/etc/mal-arena-live/<bot_id>/LIVE_OK",
+#  "step_record_sha256": "<64 hex, only for an up-step start>",
+#  "lane": {"ledger_path": "/var/lib/mal-live/rotation-lane/lane-ledger.jsonl", "stop_path": "/var/lib/mal-live/rotation-lane/STOP",
+#           "book_stop_path": "/var/lib/mal-live/rotation-lane/STOP-<bot_id>", "stake_lamports": 100000000}}
