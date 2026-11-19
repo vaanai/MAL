@@ -26,14 +26,25 @@ What it computes (all DEC-036 section 6):
   --since-ms MS: also evaluate every closed trade with close ts >= MS as the state stood right after it, and print one `fired_at_close` line per close with a flag. The exit code is the worst of the
      latest state and every evaluated close. Per-close CUSUM evaluation covers closes of the current population (the rung the calibration is for); the retire check covers every close of the book.
 
+  DEPLOY CONDITION C1 (QP, PR 1468): the manager's MiScusi job MUST pass --since-ms (the previous run's watermark; the population start on the first run) and act on the worst exit code.
+  The section 6 item 4 calibration is first passage ("P(S reaches h within 100 trades)"); without --since-ms a warning or alarm that fired and then recovered before the job ran is never reported.
+  A flag that fired at any close is the section 6 item 5 trigger even if S later falls back.
+  Book realized for the loss cap is the executor's own sum (rotation_lane_executor.fold_rotation), stray fee rows included; every row must fold as the executor folds it (else exit 2).
+  The monitor reads the main ledger only: rows still in the executor's backlog are seen after the next drain. n_closed_book counts failed buy fills as closes (as FLOOR's monitor does); it is NOT the
+  section 5 item 1 / section 9 item 2 up-step count, which counts filled closes only. mu0 <= 0 at the current rung is a STOP (exit 20, flag mu0_le_0_at_current_rung; section 6 item 3, section 4 item 2).
+  Proof for section 7 (a monitor is a code change): the md5 decision-equivalence proof is the empty `git diff --stat` on the executor, bridge and FLOOR files (this PR changes no decision code).
+
 Calibration file (schema `rotation-decay-calibration.v1`, one rung): {"schema", "bot_id", "stake_lamports", "winsor_lo", "winsor_hi", "mu0", "mu1", "h_w", "h_a", "n0" (default 25),
-  "sim_source_sha256" (64 hex: the calibration run's sim source, section 6 item 4), optional "mu0_by_rung" {"<lamports>": mu0}, optional "cost_frac_by_stake" {"<lamports>": fraction}}.
+  "sim_source_sha256" (64 hex: the calibration run's sim source, section 6 item 4), "mu0_by_rung" {"<lamports>": mu0} REQUIRED to cover every step-down target of the rung (0.25: 0.125 and 0.05;
+  0.125 and 0.10: 0.05; 0.05: none), so a target with mu0 <= 0 is a STOP; no default, missing = exit 2; if it holds the rung itself it must equal mu0; optional "cost_frac_by_stake" {"<lamports>": c} with
+  0 < c < 1 (a card-measured number; default the section 8 table 0.03594 / 0.03825 / 0.04035 / 0.05268)}. Optional --calibration-sha256 must equal the sha256 of the file bytes (the card's pinned file).
 Not a registration, not a gate read, not a profit claim. These are brakes, not tests (section 6 item 8).
 """
 
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import re
 import sys
@@ -109,10 +120,18 @@ def load_calibration(path: Path, bot: str) -> dict[str, Any]:
         if m is not None:
             if not isinstance(m, dict):
                 raise MonitorError(f"calibration: {opt} must be an object")
-            try:
-                cal[opt] = {int(k): _num(m, k) for k in m}
-            except ValueError:
-                raise MonitorError(f"calibration: {opt} keys must be lamports") from None
+            for k in m:
+                if not (isinstance(k, str) and k.isdigit() and int(k) in RUNGS):
+                    raise MonitorError(f"calibration: {opt} keys must be rung lamports")
+                cal[opt][int(k)] = _num(m, k)
+    for c in cal["cost_frac_by_stake"].values():
+        if not 0 < c < 1:
+            raise MonitorError("calibration: cost_frac_by_stake values must satisfy 0 < c < 1")
+    for tgt in {t for t in LADDER[st] if t is not None}:
+        if tgt not in cal["mu0_by_rung"]:
+            raise MonitorError(f"calibration: mu0_by_rung must carry mu0 for the step-down target rung {tgt}")
+    if st in cal["mu0_by_rung"] and cal["mu0_by_rung"][st] != cal["mu0"]:
+        raise MonitorError("calibration: mu0_by_rung for the rung itself must equal mu0")
     return cal
 
 
@@ -225,7 +244,9 @@ def ladder_action(stake: int, warning: bool, alarm: bool, mu0_by_rung: dict[int,
     kind = "alarm" if alarm else "warning"
     if tgt is None:
         return {"action": "stop_retire", "to_stake": None, "reason": f"{kind} at the 0.05 rung: book STOP, retire to paper"}
-    if mu0_by_rung and mu0_by_rung.get(tgt, 1.0) <= 0:
+    if mu0_by_rung is None or tgt not in mu0_by_rung:
+        raise MonitorError(f"no mu0 for step-down target rung {tgt}: the card must carry it")
+    if mu0_by_rung[tgt] <= 0:
         return {"action": "stop_retire", "to_stake": None, "reason": f"{kind}: mu0 at target rung {tgt} <= 0, the step is a book STOP (section 6 item 3)"}
     return {"action": "step_down", "to_stake": tgt, "reason": f"{kind} at stake {stake}"}
 
@@ -248,7 +269,7 @@ def loss_cap_lamports(starts: Sequence[tuple[int, int]]) -> int:
     return RX.ROTATION_BOOK_LOSS_CAP_STEPPED_LAMPORTS if any(st == 250_000_000 for _, st in starts) else RX.ROTATION_BOOK_LOSS_CAP_FIRST_LAMPORTS
 
 
-def state_at(trades: Sequence[dict[str, Any]], pop: Sequence[dict[str, Any]], cal: dict[str, Any], cost_frac: dict[int, float], cap: int, n_open: int, s: int) -> dict[str, Any]:
+def state_at(trades: Sequence[dict[str, Any]], pop: Sequence[dict[str, Any]], cal: dict[str, Any], cost_frac: dict[int, float], cap: int, n_open: int, s: int, realized: int) -> dict[str, Any]:
     """The flags after the last trade of `trades` (all book trades so far) and `pop` (the population trades so far)."""
     ws = [winsorize(t["x"], cal["winsor_lo"], cal["winsor_hi"]) for t in pop]
     path = cusum_path(ws, cal["mu0"], cal["mu1"])
@@ -256,19 +277,25 @@ def state_at(trades: Sequence[dict[str, Any]], pop: Sequence[dict[str, Any]], ca
     warning, alarm = S >= cal["h_w"], S >= cal["h_a"]
     la = ladder_action(s, warning, alarm, cal["mu0_by_rung"])
     ret = retire_check(trades, cal["n0"], cost_frac)
-    realized = sum(t["r"] for t in trades)
+    mu0_stop = cal["mu0"] <= 0
     cap_hit = realized <= -cap or (n_open == 0 and realized - (s + RX.ROTATION_FEE_RESERVE_LAMPORTS) <= -cap)
-    code = 20 if (la["action"] == "stop_retire" or ret["fired"] or cap_hit) else 10 if la["action"] == "step_down" else 0
-    flags = [k for k, v in (("warning", warning), ("alarm", alarm), ("retire", ret["fired"]), ("loss_cap", cap_hit)) if v]
+    code = 20 if (la["action"] == "stop_retire" or ret["fired"] or cap_hit or mu0_stop) else 10 if la["action"] == "step_down" else 0
+    flags = [k for k, v in (("warning", warning), ("alarm", alarm), ("retire", ret["fired"]), ("loss_cap", cap_hit), ("mu0_le_0_at_current_rung", mu0_stop)) if v]
     return {"S": S, "h_w": cal["h_w"], "h_a": cal["h_a"], "warning": warning, "alarm": alarm, "n_population": len(pop), "ladder": la, "retire": ret,
-            "book_realized_lamports": realized, "loss_cap_lamports": cap, "loss_cap_hit": cap_hit, "flags": flags, "exit_code": code}
+            "book_realized_lamports": realized, "loss_cap_lamports": cap, "loss_cap_hit": cap_hit, "mu0_le_0_at_current_rung": mu0_stop, "flags": flags, "exit_code": code}
 
 
 def run(ledger: Path, bot: str, cal: dict[str, Any], since_ms: int | None = None) -> dict[str, Any]:
     RX_bad = RX.bot_id_problem(bot)
     if RX_bad:
         raise MonitorError(f"--bot invalid: {RX_bad}")
-    book = fold_book(read_rows(ledger), bot)
+    all_rows = read_rows(ledger)
+    book = fold_book(all_rows, bot)
+    try:  # the executor's own sum of realized (stray fee rows included); it raises on rows it cannot read, as the executor would
+        realized_entries = [(ts, d) for ts, b, d in RX.fold_rotation(all_rows)["realized"] if b == bot]
+    except Exception as exc:  # noqa: BLE001
+        raise MonitorError(f"ledger row the executor cannot fold: {exc}") from None
+    realized_total = sum(d for _, d in realized_entries)
     starts, trades = book["starts"], book["trades"]
     if not starts:
         raise MonitorError("no start row with a stake for this bot in the ledger")
@@ -290,7 +317,7 @@ def run(ledger: Path, bot: str, cal: dict[str, Any], since_ms: int | None = None
     def in_pop(t: dict[str, Any]) -> bool:
         return t["stake"] == s and t["intent_ts_ms"] >= pop_start
 
-    res = state_at(trades, [t for t in trades if in_pop(t)], cal, cost_frac, cap, book["n_open"], s)
+    res = state_at(trades, [t for t in trades if in_pop(t)], cal, cost_frac, cap, book["n_open"], s, realized_total)
     res.update({"bot_id": bot, "stake_lamports": s, "population_start_ms": pop_start, "n_closed_book": len(trades),
                 "n_closed_other_stake_or_before_start": sum(1 for t in trades if not in_pop(t)), "n_open": book["n_open"],
                 "calibration": {k: cal[k] for k in ("mu0", "mu1", "h_w", "h_a", "winsor_lo", "winsor_hi", "n0", "sim_source_sha256")}})
@@ -301,7 +328,9 @@ def run(ledger: Path, bot: str, cal: dict[str, Any], since_ms: int | None = None
                 continue
             sub = trades[:i + 1]
             # open count after this close is not reconstructed: the no-open pre-send form is used only at the latest state; per close, realized <= -cap only
-            st = state_at(sub, [u for u in sub if in_pop(u)], cal, cost_frac, cap, 1, s)
+            cap_t = loss_cap_lamports([x for x in starts if x[0] <= t["ts_ms"]])
+            real_t = sum(d for ts, d in realized_entries if ts <= t["ts_ms"])  # entries at the same ms as the close count as at or before it
+            st = state_at(sub, [u for u in sub if in_pop(u)], cal, cost_frac, cap_t, 1, s, real_t)
             if st["exit_code"]:
                 fired.append({"ts_ms": t["ts_ms"], "flags": st["flags"], "action": st["ladder"]["action"], "to_stake": st["ladder"]["to_stake"], "exit_code": st["exit_code"], "S": st["S"]})
         res["fired_at_close"] = fired
@@ -313,7 +342,7 @@ def run(ledger: Path, bot: str, cal: dict[str, Any], since_ms: int | None = None
 def render(res: dict[str, Any]) -> str:
     cal, ret, la = res["calibration"], res["retire"], res["ladder"]
     L = [f"rotation_decay_monitor (DEC-036 section 9 item 9) bot {res['bot_id']}: stake {res['stake_lamports']} lamports",
-         f"closed: book {res['n_closed_book']}, current-rung population {res['n_population']}; open positions {res['n_open']}",
+         f"closed (failed buy fills included; not the up-step count): book {res['n_closed_book']}, current-rung population {res['n_population']}; open positions {res['n_open']}",
          f"CUSUM S {res['S']:.6f} (mu0 {cal['mu0']}, mu1 {cal['mu1']}, winsor [{cal['winsor_lo']}, {cal['winsor_hi']}]); warning at h_w {cal['h_w']}: {'FIRED' if res['warning'] else 'ok'}; alarm at h_a {cal['h_a']}: {'FIRED' if res['alarm'] else 'ok'}",
          f"ladder action: {la['action']}" + (f" to {la['to_stake']}" if la["to_stake"] else "") + f" ({la['reason']})"]
     if ret["n"]:
@@ -321,6 +350,8 @@ def render(res: dict[str, Any]) -> str:
     else:
         L.append("retire check: no closed trades")
     L.append(f"per-book loss cap {res['loss_cap_lamports']} lamports, book realized {res['book_realized_lamports']}: {'HIT' if res['loss_cap_hit'] else 'ok'}")
+    if res["mu0_le_0_at_current_rung"]:
+        L.append("mu0 <= 0 at the current rung: book STOP (section 6 item 3)")
     L.append("flags: " + (",".join(res["flags"]) or "none"))
     L.append("STOP / retire" if res["exit_code"] == 20 else "STEP-DOWN" if res["exit_code"] == 10 else "no flag")
     L.append(f"population start {res['population_start_ms']} ms; closes not in the population (other stake or before start): {res['n_closed_other_stake_or_before_start']}")
@@ -333,10 +364,18 @@ def main(argv: Sequence[str] | None = None) -> int:
     ap.add_argument("--bot", required=True)
     ap.add_argument("--ledger-file", type=Path, default=Path(RX.ROTATION_LEDGER_PATH))
     ap.add_argument("--calibration", type=Path, required=True)
-    ap.add_argument("--since-ms", type=int)
+    ap.add_argument("--calibration-sha256", help="must equal the sha256 of the calibration file bytes (the card's pinned file)")
+    ap.add_argument("--since-ms", type=int, help="REQUIRED in the manager's job (deploy condition C1): evaluates every close since this instant")
     ap.add_argument("--json", action="store_true")
     a = ap.parse_args(argv)
     try:
+        if a.calibration_sha256 is not None:
+            try:
+                got = hashlib.sha256(a.calibration.read_bytes()).hexdigest()
+            except OSError as exc:
+                raise MonitorError(f"calibration unreadable: {exc}") from None
+            if got != a.calibration_sha256.lower():
+                raise MonitorError(f"calibration sha256 {got} != --calibration-sha256")
         cal = load_calibration(a.calibration, a.bot)
         res = run(a.ledger_file, a.bot, cal, a.since_ms)
     except MonitorError as exc:

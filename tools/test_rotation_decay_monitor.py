@@ -19,7 +19,7 @@ SHA = "ab" * 32
 
 def cal_dict(stake=S10, **kw):
     d = {"schema": M.SCHEMA, "bot_id": BOT, "stake_lamports": stake, "winsor_lo": -0.5, "winsor_hi": 0.5, "mu0": 0.02, "mu1": -0.02, "h_w": 0.05, "h_a": 0.2,
-         "n0": 25, "sim_source_sha256": SHA}
+         "n0": 25, "sim_source_sha256": SHA, "mu0_by_rung": {str(t): 0.01 for t in M.LADDER[stake] if t is not None}}
     d.update(kw)
     return d
 
@@ -121,8 +121,99 @@ def test_rotation_decay_requires_mu1_below_mu0(tmp_path, capsys):
         fx.write(cal=cal_dict(**bad))
         assert M.main(fx.args()) == 2
         assert "mu1" in capsys.readouterr().err
-    fx.write(cal=cal_dict(mu0=-0.01, mu1=-0.03))  # mu1 < mu0 <= 0 loads (the monitor does not decide go-live; section 4 does)
-    assert M.main(fx.args()) in (0, 10, 20)
+    fx.write(cal=cal_dict(mu0=0.02, mu1=0.01))  # 0 < mu1 < mu0 is refused too (mu1 = min(0, mu0 - delta) <= 0)
+    assert M.main(fx.args()) == 2
+    assert "mu1" in capsys.readouterr().err
+
+
+def test_mu0_le_0_at_current_rung_is_stop(tmp_path, capsys):
+    """QP M3: section 4 item 2 / section 6 item 3, mu0 > 0 at every live rung; a file with mu0 <= 0 is a STOP, not a normal run."""
+    for mu0, mu1 in ((-0.01, -0.03), (0.0, -0.02)):
+        fx = Fx(tmp_path).start(S10).trade(0.01).write(cal=cal_dict(mu0=mu0, mu1=mu1))
+        code, res = run_json(fx, capsys)
+        assert code == 20 and "mu0_le_0_at_current_rung" in res["flags"]
+        assert M.main(fx.args()) == 20
+        assert "mu0 <= 0 at the current rung" in capsys.readouterr().out
+
+
+def test_mu0_by_rung_required_for_every_target(tmp_path, capsys):
+    """QP M2 / reviewer B2: no default mu0 for a step-down target; missing map, missing target, wrong key, mu0 <= 0 at the target."""
+    fx = Fx(tmp_path).start(S25).trade(0.01, S25)
+    for bad in ({}, {str(S125): 0.01}, {str(S05): 0.01}, {str(S125): 0.01, str(S05): 0.01, "77": 0.1}):
+        fx.write(cal=cal_dict(stake=S25, mu0_by_rung=bad))
+        assert M.main(fx.args()) == 2, bad
+        assert "mu0_by_rung" in capsys.readouterr().err
+    d = cal_dict(stake=S25)
+    del d["mu0_by_rung"]
+    fx.write(cal=d)
+    assert M.main(fx.args()) == 2
+    fx.write(cal=cal_dict(stake=S10, mu0_by_rung={}))  # 0.10 needs 0.05
+    assert M.main(fx.args()) == 2
+    # the rung itself, if listed, must equal mu0
+    fx.write(cal=cal_dict(stake=S25, mu0_by_rung={str(S125): 0.01, str(S05): 0.01, str(S25): 0.5}))
+    assert M.main(fx.args()) == 2
+    # 0.05 has no target: no map needed
+    (tmp_path / "x").mkdir()
+    d = cal_dict(stake=S05)
+    del d["mu0_by_rung"]
+    assert M.main(Fx(tmp_path / "x").start(S05).trade(0.01, S05).write(cal=d).args()) == 0
+    capsys.readouterr()
+    # mu0 <= 0 at the target rung: the step is a STOP (exit 20); warning -> 0.125
+    (tmp_path / "y").mkdir()
+    fx3 = Fx(tmp_path / "y").start(S25).trade(-0.10, S25).write(cal=cal_dict(stake=S25, mu0_by_rung={str(S125): -0.001, str(S05): 0.01}))
+    code, res = run_json(fx3, capsys)
+    assert res["warning"] and not res["alarm"] and res["ladder"]["action"] == "stop_retire" and code == 20
+    (tmp_path / "z").mkdir()
+    fx4 = Fx(tmp_path / "z").start(S25).trade(-0.10, S25).write(cal=cal_dict(stake=S25, mu0_by_rung={str(S125): 0.01, str(S05): 0.01}))
+    code, res = run_json(fx4, capsys)
+    assert res["ladder"]["to_stake"] == S125 and code == 10
+
+
+def test_stray_fee_in_book_realized_matches_executor(tmp_path, capsys):
+    """QP M1 / reviewer B1: book realized for the loss cap is the executor's own fold_rotation sum, stray fee rows included, and the STOP fires where the executor's would."""
+    from tools.forge import rotation_lane_executor as RX
+    fx = Fx(tmp_path).start(S10).many([-0.5] * 3)
+    fx.row("fee", "M1", sol_out_lamports=200_000_000)  # a stray fee on an exited mint: not a trade
+    fx.write(cal=cal_dict(h_w=100.0, h_a=200.0, winsor_lo=-1.0, winsor_hi=1.0))
+    exec_real = sum(d for _, b, d in RX.fold_rotation(fx.rows)["realized"] if b == BOT)
+    assert exec_real == -350_000_000
+    assert exec_real - (S10 + RX.ROTATION_FEE_RESERVE_LAMPORTS) <= -RX.ROTATION_BOOK_LOSS_CAP_FIRST_LAMPORTS  # the executor's no-open pre-send test: a book STOP
+    code, res = run_json(fx, capsys)
+    assert res["book_realized_lamports"] == exec_real and res["n_closed_book"] == 3
+    assert res["loss_cap_hit"] and code == 20 and "loss_cap" in res["flags"]
+    # without the stray row the same trades do not trip the cap
+    (tmp_path / "n").mkdir()
+    fx2 = Fx(tmp_path / "n").start(S10).many([-0.5] * 3).write(cal=cal_dict(h_w=100.0, h_a=200.0, winsor_lo=-1.0, winsor_hi=1.0))
+    res = run_json(fx2, capsys)[1]
+    assert res["book_realized_lamports"] == -150_000_000 and not res["loss_cap_hit"]
+
+
+def test_row_the_executor_cannot_fold_exits_2(tmp_path):
+    fx = Fx(tmp_path).start(S10).trade(0.01).write()
+    fx.p.write_bytes(fx.p.read_bytes() + json.dumps({"ev": "fee", "ts_ms": 5}).encode() + b"\n")  # no bot_id / mint: fold_rotation raises
+    assert M.main(fx.args()) == 2
+
+
+def test_since_ms_cap_uses_start_rows_at_the_close(tmp_path, capsys):
+    """Reviewer m2: a 0.25 start row written after a close does not raise that close's cap from 0.40 to 0.75."""
+    fx = Fx(tmp_path).start(S10).many([-1.0] * 4)  # -0.40 SOL at 0.10 SOL stake: cap 0.40 hit at the 4th close
+    fx.start(S25).start(S10)
+    fx.write(cal=cal_dict(h_w=100.0, h_a=200.0, winsor_lo=-1.0, winsor_hi=1.0))
+    code, res = run_json(fx, capsys, "--since-ms", "0")
+    assert any("loss_cap" in c["flags"] for c in res["fired_at_close"])
+    assert res["loss_cap_lamports"] == 750_000_000 and not res["loss_cap_hit"]  # latest state: a 0.25 start row exists
+
+
+def test_calibration_sha256_pin_and_cost_override(tmp_path):
+    import hashlib
+    fx = Fx(tmp_path).start(S10).trade(0.01).write()
+    good = hashlib.sha256(fx.c.read_bytes()).hexdigest()
+    assert M.main(fx.args("--calibration-sha256", good)) == 0
+    assert M.main(fx.args("--calibration-sha256", "0" * 64)) == 2
+    for bad in (-0.01, 0.0, 1.0, 5.0):
+        fx.write(cal=cal_dict(cost_frac_by_stake={str(S10): bad}))
+        assert M.main(fx.args()) == 2, bad
+    assert M.COST_FRAC == {S05: 0.03594, S10: 0.03825, S125: 0.04035, S25: 0.05268}
 
 
 def test_rotation_decay_calibration_refusals(tmp_path, capsys):
@@ -170,17 +261,21 @@ def test_rotation_decay_ladder_table(tmp_path, capsys, stake, warn, alarm):
 
 def test_rotation_decay_ladder_function_rows():
     for stake, w, a in ((S25, S125, S05), (S125, S05, S05), (S10, S05, S05)):
-        assert M.ladder_action(stake, True, False)["to_stake"] == w
-        assert M.ladder_action(stake, False, True)["to_stake"] == a
-        assert M.ladder_action(stake, True, True)["to_stake"] == a  # alarm outranks warning
+        mm = {S125: 0.01, S05: 0.01}
+        assert M.ladder_action(stake, True, False, mm)["to_stake"] == w
+        assert M.ladder_action(stake, False, True, mm)["to_stake"] == a
+        assert M.ladder_action(stake, True, True, mm)["to_stake"] == a  # alarm outranks warning
     for flags in ((True, False), (False, True), (True, True)):
         assert M.ladder_action(S05, *flags)["action"] == "stop_retire"
     assert M.ladder_action(S25, False, False)["action"] == "stay"
     # 0.125 -> 0.10 and any up move are never produced
     assert all(t in (S125, S05, None) for s in M.LADDER for t in M.LADDER[s])
     # section 6 item 3: mu0 <= 0 at the target rung makes the step a STOP
-    assert M.ladder_action(S25, True, False, {S125: -0.001})["action"] == "stop_retire"
-    assert M.ladder_action(S25, True, False, {S125: 0.01})["to_stake"] == S125
+    assert M.ladder_action(S25, True, False, {S125: -0.001, S05: 0.01})["action"] == "stop_retire"
+    assert M.ladder_action(S25, True, False, {S125: 0.01, S05: 0.01})["to_stake"] == S125
+    for m in (None, {}, {S125: 0.01}):  # no default mu0 for a missing target
+        with pytest.raises(M.MonitorError):
+            M.ladder_action(S25, False, True, m)
     with pytest.raises(M.MonitorError):
         M.ladder_action(77, True, False)
 
