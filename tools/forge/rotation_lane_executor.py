@@ -604,12 +604,17 @@ class RotationLaneBridge(D.DslLaneBridge):
         if live:
             port.pre_buy = self._lane_pre_buy
             port.on_error = self._latch
-            self._lane_record("start", "", code_sha256=hashlib.sha256(Path(__file__).read_bytes()).hexdigest(), frozen_sha=cfg.frozen_sha, book=cfg.bot_id, spec_sha256=self.pins["spec_sha256"],
-                              lane_class=LANE_CLASS, start_nonce=self._start_nonce, stake_lamports=lane_cfg.stake_lamports, step_record_sha256=self.pins.get("step_record_sha256"),
-                              lane={"bot_id": self.bot, "stake_lamports": lane_cfg.stake_lamports, "max_open": lane_cfg.max_open, "daily_loss_lamports": lane_cfg.daily_loss_lamports,
-                                    "fee_reserve_lamports": lane_cfg.fee_reserve_lamports, "mark_stale_s": lane_cfg.mark_stale_s, "book_loss_cap_lamports": self.rot.book_cap_cfg,
-                                    "funded_lamports": self.rot.funded, "wallet_floor_lamports": self.rot.wallet_floor})
+            if not self._ladder_deferred:  # B4: a start row exists only once the stake ladder has been verified on the complete ledger
+                self._write_start_row()
             self._lane_reconcile(self.now_ms(), force=True)
+
+    def _write_start_row(self) -> None:
+        cfg, lane_cfg = self.cfg, self.lane_cfg
+        self._lane_record("start", "", code_sha256=hashlib.sha256(Path(__file__).read_bytes()).hexdigest(), frozen_sha=cfg.frozen_sha, book=cfg.bot_id, spec_sha256=self.pins["spec_sha256"],
+                          lane_class=LANE_CLASS, start_nonce=self._start_nonce, stake_lamports=lane_cfg.stake_lamports, step_record_sha256=self.pins.get("step_record_sha256"),
+                          lane={"bot_id": self.bot, "stake_lamports": lane_cfg.stake_lamports, "max_open": lane_cfg.max_open, "daily_loss_lamports": lane_cfg.daily_loss_lamports,
+                                "fee_reserve_lamports": lane_cfg.fee_reserve_lamports, "mark_stale_s": lane_cfg.mark_stale_s, "book_loss_cap_lamports": self.rot.book_cap_cfg,
+                                "funded_lamports": self.rot.funded, "wallet_floor_lamports": self.rot.wallet_floor})
 
     def _start_guard(self, cfg: B.Config, port: B.OrderPort) -> None:
         if self.lane_cfg.stake_lamports not in ROTATION_STAKE_RUNGS_LAMPORTS or cfg.stake_lamports != self.lane_cfg.stake_lamports:
@@ -697,7 +702,9 @@ class RotationLaneBridge(D.DslLaneBridge):
             return "lane_ledger_error"
         why = stake_start_problem(rows, self.bot, self.cfg.stake_lamports, self.pins.get("step_record_sha256"))
         if why:
-            return "rotation_ladder:" + why  # stays refused; exits keep running; the manager restarts with a correct config
+            self._rcount("ladder_refused")  # no start row is written; entries stay refused, exits keep running; the manager restarts with a correct config
+            return "rotation_ladder:" + why
+        self._write_start_row()  # verified on the complete ledger: only now does the start row exist
         self._ladder_deferred = False
         return None
 

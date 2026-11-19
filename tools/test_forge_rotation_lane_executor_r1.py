@@ -129,6 +129,59 @@ def test_rotation_backlog_pending_at_start_never_strands_an_open_position(tmp_pa
     br2.release_lane_lock()
 
 
+def test_rotation_refused_stake_writes_no_start_row_and_the_cap_stays_040(tmp_path, monkeypatch):
+    """B4: a start held back by an undrained backlog writes NO start row; the deferred ladder check refuses 0.25 (no step record), and a restart still refuses; the book cap stays 0.40."""
+    led = mkled(tmp_path)  # the book's last start row: 0.10
+    led._write_line(led.backlog_path, {"schema": "h5-lane-ledger.v1", "ev": "fee", "bot_id": BOT, "mint": "ZZ", "ts_ms": T0 - 5, "sol_in_lamports": 0, "sol_out_lamports": 1, "row_id": "bl1"})
+    real_drain = R.RotationLedger.drain
+    monkeypatch.setattr(R.RotationLedger, "drain", lambda self: (_ for _ in ()).throw(OSError("busy")))
+    clk = Clock(T0)
+    br, inner = mk(tmp_path, clk, raw=raw_cfg(tmp_path, stake=250_000_000))  # starts (exits would run); 0.25 with no step record
+    assert br._ladder_deferred
+    monkeypatch.setattr(R.RotationLedger, "drain", real_drain)
+    lg = started(tmp_path)
+    lg.entry(T0, "o1")
+    feed(br, clk)
+    assert inner.buys == [] and refusals(br)[-1]["why"] == "rotation_ladder:up_step_needs_step_record_sha256" and br._rot_counts["ladder_refused"] >= 1
+    starts = [r for r in br.lane.read() if r["ev"] == "start" and r["bot_id"] == BOT]
+    assert [r["stake_lamports"] for r in starts] == [R10]  # no 0.25 start row exists
+    assert br.lane.book_cap(R.fold_rotation(br.lane.read())) == 400_000_000
+    br.release_lane_lock()
+    with pytest.raises(SystemExit, match="up_step_needs_step_record_sha256"):  # a restart (backlog drained) still refuses
+        mk(tmp_path, Clock(T0), raw=raw_cfg(tmp_path, stake=250_000_000))
+    assert mkled(tmp_path, start=False).book_cap(R.fold_rotation(mkled(tmp_path, start=False).read())) == 400_000_000
+
+
+def test_rotation_new_book_stuck_backlog_025_leaves_no_start_row_and_010_restart_is_allowed(tmp_path, monkeypatch):
+    """QP M4 probe: a NEW book, a stuck backlog, started at 0.25 with no step record."""
+    led = mkled(tmp_path, start=False)  # this book has no start row
+    led._write_line(led.backlog_path, {"schema": "h5-lane-ledger.v1", "ev": "fee", "bot_id": BOT, "mint": "ZZ", "ts_ms": T0 - 5, "sol_in_lamports": 0, "sol_out_lamports": 1, "row_id": "bq1"})
+    real_drain = R.RotationLedger.drain
+    monkeypatch.setattr(R.RotationLedger, "drain", lambda self: (_ for _ in ()).throw(OSError("busy")))
+    clk = Clock(T0)
+    br, inner = mk(tmp_path, clk, raw=raw_cfg(tmp_path, stake=250_000_000))
+    assert br._ladder_deferred
+    monkeypatch.setattr(R.RotationLedger, "drain", real_drain)
+    started(tmp_path).entry(T0, "o1")
+    feed(br, clk)
+    assert inner.buys == [] and refusals(br)[-1]["why"] == "rotation_ladder:new_book_must_start_at_100000000"
+    assert [r for r in br.lane.read() if r["ev"] == "start" and r["bot_id"] == BOT] == []  # no 0.25 start row persists
+    assert br.lane.book_cap(R.fold_rotation(br.lane.read())) == 400_000_000
+    br.release_lane_lock()
+    with pytest.raises(SystemExit, match="new_book_must_start_at_100000000"):  # a later 0.25 restart with no record is refused
+        mk(tmp_path, Clock(T0), raw=raw_cfg(tmp_path, stake=250_000_000))
+    ok, _ = mk(tmp_path, Clock(T0))  # the legal 0.10 restart IS allowed
+    assert [r["stake_lamports"] for r in ok.lane.read() if r["ev"] == "start" and r["bot_id"] == BOT] == [R10]
+    ok.release_lane_lock()
+
+
+def test_rotation_normal_start_writes_its_start_row_at_once(tmp_path):
+    br, _ = mk(tmp_path, Clock(T0))
+    assert not br._ladder_deferred
+    assert [r["stake_lamports"] for r in br.lane.read() if r["ev"] == "start"] == [R10]
+    br.release_lane_lock()
+
+
 def test_rotation_wallet_floor_counts_other_books_in_flight_buys(tmp_path):
     clk = Clock(T0)
     br, _ = mk(tmp_path, clk)
