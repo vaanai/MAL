@@ -13,7 +13,7 @@ import pytest
 from tools.forge import rotation_lane_executor as R
 from tools.test_floor_arena_executor import Clock, _env  # noqa: F401  (autouse fixture)
 from tools.test_floor_lane_executor import T0, FakeInner
-from tools.test_forge_rotation_lane_executor import (BOT, BOT2, DAY, R10, floor_paths, intent, loss, mk, mkled, put, raw_cfg, reserve)  # noqa: F401  (floor_paths: autouse fixture)
+from tools.test_forge_rotation_lane_executor import (BOT, BOT2, DAY, R10, feed, floor_paths, intent, loss, mk, mkled, put, raw_cfg, refusals, reserve, started)  # noqa: F401  (floor_paths: autouse fixture)
 
 
 def _no_paths(tmp, **kw):
@@ -97,11 +97,49 @@ def test_rotation_live_start_needs_the_expected_live_port_class(tmp_path):
     assert R.run(raw_cfg(tmp_path), live_flag=True, root_checks=False, port_factory=lambda c: FakeInner(), now_ms=Clock(T0)) == 2
 
 
-def test_rotation_start_refused_while_the_ledger_backlog_is_pending(tmp_path):
-    led = mkled(tmp_path, start=False)
-    led._write_line(led.backlog_path, {"ev": "start", "bot_id": BOT, "stake_lamports": R10, "ts_ms": T0, "mint": "", "row_id": "r1"})
-    with pytest.raises(SystemExit, match="backlog pending"):
-        mk(tmp_path, Clock(T0))
+def test_rotation_backlog_pending_at_start_never_strands_an_open_position(tmp_path, monkeypatch):
+    """B3: a pending backlog at start is drained; if it will not drain the process still STARTS (exits run), entries are refused until the drain works, and the ladder is then checked."""
+    clk = Clock(T0)
+    br, inner = mk(tmp_path, clk)
+    lg = started(tmp_path)
+    lg.entry(T0, "o1")
+    feed(br, clk)
+    inner.land_buy("MP")
+    br._poll_ports()
+    br.release_lane_lock()
+    led = br.lane
+    led._write_line(led.backlog_path, {"schema": "h5-lane-ledger.v1", "ev": "fee", "bot_id": BOT, "mint": "ZZ", "ts_ms": T0 + 1, "sol_in_lamports": 0, "sol_out_lamports": 1000, "row_id": "bl1"})
+    real_drain = R.RotationLedger.drain
+    monkeypatch.setattr(R.RotationLedger, "drain", lambda self: (_ for _ in ()).throw(OSError("busy")))
+    br2, _ = mk(tmp_path, clk, inner=inner)  # starts: no SystemExit
+    assert br2._ladder_deferred  # the drain failed at start: the ladder check is deferred (the start row's own write drained the first backlog row)
+    br2.lane._write_line(br2.lane.backlog_path, {"schema": "h5-lane-ledger.v1", "ev": "fee", "bot_id": BOT, "mint": "ZY", "ts_ms": T0 + 2, "sol_in_lamports": 0, "sol_out_lamports": 1, "row_id": "bl2"})
+    assert br2.lane.backlog_pending()
+    lg.entry(T0 + 5_000, "o2", pool="Q")
+    lg.exit(T0 + 6_000, "o1", reason="tp")
+    feed(br2, clk)
+    assert inner.sells == [("MP", "tp")]  # the exit of the open position is processed
+    assert len(inner.buys) == 1 and refusals(br2)[-1]["why"] == "lane_backlog_pending"  # the entry is refused while the backlog is pending
+    monkeypatch.setattr(R.RotationLedger, "drain", real_drain)
+    br2.tick()  # the bridge tick drains
+    assert not br2.lane.backlog_pending()
+    lg.entry(T0 + 20_000, "o3", pool="R")
+    feed(br2, clk)
+    assert len(inner.buys) == 2 and not br2._ladder_deferred  # ladder verified on the complete ledger, then entries are allowed
+    br2.release_lane_lock()
+
+
+def test_rotation_wallet_floor_counts_other_books_in_flight_buys(tmp_path):
+    clk = Clock(T0)
+    br, _ = mk(tmp_path, clk)
+    other = mkled(tmp_path, bot=BOT2)
+    intent(other, BOT2, "X0")  # another book's send, not landed: its stake has not left the wallet
+    put(other, BOT2, "fill", "X1", sout=1, ok=True)
+    intent(other, BOT2, "X2")
+    put(other, BOT2, "fill", "X2", sout=R10 + 2_260_000, ok=True)  # landed: already in the balance, not counted
+    base = R10 + 160_000 + 2_100_000 + 1_600_000 + 250_000_000
+    assert br.floor_problem(R10, base + R10) is None and br.floor_problem(R10, base + R10 - 1) == "wallet_floor"
+    br.release_lane_lock()
 
 
 def test_rotation_refuses_paths_in_floor_lane_dir_incl_backlog_and_wallet_wide_files(tmp_path, monkeypatch):

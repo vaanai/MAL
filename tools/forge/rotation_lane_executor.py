@@ -586,6 +586,8 @@ class RotationLaneBridge(D.DslLaneBridge):
         self._a3_pause = None
         self._a3_polled_ms = None
         self._rot_counts: dict[str, int] = {}
+        self._ladder_deferred = False  # True while the start-time stake ladder could not be verified because the ledger backlog would not drain: entries refused, exits keep running
+        self._start_nonce = __import__("uuid").uuid4().hex
         if lane_cfg.bot_id != cfg.bot_id or bot_id_problem(cfg.bot_id):
             raise SystemExit("rotation lane start refused: bot_id pin")
         if live:
@@ -603,7 +605,7 @@ class RotationLaneBridge(D.DslLaneBridge):
             port.pre_buy = self._lane_pre_buy
             port.on_error = self._latch
             self._lane_record("start", "", code_sha256=hashlib.sha256(Path(__file__).read_bytes()).hexdigest(), frozen_sha=cfg.frozen_sha, book=cfg.bot_id, spec_sha256=self.pins["spec_sha256"],
-                              lane_class=LANE_CLASS, stake_lamports=lane_cfg.stake_lamports, step_record_sha256=self.pins.get("step_record_sha256"),
+                              lane_class=LANE_CLASS, start_nonce=self._start_nonce, stake_lamports=lane_cfg.stake_lamports, step_record_sha256=self.pins.get("step_record_sha256"),
                               lane={"bot_id": self.bot, "stake_lamports": lane_cfg.stake_lamports, "max_open": lane_cfg.max_open, "daily_loss_lamports": lane_cfg.daily_loss_lamports,
                                     "fee_reserve_lamports": lane_cfg.fee_reserve_lamports, "mark_stale_s": lane_cfg.mark_stale_s, "book_loss_cap_lamports": self.rot.book_cap_cfg,
                                     "funded_lamports": self.rot.funded, "wallet_floor_lamports": self.rot.wallet_floor})
@@ -620,16 +622,21 @@ class RotationLaneBridge(D.DslLaneBridge):
             if not D.X.sell_closes_ata():
                 raise SystemExit("rotation lane start refused: the sell does not close the token ATA (rent would be stranded)")
             assert self.lane is not None
+            try:  # never exit over a backlog (open positions would be stranded with no exits): drain it first
+                self.lane.drain()
+            except Exception as exc:  # noqa: BLE001
+                print(f"rotation_lane_executor ALERT lane_backlog_drain_failed label={type(exc).__name__}", flush=True)
             if self.lane.backlog_pending():
-                raise SystemExit("rotation lane start refused: ledger backlog pending (the last stake would be read from an incomplete ledger)")
-            try:
-                with self.lane.locked():
-                    rows = self.lane.read()
-            except Exception:  # noqa: BLE001
-                raise SystemExit("rotation lane start refused: ledger_unreadable") from None
-            why = stake_start_problem(rows, self.bot, cfg.stake_lamports, self.pins.get("step_record_sha256"))
-            if why:
-                raise SystemExit(f"rotation lane start refused: {why}")
+                self._ladder_deferred = True  # entries stay refused until the backlog is drained and the ladder is checked on the complete ledger (_lane_check); exits run
+            else:
+                try:
+                    with self.lane.locked():
+                        rows = self.lane.read()
+                except Exception:  # noqa: BLE001
+                    raise SystemExit("rotation lane start refused: ledger_unreadable") from None
+                why = stake_start_problem(rows, self.bot, cfg.stake_lamports, self.pins.get("step_record_sha256"))
+                if why:
+                    raise SystemExit(f"rotation lane start refused: {why}")
         elif port.live:
             raise SystemExit("rotation lane start refused: a DRY config never takes a live port")
 
@@ -649,6 +656,13 @@ class RotationLaneBridge(D.DslLaneBridge):
             return "balance_unreadable"
         opens = self.open_orders(scope)
         pending = sum(int(o["stake_lamports"]) for o in opens.values() if o["status"] in F.UNLANDED_BUY_STATUSES)
+        if self.lane is not None:  # other rotation books' sends that have not landed (their stakes have not left the shared wallet yet), from the shared ledger
+            try:
+                with self.lane.locked():
+                    st = fold_rotation(self.lane.read())
+            except Exception:  # noqa: BLE001
+                return "lane_ledger_error"
+            pending += sum(p["stake"] for p in st["open"].values() if p["bot"] != self.bot and not p["filled"])
         need = pending + stake + F.SEND_FEE_LAMPORTS + F.RENT_RESERVE_LAMPORTS + (len(opens) + 1) * F.SELL_RESERVE_LAMPORTS + self.rot.wallet_floor
         return "wallet_floor" if bal < need else None
 
@@ -660,7 +674,32 @@ class RotationLaneBridge(D.DslLaneBridge):
             return "a3_pause:" + self._a3_pause
         if self._lane_orphans:
             return "lane_unresolved_intent"
+        if self._ladder_deferred:
+            why = self._ladder_verify()
+            if why:
+                return why
         return self.lane.check(self._lane_marks, now, stake)
+
+    def _ladder_verify(self) -> str | None:
+        """The deferred start-time ladder check: once the backlog is drained, on the complete ledger without this instance's own start row."""
+        assert self.lane is not None
+        if self.lane.backlog_pending():
+            try:
+                self.lane.drain()
+            except Exception:  # noqa: BLE001
+                pass
+            if self.lane.backlog_pending():
+                return "lane_backlog_pending"
+        try:
+            with self.lane.locked():
+                rows = [r for r in self.lane.read() if not (isinstance(r, dict) and r.get("start_nonce") == self._start_nonce)]
+        except Exception:  # noqa: BLE001
+            return "lane_ledger_error"
+        why = stake_start_problem(rows, self.bot, self.cfg.stake_lamports, self.pins.get("step_record_sha256"))
+        if why:
+            return "rotation_ladder:" + why  # stays refused; exits keep running; the manager restarts with a correct config
+        self._ladder_deferred = False
+        return None
 
     def _rcount(self, k: str) -> None:
         self._rot_counts[k] = self._rot_counts.get(k, 0) + 1
@@ -705,6 +744,8 @@ class RotationLaneBridge(D.DslLaneBridge):
         stake = order.get("stake_lamports")
         if not isinstance(stake, int) or isinstance(stake, bool) or stake not in ROTATION_STAKE_RUNGS_LAMPORTS or stake != self.cfg.stake_lamports:
             return "rotation_stake_out_of_bounds"
+        if self._ladder_deferred and self._ladder_verify():
+            return "rotation_ladder_unverified"
         why = self.floor_pool_refusal([order.get("mint"), order.get("pool")])
         if why:
             return why
