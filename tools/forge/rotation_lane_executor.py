@@ -65,6 +65,12 @@ FLOOR_BOT_ID = "floor-lane-1"
 FLOOR_WALLET_PUBKEY = "5n95HyhZqjZNkjdp44QGJoAqk4ZFjDgMKuUzWcQqSugk"  # docs/HANDOFF.md "Wallet" line (public key only)
 FLOOR_LEDGER_PATHS = ("/var/lib/mal-live/h5-lane/lane-ledger.jsonl",)  # lane_daily_report.LEDGER_NAME under the FLOOR lane dir (the `lane.ledger_path` example of the FLOOR config)
 FLOOR_STOP_PATHS = ("/var/lib/mal-live/h5-lane/STOP", "/var/lib/mal-live/STOP", "/var/lib/mal-live/HALT")  # FLOOR's lane STOP and the wallet-wide files: a rotation STOP must never be one of them
+FLOOR_LANE_DIRS = ("/var/lib/mal-live/h5-lane",)  # nothing of the rotation lane may live in FLOOR's lane dir (its ledger, backlog files, STOP) or directly in /var/lib/mal-live (wallet-wide STOP/HALT)
+WALLET_WIDE_DIR = "/var/lib/mal-live"
+# DEC-036 section 9 item 4 / QP M1: the rotation ledger and lane STOP are PINNED in code (config may omit them or must equal them); a book STOP is <dir>/STOP-<bot_id>. A config cannot name a
+# fresh ledger to shed the lane-wide budgets or the lifetime STOP.
+ROTATION_LEDGER_PATH = "/var/lib/mal-live/rotation-lane/lane-ledger.jsonl"
+ROTATION_STOP_PATH = "/var/lib/mal-live/rotation-lane/STOP"
 RESERVED_BOT_IDS = ("floor-lane-1", "h5-lane", "l1-floor-v2")
 SHA40 = re.compile(r"^[0-9a-f]{40}$")
 SHA64 = re.compile(r"^[0-9a-f]{64}$")
@@ -102,6 +108,33 @@ def _canon(p: str) -> str:
     return os.path.normpath(os.path.realpath(p))
 
 
+def floor_path_problem(path: str) -> str | None:
+    """DEC-036 section 9 item 5 (and section 2 item 3). None, or why a rotation ledger / STOP path would touch FLOOR's files: the pinned FLOOR ledger and STOP paths, anything in FLOOR's lane dir (its
+    backlog files included) or directly in /var/lib/mal-live (the wallet-wide STOP and HALT), or the same inode (st_dev, st_ino) as one of them. Everything is compared after realpath."""
+    c = _canon(path)
+    floor_files = {_canon(p) for p in (*FLOOR_LEDGER_PATHS, *FLOOR_STOP_PATHS)}
+    if c in floor_files:
+        return "equals a FLOOR / wallet-wide path"
+    if os.path.dirname(c) == _canon(WALLET_WIDE_DIR):
+        return "directly in the wallet-wide dir"
+    for d in FLOOR_LANE_DIRS:
+        cd = _canon(d)
+        if c == cd or c.startswith(cd + os.sep):
+            return "inside FLOOR's lane dir"
+    try:
+        mine = os.stat(c)
+    except OSError:
+        return None
+    for f in floor_files:
+        try:
+            other = os.stat(f)
+        except OSError:
+            continue
+        if (mine.st_dev, mine.st_ino) == (other.st_dev, other.st_ino):
+            return "the same inode as a FLOOR file"
+    return None
+
+
 @dataclass(frozen=True)
 class RotationLimits:
     """The evaluated limits of ONE instance: each is min(config, code ceiling) (the fee reserve and the wallet floor: max)."""
@@ -127,9 +160,10 @@ def parse_lane(raw: Any, bot_id: str) -> tuple[H.LaneConfig, dict[str, Any]]:
     extra = set(raw) - LANE_KEYS
     if extra:
         raise RotationConfigError(f"lane: unknown keys {sorted(extra)}")
-    for key in ("ledger_path", "stop_path", "book_stop_path"):
-        if not isinstance(raw.get(key), str) or not raw[key] or not os.path.isabs(raw[key]):
-            raise RotationConfigError(f"lane.{key} is required (absolute path)")
+    pinned = {"ledger_path": ROTATION_LEDGER_PATH, "stop_path": ROTATION_STOP_PATH, "book_stop_path": os.path.join(os.path.dirname(ROTATION_STOP_PATH), f"STOP-{bot_id}")}
+    for key, pin in pinned.items():
+        if key in raw and raw[key] != pin:
+            raise RotationConfigError(f"lane.{key} must be the pinned rotation path {pin} (or omitted)")
     if raw.get("bot_id", bot_id) != bot_id:
         raise RotationConfigError("lane.bot_id must equal the config bot_id")
     stake = _whole(raw, "stake_lamports")
@@ -148,9 +182,9 @@ def parse_lane(raw: Any, bot_id: str) -> tuple[H.LaneConfig, dict[str, Any]]:
     stale = raw.get("mark_stale_s", ROTATION_MARK_STALE_MAX_S)
     if isinstance(stale, bool) or not isinstance(stale, (int, float)) or not math.isfinite(stale) or not 0 < stale <= ROTATION_MARK_STALE_MAX_S:
         raise RotationConfigError(f"lane.mark_stale_s must be in (0, {ROTATION_MARK_STALE_MAX_S}]")
-    lane = H.LaneConfig(Path(raw["ledger_path"]), Path(raw["stop_path"]), bot_id, stake, limits["max_open"], ROTATION_LIFETIME_BUDGET_MAX_LAMPORTS, limits["daily_loss_lamports"], reserve,
+    lane = H.LaneConfig(Path(pinned["ledger_path"]), Path(pinned["stop_path"]), bot_id, stake, limits["max_open"], ROTATION_LIFETIME_BUDGET_MAX_LAMPORTS, limits["daily_loss_lamports"], reserve,
                         float(stale), "", False)
-    return lane, {**limits, "fee_reserve": reserve, "book_stop_path": raw["book_stop_path"]}
+    return lane, {**limits, "fee_reserve": reserve, "book_stop_path": pinned["book_stop_path"]}
 
 
 def make_config(raw: Mapping[str, Any]) -> tuple[B.Config, H.LaneConfig, str, dict[str, Any]]:
@@ -196,16 +230,14 @@ def make_config(raw: Mapping[str, Any]) -> tuple[B.Config, H.LaneConfig, str, di
     if step_sha is not None and not (isinstance(step_sha, str) and SHA64.match(step_sha)):
         raise RotationConfigError("step_record_sha256 must be 64 hex")
     # item 5: FLOOR's ledger and STOP paths (a pinned list), FLOOR's wallet public key (a pinned constant)
-    floor_stops = {_canon(p) for p in FLOOR_STOP_PATHS}
-    mine = {"lane.stop_path": _canon(lane.stop_path.as_posix()), "lane.book_stop_path": _canon(lim["book_stop_path"])}
-    for name, p in mine.items():
-        if p in floor_stops:
-            raise RotationConfigError(f"{name} equals a FLOOR / wallet-wide STOP path")
-    if mine["lane.stop_path"] == mine["lane.book_stop_path"]:
-        raise RotationConfigError("lane.stop_path and lane.book_stop_path must differ")
     floor_ledgers = {_canon(p) for p in FLOOR_LEDGER_PATHS}
-    if _canon(lane.ledger_path.as_posix()) in floor_ledgers:
-        raise RotationConfigError("lane.ledger_path equals FLOOR's ledger")
+    mine = {"lane.ledger_path": lane.ledger_path.as_posix(), "lane.stop_path": lane.stop_path.as_posix(), "lane.book_stop_path": lim["book_stop_path"]}
+    for name, p in mine.items():
+        why = floor_path_problem(p)
+        if why:
+            raise RotationConfigError(f"{name} refused: {why}")
+    if len({_canon(p) for p in mine.values()}) != 3:
+        raise RotationConfigError("lane ledger, lane STOP and book STOP paths must be three different paths")
     live = mode == B.LIVE
     pub = raw.get("wallet_pubkey")
     fl_read = raw.get("floor_ledger_read_path")
@@ -215,13 +247,16 @@ def make_config(raw: Mapping[str, Any]) -> tuple[B.Config, H.LaneConfig, str, di
             raise RotationConfigError("wallet_pubkey (the rotation wallet's PUBLIC key) is required in live")
         if not (isinstance(fl_read, str) and fl_read and _canon(fl_read) in floor_ledgers):
             raise RotationConfigError("floor_ledger_read_path is required in live and must be FLOOR's pinned ledger path (same-pool refusal is ON)")
-        if not (F._num(funded) and ROTATION_FUNDED_MIN_LAMPORTS <= funded <= ROTATION_FUNDED_MAX_LAMPORTS):
+        if not (isinstance(funded, int) and not isinstance(funded, bool) and ROTATION_FUNDED_MIN_LAMPORTS <= funded <= ROTATION_FUNDED_MAX_LAMPORTS):
             raise RotationConfigError(f"funded_lamports is required in live ({ROTATION_FUNDED_MIN_LAMPORTS}..{ROTATION_FUNDED_MAX_LAMPORTS})")
     if pub is not None and pub == FLOOR_WALLET_PUBKEY:
         raise RotationConfigError("wallet_pubkey equals floor-lane-1's wallet")
     if mode == B.LIVE and raw.get("a3_record_file") is not None and not os.path.isabs(str(raw["a3_record_file"])):
         raise RotationConfigError("a3_record_file must be an absolute path")
-    wallet_floor = max(ROTATION_WALLET_FLOOR_MIN_LAMPORTS, int(raw.get("wallet_floor_lamports", 0) or 0))
+    wf = raw.get("wallet_floor_lamports", 0) or 0
+    if isinstance(wf, bool) or not isinstance(wf, int) or wf < 0:
+        raise RotationConfigError("wallet_floor_lamports must be a whole number")
+    wallet_floor = max(ROTATION_WALLET_FLOOR_MIN_LAMPORTS, wf)
     funded_i = int(funded) if funded is not None else 0
     rl = RotationLimits(lim["fee_reserve"], lim["book_loss_cap_lamports"], lim["max_open"], lim["daily_loss_lamports"], lim["open_exposure_max_lamports"], lim["month_budget_lamports"],
                         lim["lifetime_budget_lamports"], lim["wallet_slice_bps"], wallet_floor, funded_i, Path(lim["book_stop_path"]), str(fl_read or ""), str(pub or ""))
@@ -565,7 +600,6 @@ class RotationLaneBridge(D.DslLaneBridge):
             self.release_lane_lock()
             raise
         if live:
-            assert port.live
             port.pre_buy = self._lane_pre_buy
             port.on_error = self._latch
             self._lane_record("start", "", code_sha256=hashlib.sha256(Path(__file__).read_bytes()).hexdigest(), frozen_sha=cfg.frozen_sha, book=cfg.bot_id, spec_sha256=self.pins["spec_sha256"],
@@ -581,11 +615,13 @@ class RotationLaneBridge(D.DslLaneBridge):
         if cfg.max_open > ROTATION_BOOK_MAX_OPEN or cfg.max_open != self.lane_cfg.max_open:
             raise SystemExit("rotation lane start refused: max_open")
         if cfg.mode == B.LIVE:
-            if not (LIVE_BUILT and port.live):
-                raise SystemExit("rotation lane start refused: a live config needs LIVE_BUILT and a live port")
+            if not (LIVE_BUILT and port.live and isinstance(port, D.X.FloorLanePort)):
+                raise SystemExit("rotation lane start refused: a live config needs LIVE_BUILT and a FloorLanePort (the write-ahead pre_buy hook is its only send gate)")
             if not D.X.sell_closes_ata():
                 raise SystemExit("rotation lane start refused: the sell does not close the token ATA (rent would be stranded)")
             assert self.lane is not None
+            if self.lane.backlog_pending():
+                raise SystemExit("rotation lane start refused: ledger backlog pending (the last stake would be read from an incomplete ledger)")
             try:
                 with self.lane.locked():
                     rows = self.lane.read()
@@ -607,12 +643,13 @@ class RotationLaneBridge(D.DslLaneBridge):
         return stake + self.rot.fee_reserve
 
     def floor_problem(self, stake: int, bal: int | None, scope: bool = True) -> str | None:
-        """The wallet floor, held ONCE (not per position): balance must cover the open stakes, the new stake, the new buy's send + rent, a sell reserve per position, and the floor."""
+        """The wallet floor, held ONCE (DEC-036 section 5 item 8, manager ruling). The balance already reflects every LANDED stake, so a landed position's stake is not added again; only buys
+        not yet landed (their stake has not left the wallet) are, with the new stake, the new buy's send + rent, a sell reserve for every position, and the floor (once)."""
         if bal is None:
             return "balance_unreadable"
         opens = self.open_orders(scope)
-        held = sum(int(o["stake_lamports"]) for o in opens.values())
-        need = held + stake + F.SEND_FEE_LAMPORTS + F.RENT_RESERVE_LAMPORTS + (len(opens) + 1) * F.SELL_RESERVE_LAMPORTS + self.rot.wallet_floor
+        pending = sum(int(o["stake_lamports"]) for o in opens.values() if o["status"] in F.UNLANDED_BUY_STATUSES)
+        need = pending + stake + F.SEND_FEE_LAMPORTS + F.RENT_RESERVE_LAMPORTS + (len(opens) + 1) * F.SELL_RESERVE_LAMPORTS + self.rot.wallet_floor
         return "wallet_floor" if bal < need else None
 
     def _lane_check(self, now: int, stake: int) -> str | None:
