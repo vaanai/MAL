@@ -38,6 +38,10 @@ def floor_paths(tmp_path, monkeypatch):
     fl.write_text("")
     monkeypatch.setattr(R, "FLOOR_LEDGER_PATHS", (str(fl),))
     monkeypatch.setattr(R, "FLOOR_STOP_PATHS", (str(tmp_path / "floor" / "STOP"), str(tmp_path / "wallet-STOP"), str(tmp_path / "wallet-HALT")))
+    monkeypatch.setattr(R, "FLOOR_LANE_DIRS", (str(tmp_path / "floor"),))
+    monkeypatch.setattr(R, "WALLET_WIDE_DIR", str(tmp_path))
+    monkeypatch.setattr(R, "ROTATION_LEDGER_PATH", str(tmp_path / "rot" / "ledger.jsonl"))  # the pinned rotation paths, moved under tmp
+    monkeypatch.setattr(R, "ROTATION_STOP_PATH", str(tmp_path / "rot" / "STOP"))
     return fl
 
 
@@ -346,10 +350,13 @@ def test_rotation_wallet_floor_held_once(tmp_path):
     clk = Clock(T0)
     br, _ = mk(tmp_path, clk)
     assert R.ROTATION_WALLET_FLOOR_MIN_LAMPORTS == 250_000_000 and br.rot.wallet_floor == 250_000_000
-    orders = {f"o{i}": {"stake_lamports": R10} for i in range(2)}
+    orders = {f"o{i}": {"stake_lamports": R10, "status": "open"} for i in range(2)}  # two LANDED positions: the balance already reflects their stakes
     br.open_orders = lambda scope=True: orders  # type: ignore[method-assign]
-    need = 2 * R10 + R10 + F.SEND_FEE_LAMPORTS + F.RENT_RESERVE_LAMPORTS + 3 * F.SELL_RESERVE_LAMPORTS + 250_000_000  # the floor appears once
+    need = R10 + F.SEND_FEE_LAMPORTS + F.RENT_RESERVE_LAMPORTS + 3 * F.SELL_RESERVE_LAMPORTS + 250_000_000  # each landed stake counted once (in the balance), the floor once
     assert br.floor_problem(R10, need) is None and br.floor_problem(R10, need - 1) == "wallet_floor"
+    orders["o2"] = {"stake_lamports": R10, "status": "buy_sent"}  # an unlanded send: its stake has not left the wallet yet, counted once, plus one more sell reserve
+    need2 = need + R10 + F.SELL_RESERVE_LAMPORTS
+    assert br.floor_problem(R10, need2) is None and br.floor_problem(R10, need2 - 1) == "wallet_floor"
     assert br.floor_problem(R10, None) == "balance_unreadable"
     raised = R.make_config(raw_cfg(tmp_path, wallet_floor_lamports=300_000_000))[0]
     assert raised.wallet_floor_lamports == 300_000_000  # config may raise it
@@ -383,19 +390,16 @@ def _scenario(tmp):
 
 
 def test_rotation_limits_independent_of_floor_constants(tmp_path, monkeypatch):
-    base = _scenario(tmp_path / "a") if (tmp_path / "a").mkdir() is None else None
+    import shutil
+
+    base = _scenario(tmp_path)
+    shutil.rmtree(tmp_path / "rot")
+    shutil.rmtree(tmp_path / "state", ignore_errors=True)
     for mod in (X, H, D):
         for name in [n for n in dir(mod) if n.startswith(("LANE_", "FLOOR_LANE_", "DSL_LANE_")) and isinstance(getattr(mod, n), (int, float, tuple)) and not isinstance(getattr(mod, n), bool)]:
             v = getattr(mod, name)
             monkeypatch.setattr(mod, name, (1,) * len(v) if isinstance(v, tuple) else 1)
-    (tmp_path / "b").mkdir()
-    (tmp_path / "b" / "floor").mkdir()
-    assert _scenario(tmp_path / "b") == base
-
-
-@pytest.fixture
-def _b_paths(tmp_path, monkeypatch):
-    return tmp_path
+    assert _scenario(tmp_path) == base
 
 
 def test_rotation_refuses_floor_ledger_stop_path_and_pubkey(tmp_path):
@@ -411,7 +415,6 @@ def test_rotation_refuses_floor_ledger_stop_path_and_pubkey(tmp_path):
         with pytest.raises(ValueError):
             R.make_config(raw_cfg(tmp_path, wallet_pubkey=bad))
     assert R.FLOOR_WALLET_PUBKEY == "5n95HyhZqjZNkjdp44QGJoAqk4ZFjDgMKuUzWcQqSugk"  # docs/HANDOFF.md, public key only
-    assert R.FLOOR_LEDGER_PATHS == (str(tmp_path / "floor" / "lane-ledger.jsonl"),) or True
 
 
 def test_pinned_floor_paths_in_code_match_the_documented_ones():
