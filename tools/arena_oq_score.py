@@ -13,9 +13,17 @@ Read rules (declared; CI 1,000 bootstrap draws, seed 1, 5th percentile as the ga
 positive days, total after dropping the top 3 trades, total after dropping the top creator and after dropping the top quote mint (the creator / quote mint with the largest total; trades with no creator are
 one group "unknown" and counted). Also reported next to P&L: unfilled round trips, stale-capped exits, unpriced rows, excluded rows, pending counts when given.
 
-P1-P3 (card docs/rotation/books/osb-oq-v1.md, read prerequisites; PR #1458 item 5): P1 `window=(S_ms, L_ms)` keeps only positions whose entry decision (`decision_ms.entry`) is in [S, L); every count and total is on that set, rows outside are counted by reason only (`window`).
-P2 `conversion_costs` on the windowed set: conversion-leg cost totals (entry_conv_cost_lamports + exit_conv_cost_lamports), sends, mean cost over stake, under no-fail and both fail legs. P3 the drop-top reads carry the top
-creator / quote-mint ADDRESSES (`key`); `strip_addresses(rep)` / `--strip-addresses` gives the copy form with no address. Without a window the output is the old one plus the new `conversion_costs` and `window` (null) fields.
+P1-P3 (card docs/rotation/books/osb-oq-v1.md, read prerequisites; PR #1458 item 5; QP/REVIEWER on PR #1465):
+P1 `window=(S_ms, L_ms)` keeps only positions whose ENTRY DECISION is in [S, L); every count and total is on that set; rows outside are counted by `kind:reason` only (`window`). Placement by row kind:
+  trade / open rows and every sell-side row of an opened position: `decision_ms.entry` of the position. Buy-side excluded / refused rows (engine `_drop_entry`) carry NO decision time, only `t_ms` = the landing print: the entry was decided in
+  [t_ms - 24 h, t_ms - lat_entry]. Certainly inside [S, L) -> in; certainly outside -> out; the interval straddles S or L -> `ambiguous_buy_side`, which is counted IN (numerator and denominator of the board share and its verdict, the
+  conservative side); `excluded.share_without_ambiguous` is shown beside. A row whose time cannot be resolved REFUSES the read (ValueError; the CLI exits 2). The `g1` block (stale-capped exits + unfilled round trips, once per position, over the
+  same denominator as the board share) is on the windowed set; the copied engine `status` is the whole run (`whole_run_not_windowed`).
+P2 `conversion_costs` on the windowed set: conversion-leg costs (entry + exit_conv_cost_lamports), sends, under no-fail and both fail legs. PARTIAL cost: conversion legs (fees + impact) + 4 sends; the token-leg pool fees and impact are NOT in the rows.
+`shrink_cost` composes the QP rule (QP VERDICT 307a2953 M5): c_used = max(c_registered, mean(conv + sends)/stake + token-leg parts), at 0.10: c_registered 7.925% (2.02 + 2.4 + 2.4 + 1.105), token parts 2.4% + 1.105%; at 0.25: c_registered
+8.348% (0.808 + 2.4 + 2.4 + 2.740), token parts 2.4% + 2.740%.
+P3 the full output carries the top creator / quote-mint ADDRESSES (`drop_top_*.key`). The CLI prints the STRIPPED form (no address) on stdout; the full form goes only to `--out`, which must be a new file in a directory owned by the caller with
+no group/other bits (created O_EXCL, mode 0600, no chmod after the write). Without a window the old keys are unchanged; new keys: `window` (null), `conversion_costs`, `g1`, `shrink_cost`.
 """
 
 from __future__ import annotations
@@ -67,9 +75,12 @@ def _entry_ms(r: Mapping[str, Any]) -> int | None:
     return int(d["entry"]) if isinstance(d, Mapping) and d.get("entry") is not None else None
 
 
-def window_rows(rows: Sequence[Mapping[str, Any]], start_ms: int, end_ms: int) -> tuple[list[Mapping[str, Any]], dict[str, Any]]:
-    """P1: rows of positions whose entry decision is in [start_ms, end_ms). A position's entry decision comes from its trade / open row (any stake); a refused or excluded row of a position with neither
-    (an entry that never opened) falls back to its own t_ms, the only time it carries. `open` rows are dropped from the scored set (the scorer never read them). Returns (kept, outside counts by reason)."""
+HOLD_MS = 86_400_000  # an entry lands, or is scored as an unfilled round trip, within 24 h of its decision
+
+
+def window_rows(rows: Sequence[Mapping[str, Any]], start_ms: int, end_ms: int, lat_ms: float = 0.0) -> tuple[list[Mapping[str, Any]], dict[str, Any]]:
+    """P1: rows of positions whose entry decision is in [start_ms, end_ms); see the module header for the placement of each row kind. `open` rows are dropped from the scored set (the scorer never read them).
+    Raises ValueError when a scored row has no resolvable time. Returns (kept, info); info["ambiguous_pids"] is the set of buy-side positions whose decision interval straddles S or L (kept)."""
     dec: dict[str, int] = {}
     for r in rows:
         e = _entry_ms(r)
@@ -78,26 +89,42 @@ def window_rows(rows: Sequence[Mapping[str, Any]], start_ms: int, end_ms: int) -
     kept: list[Mapping[str, Any]] = []
     before: collections.Counter = collections.Counter()
     after: collections.Counter = collections.Counter()
-    unresolved = 0
+    amb_pids: set = set()
+    n_amb = n_buy = 0
     for r in rows:
         k = r.get("kind")
         if k not in ("trade", "excluded", "refused"):
             continue
-        t = dec.get(r.get("position_id"))
-        if t is None:
-            t = _entry_ms(r) if k == "trade" else (int(r["t_ms"]) if r.get("t_ms") is not None else None)
-        if t is None:
-            unresolved += 1  # no time at all: cannot be placed in the window, so not scored
-            continue
         key = "%s:%s" % (k, r.get("reason"))
-        if t < start_ms:
+        t = dec.get(r.get("position_id"))
+        if t is None and k == "trade":
+            t = _entry_ms(r)
+        if t is not None:
+            if t < start_ms:
+                before[key] += 1
+            elif t >= end_ms:
+                after[key] += 1
+            else:
+                kept.append(r)
+            continue
+        if k == "trade" or r.get("t_ms") is None or r.get("side") == "sell":
+            raise ValueError("unresolved time: a %s row (position %s) has no entry decision time; the read is refused" % (k, r.get("position_id")))
+        n_buy += 1
+        t_ms = int(r["t_ms"])
+        latest, earliest = t_ms - int(lat_ms), t_ms - HOLD_MS
+        if latest < start_ms:
             before[key] += 1
-        elif t >= end_ms:
+        elif earliest >= end_ms:
             after[key] += 1
         else:
             kept.append(r)
-    return kept, {"start_ms": start_ms, "end_ms": end_ms, "rule": "decision_ms.entry in [start_ms, end_ms)", "kept_rows": len(kept), "outside_before_by_reason": dict(sorted(before.items())),
-                  "outside_at_or_after_end_by_reason": dict(sorted(after.items())), "unresolved_time_rows": unresolved}
+            if earliest < start_ms or latest >= end_ms:
+                n_amb += 1
+                amb_pids.add(r.get("position_id"))
+    return kept, {"start_ms": start_ms, "end_ms": end_ms,
+                  "rule": "entry decision in [start_ms, end_ms): trade/open rows and sell-side rows by decision_ms.entry of the position; buy-side excluded/refused rows (no decision time) by the interval [t_ms - 24 h, t_ms - lat_entry]: inside, outside, or ambiguous (counted in)",
+                  "kept_rows": len(kept), "buy_side_rows_placed_by_t_ms": n_buy, "ambiguous_buy_side": n_amb, "lat_entry_ms_used": int(lat_ms), "outside_before_by_reason": dict(sorted(before.items())),
+                  "outside_at_or_after_end_by_reason": dict(sorted(after.items())), "ambiguous_pids": amb_pids}
 
 
 def conversion_costs(tr: Sequence[Mapping[str, Any]], stake_sol: float, fl: Mapping[str, Any]) -> dict[str, Any]:
@@ -116,12 +143,32 @@ def conversion_costs(tr: Sequence[Mapping[str, Any]], stake_sol: float, fl: Mapp
     stake_l = stake_sol * 1e9
     flat_conv, press_conv = float((conv * w_flat).sum()), float((conv * w_press).sum())
     flat_total = float(fl["flat"].sum())
-    return {"n": n, "entry_conv_cost_lamports": float(ent.sum()), "exit_conv_cost_lamports": float(ext.sum()), "conv_cost_lamports_total": float(conv.sum()),
+    priced = np.array([not ((t.get("unfilled_roundtrip") and not t.get("unfilled_priced")) or (t.get("stale_exit_capped") and not t.get("stale_priced"))) for t in tr])
+    mp = float(conv[priced].mean()) if priced.any() else None
+    mps = float((conv + sends)[priced].mean() / stake_l) if priced.any() else None
+    return {"scope": "PARTIAL cost: conversion legs (pool fees + impact) + 4 sends; the token-leg pool fees and token-leg impact are NOT in the rows; a lower bound on the round trip, not the card's full cost",
+            "n_priced": int(priced.sum()), "mean_conv_cost_per_trade_lamports_priced": mp, "mean_conv_plus_sends_over_stake_priced": mps,
+            "n": n, "entry_conv_cost_lamports": float(ent.sum()), "exit_conv_cost_lamports": float(ext.sum()), "conv_cost_lamports_total": float(conv.sum()),
             "sends_lamports_total": float(sends.sum()), "conv_sends_lamports": float((2 * send1).sum()), "stake_sol": stake_sol,
             "mean_conv_cost_per_trade_lamports": float(conv.mean()), "mean_conv_cost_over_stake": float(conv.mean() / stake_l),
             "mean_conv_plus_sends_over_stake": float((conv + sends).mean() / stake_l),
             "flat": {"conv_cost_lamports_expected": flat_conv, "flat_total_before_conv_cost_sol": (flat_total + flat_conv) / 1e9},
             "press": {"conv_cost_lamports_expected": press_conv, "press_total_before_conv_cost_sol": (float(fl["press"].sum()) + press_conv) / 1e9}}
+
+
+SHRINK = {0.1: {"c_registered": 0.07925, "token_parts": 0.024 + 0.01105, "terms": "c = 2.02 + 2.4 + 2.4 + 1.105 = 7.925%; token parts 2.4% + 1.105%"},
+          0.25: {"c_registered": 0.08348, "token_parts": 0.024 + 0.0274, "terms": "c = 0.808 + 2.4 + 2.4 + 2.740 = 8.348%; token parts 2.4% + 2.740%"}}
+
+
+def shrink_cost(cc: Mapping[str, Any], stake_sol: float) -> dict[str, Any] | None:
+    """QP rule: c_used = max(c_registered, measured partial cost over stake + the card's token-leg parts); measured = the larger of the all-rows and the priced-only mean (unpriced rows carry 0 legs)"""
+    sh = next((v for k, v in SHRINK.items() if abs(k - stake_sol) < 1e-12), None)
+    if sh is None or not cc.get("n"):
+        return None
+    meas = max(cc["mean_conv_plus_sends_over_stake"], cc["mean_conv_plus_sends_over_stake_priced"] or 0.0)
+    comp = meas + sh["token_parts"]
+    return {"rule": "c_used = max(c_registered, measured_conv_plus_sends_over_stake + token-leg parts)", "terms": sh["terms"], "c_registered": sh["c_registered"], "measured_conv_plus_sends_over_stake": meas,
+            "token_leg_parts": sh["token_parts"], "c_measured_composed": comp, "c_used": max(sh["c_registered"], comp)}
 
 
 def strip_addresses(rep: Mapping[str, Any]) -> dict[str, Any]:
@@ -167,11 +214,15 @@ def summarize(vals_sol: np.ndarray, trades: Sequence[Mapping[str, Any]]) -> dict
 
 
 def report(rows: Sequence[Mapping[str, Any]], stake_sol: float, send: float | None = None, status: Mapping[str, Any] | None = None,
-           window: tuple[int, int] | None = None) -> dict[str, Any]:
+           window: tuple[int, int] | None = None, lat_entry_ms: float | None = None) -> dict[str, Any]:
     """the declared read of one stake: both fail models, the flags, the counts. `send` defaults to the rows' own send_lamports (all rows must agree). `window` = (S_ms, L_ms): P1, see window_rows."""
     win = None
     if window is not None:
-        rows, win = window_rows(rows, int(window[0]), int(window[1]))
+        if lat_entry_ms is None:  # from the rows, else the status, else 0 (a later latest-decision: the wider, conservative interval)
+            ls = [float(r["lat_entry_s"]) for r in rows if r.get("lat_entry_s") is not None] or ([float(status["lat_entry_s"])] if status and status.get("lat_entry_s") is not None else [])
+            lat_entry_ms = min(ls) * 1000.0 if ls else 0.0
+        rows, win = window_rows(rows, int(window[0]), int(window[1]), lat_entry_ms)
+        amb = win.pop("ambiguous_pids")
     tr = trade_rows(rows, stake_sol)
     sends = {int(t["send_lamports"]) for t in tr}
     if send is None:
@@ -188,7 +239,12 @@ def report(rows: Sequence[Mapping[str, Any]], stake_sol: float, send: float | No
                                      "excluded_rows": sum(1 for r in rows if r.get("kind") == "excluded"), "refused_rows": sum(1 for r in rows if r.get("kind") == "refused"),
                                      "rent_report_lamports_total": sum(int(t.get("rent_report_lamports", 0)) for t in tr), "buyback_fee_modelled": False}}
     out["window"] = win
+    if win is not None:
+        amb_here = {p for p in amb}
+    else:
+        amb_here = set()
     out["conversion_costs"] = conversion_costs(tr, stake_sol, fl)
+    out["shrink_cost"] = shrink_cost(out["conversion_costs"], stake_sol)
     pids_t = {t["position_id"] for t in rows if t.get("kind") == "trade"}
     pids_x = {t["position_id"] for t in rows if t.get("kind") in ("excluded", "refused") and t.get("position_id")}  # as the WSOL board: engine-excluded + engine-refused over requested
     gap_t = {t["position_id"] for t in tr if t.get("gap_in_hold")}
@@ -196,7 +252,14 @@ def report(rows: Sequence[Mapping[str, Any]], stake_sol: float, send: float | No
     tot = len(pids_t | pids_x)
     share = len(pids_x) / tot if tot else 0.0
     strict = len(gap_t | gap_x) / tot if tot else 0.0  # any gap in the hold, whatever the mode (what the strict "on" book would exclude, at least)
-    out["excluded"] = {"positions_traded": len(pids_t), "positions_excluded_or_refused": len(pids_x), "share": share, "strict_any_gap_in_hold_share": strict, "max_share": EXCLUDED_MAX_SHARE,
+    g1p = {t["position_id"] for t in tr if t.get("stale_exit_capped") or t.get("unfilled_roundtrip")}
+    g1_share = len(g1p) / tot if tot else 0.0
+    out["g1"] = {"positions_stale_capped_or_unfilled": len(g1p), "stale_exit_capped": len({t["position_id"] for t in tr if t.get("stale_exit_capped")}),
+                 "unfilled_roundtrip": len({t["position_id"] for t in tr if t.get("unfilled_roundtrip")}), "denominator_positions": tot, "share": g1_share, "max_share": EXCLUDED_MAX_SHARE,
+                 "verdict": "NOT_DECIDABLE" if g1_share > EXCLUDED_MAX_SHARE else "ok", "scope": "this stake's windowed positions, each counted once, over the board denominator"}
+    tot_wo = len((pids_t | pids_x) - amb_here)
+    share_wo = len(pids_x - amb_here) / tot_wo if tot_wo else 0.0
+    out["excluded"] = {"share_without_ambiguous": share_wo, "ambiguous_buy_side_in_share": len(pids_x & amb_here), "positions_traded": len(pids_t), "positions_excluded_or_refused": len(pids_x), "share": share, "strict_any_gap_in_hold_share": strict, "max_share": EXCLUDED_MAX_SHARE,
                        "verdict": "NOT_DECIDABLE" if share > EXCLUDED_MAX_SHARE else "ok", "strict_verdict": "NOT_DECIDABLE" if strict > EXCLUDED_MAX_SHARE else "ok"}
     stake = np.array([float(t["stake_sol"]) for t in tr])
     pf = np.full(len(tr), F.FAIL_FLAT)
@@ -209,19 +272,40 @@ def report(rows: Sequence[Mapping[str, Any]], stake_sol: float, send: float | No
     out["flags"]["gap_in_hold"] = sum(byr.values())
     if status is not None:
         out["status"] = {k: status[k] for k in ("pending", "fee_audit", "quote_post_fallback", "lat_entry_s", "gap_mode", "written_unix_s") if k in status}
+        if win is not None:
+            out["status"]["whole_run_not_windowed"] = True
     if not all(math.isfinite(v) for v in fl["flat"]):
         raise ValueError("non-finite P&L")
     return out
 
 
 def _parse_instant(x: str) -> int:
-    """ms since epoch from an integer ms or an ISO instant (YYYY-MM-DDTHH[:MM[:SS]][Z], UTC)"""
+    """ms since epoch from an integer ms or an ISO instant (YYYY-MM-DDTHH[:MM[:SS]] with Z, +00:00 or no suffix = UTC). Any other offset is refused (ValueError)."""
     if x.lstrip("-").isdigit():
         return int(x)
-    z = x.rstrip("Z")
+    z = x[:-1] if x.endswith("Z") else x
+    if z.endswith("+00:00"):
+        z = z[:-6]
     if len(z) == 13:
         z += ":00"
-    return int(dt.datetime.fromisoformat(z).replace(tzinfo=dt.timezone.utc).timestamp() * 1000)
+    d = dt.datetime.fromisoformat(z)
+    if d.tzinfo is not None:
+        raise ValueError("non-UTC offset in %r: give the instant in UTC (Z)" % x)
+    return int(d.replace(tzinfo=dt.timezone.utc).timestamp() * 1000)
+
+
+def write_private(path: str, text: str) -> None:
+    """P3: the full (address-bearing) form goes only to a NEW file in a directory owned by the caller with no group/other bits; created O_EXCL|O_NOFOLLOW at 0600, never chmod after the write"""
+    import os
+
+    parent = Path(path).resolve().parent
+    stt = parent.stat()
+    if stt.st_uid != os.getuid() or stt.st_mode & 0o077:
+        raise ValueError("--out parent %s must be owned by the caller with mode 0700 (no group/other bits)" % parent)
+    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
+    with os.fdopen(fd, "w") as fh:
+        os.fchmod(fh.fileno(), 0o600)
+        fh.write(text)
 
 
 def main(argv: Sequence[str] | None = None) -> int:
@@ -233,8 +317,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     ap.add_argument("--status", default=None, help="the engine's status.json (default: oq-status.json next to the ledger dir, in the run dir); a read without it is refused")
     ap.add_argument("--start", default=None, help="P1 window start S (ms or ISO UTC, e.g. the manifest's start_hour 2026-11-19T03); needs --look")
     ap.add_argument("--look", default=None, help="P1 window end L, exclusive (ms or ISO UTC)")
-    ap.add_argument("--out", default=None, help="write the FULL output (with addresses) to this file, mode 0600; keep it in the book's 0700 out root")
-    ap.add_argument("--strip-addresses", action="store_true", help="P3: print the copy form (no creator / quote-mint address); --out still gets the full form")
+    ap.add_argument("--out", default=None, help="write the FULL output (with addresses) to this NEW file, mode 0600, in a directory you own with mode 0700 (the book's out root); stdout never carries addresses")
     a = ap.parse_args(argv)
     if (a.start is None) != (a.look is None):
         print("refused: --start and --look go together")
@@ -249,17 +332,18 @@ def main(argv: Sequence[str] | None = None) -> int:
     if age > STATUS_MAX_AGE_S:
         print("refused: oq-status.json is %.0f s old (written_unix_s %s), more than %d s" % (age, st.get("written_unix_s"), STATUS_MAX_AGE_S))
         return 2
-    win = (_parse_instant(a.start), _parse_instant(a.look)) if a.start is not None else None
-    rep = report(load_rows(a.ledger), a.stake, status=st, window=win)
-    rep["status_written_unix_s"] = st.get("written_unix_s")
-    if a.out:
-        import os
-
-        fd = os.open(a.out, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
-        with os.fdopen(fd, "w") as fh:
-            fh.write(json.dumps(rep, indent=1, sort_keys=True, default=float))
-        os.chmod(a.out, 0o600)
-    print(json.dumps(strip_addresses(rep) if a.strip_addresses else rep, indent=1, sort_keys=True, default=float))
+    try:
+        win = (_parse_instant(a.start), _parse_instant(a.look)) if a.start is not None else None
+        if win is not None and win[0] >= win[1]:
+            raise ValueError("window start %d is not before look %d" % win)
+        rep = report(load_rows(a.ledger), a.stake, status=st, window=win)
+        rep["status_written_unix_s"] = st.get("written_unix_s")
+        if a.out:
+            write_private(a.out, json.dumps(rep, indent=1, sort_keys=True, default=float))
+    except (ValueError, OSError) as e:
+        print("refused: %s" % e)
+        return 2
+    print(json.dumps(strip_addresses(rep), indent=1, sort_keys=True, default=float))
     return 0
 
 
