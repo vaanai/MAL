@@ -16,7 +16,7 @@ one group "unknown" and counted). Also reported next to P&L: unfilled round trip
 P1-P3 (card docs/rotation/books/osb-oq-v1.md, read prerequisites; PR #1458 item 5; QP/REVIEWER on PR #1465):
 P1 `window=(S_ms, L_ms)` keeps only positions whose ENTRY DECISION is in [S, L); every count and total is on that set; rows outside are counted by `kind:reason` only (`window`). Placement by row kind:
   trade / open rows and every sell-side row of an opened position: `decision_ms.entry` of the position. Buy-side excluded / refused rows (engine `_drop_entry`) carry NO decision time, only `t_ms` = the landing print: the entry was decided in
-  [t_ms - 24 h, t_ms - lat_entry]. Certainly inside [S, L) -> in; certainly outside -> out; the interval straddles S or L -> `ambiguous_buy_side`, which is counted IN (numerator and denominator of the board share and its verdict, the
+  [t_ms - HOLD_MS, t_ms - lat_entry] (HOLD_MS = arena_rule_l1_oq.HOLD_MS + arena_rules.TICK_MS). Certainly inside [S, L) -> in; certainly outside -> out; the interval straddles S or L -> `ambiguous_buy_side`, which is counted IN (numerator and denominator of the board share and its verdict, the
   conservative side); `excluded.share_without_ambiguous` is shown beside. A row whose time cannot be resolved REFUSES the read (ValueError; the CLI exits 2). The `g1` block (stale-capped exits + unfilled round trips, once per position, over the
   same denominator as the board share) is on the windowed set; the copied engine `status` is the whole run (`whole_run_not_windowed`).
 P2 `conversion_costs` on the windowed set: conversion-leg costs (entry + exit_conv_cost_lamports), sends, under no-fail and both fail legs. PARTIAL cost: conversion legs (fees + impact) + 4 sends; the token-leg pool fees and impact are NOT in the rows.
@@ -38,7 +38,9 @@ from typing import Any, Iterable, Mapping, Sequence
 
 import numpy as np
 
+from tools import arena_rule_l1_oq as Q
 from tools import arena_stack as F
+from tools.arena_rules import TICK_MS
 
 STATUS_MAX_AGE_S = 7200
 EXCLUDED_MAX_SHARE = 0.05  # arena_paper: > 5% of a book excluded -> NOT_DECIDABLE
@@ -75,7 +77,7 @@ def _entry_ms(r: Mapping[str, Any]) -> int | None:
     return int(d["entry"]) if isinstance(d, Mapping) and d.get("entry") is not None else None
 
 
-HOLD_MS = 86_400_000  # an entry lands, or is scored as an unfilled round trip, within 24 h of its decision
+HOLD_MS = Q.HOLD_MS + TICK_MS  # earliest possible entry decision of a row = t_ms - this: the rule's 24 h hold + its leg slack (arena_rule_l1_oq.HOLD_MS) + one decision tick (arena_rules.TICK_MS); imported, not hard-coded
 
 
 def window_rows(rows: Sequence[Mapping[str, Any]], start_ms: int, end_ms: int, lat_ms: float = 0.0) -> tuple[list[Mapping[str, Any]], dict[str, Any]]:
@@ -122,7 +124,7 @@ def window_rows(rows: Sequence[Mapping[str, Any]], start_ms: int, end_ms: int, l
                 n_amb += 1
                 amb_pids.add(r.get("position_id"))
     return kept, {"start_ms": start_ms, "end_ms": end_ms,
-                  "rule": "entry decision in [start_ms, end_ms): trade/open rows and sell-side rows by decision_ms.entry of the position; buy-side excluded/refused rows (no decision time) by the interval [t_ms - 24 h, t_ms - lat_entry]: inside, outside, or ambiguous (counted in)",
+                  "rule": "entry decision in [start_ms, end_ms): trade/open rows and sell-side rows by decision_ms.entry of the position; buy-side excluded/refused rows (no decision time) by the interval [t_ms - HOLD_MS, t_ms - lat_entry] (HOLD_MS = arena_rule_l1_oq.HOLD_MS + arena_rules.TICK_MS): inside, outside, or ambiguous (counted in)",
                   "kept_rows": len(kept), "buy_side_rows_placed_by_t_ms": n_buy, "ambiguous_buy_side": n_amb, "lat_entry_ms_used": int(lat_ms), "outside_before_by_reason": dict(sorted(before.items())),
                   "outside_at_or_after_end_by_reason": dict(sorted(after.items())), "ambiguous_pids": amb_pids}
 
@@ -256,7 +258,7 @@ def report(rows: Sequence[Mapping[str, Any]], stake_sol: float, send: float | No
     g1_share = len(g1p) / tot if tot else 0.0
     out["g1"] = {"positions_stale_capped_or_unfilled": len(g1p), "stale_exit_capped": len({t["position_id"] for t in tr if t.get("stale_exit_capped")}),
                  "unfilled_roundtrip": len({t["position_id"] for t in tr if t.get("unfilled_roundtrip")}), "denominator_positions": tot, "share": g1_share, "max_share": EXCLUDED_MAX_SHARE,
-                 "verdict": "NOT_DECIDABLE" if g1_share > EXCLUDED_MAX_SHARE else "ok", "scope": "this stake's windowed positions, each counted once, over the board denominator"}
+                 "verdict": "NOT_DECIDABLE" if g1_share > EXCLUDED_MAX_SHARE else "ok", "scope": "this stake's windowed positions, each counted once, over the board denominator (traded + excluded/refused positions, ambiguous buy-side positions included)"}
     tot_wo = len((pids_t | pids_x) - amb_here)
     share_wo = len(pids_x - amb_here) / tot_wo if tot_wo else 0.0
     out["excluded"] = {"share_without_ambiguous": share_wo, "ambiguous_buy_side_in_share": len(pids_x & amb_here), "positions_traded": len(pids_t), "positions_excluded_or_refused": len(pids_x), "share": share, "strict_any_gap_in_hold_share": strict, "max_share": EXCLUDED_MAX_SHARE,

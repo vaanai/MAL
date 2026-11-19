@@ -241,7 +241,7 @@ def test_no_window_output_equals_main_scorer_for_every_old_key():
     root = Path(__file__).resolve().parents[1]
     r = subprocess.run(["git", "-C", str(root), "show", OLD_SCORER_REF + ":tools/arena_oq_score.py"], capture_output=True, text=True)
     if r.returncode:
-        pytest.skip("old scorer ref not available")
+        pytest.fail("commit %s is missing (fetch it): the backward-compat proof cannot run" % OLD_SCORER_REF)
     spec = importlib.util.spec_from_loader("old_score", loader=None)
     old = importlib.util.module_from_spec(spec)
     exec(compile(r.stdout, "old_score", "exec"), old.__dict__)
@@ -254,6 +254,22 @@ def test_no_window_output_equals_main_scorer_for_every_old_key():
             assert {x: b[k][x] for x in a[k]} == a[k]
         else:
             assert json.dumps(b[k], sort_keys=True, default=float) == json.dumps(a[k], sort_keys=True, default=float), k
+
+
+def test_n1_earliest_decision_uses_the_rule_hold_plus_tick_imported():
+    from tools import arena_rule_l1_oq as Q
+    from tools.arena_rules import TICK_MS
+
+    assert S.HOLD_MS == Q.HOLD_MS + TICK_MS and S.HOLD_MS > 86_400_000
+    # entry decided at L - 1 s, scored an unfilled round trip HOLD_MS later (24 h + leg slack + tick): the row must not be certainly outside
+    base = rows_edges()[1:4]
+    rep = S.report(base + [{"kind": "refused", "position_id": "r1", "side": "buy", "reason": "no_quote", "t_ms": Lm - 1000 + S.HOLD_MS}], STAKE, window=(Sm, Lm), lat_entry_ms=4085)
+    assert rep["window"]["outside_at_or_after_end_by_reason"] == {} and rep["flags"]["refused_rows"] == 1 and rep["window"]["ambiguous_buy_side"] == 1
+    # with the old 24 h constant this row would be placed certainly outside only if t_ms - 24 h >= L; with the imported hold it needs t_ms - HOLD_MS >= L
+    legacy = S.report(base + [{"kind": "refused", "position_id": "r1", "side": "buy", "reason": "no_quote", "t_ms": Lm + 86_400_000 + 1000}], STAKE, window=(Sm, Lm), lat_entry_ms=4085)
+    assert legacy["window"]["outside_at_or_after_end_by_reason"] == {} and legacy["window"]["ambiguous_buy_side"] == 1
+    out = S.report(base + [{"kind": "refused", "position_id": "r1", "side": "buy", "reason": "no_quote", "t_ms": Lm + S.HOLD_MS}], STAKE, window=(Sm, Lm), lat_entry_ms=4085)
+    assert out["window"]["outside_at_or_after_end_by_reason"] == {"refused:no_quote": 1}
 
 
 def test_parse_instant_iso_and_ms():
