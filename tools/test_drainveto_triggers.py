@@ -26,6 +26,7 @@ FAKE_L1 = textwrap.dedent('''
         def triggers(self, hour, state):
             out = []
             canon = {'MINT': 'P'}
+            qpost = hour.q - hour.sol / (1 - 0.0125)  # the rule's own sell-side q_post
             for p in range(len(hour.pools)):
                 pool = str(hour.pools[p])
                 for r in hour.rows_q[p]:
@@ -48,7 +49,10 @@ def load_fake(tmp_path):
 
 class Hour:
     def __init__(self, pools, mints, rows_q, sl, tx, ev, block="blk0", T=3600):
+        import numpy as np
         self.pools, self.mints, self.rows_q, self.sl, self.tx, self.ev, self.block, self.T = pools, mints, rows_q, sl, tx, ev, block, T
+        n = len(sl)
+        self.q, self.sol, self.b, self.tok, self.v = (np.arange(n) * 1e6 + 1e8), np.full(n, 8e7), np.full(n, 1000.0), np.full(n, 50.0), np.full(n, 17.6e9)
 
 
 def test_source_equality_fake(tmp_path):
@@ -99,10 +103,13 @@ def test_locrule_records_first_in_kit_order_and_earlier_nonqualifying(tmp_path):
     assert rule.loc[0][3:6] == (100, 1, 3)  # first qualifying print in kit order
     assert rule.loc[1][3:6] == (100, 2, 0)
     assert rule.loc[0][6] == "MINT" and rule.loc[0][7] is True
+    # decision state of the trigger print itself: Q = the rule's qpost at that row (V excluded), B = b + tok, V = hour.v
+    assert rule.loc[0][8] == pytest.approx(h.q[1] - h.sol[1] / (1 - 0.0125)) and rule.loc[0][9] == 1050.0 and rule.loc[0][10] == 17.6e9
+    assert rule.loc[1][8] == pytest.approx(h.q[2] - h.sol[2] / (1 - 0.0125))
 
 
-def mk_rec(pool="P", slot=100, T=3600, tx=1, ev=3, mint="MINT", canon=True, block="blk0"):
-    return (block, T, pool, slot, tx, ev, mint, canon)
+def mk_rec(pool="P", slot=100, T=3600, tx=1, ev=3, mint="MINT", canon=True, block="blk0", Q=1e8, B=1050.0, V=17.6e9):
+    return (block, T, pool, slot, tx, ev, mint, canon, Q, B, V)
 
 
 def crcp(p):
@@ -113,6 +120,8 @@ def test_join_first_print_and_count():
     recs = [mk_rec(tx=1, ev=3), mk_rec(tx=2, ev=0)]
     out = B.join(recs, [(0, crcp("P"), 100, 3600)], ["blk0"], expect_n=1)
     assert out[0]["tx_index"] == 1 and out[0]["event_index"] == 3 and out[0]["n_qual_in_slot"] == 2
+    out = B.join([mk_rec(tx=1, Q=5.0), mk_rec(tx=2, Q=9.0)], [(0, crcp("P"), 100, 3600)], ["blk0"], expect_n=1)
+    assert out[0]["Q"] == 5.0  # the first print's state
 
 
 def test_join_unmatched_refused():
@@ -186,12 +195,14 @@ def test_scan_keys_txev_missing(tmp_path):
 
 
 def test_finish_rows_problems_order_and_allowlist():
-    loc = [{"blk": 0, "block": "b0", "pool": "B", "pool_crc32": 2, "slot": 5, "hourT": 3600, "tx_index": 1, "event_index": 2, "mint": "M", "canon_ok": True, "n_qual_in_slot": 1},
-           {"blk": 0, "block": "b0", "pool": "A", "pool_crc32": 1, "slot": 5, "hourT": 3600, "tx_index": 1, "event_index": 2, "mint": "", "canon_ok": True, "n_qual_in_slot": 2},
-           {"blk": 0, "block": "b0", "pool": "C", "pool_crc32": 3, "slot": 4, "hourT": 3600, "tx_index": 1, "event_index": 2, "mint": "M", "canon_ok": False, "n_qual_in_slot": 1},
-           {"blk": 0, "block": "b0", "pool": "D", "pool_crc32": 4, "slot": 9, "hourT": 3600, "tx_index": 1, "event_index": 2, "mint": "M", "canon_ok": True, "n_qual_in_slot": 1}]
+    loc = [{"blk": 0, "block": "b0", "pool": "B", "pool_crc32": 2, "slot": 5, "hourT": 3600, "tx_index": 1, "event_index": 2, "mint": "M", "canon_ok": True, "n_qual_in_slot": 1, "Q": 1.0, "B": 2.0, "V": 3.0},
+           {"blk": 0, "block": "b0", "pool": "A", "pool_crc32": 1, "slot": 5, "hourT": 3600, "tx_index": 1, "event_index": 2, "mint": "", "canon_ok": True, "n_qual_in_slot": 2, "Q": 1.0, "B": 2.0, "V": 3.0},
+           {"blk": 0, "block": "b0", "pool": "C", "pool_crc32": 3, "slot": 4, "hourT": 3600, "tx_index": 1, "event_index": 2, "mint": "M", "canon_ok": False, "n_qual_in_slot": 1, "Q": 1.0, "B": 2.0, "V": 3.0},
+           {"blk": 0, "block": "b0", "pool": "D", "pool_crc32": 4, "slot": 9, "hourT": 3600, "tx_index": 1, "event_index": 2, "mint": "M", "canon_ok": True, "n_qual_in_slot": 1, "Q": 1.0, "B": 2.0, "V": 3.0}]
     kc = {("B", 5): [1, True], ("A", 5): [1, True], ("C", 4): [1, True], ("D", 9): [1, False]}
-    rows = B.finish_rows(loc, kc)
+    rows, st = B.finish_rows(loc, kc)
+    assert [r["ordinal"] for r in st] == [1, 2, 3, 4] and all(tuple(r) == B.DSTATE_KEYS for r in st)
+    assert all(set(r) .isdisjoint({"Q", "B", "V"}) for r in rows)  # the locator file carries no reserve
     assert [r["pool"] for r in rows] == ["C", "A", "B", "D"] and [r["ordinal"] for r in rows] == [1, 2, 3, 4]  # sorted by (blk, slot, pool), not input order
     assert [r["locator_problem"] for r in rows] == ["mint_not_canon", "mint_missing", "none", "txev_missing"]
     assert [r["locator_ok"] for r in rows] == [False, False, True, False]
@@ -203,15 +214,41 @@ def test_finish_rows_problems_order_and_allowlist():
 
 def test_output_leak_and_mode(tmp_path):
     rows = [{k: 1 for k in B.OUT_KEYS}]
-    p, sha = B.write_rows(rows, str(tmp_path), root=str(tmp_path))
-    assert stat.S_IMODE(os.stat(p).st_mode) == 0o640 and sha == B.sha256_file(p)
-    assert set(json.loads(open(p).readline())) == set(B.OUT_KEYS)
-    for bad in ("Qe", "block_time", "trader", "sol", "xs", "tdec", "V"):
+    st = [{k: 1 for k in B.DSTATE_KEYS}]
+    w = B.write_files({"a.jsonl": (rows, B.OUT_KEYS), "b.jsonl": (st, B.DSTATE_KEYS)}, str(tmp_path), root=str(tmp_path))
+    for name, (p, sha) in w.items():
+        assert stat.S_IMODE(os.stat(p).st_mode) == 0o640 and sha == B.sha256_file(p)
+    assert w["a.jsonl"][1] != w["b.jsonl"][1]
+    assert set(json.loads(open(w["a.jsonl"][0]).readline())) == set(B.OUT_KEYS) and set(json.loads(open(w["b.jsonl"][0]).readline())) == set(B.DSTATE_KEYS)
+    for bad in ("Qe", "Be", "block_time", "trader", "sol", "xs", "tdec", "Qx", "why"):
+        assert bad not in B.OUT_KEYS and bad not in B.DSTATE_KEYS
+    for bad in ("Q", "B", "V", "split"):
         assert bad not in B.OUT_KEYS
     with pytest.raises(B.BuilderRefused, match="output_key_not_allowed"):
-        B.write_rows([{**rows[0], "tdec": 1}], str(tmp_path), root=str(tmp_path))
+        B.write_files({"a": ([{**rows[0], "tdec": 1}], B.OUT_KEYS)}, str(tmp_path), root=str(tmp_path))
+    with pytest.raises(B.BuilderRefused, match="output_key_not_allowed"):
+        B.write_files({"a": ([{**st[0], "Qe": 1}], B.DSTATE_KEYS)}, str(tmp_path), root=str(tmp_path))
     with pytest.raises(B.BuilderRefused, match="out_dir_not"):
-        B.write_rows(rows, str(tmp_path / "other"), root=str(tmp_path))
+        B.write_files({"a": (rows, B.OUT_KEYS)}, str(tmp_path / "other"), root=str(tmp_path))
+    # a bad second file writes NOTHING (the first is not left behind)
+    d2 = tmp_path / "x"
+    d2.mkdir()
+    with pytest.raises(B.BuilderRefused):
+        B.write_files({"a.jsonl": (rows, B.OUT_KEYS), "b.jsonl": ([{"bad": 1}], B.DSTATE_KEYS)}, str(d2), root=str(d2))
+    assert os.listdir(d2) == []
+
+
+def test_split_rule():
+    from datetime import datetime, timezone
+    t = lambda *a: int(datetime(*a, tzinfo=timezone.utc).timestamp())
+    assert B.split_of("explore-0814", t(2026, 8, 21, 11)) == "D" and B.split_of("explore-0814", t(2026, 8, 21, 12)) == "C1"
+    for blk in ("fast-pool-2026-09-18T23_2026-09-22T00", "oracle-insample-2026-09-22_25", "oracle-live-2026-09-25_27"):
+        assert B.split_of(blk, t(2026, 9, 22, 0)) == "C2"
+
+
+def test_disclosures_include_d7_and_run_note():
+    assert any(d.startswith("D7") for d in B.DISCLOSURES)
+    assert "-m" in B.__doc__ and "MemoryMax >= 3G" in B.__doc__
 
 
 def test_refusal_writes_no_file(tmp_path, monkeypatch):
