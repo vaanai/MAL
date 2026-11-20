@@ -156,8 +156,17 @@ class Capture:
     """Per (block, pool crc): trimmed pool rows and the per-hour clock, as the kit's _price_store saw them."""
 
     def __init__(self):
-        self.pools: dict = {}
-        self.clk: dict = {}
+        self.pools: dict = {}  # (block, pool crc) -> list of segment entries (a pool is priced once per flushed segment)
+
+    def add(self, key, entry):
+        self.pools.setdefault(key, []).append(entry)
+
+    def find(self, bi: int, crc: int, sd: int):
+        """The segment entry that priced attempt (block, pool, decision slot sd). Several segments of one pool share a key."""
+        for e in self.pools[(int(bi), int(crc))]:
+            if int(sd) in e["sds"]:
+                return e
+        raise KeyError((bi, crc, sd))
 
 
 def run_pass1(workers: int, blocks=None):
@@ -195,10 +204,9 @@ def run_pass1(workers: int, blocks=None):
             jx = int(min(len(sl) - 1, np.searchsorted(sl, need.max(), "left")))
             j0 = max(0, int(np.searchsorted(sl, sd.min(), "left")) - 1)
             key = (int(bi), zlib.crc32(pool.encode()))
-            cap.pools[key] = {"a": {k: np.array(v[j0:jx + 1]) for k, v in a.items()}, "seg_end": int(loc["seg_end"])}
-            if bi not in cap.clk:
-                hours = np.array(sorted(ms))
-                cap.clk[int(bi)] = {"hours": hours, "mins": np.array([ms[h] for h in hours]), "rate": {int(h): float(clk["rate"][int(h)]) for h in hours}}
+            hours = np.array(sorted(ms))
+            clkd = {"hours": hours, "mins": np.array([ms[h] for h in hours]), "rate": {int(h): float(clk["rate"][int(h)]) for h in hours}}
+            cap.add(key, {"a": {k: np.array(v[j0:jx + 1]) for k, v in a.items()}, "seg_end": int(loc["seg_end"]), "sds": {int(x) for x in sd}, "clk": clkd})
         return out
 
     S.pool_states = hook
@@ -221,9 +229,9 @@ def run_pass1(workers: int, blocks=None):
 def reprice(S, cap: Capture, st: dict, i: int, xr: int):
     """Kit pricing of attempt i exited at decision slot xr. Returns (Qx, Bx) or None when the kit would exclude it at the block edge."""
     bi, crc, sd = int(st["blk"][i]), int(st["pool"][i]), int(st["sd"][i])
-    c = cap.pools[(bi, crc)]
+    c = cap.find(bi, crc, sd)
     a, seg_end = c["a"], c["seg_end"]
-    clk = cap.clk[bi]
+    clk = c["clk"]
     hours, mins, rate = clk["hours"], clk["mins"], clk["rate"]
     hd = int(np.clip(np.searchsorted(mins, sd, "right") - 1, 0, len(mins) - 1))
     hx = int(np.clip(np.searchsorted(mins, xr, "right") - 1, 0, len(mins) - 1))
@@ -284,7 +292,12 @@ def main(argv=None) -> int:
     # self-check: reprice at the original exit slot reproduces the kit's Qx, Bx
     bad = 0
     for i in range(n):
-        r = reprice(S, cap, st, i, int(st["xs"][i]))
+        try:
+            r = reprice(S, cap, st, i, int(st["xs"][i]))
+        except Exception as e:  # counted, never silent
+            print("selfcheck exception", i, type(e).__name__, str(e)[:80], flush=True)
+            bad += 1
+            continue
         if r is None or r[0] != float(st["Qx"][i]) or r[1] != float(st["Bx"][i]):
             bad += 1
     res["selfcheck_mismatch"] = bad
@@ -311,7 +324,7 @@ def main(argv=None) -> int:
     rate_of = {}
     for i in range(n):
         bi = int(st["blk"][i])
-        clk = cap.clk[bi]
+        clk = cap.find(bi, int(st["pool"][i]), int(st["sd"][i]))["clk"]
         hd = int(np.clip(np.searchsorted(clk["mins"], int(st["sd"][i]), "right") - 1, 0, len(clk["mins"]) - 1))
         rate_of[i] = clk["rate"][int(clk["hours"][hd])]
     qcache: dict = {}
@@ -338,7 +351,7 @@ def main(argv=None) -> int:
                         xr = int(st["sd"][gi]) + int(np.rint((t - td[gi]) * rate_of[gi]))
                         key = (gi, xr)
                         if key not in qcache:
-                            c = cap.pools[(int(st["blk"][gi]), int(st["pool"][gi]))]
+                            c = cap.find(int(st["blk"][gi]), int(st["pool"][gi]), int(st["sd"][gi]))
                             ok = at_floor_no_net_buy(c["a"], xr, rate_of[gi])
                             qcache[key] = reprice(S, cap, st, gi, xr) if ok else None
                         return qcache[key]

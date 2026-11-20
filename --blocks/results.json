@@ -116,7 +116,8 @@
    }
   }
  },
- "verdict_all_items_pass": true,
+ "verdict_all_items_pass": false,
+ "verdict_combos": 0,
  "verdict": {},
  "results": {
   "6|C2|4|0|kit|flat": {

@@ -107,3 +107,17 @@ def test_paired_boot_seed_deterministic():
     r1 = R.paired_boot({1: 1.0, 2: 2.0, 3: -0.5}, {1: 0.5, 2: 1.0, 3: 0.0})
     r2 = R.paired_boot({1: 1.0, 2: 2.0, 3: -0.5}, {1: 0.5, 2: 1.0, 3: 0.0})
     assert r1 == r2 and r1["p2.5"] <= r1["p5"]
+
+
+def test_capture_find_two_segments_same_pool():
+    """Regression for 'mint without prints': a pool flushed in two segments of a block shares (block, crc); the later segment must not overwrite the first."""
+    cap = R.Capture()
+    cap.add((0, 7), {"a": {"sl": np.array([1, 2])}, "sds": {10, 20}, "seg_end": 5, "clk": {}})
+    cap.add((0, 7), {"a": {"sl": np.array([900, 901])}, "sds": {1000}, "seg_end": 2000, "clk": {}})
+    assert cap.find(0, 7, 20)["a"]["sl"].tolist() == [1, 2]
+    assert cap.find(0, 7, 1000)["a"]["sl"].tolist() == [900, 901]
+    try:
+        cap.find(0, 7, 5)
+        assert False
+    except KeyError:
+        pass
