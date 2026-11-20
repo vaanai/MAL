@@ -1,0 +1,27 @@
+{
+ "book_id": "osb-boost330",
+ "kind": "h5_shadow_fresh_forward (not an osb_follow book: osb_follow replays FLOOR host code on tape; this book is the frozen H5 shadow detector on the live public PumpSwap feed)",
+ "rule_id": "H5-BOOSTFLOOR v1",
+ "rule_file": "/data/mal/hunt-1008/h5-flows/RULE.md",
+ "rule_sha256": "c66b1a5990468080d56a97d67619c035cd81e2782eac89c48b94b8c9c9abe56c",
+ "rule_sha256_cite": "tools/h5_shadow.py RULE_SHA256 (line 190); EXP/EXP-024-h5-boostfloor-part1-prereg.md section 2 (sed check, line 659)",
+ "rule": {
+  "universe": "complete graduation, canonical PumpSwap pool, V in [17.5, 17.7] SOL, non-mayhem, BOOST era",
+  "trigger": "first non-BOOST sell print at t in [0, 300] s after the pool's first print with post-sell Q = real quote + V <= 40 SOL and BOOST spent < 0.999 * 17.585 SOL; one trade per pool",
+  "q_star_sol": 40.0,
+  "entry_landing_s": [1.3, 1.9],
+  "exit": "s0 + round(330 s / sps) trigger; sell lands ceil(0.55 s / sps) slots later",
+  "priority_lamports_per_send": 55000,
+  "variant_priced": "pv (per-print V); fv is report-only"
+ },
+ "code": {
+  "file": "tools/h5_shadow.py",
+  "blob_sha1_at_main_02afa4fc": "f23cf492211fd79287fa6ac82fd382f1f3e39a3d",
+  "flags": "--fresh-forward ARENA (default --q-star-sol 40.0; bx10 off by not passing --bx10-enable)"
+ },
+ "scorer": "OPEN: tools/arena_h5_score.py BOTS holds only h5v1-boostfloor-a1 and h5v2-boostclock-a1; a bot id for this book needs a registration (see osb-boost330-start-plan.md section 5)",
+ "stakes_sol": [0.1, 0.25],
+ "start_instant_utc": "<set by the manager at start>",
+ "out_dir": "<ARENA_ROOT>/h5-boost330-<UTC start date>   (must resolve under h5-*; check_fresh_out_dir)",
+ "seals": "SEALS-BRIEF arena lines; shadow dir and ledger sealed like every arena book's; never miscusi_job_status on the runner job"
+}
