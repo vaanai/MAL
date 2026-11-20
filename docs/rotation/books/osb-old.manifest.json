@@ -1,6 +1,6 @@
 {
  "book_id": "osb-old",
- "title": "open sim book osb-old: FLOOR live config (lane host with gap guard) on graduates aged 200 h to 21 d (AGE_LO 720000, AGE_HI 1814400), birth times known only from the book's own follow from 2026-11-02T01",
+ "title": "open sim book osb-old: FLOOR live config (lane host with gap guard) on graduates aged 200 h to 21 d (AGE_LO 720000, AGE_HI 1814400), birth times known only from the book's own follow from 2026-11-03T03",
  "host": "lane",
  "rule_overrides": {
   "AGE_LO": 720000,
@@ -13,8 +13,8 @@
   1.0
  ],
  "send_lamports": 160000,
- "start_hour": "<set at start: YYYY-MM-DDTH, not before 2026-11-23T02>",
- "seed_from_hour": "2026-11-02T01",
+ "start_hour": "<set at start: YYYY-MM-DDTHH, not before 2026-11-24T04>",
+ "seed_from_hour": "2026-11-03T03",
  "tape_dir": "/data2/mal/scratch/floor-open-sim/keep",
  "out_root": "/data2/mal/scratch/floor-open-sim/books/osb-old",
  "lane": {
