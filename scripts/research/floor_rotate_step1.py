@@ -5,7 +5,7 @@ Declaration (binding, written and chmod a-w before any priced run):
   /data/mal/hunt-1008/ops/reports/2026-11-20/floor-rotate-step1-DECLARATION.md
 Ruling: /data/mal/hunt-1008/ops/QP-RULING-1120-floor-rotate-old.md (Q2).
 
-`--policy first` is first-come (analyze.py cap_sim). `--policy rotate` rotates the oldest stale at-floor position when the cap is full and a trigger arrives.
+The job runs both policies on the same attempts: first-come (analyze.py cap_sim) and rotate (policy `rotate`), which rotates the oldest stale at-floor position when the cap is full and a trigger arrives.
 Pass 1 runs the kit (tools/arena_screen.py) on the four OUTCOMES exploration blocks for the single base cell h24_tp1.5 and captures each attempt's pool rows.
 Pass 2 runs the cap simulations and reprices every rotated exit with the kit's own pool_states at the rotation decision slot (never a later one).
 Usage: floor_rotate_step1.py OUT_DIR [--workers N] [--ref-pkl grid.pkl]
