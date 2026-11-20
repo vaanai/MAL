@@ -57,6 +57,28 @@ def trig(**kw):
     return d
 
 
+def split_files(path, tmp):
+    """Turn the merged fixture trigger lines (trig()) into a locator file + dstate file; returns (locator path, sha256, dstate path)."""
+    from datetime import datetime, timezone
+    loc, st = [], []
+    for i, line in enumerate(open(path), 1):
+        t = json.loads(line)
+        hr = datetime.fromtimestamp(t["block_time"], tz=timezone.utc).strftime("%Y-%m-%dT%H")
+        loc.append({"ordinal": i, "block": t["blk"], "blk": 0, "pool": "PX", "pool_crc32": 1, "mint": t["mint"], "hour": hr, "slot": t["slot"], "tx_index": t["tx_index"],
+                    "event_index": t["event_index"], "locator_ok": t.get("locator_ok", True), "locator_problem": "none", "n_qual_in_slot": 1})
+        st.append({"ordinal": i, "Q": t["Q"], "B": t["B"], "V": t["V"], "split": t.get("split")})
+    lp, sp = tmp / "loc.jsonl", tmp / "dstate.jsonl"
+    lp.write_text("".join(json.dumps(r) + "\n" for r in loc))
+    sp.write_text("".join(json.dumps(r) + "\n" for r in st))
+    return str(lp), R.sha256_file(str(lp)), str(sp)
+
+
+def run_merged(path, out, schema_json=None):
+    from pathlib import Path
+    lp, sha, sp = split_files(path, Path(path).parent)
+    return R.run(lp, out, schema_json, triggers_sha256=sha, dstate_path=sp)
+
+
 def test_drain_tokens_algebra():
     assert R.drain_tokens(1.0, 100.0, 10.0) == pytest.approx(10.0)  # Q*B/V
     with pytest.raises(R.ReaderRefused):
@@ -83,7 +105,7 @@ def test_reader_balances_cut_and_flags(view, tmp_path):
     tp = tmp_path / "t.jsonl"
     tp.write_text(json.dumps(trig(split="D")) + "\n")
     out = tmp_path / "out"
-    R.run(str(tp), str(out))
+    run_merged(str(tp), str(out))
     rec = json.loads((out / "per_pool.jsonl").read_text().splitlines()[0])
     assert rec["status"] == "measured"
     # balances: a=400, b=30, c=20 ; total 450 ; D = 10 -> top1 400 >= 10
@@ -102,7 +124,7 @@ def test_not_flagged_when_drain_too_large(view, tmp_path):
     build(view, {T0: [trade("M1", "a", "buy", 5, 10, 0, T0 + 5)]}, {T0: [{"mint": "M1", "block_time": T0 + 1}]})
     tp = tmp_path / "t.jsonl"
     tp.write_text(json.dumps(trig(block_time=T0 + 100, Q=10.0, B=100.0, V=1.0)) + "\n")  # D = 1000
-    R.run(str(tp), str(tmp_path / "o"))
+    run_merged(str(tp), str(tmp_path / "o"))
     rec = json.loads((tmp_path / "o" / "per_pool.jsonl").read_text().splitlines()[0])
     assert rec["top1_ge_D"] is False and rec["top3_ge_D"] is False
 
@@ -111,7 +133,7 @@ def test_pool_without_create_in_block_is_censored_and_counted(view, tmp_path):
     build(view, {T0: [trade("M1", "a", "buy", 5, 10, 0, T0 + 5)]}, {T0: [{"mint": "OTHER", "block_time": T0 + 1}]})
     tp = tmp_path / "t.jsonl"
     tp.write_text(json.dumps(trig(block_time=T0 + 100)) + "\n")
-    R.run(str(tp), str(tmp_path / "o"))
+    run_merged(str(tp), str(tmp_path / "o"))
     rec = json.loads((tmp_path / "o" / "per_pool.jsonl").read_text().splitlines()[0])
     assert rec == {"i": 0, "blk": BLK, "split": None, "status": "censored", "reason": "no_create_in_block"}
     agg = json.loads((tmp_path / "o" / "counts.json").read_text())["aggregate"]
@@ -124,7 +146,7 @@ def test_create_hour_before_block_start_is_censored(view, tmp_path):
     build(view, {T0 + 3600: [trade("M1", "a", "buy", 5, 10, 0, T0 + 3601)]}, {T0: [{"mint": "M1", "block_time": T0 + 1}]})
     tp = tmp_path / "t.jsonl"
     tp.write_text(json.dumps(trig(block_time=T0 + 3700)) + "\n")
-    R.run(str(tp), str(tmp_path / "o"))
+    run_merged(str(tp), str(tmp_path / "o"))
     rec = json.loads((tmp_path / "o" / "per_pool.jsonl").read_text().splitlines()[0])
     assert rec["reason"] == "no_create_in_block"
 
@@ -133,7 +155,7 @@ def test_block_without_curve_rows_not_measurable(view, tmp_path):
     build(view, {T0: [trade("M1", "a", "buy", 5, 10, 0, T0 + 5, "pumpswap")]}, {T0: [{"mint": "M1", "block_time": T0 + 1}]}, pad=False)
     tp = tmp_path / "t.jsonl"
     tp.write_text(json.dumps(trig(block_time=T0 + 100)) + "\n")
-    R.run(str(tp), str(tmp_path / "o"))
+    run_merged(str(tp), str(tmp_path / "o"))
     rec = json.loads((tmp_path / "o" / "per_pool.jsonl").read_text().splitlines()[0])
     assert rec["reason"] == "block_not_measurable"
 
@@ -160,19 +182,54 @@ def test_refuses_other_roots(blk):
         R.block_root(blk)
 
 
-def test_refuses_extra_trigger_keys(tmp_path):
-    p = tmp_path / "t.jsonl"
-    for bad in ("Qx", "why", "dur_s", "wQ1", "pnl"):
-        p.write_text(json.dumps(trig(**{bad: 1})) + "\n")
+def test_refuses_extra_locator_keys_and_dstate_outcome_keys(tmp_path):
+    lp = tmp_path / "t.jsonl"
+    base = {"ordinal": 1, "block": BLK, "blk": 0, "pool": "P", "pool_crc32": 1, "mint": "M", "hour": "2026-09-22T00", "slot": 1, "tx_index": 0, "event_index": 0,
+            "locator_ok": True, "locator_problem": "none", "n_qual_in_slot": 1}
+    sp = tmp_path / "s.jsonl"
+    sp.write_text(json.dumps({"ordinal": 1, "Q": 1, "B": 1, "V": 1, "split": None}) + "\n")
+    for bad in ("Qx", "why", "dur_s", "wQ1", "pnl", "xs", "tdec"):
+        lp.write_text(json.dumps({**base, bad: 1}) + "\n")
         with pytest.raises(R.ReaderRefused):
-            R.load_triggers(str(p))
+            R.load_triggers(str(lp), R.sha256_file(str(lp)), str(sp))
+        lp.write_text(json.dumps(base) + "\n")
+        sp.write_text(json.dumps({"ordinal": 1, "Q": 1, "B": 1, "V": 1, "split": None, bad: 1}) + "\n")
+        with pytest.raises(R.ReaderRefused):
+            R.load_triggers(str(lp), R.sha256_file(str(lp)), str(sp))
+        sp.write_text(json.dumps({"ordinal": 1, "Q": 1, "B": 1, "V": 1, "split": None}) + "\n")
+
+
+def test_refuses_trigger_file_with_wrong_sha(tmp_path):
+    lp, sha, sp = _files(tmp_path, trig())
+    with pytest.raises(R.ReaderRefused, match="sha256_mismatch"):
+        R.load_triggers(lp, "0" * 64, sp)
+    with pytest.raises(R.ReaderRefused, match="sha256_mismatch"):
+        R.load_triggers(lp, "", sp)
+    open(lp, "a").write("\n")  # any byte change after pinning
+    with pytest.raises(R.ReaderRefused, match="sha256_mismatch"):
+        R.load_triggers(lp, sha, sp)
+    assert R.main(["--triggers", lp, "--triggers-sha256", "0" * 64, "--dstate", sp, "--out", str(tmp_path / "o")]) == 2
+
+
+def _files(tmp_path, t):
+    p = tmp_path / "m.jsonl"
+    p.write_text(json.dumps(t) + "\n")
+    return split_files(str(p), tmp_path)
+
+
+def test_locator_incomplete_is_censored_and_counted(view, tmp_path):
+    build(view, {T0: [trade("M1", "a", "buy", 5, 10, 0, T0 + 5)]}, {T0: [{"mint": "M1", "block_time": T0 + 1}]})
+    rec, ret = _run1(view, tmp_path, trig(block_time=T0 + 100, locator_ok=False))
+    assert rec == {"i": 0, "blk": BLK, "split": None, "status": "censored", "reason": "locator_incomplete"}
+    row = [r for r in ret["aggregate"] if r["split"] == "all"][0]
+    assert row["censored_locator_incomplete"] == 1 and row["measured"] == 0
 
 
 def test_refuses_unknown_block_in_run(tmp_path):
     p = tmp_path / "t.jsonl"
     p.write_text(json.dumps(trig(blk="fresh-0808")) + "\n")
     with pytest.raises(R.ReaderRefused):
-        R.run(str(p), str(tmp_path / "o"))
+        run_merged(str(p), str(tmp_path / "o"))
 
 
 def test_refuses_hour_at_or_after_october(view):
@@ -201,7 +258,7 @@ def test_refuses_out_dir_in_clean_view(view, tmp_path):
     p = tmp_path / "t.jsonl"
     p.write_text(json.dumps(trig()) + "\n")
     with pytest.raises(AS.Refused):
-        R.run(str(p), str(view / "o"))
+        run_merged(str(p), str(view / "o"))
 
 
 def test_main_returns_2_on_refusal(capsys):
@@ -212,7 +269,7 @@ def test_bad_trigger_row_is_censored(view, tmp_path):
     build(view, {T0: [trade("M1", "a", "buy", 5, 10, 0, T0 + 5)]}, {T0: [{"mint": "M1", "block_time": T0 + 1}]})
     p = tmp_path / "t.jsonl"
     p.write_text(json.dumps(trig(V=0)) + "\n")
-    R.run(str(p), str(tmp_path / "o"))
+    run_merged(str(p), str(tmp_path / "o"))
     rec = json.loads((tmp_path / "o" / "per_pool.jsonl").read_text().splitlines()[0])
     assert rec["reason"] == "bad_trigger_row"
 
@@ -222,7 +279,7 @@ def _run1(view, tmp_path, trigger, schema_json=None):
     tp = tmp_path / "t.jsonl"
     tp.write_text(json.dumps(trigger) + "\n")
     out = tmp_path / "o"
-    ret = R.run(str(tp), str(out), schema_json)
+    ret = run_merged(str(tp), str(out), schema_json)
     return json.loads((out / "per_pool.jsonl").read_text().splitlines()[0]), ret
 
 
