@@ -262,7 +262,7 @@ def lam_of(S, st: dict, idx: np.ndarray, qx: np.ndarray | None, bx: np.ndarray |
 
 
 def main(argv=None) -> int:
-    out = argv[1]
+    out = argv[0]
     workers = 1
     ref_pkl = None
     if "--workers" in argv:
