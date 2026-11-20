@@ -13,10 +13,11 @@ Modes:
   --schema-count  counts rows by venue and key name per block (names and counts only; runs first, per the ruling);
   (default)       the reader proper; needs --triggers.
 
-Trigger input (JSONL, exactly these keys, any other key is refused): blk, mint, slot, tx_index, event_index, block_time, Q, B, V, split (optional: D, C1 or C2).
+Trigger input: the pinned locator file of tools/drainveto_triggers.py (JSONL, exactly LOCATOR_KEYS), passed with --triggers-sha256; the reader refuses to run if the file's sha256
+differs. Decision-time state comes from --dstate (JSONL, exactly DSTATE_KEYS: ordinal, Q, B, V, split optional D, C1 or C2). A trigger with locator_ok false is censored
+(locator_incomplete); the key is never defaulted.
 Q, B, V are the decision-time post-buy state (PART1 S2 algebra, same units as token amounts). D = k/V - B with k = (Q+V)*B, i.e. D = Q*B/V: the token amount a holder must
-add to the pool to drive the real quote reserve to 0. There is NO pinned trigger builder yet: grid.pkl carries no mint, slot, tx_index or event_index (pool is crc32, tdec an interpolated time), so the trigger file
-cannot be made from the licensed grid fields. That question is open with QP (PR #1474 body). The reader never opens grid.pkl and does not derive triggers from tape.
+add to the pool to drive the real quote reserve to 0. The reader never opens grid.pkl and does not derive triggers from tape. The pinned dstate builder (Q, B, V per ordinal) is a separate step still to be specified.
 Measurability: a block is measurable only if >= 99% of its pumpfun rows AND of its pumpswap rows carry mint, trader, token_raw, slot, tx_index and event_index (MIN_FIELD_SHARE, fixed
 before any schema output). The reader proper takes the filed --schema-count output via --schema-json, or else re-runs the licensed schema pass itself.
 Field allowlist: rows are JSON-parsed and projected to the allowlist as the first operation (QP-accepted at 0d0e3a5a while projection stays first).
@@ -29,6 +30,7 @@ from __future__ import annotations
 
 import argparse
 import collections
+import hashlib
 import json
 import os
 import re
@@ -43,11 +45,12 @@ from tools import arena_screen as AS
 
 ALLOWED_ROW_FIELDS = ("trader", "side", "token_raw", "slot", "event_index", "tx_index", "block_time", "event_ts", "venue", "prog", "mint")
 ALLOWED_CREATE_FIELDS = ("mint", "slot", "block_time", "event_ts")
-TRIGGER_KEYS = ("blk", "mint", "slot", "tx_index", "event_index", "block_time", "Q", "B", "V", "split")
+LOCATOR_KEYS = ("ordinal", "block", "blk", "pool", "pool_crc32", "mint", "hour", "slot", "tx_index", "event_index", "locator_ok", "locator_problem", "n_qual_in_slot")  # tools/drainveto_triggers.py OUT_KEYS
+DSTATE_KEYS = ("ordinal", "Q", "B", "V", "split")  # decision-time state from the licensed grid fields (Qe, Be, VMap V); its own pinned step, not built here
 SPLITS = ("D", "C1", "C2")
 HARD_END = datetime(2026, 10, 1, tzinfo=timezone.utc)  # no hour at or after this instant, ever
 VENUES = ("pumpfun", "pumpswap")
-REASONS = ("block_not_measurable", "oracle_live_proxy", "no_create_in_block", "create_after_decision", "no_usable_rows_before_cut", "bad_trigger_row")
+REASONS = ("locator_incomplete", "block_not_measurable", "oracle_live_proxy", "no_create_in_block", "create_after_decision", "no_usable_rows_before_cut", "bad_trigger_row")
 # no_create_in_block merges "created before the block start" with "no create row found" (the creates dir is the block's own; the two cannot be told apart).
 SIX = ("mint", "trader", "token_raw", "slot", "tx_index", "event_index")
 MIN_FIELD_SHARE = 0.99
@@ -188,28 +191,60 @@ def measurable(sc: dict) -> bool:
 
 
 # ----------------------------------------------------------------------------------------------------------------------------------------------- triggers
-def load_triggers(path: str) -> list[dict]:
+def _jsonl(path: str, keys: tuple, what: str, required: bool = True) -> list[dict]:
     out = []
     with open(path, "rb") as fh:
         for n, line in enumerate(fh):
             if not line.strip():
                 continue
             r = json.loads(line)
-            extra = sorted(set(r) - set(TRIGGER_KEYS))
-            if extra:
-                raise ReaderRefused(f"trigger_key_not_allowed (line {n + 1}): {extra}")
-            if r.get("split") is not None and r["split"] not in SPLITS:
-                raise ReaderRefused(f"bad_split (line {n + 1})")
+            extra = sorted(set(r) - set(keys))
+            missing = sorted(set(keys) - set(r)) if required else []
+            if extra or missing:
+                raise ReaderRefused(f"{what}_keys_refused (line {n + 1}): extra {extra} missing {missing}")
             out.append(r)
+    return out
+
+
+def sha256_file(path: str) -> str:
+    h = hashlib.sha256()
+    with open(path, "rb") as fh:
+        for chunk in iter(lambda: fh.read(1 << 20), b""):
+            h.update(chunk)
+    return h.hexdigest()
+
+
+def load_triggers(path: str, sha256: str, dstate_path: str) -> list[dict]:
+    """Locator file (sha256-pinned) merged by ordinal with the decision-state file. Refuses on any sha or key mismatch."""
+    if not sha256 or sha256_file(path) != sha256.lower():
+        raise ReaderRefused("trigger_file_sha256_mismatch")
+    loc = _jsonl(path, LOCATOR_KEYS, "locator")
+    st = {r["ordinal"]: r for r in _jsonl(dstate_path, DSTATE_KEYS, "dstate")}
+    if len({r["ordinal"] for r in loc}) != len(loc):
+        raise ReaderRefused("locator_ordinals_not_unique")
+    out = []
+    for r in loc:
+        d = st.get(r["ordinal"])
+        if d is None:
+            raise ReaderRefused("dstate_missing_ordinal")
+        if d.get("split") is not None and d["split"] not in SPLITS:
+            raise ReaderRefused("bad_split")
+        out.append({"ordinal": r["ordinal"], "blk": r["block"], "mint": r["mint"], "hour": r["hour"], "slot": r["slot"], "tx_index": r["tx_index"], "event_index": r["event_index"],
+                    "locator_ok": r["locator_ok"], "Q": d["Q"], "B": d["B"], "V": d["V"], "split": d.get("split")})
     return out
 
 
 def trigger_ok(t: dict) -> bool:
     try:
+        datetime.strptime(t["hour"], "%Y-%m-%dT%H")
         return (t["blk"] in AS.CANONICAL_BLOCKS and isinstance(t["mint"], str) and t["mint"] != "" and int(t["slot"]) >= 0 and int(t["tx_index"]) >= 0 and int(t["event_index"]) >= 0
-                and float(t["block_time"]) > 0 and float(t["Q"]) >= 0 and float(t["B"]) >= 0 and float(t["V"]) > 0)
+                and float(t["Q"]) >= 0 and float(t["B"]) >= 0 and float(t["V"]) > 0)
     except (KeyError, TypeError, ValueError):
         return False
+
+
+def decision_hour(t: dict) -> datetime:
+    return datetime.strptime(t["hour"], "%Y-%m-%dT%H").replace(tzinfo=timezone.utc)
 
 
 # ----------------------------------------------------------------------------------------------------------------------------------------------- reader
@@ -246,6 +281,8 @@ def read_block(blk: str, trig: list[tuple[int, dict]], block_measurable: bool) -
     for i, t in trig:
         if not trigger_ok(t):
             res[i] = {"status": "censored", "reason": "bad_trigger_row"}
+        elif not t.get("locator_ok"):
+            res[i] = {"status": "censored", "reason": "locator_incomplete"}
         else:
             good.append((i, t))
     if not block_measurable:
@@ -263,7 +300,7 @@ def read_block(blk: str, trig: list[tuple[int, dict]], block_measurable: bool) -
             res[i] = {"status": "censored", "reason": "block_not_measurable"}
         return res, dict(skips)
     block_start = files[0][0]
-    last_hour = max(hour_floor(float(t["block_time"])) for _, t in good)
+    last_hour = max(decision_hour(t) for _, t in good)
     created = find_creates(root, {t["mint"] for _, t in good}, last_hour)
     act: dict = {}
     for i, t in good:
@@ -271,7 +308,7 @@ def read_block(blk: str, trig: list[tuple[int, dict]], block_measurable: bool) -
         if ct is None or hour_floor(ct) < block_start:
             res[i] = {"status": "censored", "reason": "no_create_in_block"}
             continue
-        h0, h1 = hour_floor(ct), hour_floor(float(t["block_time"]))
+        h0, h1 = hour_floor(ct), decision_hour(t)
         if h1 < h0:
             res[i] = {"status": "censored", "reason": "create_after_decision"}
             continue
@@ -367,9 +404,9 @@ def aggregate(trigs: list[dict], res: dict) -> list[dict]:
     return out
 
 
-def run(triggers_path: str, out_dir: str, schema_json: str | None = None) -> dict:
+def run(triggers_path: str, out_dir: str, schema_json: str | None = None, *, triggers_sha256: str = "", dstate_path: str = "") -> dict:
     out = AS.check_out_dir(out_dir)
-    trigs = load_triggers(triggers_path)
+    trigs = load_triggers(triggers_path, triggers_sha256, dstate_path)
     by_blk: dict = collections.defaultdict(list)
     res: dict = {}
     for i, t in enumerate(trigs):
@@ -414,7 +451,9 @@ def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     ap.add_argument("--schema-count", action="store_true", help="count rows and field names per block, nothing else")
     ap.add_argument("--blocks", nargs="*", default=list(AS.CANONICAL_BLOCKS))
-    ap.add_argument("--triggers", help="trigger JSONL (allowed keys only)")
+    ap.add_argument("--triggers", help="locator JSONL built by tools/drainveto_triggers.py")
+    ap.add_argument("--triggers-sha256", help="the notebooked sha256 of the locator file; the reader refuses on any difference")
+    ap.add_argument("--dstate", help="decision-state JSONL (ordinal, Q, B, V, split)")
     ap.add_argument("--schema-json", help="filed --schema-count output (counts only); measurability is read from it instead of re-running the schema pass")
     ap.add_argument("--out", help="output dir (not inside the arena or clean view)")
     a = ap.parse_args(argv)
@@ -424,10 +463,10 @@ def main(argv: list[str] | None = None) -> int:
             for b in a.blocks:
                 print(json.dumps(schema_count(b), sort_keys=True))
             return 0
-        if not (a.triggers and a.out):
-            ap.error("--triggers and --out are required unless --schema-count")
+        if not (a.triggers and a.out and a.triggers_sha256 and a.dstate):
+            ap.error("--triggers, --triggers-sha256, --dstate and --out are required unless --schema-count")
         print(STAMP)
-        print(json.dumps(run(a.triggers, a.out, a.schema_json), sort_keys=True))
+        print(json.dumps(run(a.triggers, a.out, a.schema_json, triggers_sha256=a.triggers_sha256, dstate_path=a.dstate), sort_keys=True))
         return 0
     except (ReaderRefused, AS.Refused) as e:
         print(f"REFUSED: {e}", file=sys.stderr)
