@@ -146,6 +146,7 @@ def paired_boot(daily_rot: dict, daily_fc: dict, draws: int = 1000, seed: int = 
 # ------------------------------------------------------------------------------------------------------------------ kit side (pass 1 and repricing)
 def _kit():
     sys.dont_write_bytecode = True
+    sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
     sys.path.insert(0, L4)
     import tools.arena_screen as S
     return S
@@ -159,7 +160,7 @@ class Capture:
         self.clk: dict = {}
 
 
-def run_pass1(workers: int):
+def run_pass1(workers: int, blocks=None):
     S = _kit()
     import l1_rule_tpfix  # noqa: F401  (patches S._price_exit to the post-buy-mark TP)
     import l1_rule
@@ -205,6 +206,8 @@ def run_pass1(workers: int):
     vmap = S.VMap(VM)
     scr = S.Screen(rule, screen_p=False)
     for bi, (k, path) in enumerate(BLK):
+        if blocks is not None and bi not in blocks:
+            continue
         name = os.path.relpath(os.path.realpath(path), CV)
         files = S.discover(path, "clean", None)
         scr.run_block(bi, name, S.iter_hours(files, name, "backfill", vmap, workers))
@@ -259,7 +262,17 @@ def main(argv=None) -> int:
     if "--ref-pkl" in argv:
         ref_pkl = argv[argv.index("--ref-pkl") + 1]
     os.makedirs(out, exist_ok=True)
-    S, st, cap, meta = run_pass1(workers)
+    blocks = None
+    if "--blocks" in argv:
+        blocks = {int(x) for x in argv[argv.index("--blocks") + 1].split(",")}  # smoke only; the priced run uses all four
+    ck = os.path.join(out, "pass1.pkl")
+    if "--from-pass1" in argv and os.path.exists(ck):
+        S = _kit()
+        import l1_rule_tpfix  # noqa: F401
+        st, cap, meta = pickle.load(open(ck, "rb"))
+    else:
+        S, st, cap, meta = run_pass1(workers, blocks)
+        pickle.dump((st, cap, meta), open(ck, "wb"), protocol=4)
     n = len(st["ref"])
     print("attempts", n, meta, flush=True)
     res: dict = {"meta": meta, "n_attempts": n}
@@ -374,15 +387,20 @@ def main(argv=None) -> int:
                 for fail in ("flat", "press"):
                     per = {}
                     for variant in VARIANTS:
+                        if (variant, sp, K, 0, fb, fail) not in results:
+                            continue
                         r0 = results[(variant, sp, K, 0, fb, fail)]
                         diffs = [results[(variant, sp, K, o, fb, fail)]["ro_sd"] - results[(variant, sp, K, o, fb, fail)]["fc_sd"] for o in OFFSETS if (variant, sp, K, o, fb, fail) in results]
                         per[variant] = judge({"sd": r0["ro_sd"], "ex3": r0["ro"]["ex3"], "pos_days": r0["ro"]["pos_days"]}, {"sd": r0["fc_sd"], "ex3": r0["fc"]["ex3"], "pos_days": r0["fc"]["pos_days"]}, diffs)
                         per[variant]["n_pos_offsets"] = sum(1 for d_ in diffs if d_ > 0)
                         per[variant]["n_offsets"] = len(diffs)
+                    if len(per) < len(VARIANTS):
+                        continue
                     w = worse_variant_pass({v: per[v] for v in per})
                     verdict[f"{sp}|K{K}|{fb}|{fail}"] = {"worse": w, "per_variant": {str(k): v for k, v in per.items()}}
                     allpass = allpass and all(w.values())
-    res["verdict_all_items_pass"] = bool(allpass)
+    res["verdict_all_items_pass"] = bool(allpass and len(verdict) == 16)
+    res["verdict_combos"] = len(verdict)
     res["verdict"] = verdict
     res["results"] = {"|".join(str(x) for x in k): v for k, v in results.items()}
     res["rotated_exit_stats"] = {"cache_entries": len(qcache), "cache_none": sum(1 for v in qcache.values() if v is None)}
