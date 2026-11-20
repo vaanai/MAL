@@ -14,6 +14,15 @@ This is a **desk test** on public data (GeckoTerminal daily OHLCV). It is not a 
 - Candidates are discovered from GeckoTerminal pool lists (volume, tx count, trending, new pools, five DEXes). **Known limit:** the lists show pools alive today, so dead coins enter only if the pool is still listed; survivorship is reduced, not removed. Dead/delisted pools that appear are kept. Coverage is reported in the PR body and must be read with this limit.
 - **Known limit:** GeckoTerminal OHLCV has no liquidity history. Liquidity is a snapshot per pool at fetch time (`liq_usd_snapshot`). Point-in-time liquidity is a declared proxy (section 3).
 
+## 1b. Coverage result (step 0, counts only)
+
+Full report: `/data/mal/hunt-1008/ops/reports/2026-11-20/trend50-coverage.md`. MANIFEST.json sha256 a779c71bf981b46d71cf1122ee0c5734c62545ae1145c41f3093e36c554af3c2 (994 fetches, 0 non-200).
+
+- 929 candidate pools with bars, 642 unique tokens after the exclusion list; 100 coins ever in the point-in-time top 50.
+- Universe size per day: May 0, June median 37, July 44, August 39, September to November 50. 130 of 203 days have under 50 coins, 38 days have none.
+- Dead or delisted coins kept: 0. All candidates come from today's lists, so survivorship bias is not removed. Median first-bar date is 2026-11-17.
+- Consequence: the train split is thin (no universe in May) and the read split is the only well-populated one. Any PASS in section 5 must be read with this survivorship caveat; a historical pool source is needed before a forward book rests on it.
+
 ## 2. Universe (point-in-time)
 
 On each date d, using only bars up to and including the close of d-1: rank candidate coins by trailing 30-day sum of USD volume; the universe is the top 50. A coin must also have at least 30 bars history and median daily volume over the trailing 30 bars of at least USD 250,000. Stablecoins, SOL, wrapped SOL and liquid-staking tokens are excluded by symbol list (fixed before the pull in the script's candidate names; list printed in the run record). One pool per token: the pool with the highest summed volume in the window.
