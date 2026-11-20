@@ -8,13 +8,17 @@ IN-SAMPLE EXPLORATION on the four OUTCOMES blocks; not a gate read. No book has 
 
 ## What step 0 hands over
 
-Per trigger (ordinal only, no pool, mint or trader id): measured or censored with a reason, top-1 and top-3 token share of the positive same-block net balances, and the flags top1 >= D and top3 >= D, where D = k/V - B = Q*B/V from the decision-time state. Counts per block and per split (D, C1, C2). Censoring: no create row in the block, block not measurable, bad trigger row. Flagged share is computed on the measured (uncensored) triggers only.
+Per trigger (ordinal only, no pool, mint or trader id): measured or censored with a reason, top-1 and top-3 token share of the positive same-block net balances, and the flags top1 >= Dr and top3 >= Dr, where Dr = k/V - B = Q*B/V is the drain quantity from the decision-time state (named Dr so that it is not confused with the split D). The balance cut is (slot, tx_index, event_index) strictly before the trigger print. Counts per block and per split (D, C1, C2). Censoring, each counted per block: no create row in the block (merges "created before the block start" with "no create row found"), oracle-live proxy, block not measurable (under 99% of pumpfun or of pumpswap rows carry all of mint, trader, token_raw, slot, tx_index, event_index), create after decision, no usable rows before the cut, bad trigger row. Flagged share is computed on the measured (uncensored) triggers only.
 
-Disclosed limits (every report): transfers in are missed (understates concentration), transfers out leave tokens on the sender (overstates it), direction unknown; crc32 ids can collide (biases toward flagging); pool, burn and known-program holders cannot be recognised from a crc32 id and are not excluded; the live getTokenLargestAccounts read counts token accounts, not wallets, so it is a different measurement.
+Disclosed limits (every report): keep or decode gaps between create and decision are not detected, so balances there are incomplete (bias of unknown direction); transfers in are missed (understates concentration), transfers out leave tokens on the sender (overstates it), direction unknown; crc32 ids can collide (biases toward flagging); pool, burn and known-program holders cannot be recognised from a crc32 id and are not excluded; the live getTokenLargestAccounts read counts token accounts, not wallets, so it is a different measurement.
 
 ## Step 0 gate to step 1
 
 The flagged share on the uncensored explore-0814 set must lie in 5-40% at both top-1 and top-3. Outside it, the veto either hits almost nothing or almost everything, and step 1 does not run. The September blocks are reported and do not decide (about 23 attempts in total).
+
+## How the 332 triggers are selected
+
+The 332 are the FLOOR triggers of the h24_tp1.5 cell of the exploration grid. That cell was itself chosen from a 12-cell grid, so the base carries selection. A veto that only removes trades raises the mean by chance about half the time per variant. Step 1 therefore also reports a matched random-veto placebo beside every difference: the same flagged count, 1,000 draws, seed 1, on the same uncensored subset. The trigger file for step 0 needs mint and the decision print key (slot, tx_index, event_index) that the licensed grid fields do not carry; its pinned builder is open with QP and is not part of this draft.
 
 ## What step 1 computes (only after the gate above, new QP OK, reader blob unchanged or the change named)
 
@@ -22,15 +26,17 @@ On the SAME uncensored subset (not the 332), through the kit pricer, for each va
 
 ## What kills it
 
-- Unflagged minus base mean SOL per trade <= 0 in D or C1, in either variant, under any deciding fail model or send fee: dead.
+- Unflagged minus base mean SOL per trade <= 0 in split D or C1, in either variant, under any deciding sub-cell (flat and pressure-1 fail models x total and sc strand rules) or either send fee: dead.
+- Unflagged minus base <= 0 after removing the best UTC day, in split D or C1: dead.
 - Flagged share outside 5-40% at step 0: dead before pricing.
-- Unflagged total not positive after removing its top 3 trades, or the gain comes from one UTC day: dead.
+- Unflagged total not positive after removing its top 3 trades: dead. ("One UTC day" means the single UTC date with the largest contribution to the difference; see the line above.)
+- The difference is not above the 95th percentile of the matched random-veto placebo: dead.
 - The three c8 strands (0.91%) shown to be a kit tolerance artefact so that no strand is avoided: dead (the veto has nothing to remove).
 - Uncensored explore-0814 subset too small to separate unflagged from base (fewer than 100 unflagged trades is reported "not decidable", not positive).
 
 ## What a pass would and would not mean
 
-A pass is an in-sample exploration result on the 332 FLOOR triggers; it is not out-of-sample and not a gate read. It licenses only the forward check: the RPC logger (getTokenLargestAccounts then getMultipleAccounts, pool vault, curve account, burn and known programs dropped) on open-sim triggers, and a 5-day declared read. The tape rebuild and the live read are different measurements; only the forward check links them.
+A pass is an in-sample exploration result on the uncensored subset of the 332 FLOOR triggers; it is not out-of-sample and not a gate read. It licenses only the forward check: the RPC logger (getTokenLargestAccounts then getMultipleAccounts, pool vault, curve account, burn and known programs dropped) on open-sim triggers, and a 5-day declared read. The tape rebuild and the live read are different measurements; only the forward check links them.
 
 ## Multiplicity
 
