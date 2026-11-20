@@ -52,7 +52,7 @@ def build(view, rows_by_hour, creates, pad=True, blk=BLK):
 
 
 def trig(**kw):
-    d = {"blk": BLK, "mint": "M1", "slot": 100, "tx_index": 0, "event_index": 0, "block_time": T0 + 3600 + 50, "Q": 1.0, "B": 100.0, "V": 10.0}
+    d = {"blk": BLK, "mint": "M1", "slot": 100, "tx_index": 0, "event_index": 0, "block_time": T0 + 3600 + 50, "Q": 1e8, "B": 1000.0, "V": 17.6e9}
     d.update(kw)
     return d
 
@@ -70,13 +70,13 @@ def split_files(path, tmp):
     lp, sp = tmp / "loc.jsonl", tmp / "dstate.jsonl"
     lp.write_text("".join(json.dumps(r) + "\n" for r in loc))
     sp.write_text("".join(json.dumps(r) + "\n" for r in st))
-    return str(lp), R.sha256_file(str(lp)), str(sp)
+    return str(lp), R.sha256_file(str(lp)), str(sp), R.sha256_file(str(sp))
 
 
 def run_merged(path, out, schema_json=None):
     from pathlib import Path
-    lp, sha, sp = split_files(path, Path(path).parent)
-    return R.run(lp, out, schema_json, triggers_sha256=sha, dstate_path=sp)
+    lp, sha, sp, ssha = split_files(path, Path(path).parent)
+    return R.run(lp, out, schema_json, triggers_sha256=sha, dstate_path=sp, dstate_sha256=ssha, schema_sha256=R.sha256_file(schema_json) if schema_json else "")
 
 
 def test_drain_tokens_algebra():
@@ -97,8 +97,8 @@ def test_reader_balances_cut_and_flags(view, tmp_path):
     rows0 = [trade("M1", "a", "buy", 500, 10, 0, T0 + 5), trade("M1", "b", "buy", 30, 11, 0, T0 + 6),
              trade("M2", "z", "buy", 999, 12, 0, T0 + 7)]  # M2 is not a trigger
     rows1 = [trade("M1", "c", "buy", 20, 90, 0, T0 + 3600 + 1, "pumpswap"), trade("M1", "a", "sell", 100, 95, 0, T0 + 3600 + 2, "pumpswap"),
+             trade("M1", "a", "sell", 50, 100, 0, T0 + 3600 + 50, "pumpswap"),  # the trigger print itself: counts ("up to and including")
              trade("M1", "b", "buy", 10_000, 100, 1, T0 + 3600 + 50, "pumpswap"),  # after the trigger print (same slot, same tx, later event)
-             trade("M1", "b", "buy", 10_000, 100, 0, T0 + 3600 + 50, "pumpswap"),  # the trigger print itself: strictly-before excludes it
              trade("M1", "b", "buy", 10_000, 101, 0, T0 + 3600 + 51, "pumpswap")]  # after the cut (slot)
     rows2 = [trade("M1", "b", "buy", 77_777, 500, 0, T0 + 7200 + 5)]  # hour after decision: never read
     build(view, {T0: rows0, T0 + 3600: rows1, T0 + 7200: rows2}, {T0: [{"mint": "M1", "block_time": T0 + 1, "creator": "X", "name": "N"}]})
@@ -108,22 +108,22 @@ def test_reader_balances_cut_and_flags(view, tmp_path):
     run_merged(str(tp), str(out))
     rec = json.loads((out / "per_pool.jsonl").read_text().splitlines()[0])
     assert rec["status"] == "measured"
-    # balances: a=400, b=30, c=20 ; total 450 ; D = 10 -> top1 400 >= 10
-    assert rec["top1_share"] == pytest.approx(400 / 450)
+    # balances: a=350 (500-100-50), b=30, c=20 ; total 400 ; Dr = 1e8*1000/17.6e9 = 5.68
+    assert rec["top1_share"] == pytest.approx(350 / 400) and rec["trigger_print_seen"] is True
     assert rec["top3_share"] == pytest.approx(1.0)
-    assert rec["n_curve_rows"] == 2 and rec["n_pumpswap_rows"] == 2
+    assert rec["n_curve_rows"] == 2 and rec["n_pumpswap_rows"] == 3
     assert rec["top1_ge_D"] is True
     text = (out / "per_pool.jsonl").read_text() + (out / "counts.json").read_text()
     for leak in ("M1", "M2", "sol_lamports", "creator", "price", "reason_pnl"):
         assert leak not in text
     agg = json.loads((out / "counts.json").read_text())["aggregate"]
-    assert any(r["block"] == BLK and r["split"] == "D" and r["measured"] == 1 and r["flag_top1"] == 1 for r in agg)
+    assert any(r["block"] == BLK and r["split"] == "D" and r["measured"] == 1 and r["flag_top1"] == 1 and r["trigger_print_seen"] == 1 for r in agg)
 
 
 def test_not_flagged_when_drain_too_large(view, tmp_path):
     build(view, {T0: [trade("M1", "a", "buy", 5, 10, 0, T0 + 5)]}, {T0: [{"mint": "M1", "block_time": T0 + 1}]})
     tp = tmp_path / "t.jsonl"
-    tp.write_text(json.dumps(trig(block_time=T0 + 100, Q=10.0, B=100.0, V=1.0)) + "\n")  # D = 1000
+    tp.write_text(json.dumps(trig(block_time=T0 + 100, Q=0.5e9, B=3.52e6)) + "\n")  # Dr = 1e5
     run_merged(str(tp), str(tmp_path / "o"))
     rec = json.loads((tmp_path / "o" / "per_pool.jsonl").read_text().splitlines()[0])
     assert rec["top1_ge_D"] is False and rec["top3_ge_D"] is False
@@ -191,24 +191,24 @@ def test_refuses_extra_locator_keys_and_dstate_outcome_keys(tmp_path):
     for bad in ("Qx", "why", "dur_s", "wQ1", "pnl", "xs", "tdec"):
         lp.write_text(json.dumps({**base, bad: 1}) + "\n")
         with pytest.raises(R.ReaderRefused):
-            R.load_triggers(str(lp), R.sha256_file(str(lp)), str(sp))
+            R.load_triggers(str(lp), R.sha256_file(str(lp)), str(sp), R.sha256_file(str(sp)))
         lp.write_text(json.dumps(base) + "\n")
         sp.write_text(json.dumps({"ordinal": 1, "Q": 1, "B": 1, "V": 1, "split": None, bad: 1}) + "\n")
         with pytest.raises(R.ReaderRefused):
-            R.load_triggers(str(lp), R.sha256_file(str(lp)), str(sp))
+            R.load_triggers(str(lp), R.sha256_file(str(lp)), str(sp), R.sha256_file(str(sp)))
         sp.write_text(json.dumps({"ordinal": 1, "Q": 1, "B": 1, "V": 1, "split": None}) + "\n")
 
 
 def test_refuses_trigger_file_with_wrong_sha(tmp_path):
-    lp, sha, sp = _files(tmp_path, trig())
+    lp, sha, sp, ssha = _files(tmp_path, trig())
     with pytest.raises(R.ReaderRefused, match="sha256_mismatch"):
-        R.load_triggers(lp, "0" * 64, sp)
+        R.load_triggers(lp, "0" * 64, sp, ssha)
     with pytest.raises(R.ReaderRefused, match="sha256_mismatch"):
-        R.load_triggers(lp, "", sp)
+        R.load_triggers(lp, "", sp, ssha)
     open(lp, "a").write("\n")  # any byte change after pinning
     with pytest.raises(R.ReaderRefused, match="sha256_mismatch"):
-        R.load_triggers(lp, sha, sp)
-    assert R.main(["--triggers", lp, "--triggers-sha256", "0" * 64, "--dstate", sp, "--out", str(tmp_path / "o")]) == 2
+        R.load_triggers(lp, sha, sp, ssha)
+    assert R.main(["--triggers", lp, "--triggers-sha256", "0" * 64, "--dstate", sp, "--dstate-sha256", ssha, "--out", str(tmp_path / "o")]) == 2
 
 
 def _files(tmp_path, t):
@@ -265,13 +265,13 @@ def test_main_returns_2_on_refusal(capsys):
     assert R.main(["--schema-count", "--blocks", "fresh-0808"]) == 2
 
 
-def test_bad_trigger_row_is_censored(view, tmp_path):
+def test_zero_v_is_dstate_invalid(view, tmp_path):
     build(view, {T0: [trade("M1", "a", "buy", 5, 10, 0, T0 + 5)]}, {T0: [{"mint": "M1", "block_time": T0 + 1}]})
     p = tmp_path / "t.jsonl"
     p.write_text(json.dumps(trig(V=0)) + "\n")
     run_merged(str(p), str(tmp_path / "o"))
     rec = json.loads((tmp_path / "o" / "per_pool.jsonl").read_text().splitlines()[0])
-    assert rec["reason"] == "bad_trigger_row"
+    assert rec["reason"] == "dstate_invalid"
 
 
 
@@ -288,13 +288,13 @@ def test_same_slot_later_transaction_does_not_count(view, tmp_path):
     rows = [trade("M1", "a", "buy", 10, 99, 0, T0 + 5),
             trade("M1", "late", "buy", 99_999, 100, 0, T0 + 6, tx=9),  # later tx, event 0 <= 5: the old (slot, event) cut let it through
             trade("M1", "early", "buy", 7, 100, 9, T0 + 6, tx=1),  # earlier tx, event 9 > 5: counts
-            trade("M1", "same", "buy", 5_000, 100, 5, T0 + 6, tx=2),  # the trigger print itself: excluded
+            trade("M1", "a", "sell", 4, 100, 5, T0 + 6, "pumpfun", tx=2),  # the trigger print itself (a sell): counted
             trade("M1", "after", "buy", 5_000, 100, 6, T0 + 6, tx=2)]
     build(view, {T0: rows}, {T0: [{"mint": "M1", "block_time": T0 + 1}]})
     rec, ret = _run1(view, tmp_path, trig(slot=100, tx_index=2, event_index=5, block_time=T0 + 10))
-    assert rec["status"] == "measured" and rec["n_curve_rows"] == 2 and rec["n_holders"] == 2
-    assert rec["top1_share"] == pytest.approx(10 / 17)
-    assert ret["skipped_rows_by_block"][BLK]["after_cut"] == 3
+    assert rec["status"] == "measured" and rec["n_curve_rows"] == 3 and rec["n_holders"] == 2 and rec["trigger_print_seen"] is True
+    assert rec["top1_share"] == pytest.approx(7 / 13)  # a: 10 - 4 = 6, early: 7
+    assert ret["skipped_rows_by_block"][BLK]["after_cut"] == 2
 
 
 def test_same_slot_row_missing_tx_or_event_dropped_not_defaulted(view, tmp_path):
@@ -349,3 +349,65 @@ def test_trigger_requires_tx_index():
     t = trig()
     del t["tx_index"]
     assert not R.trigger_ok(t)
+
+
+def test_trigger_print_included_in_cut(view, tmp_path):
+    # R1: the trigger print is a sell by the largest holder; leaving it out would credit that seller with tokens already sold
+    rows = [trade("M1", "whale", "buy", 100, 90, 0, T0 + 5), trade("M1", "small", "buy", 30, 91, 0, T0 + 5),
+            trade("M1", "whale", "sell", 95, 100, 0, T0 + 6, "pumpswap", tx=3)]  # the trigger print
+    build(view, {T0: rows}, {T0: [{"mint": "M1", "block_time": T0 + 1}]})
+    rec, ret = _run1(view, tmp_path, trig(slot=100, tx_index=3, event_index=0, block_time=T0 + 10))
+    assert rec["top1_share"] == pytest.approx(30 / 35) and rec["trigger_print_seen"] is True  # whale 5, small 30
+
+
+def test_trigger_print_not_seen_is_reported(view, tmp_path):
+    build(view, {T0: [trade("M1", "a", "buy", 10, 90, 0, T0 + 5)]}, {T0: [{"mint": "M1", "block_time": T0 + 1}]})
+    rec, ret = _run1(view, tmp_path, trig(slot=100, tx_index=3, event_index=0, block_time=T0 + 10))
+    assert rec["status"] == "measured" and rec["trigger_print_seen"] is False
+    assert [r for r in ret["aggregate"] if r["split"] == "all"][0]["trigger_print_seen"] == 0
+
+
+def test_empty_mint_is_locator_incomplete_not_bad_trigger(view, tmp_path):
+    build(view, {T0: [trade("M1", "a", "buy", 5, 10, 0, T0 + 5)]}, {T0: [{"mint": "M1", "block_time": T0 + 1}]})
+    rec, _ = _run1(view, tmp_path, trig(mint="", locator_ok=False, block_time=T0 + 100))
+    assert rec["reason"] == "locator_incomplete"
+    rec, _ = _run1(view, tmp_path, trig(mint="", block_time=T0 + 100))  # an empty mint with locator_ok true is still a bad row, never silently measured
+    assert rec["reason"] == "bad_trigger_row"
+
+
+@pytest.mark.parametrize("kw", [dict(V=17.4e9), dict(V=17.8e9), dict(Q=-1.0), dict(Q=17.7e9), dict(Q=0.5e9 + 1), dict(B=0.0), dict(V=0)])
+def test_dstate_out_of_range_censored_not_clipped(view, tmp_path, kw):
+    build(view, {T0: [trade("M1", "a", "buy", 5, 10, 0, T0 + 5)]}, {T0: [{"mint": "M1", "block_time": T0 + 1}]})
+    rec, ret = _run1(view, tmp_path, trig(block_time=T0 + 100, **kw))
+    assert rec["reason"] == "dstate_invalid"
+    assert [r for r in ret["aggregate"] if r["split"] == "all"][0]["censored_dstate_invalid"] == 1
+
+
+def test_dstate_boundaries_accepted():
+    for kw in (dict(V=17.5e9), dict(V=17.7e9), dict(Q=0.0), dict(Q=0.5e9)):
+        assert R.dstate_ok({**trig(), **kw})
+
+
+def test_dstate_sha_and_ordinal_set_refused(tmp_path):
+    lp, sha, sp, ssha = _files(tmp_path, trig())
+    with pytest.raises(R.ReaderRefused, match="dstate_file_sha256_mismatch"):
+        R.load_triggers(lp, sha, sp, "0" * 64)
+    with pytest.raises(R.ReaderRefused, match="dstate_file_sha256_mismatch"):
+        R.load_triggers(lp, sha, sp, "")
+    open(sp, "a").write(json.dumps({"ordinal": 2, "Q": 1, "B": 1, "V": 1, "split": None}) + "\n")  # extra ordinal, with a matching new sha
+    with pytest.raises(R.ReaderRefused, match="dstate_ordinals_differ"):
+        R.load_triggers(lp, sha, sp, R.sha256_file(sp))
+    assert R.load_triggers.__doc__
+
+
+def test_schema_file_sha_required(view, tmp_path):
+    build(view, {T0: [trade("M1", "a", "buy", 5, 10, 0, T0 + 5)]}, {T0: [{"mint": "M1", "block_time": T0 + 1}]})
+    sj = tmp_path / "schema.json"
+    sj.write_text(json.dumps(R.schema_count(BLK)) + "\n")
+    tp = tmp_path / "m.jsonl"
+    tp.write_text(json.dumps(trig(block_time=T0 + 100)) + "\n")
+    lp, sha, sp, ssha = split_files(str(tp), tmp_path)
+    for bad in ("", "0" * 64):
+        with pytest.raises(R.ReaderRefused, match="schema_file_sha256_mismatch"):
+            R.run(lp, str(tmp_path / "o"), str(sj), triggers_sha256=sha, dstate_path=sp, dstate_sha256=ssha, schema_sha256=bad)
+    R.run(lp, str(tmp_path / "o"), str(sj), triggers_sha256=sha, dstate_path=sp, dstate_sha256=ssha, schema_sha256=R.sha256_file(str(sj)))
