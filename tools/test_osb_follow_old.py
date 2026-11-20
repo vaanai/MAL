@@ -17,7 +17,7 @@ MANIFEST = Path(__file__).resolve().parent.parent / "docs" / "rotation" / "books
 
 def start_manifest(tmp_path, **kw):
     d = json.loads(MANIFEST.read_text())
-    d["start_hour"] = "2026-11-23T02"
+    d["start_hour"] = "2026-11-24T04"
     d.update(kw)
     p = tmp_path / "m.json"
     p.write_text(json.dumps(d))
@@ -36,8 +36,8 @@ def test_constants():
 
 def test_seed_shorter_than_505h_is_refused_by_the_original_check(tmp_path):
     with pytest.raises(O.Refused):
-        OLD.load_manifest(str(start_manifest(tmp_path, start_hour="2026-11-23T01")))  # 504 h after 2026-11-02T01
-    OLD.load_manifest(str(start_manifest(tmp_path, start_hour="2026-11-23T02")))  # exactly 505 h
+        OLD.load_manifest(str(start_manifest(tmp_path, start_hour="2026-11-24T03")))  # 504 h after 2026-11-03T03
+    OLD.load_manifest(str(start_manifest(tmp_path, start_hour="2026-11-24T04")))  # exactly 505 h
 
 
 @pytest.mark.parametrize("kw", [{"rule_overrides": {}}, {"rule_overrides": {"AGE_LO": 720000, "AGE_HI": 1814400, "TP": 1.3}}, {"rule_overrides": {"AGE_LO": 86400, "AGE_HI": 1814400}},
@@ -74,3 +74,29 @@ def test_title_passes_the_boards_forbidden_words():
     import osb_board
     t = json.loads(MANIFEST.read_text())["title"].lower()
     assert not [w for w in osb_board.FORBIDDEN if w in t]
+
+
+def test_seed_hour_is_the_keepers_first_hour():
+    assert json.loads(MANIFEST.read_text())["seed_from_hour"] == "2026-11-03T03"
+
+
+def test_code_sha_differs_from_plain_osb_follow_and_follows_the_front_end_file(tmp_path, monkeypatch):
+    plain = O.code_sha256()
+    mine = OLD.code_sha256()
+    assert mine != plain and mine == OLD.code_sha256()
+    fake = tmp_path / "osb_follow_old.py"
+    fake.write_text("x")
+    monkeypatch.setattr(OLD, "OLD_FILE", fake)
+    assert OLD.code_sha256() not in (mine, plain)  # an edit to the front end is a new version
+
+
+def test_follow_runs_with_the_folded_code_sha_and_restores(tmp_path, monkeypatch):
+    seen = {}
+
+    def fake(path, **kw):
+        seen["sha"] = O.code_sha256()
+        return 0
+    plain = O.code_sha256
+    monkeypatch.setattr(O, "follow", fake)
+    OLD.follow(str(tmp_path / "x.json"))
+    assert seen["sha"] == OLD.code_sha256() != plain() and O.code_sha256 is plain  # a plain osb_follow start compares against plain(): a stored folded value is refused
