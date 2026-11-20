@@ -68,3 +68,9 @@ def test_age_drop_is_restored_on_error(tmp_path, monkeypatch):
     with pytest.raises(RuntimeError):
         OLD.follow(str(tmp_path / "x.json"))
     assert PT.AGE_DROP_S == before and L.AGE_HI == 200 * 3600  # stock rule constants untouched by this front end itself
+
+
+def test_title_passes_the_boards_forbidden_words():
+    import osb_board
+    t = json.loads(MANIFEST.read_text())["title"].lower()
+    assert not [w for w in osb_board.FORBIDDEN if w in t]
