@@ -3,7 +3,8 @@
 What it reads: pumpfun curve rows and PumpSwap rows of each trigger pool's mint, ONLY inside the trigger's own exploration block, from the pool's create hour to the FLOOR
 decision instant. Fields kept per row: trader (crc32), side, token amount, slot, event_index, block time, venue/prog, mint. Nothing else is ever kept (no SOL or quote amount,
 reserve, price, fee, creator, name). No hour before the block's first hour, none after the decision hour, none at or after 2026-10-01T00Z, none in the D2/D3 hours.
-Rows after the decision cut (slot, event_index) are dropped before they are counted.
+The decision cut is (slot, tx_index, event_index), STRICTLY BEFORE the trigger print (the kit's print order); the trigger print and everything after it are dropped before they are
+counted. A row in the trigger's slot lacking tx_index or event_index is dropped and counted, never defaulted. Creates hours are read only up to the latest decision hour.
 
 What it writes: counts and per-pool flags. No pool or mint or trader id, no price, no P&L, no exit outcome. The per-pool file is keyed by the ordinal of the trigger in the input
 file only.
@@ -12,10 +13,13 @@ Modes:
   --schema-count  counts rows by venue and key name per block (names and counts only; runs first, per the ruling);
   (default)       the reader proper; needs --triggers.
 
-Trigger input (JSONL, exactly these keys, any other key is refused): blk, mint, slot, event_index, block_time, Q, B, V, split (optional: D, C1 or C2).
+Trigger input (JSONL, exactly these keys, any other key is refused): blk, mint, slot, tx_index, event_index, block_time, Q, B, V, split (optional: D, C1 or C2).
 Q, B, V are the decision-time post-buy state (PART1 S2 algebra, same units as token amounts). D = k/V - B with k = (Q+V)*B, i.e. D = Q*B/V: the token amount a holder must
-add to the pool to drive the real quote reserve to 0. The trigger file is made by the caller from the allowed grid fields (pool, blk, tdec, Qe, Be, VMap V); the reader never
-opens grid.pkl.
+add to the pool to drive the real quote reserve to 0. There is NO pinned trigger builder yet: grid.pkl carries no mint, slot, tx_index or event_index (pool is crc32, tdec an interpolated time), so the trigger file
+cannot be made from the licensed grid fields. That question is open with QP (PR #1474 body). The reader never opens grid.pkl and does not derive triggers from tape.
+Measurability: a block is measurable only if >= 99% of its pumpfun rows AND of its pumpswap rows carry mint, trader, token_raw, slot, tx_index and event_index (MIN_FIELD_SHARE, fixed
+before any schema output). The reader proper takes the filed --schema-count output via --schema-json, or else re-runs the licensed schema pass itself.
+Field allowlist: rows are JSON-parsed and projected to the allowlist as the first operation (QP-accepted at 0d0e3a5a while projection stays first).
 
 Holder balance: per crc32 trader, sum(buy token) - sum(sell token) over the curve and PumpSwap rows read; negative balances (tokens that arrived by transfer) count as 0.
 No pool, burn or known-program exclusion is done (a crc32 id cannot be recognised); transfers in and out are invisible; crc32 ids can collide. Direction of the bias is unknown.
@@ -39,11 +43,15 @@ from tools import arena_screen as AS
 
 ALLOWED_ROW_FIELDS = ("trader", "side", "token_raw", "slot", "event_index", "tx_index", "block_time", "event_ts", "venue", "prog", "mint")
 ALLOWED_CREATE_FIELDS = ("mint", "slot", "block_time", "event_ts")
-TRIGGER_KEYS = ("blk", "mint", "slot", "event_index", "block_time", "Q", "B", "V", "split")
+TRIGGER_KEYS = ("blk", "mint", "slot", "tx_index", "event_index", "block_time", "Q", "B", "V", "split")
 SPLITS = ("D", "C1", "C2")
 HARD_END = datetime(2026, 10, 1, tzinfo=timezone.utc)  # no hour at or after this instant, ever
 VENUES = ("pumpfun", "pumpswap")
-REASONS = ("block_not_measurable", "no_create_in_block", "bad_trigger_row")
+REASONS = ("block_not_measurable", "oracle_live_proxy", "no_create_in_block", "create_after_decision", "no_usable_rows_before_cut", "bad_trigger_row")
+# no_create_in_block merges "created before the block start" with "no create row found" (the creates dir is the block's own; the two cannot be told apart).
+SIX = ("mint", "trader", "token_raw", "slot", "tx_index", "event_index")
+MIN_FIELD_SHARE = 0.99
+ORACLE_LIVE = "oracle-live-2026-09-25_27"
 _MINT_RE = re.compile(rb'"mint"\s*:\s*"([^"]+)"')
 
 
@@ -134,11 +142,9 @@ def row_time(r: dict):
 
 # ----------------------------------------------------------------------------------------------------------------------------------------------- schema count
 def schema_count(blk: str) -> dict:
-    """Per block: hour counts, rows by venue, rows carrying trader / token_raw / slot per venue, and the key NAMES seen on trades rows (names and counts only)."""
+    """Per block: hour counts, and per venue: rows, rows carrying each of the six fields, side value counts, key NAMES (names and counts only, never ids or amounts)."""
     root = block_root(blk)
-    out: dict = {"block": blk, "trades_hours": 0, "creates_hours": 0, "migrations_hours": 0, "trades_rows": 0, "rows_by_venue": collections.Counter(),
-                 "trader_rows_by_venue": collections.Counter(), "token_raw_rows_by_venue": collections.Counter(), "slot_rows_by_venue": collections.Counter(),
-                 "key_names": collections.Counter(), "creates_rows": 0, "migrations_rows": 0, "bad_json_rows": 0}
+    out: dict = {"block": blk, "trades_hours": 0, "creates_hours": 0, "migrations_hours": 0, "trades_rows": 0, "creates_rows": 0, "migrations_rows": 0, "bad_json_rows": 0, "venues": {}}
     for kind in ("trades", "creates", "migrations"):
         files = kind_files(root, kind)
         out[f"{kind}_hours"] = len(files)
@@ -156,21 +162,29 @@ def schema_count(blk: str) -> dict:
                     out[f"{kind}_rows"] += 1
                     continue
                 out["trades_rows"] += 1
-                v = venue_of(r) or "none"
-                out["rows_by_venue"][v] += 1
-                if r.get("trader"):
-                    out["trader_rows_by_venue"][v] += 1
-                if r.get("token_raw") is not None:
-                    out["token_raw_rows_by_venue"][v] += 1
-                if r.get("slot") is not None:
-                    out["slot_rows_by_venue"][v] += 1
+                v = out["venues"].setdefault(venue_of(r) or "none", {"rows": 0, "has": {k: 0 for k in SIX}, "all_six": 0, "side_values": {}, "key_names": {}})
+                v["rows"] += 1
+                ok = True
+                for k in SIX:
+                    if r.get(k) not in (None, ""):
+                        v["has"][k] += 1
+                    else:
+                        ok = False
+                v["all_six"] += int(ok)
+                sv = str(r.get("side"))[:12]
+                v["side_values"][sv] = v["side_values"].get(sv, 0) + 1
                 for k in r:
-                    out["key_names"][k] += 1
-    return {k: dict(v) if isinstance(v, collections.Counter) else v for k, v in out.items()}
+                    v["key_names"][k] = v["key_names"].get(k, 0) + 1
+    return out
 
 
-def curve_trader_rows(sc: dict) -> int:
-    return int(sc["trader_rows_by_venue"].get("pumpfun", 0)) if sc["token_raw_rows_by_venue"].get("pumpfun", 0) else 0
+def measurable(sc: dict) -> bool:
+    """>= MIN_FIELD_SHARE of pumpfun rows AND of pumpswap rows carry all six fields (a venue with no rows fails)."""
+    for ven in VENUES:
+        v = sc["venues"].get(ven)
+        if not v or v["rows"] == 0 or v["all_six"] / v["rows"] < MIN_FIELD_SHARE:
+            return False
+    return True
 
 
 # ----------------------------------------------------------------------------------------------------------------------------------------------- triggers
@@ -192,7 +206,7 @@ def load_triggers(path: str) -> list[dict]:
 
 def trigger_ok(t: dict) -> bool:
     try:
-        return (t["blk"] in AS.CANONICAL_BLOCKS and isinstance(t["mint"], str) and t["mint"] != "" and int(t["slot"]) >= 0 and int(t["event_index"]) >= 0
+        return (t["blk"] in AS.CANONICAL_BLOCKS and isinstance(t["mint"], str) and t["mint"] != "" and int(t["slot"]) >= 0 and int(t["tx_index"]) >= 0 and int(t["event_index"]) >= 0
                 and float(t["block_time"]) > 0 and float(t["Q"]) >= 0 and float(t["B"]) >= 0 and float(t["V"]) > 0)
     except (KeyError, TypeError, ValueError):
         return False
@@ -203,10 +217,12 @@ def hour_floor(ts: float) -> datetime:
     return datetime.fromtimestamp(int(ts) - int(ts) % 3600, tz=timezone.utc)
 
 
-def find_creates(root: str, mints: set) -> dict:
+def find_creates(root: str, mints: set, last_hour: datetime) -> dict:
     """mint -> create block time (earliest), from the block's own creates hours; fields kept: mint, time."""
     found: dict = {}
-    for _, f in kind_files(root, "creates"):
+    for ch, f in kind_files(root, "creates"):
+        if ch > last_hour:  # never an hour after the latest decision
+            break
         for line in read_lines(f):
             m = _MINT_RE.search(line)
             if m is None or m.group(1).decode() not in mints:
@@ -222,9 +238,10 @@ def find_creates(root: str, mints: set) -> dict:
     return found
 
 
-def read_block(blk: str, trig: list[tuple[int, dict]], block_measurable: bool) -> dict:
-    """Returns ordinal -> record. trig is [(ordinal, trigger)] of this block."""
+def read_block(blk: str, trig: list[tuple[int, dict]], block_measurable: bool) -> tuple[dict, dict]:
+    """Returns (ordinal -> record, skipped-row counts by reason). trig is [(ordinal, trigger)] of this block."""
     res: dict = {}
+    skips: collections.Counter = collections.Counter()
     good = []
     for i, t in trig:
         if not trigger_ok(t):
@@ -234,16 +251,20 @@ def read_block(blk: str, trig: list[tuple[int, dict]], block_measurable: bool) -
     if not block_measurable:
         for i, _ in good:
             res[i] = {"status": "censored", "reason": "block_not_measurable"}
-        return res
+        return res, dict(skips)
+    if blk == ORACLE_LIVE:  # no creates or migrations rows exist; the complete time can only be proxied by the first print: censored before any creates lookup
+        for i, _ in good:
+            res[i] = {"status": "censored", "reason": "oracle_live_proxy"}
+        return res, dict(skips)
     root = block_root(blk)
     files = kind_files(root, "trades")
-    if not files:
+    if not files or not good:
         for i, _ in good:
             res[i] = {"status": "censored", "reason": "block_not_measurable"}
-        return res
+        return res, dict(skips)
     block_start = files[0][0]
-    created = find_creates(root, {t["mint"] for _, t in good})
-    # active window per trigger: create hour .. decision hour; create before block start cannot occur (the creates dir is the block's own) but is still censored
+    last_hour = max(hour_floor(float(t["block_time"])) for _, t in good)
+    created = find_creates(root, {t["mint"] for _, t in good}, last_hour)
     act: dict = {}
     for i, t in good:
         ct = created.get(t["mint"])
@@ -252,7 +273,7 @@ def read_block(blk: str, trig: list[tuple[int, dict]], block_measurable: bool) -
             continue
         h0, h1 = hour_floor(ct), hour_floor(float(t["block_time"]))
         if h1 < h0:
-            res[i] = {"status": "censored", "reason": "bad_trigger_row"}
+            res[i] = {"status": "censored", "reason": "create_after_decision"}
             continue
         act.setdefault(t["mint"], []).append((i, t, h0, h1))
     state = {i: {"bal": collections.defaultdict(float), "n_curve": 0, "n_ps": 0} for lst in act.values() for i, *_ in lst}
@@ -270,18 +291,38 @@ def read_block(blk: str, trig: list[tuple[int, dict]], block_measurable: bool) -
             if lv is None:
                 continue
             try:
-                r = project(json.loads(line), ALLOWED_ROW_FIELDS)
+                r = project(json.loads(line), ALLOWED_ROW_FIELDS)  # first operation after parse
             except ValueError:
+                skips["bad_json"] += 1
+                continue
+            if r.get("mint") != mint:
+                skips["mint_mismatch"] += 1
                 continue
             v = venue_of(r)
-            if v not in VENUES or r.get("side") not in ("buy", "sell") or r.get("slot") is None or r.get("token_raw") is None or not r.get("trader"):
+            if v not in VENUES:
+                skips["bad_venue"] += 1
                 continue
-            key = (int(r["slot"]), int(r.get("event_index") or 0))
+            if r.get("side") not in ("buy", "sell"):
+                skips["bad_side"] += 1
+                continue
+            if r.get("slot") is None or r.get("token_raw") is None or not r.get("trader"):
+                skips["missing_slot_token_or_trader"] += 1
+                continue
+            slot = int(r["slot"])
             tid = zlib.crc32(str(r["trader"]).encode())
             amt = float(r["token_raw"]) * (1.0 if r["side"] == "buy" else -1.0)
             for i, t, h0, h1 in lv:
-                if key > (int(t["slot"]), int(t["event_index"])):  # the decision cut: rows after it are dropped
+                ts = int(t["slot"])
+                if slot > ts:  # after the decision cut
+                    skips["after_cut"] += 1
                     continue
+                if slot == ts:
+                    if r.get("tx_index") is None or r.get("event_index") is None:  # never defaulted
+                        skips["same_slot_missing_key"] += 1
+                        continue
+                    if (int(r["tx_index"]), int(r["event_index"])) >= (int(t["tx_index"]), int(t["event_index"])):  # strictly before the trigger print
+                        skips["after_cut"] += 1
+                        continue
                 s = state[i]
                 s["bal"][tid] += amt
                 s["n_curve" if v == "pumpfun" else "n_ps"] += 1
@@ -290,12 +331,14 @@ def read_block(blk: str, trig: list[tuple[int, dict]], block_measurable: bool) -
             s = state[i]
             pos = sorted((b for b in s["bal"].values() if b > 0), reverse=True)
             tot = sum(pos)
+            if s["n_curve"] + s["n_ps"] == 0 or tot <= 0:
+                res[i] = {"status": "censored", "reason": "no_usable_rows_before_cut"}
+                continue
             D = drain_tokens(float(t["Q"]), float(t["B"]), float(t["V"]))
-            top1, top3 = (pos[0] if pos else 0.0), sum(pos[:3])
+            top1, top3 = pos[0], sum(pos[:3])
             res[i] = {"status": "measured", "n_curve_rows": s["n_curve"], "n_pumpswap_rows": s["n_ps"], "n_holders": len(pos),
-                      "top1_share": (top1 / tot) if tot > 0 else None, "top3_share": (top3 / tot) if tot > 0 else None,
-                      "top1_ge_D": bool(tot > 0 and top1 >= D), "top3_ge_D": bool(tot > 0 and top3 >= D)}
-    return res
+                      "top1_share": top1 / tot, "top3_share": top3 / tot, "top1_ge_D": bool(top1 >= D), "top3_ge_D": bool(top3 >= D)}
+    return res, dict(skips)
 
 
 def aggregate(trigs: list[dict], res: dict) -> list[dict]:
@@ -324,7 +367,7 @@ def aggregate(trigs: list[dict], res: dict) -> list[dict]:
     return out
 
 
-def run(triggers_path: str, out_dir: str) -> dict:
+def run(triggers_path: str, out_dir: str, schema_json: str | None = None) -> dict:
     out = AS.check_out_dir(out_dir)
     trigs = load_triggers(triggers_path)
     by_blk: dict = collections.defaultdict(list)
@@ -334,20 +377,37 @@ def run(triggers_path: str, out_dir: str) -> dict:
             by_blk[t["blk"]].append((i, t))
         else:
             raise ReaderRefused(f"not_one_of_the_four_blocks: {t.get('blk')!r}")
+    filed = load_schema_json(schema_json) if schema_json else {}
+    skip_by_blk: dict = {}
     for blk, lst in by_blk.items():
-        sc = schema_count(blk)
-        res.update(read_block(blk, lst, curve_trader_rows(sc) > 0))
+        sc = filed.get(blk) or schema_count(blk)
+        r, sk = read_block(blk, lst, measurable(sc))
+        res.update(r)
+        skip_by_blk[blk] = sk
     agg = aggregate(trigs, res)
     os.makedirs(out, exist_ok=True)
     with open(os.path.join(out, "per_pool.jsonl"), "w") as fh:
         for i, t in enumerate(trigs):
             fh.write(json.dumps({"i": i, "blk": t["blk"], "split": t.get("split"), **res[i]}, sort_keys=True) + "\n")
     with open(os.path.join(out, "counts.json"), "w") as fh:
-        json.dump(agg, fh, indent=1, sort_keys=True)
-    return {"aggregate": agg}
+        json.dump({"aggregate": agg, "skipped_rows_by_block": skip_by_blk}, fh, indent=1, sort_keys=True)
+    return {"aggregate": agg, "skipped_rows_by_block": skip_by_blk}
 
 
-STAMP = "IN-SAMPLE EXPLORATION on the four OUTCOMES blocks; count-only; wallet history from same-block rows before the decision only (RULES Am.1 item 3); not a gate read."
+def load_schema_json(path: str) -> dict:
+    """The filed --schema-count output (one JSON line per block; the stamp line is ignored)."""
+    out = {}
+    for line in open(path):
+        line = line.strip()
+        if line.startswith("{"):
+            d = json.loads(line)
+            out[d["block"]] = d
+    return out
+
+
+STAMP = ("IN-SAMPLE EXPLORATION on the four OUTCOMES blocks; count-only; wallet history from same-block rows before the decision only (RULES Am.1 item 3); not a gate read. "
+         "Flagged share is on the uncensored subset only; censored counts per block are in the output. Gaps in keep or decode between create and decision are not detected "
+         "(balances incomplete, bias of unknown direction).")
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -355,6 +415,7 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--schema-count", action="store_true", help="count rows and field names per block, nothing else")
     ap.add_argument("--blocks", nargs="*", default=list(AS.CANONICAL_BLOCKS))
     ap.add_argument("--triggers", help="trigger JSONL (allowed keys only)")
+    ap.add_argument("--schema-json", help="filed --schema-count output (counts only); measurability is read from it instead of re-running the schema pass")
     ap.add_argument("--out", help="output dir (not inside the arena or clean view)")
     a = ap.parse_args(argv)
     try:
@@ -366,7 +427,7 @@ def main(argv: list[str] | None = None) -> int:
         if not (a.triggers and a.out):
             ap.error("--triggers and --out are required unless --schema-count")
         print(STAMP)
-        print(json.dumps(run(a.triggers, a.out), sort_keys=True))
+        print(json.dumps(run(a.triggers, a.out, a.schema_json), sort_keys=True))
         return 0
     except (ReaderRefused, AS.Refused) as e:
         print(f"REFUSED: {e}", file=sys.stderr)
