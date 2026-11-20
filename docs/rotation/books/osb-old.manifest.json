@@ -1,6 +1,6 @@
 {
  "book_id": "osb-old",
- "title": "open sim book osb-old: FLOOR live config (lane host with gap guard) on graduates aged 200 h to 21 d (AGE_LO 720000, AGE_HI 1814400), birth times known only from the book's own follow from 2026-11-03T03",
+ "title": "open sim book osb-old: FLOOR live config (lane host with gap guard) on graduates aged 200 h to 21 d (AGE_LO 720000, AGE_HI 1814400), age counted from migration, every decision has the full band (start at or after 2026-11-24T04), birth times from keep tape from 2026-11-03T03, holes from feed gaps and the 2026-11-15 decode break, no count screen first, first read not before about 2026-12-08, licensed by QP-RULING-1120b",
  "host": "lane",
  "rule_overrides": {
   "AGE_LO": 720000,
