@@ -14,7 +14,12 @@ Join: key (blk, crc32(pool), sd) must match exactly one pool address, whose trig
 n_qual_in_slot counts the qualifying prints of that pool in that slot.
 Completeness: a second pass over the trigger hours only reads key presence (pool, slot, tx_index, event_index) of every row of the matched pool in the slot; a missing or non-integer
 key sets locator_ok false (txev_missing). mint '' -> mint_missing; rule's canon[mint] != pool -> mint_not_canon.
-Output: one JSON line per trigger under /data2/mal/scratch/drainveto/, mode 0640, keys limited to OUT_KEYS; ordinals are assigned after sorting by (blk, slot, pool address), never in grid
+Decision state (QP ruling on PR #1474): the SAME recording line also records the trigger print's own post-trade state, with NO latency index and no grid Qe/Be: Q = the rule's qpost
+(real quote, lamports, V excluded), B = hour.b + hour.tok (token_raw), V = hour.v (VMap, lamports). They go to a second file, drainveto_dstate.jsonl (keys ordinal, Q, B, V, split), written
+together with the locator file only after the join and reconciliation pass; each file's sha256 is printed (never Q, B or V). Split: D = explore-0814 before 2026-08-21T12Z, C1 = explore-0814
+from it, C2 = the three September blocks. D7: Dr uses the trigger print's post-trade state (the rule's own q_post approximation, fee 0.0125), not the kit's entry state at sd + D + k.
+Run it by script path (python /path/tools/drainveto_triggers.py), NEVER with -m (the repo's tools package would shadow the kit); MemoryMax >= 3G for 2 workers.
+Output: one JSON line per trigger under /data2/mal/scratch/drainveto/, mode 0640, locator keys limited to OUT_KEYS; ordinals are assigned after sorting by (blk, slot, pool address), never in grid
 order. It holds pool and mint addresses: an intermediate input, never quoted in a report. stdout carries counts only.
 Disclosures D1-D6 (QP-RULING-1120c) are printed in DISCLOSURES and must be carried in every report that quotes step 0 or step 1.
 Do not run beside another heavy job: one MiScusi job, nice 19, ionice idle, MemoryMax scope, at most 2 workers.
@@ -67,8 +72,12 @@ EXPECT_TRIGGERS_X12 = 2136840
 FANOUT = 12
 OUT_KEYS = ("ordinal", "block", "blk", "pool", "pool_crc32", "mint", "hour", "slot", "tx_index", "event_index", "locator_ok", "locator_problem", "n_qual_in_slot")
 PROBLEMS = ("none", "txev_missing", "mint_missing", "mint_not_canon")
+# the one recording line: locator plus the trigger print's own post-trade state (Q = the rule's qpost, real quote, V excluded; B = post-sell base b + tok; V = VMap V). No latency index.
 ADDED_LINE = ("self.loc.append((str(hour.block), int(hour.T), pool, int(hour.sl[r]), int(hour.tx[r]), int(hour.ev[r]), str(hour.mints[p]), "
-              "bool(canon.get(str(hour.mints[p])) == pool)))")
+              "bool(canon.get(str(hour.mints[p])) == pool), float(qpost[r]), float(hour.b[r] + hour.tok[r]), float(hour.v[r])))")
+DSTATE_KEYS = ("ordinal", "Q", "B", "V", "split")
+SPLIT_D_END = int(datetime(2026, 8, 21, 12, tzinfo=timezone.utc).timestamp())  # PART2-EXITS.md line 4: D = explore-0814 before this hour, C1 = from it, C2 = the September blocks
+EXPLORE = "explore-0814"
 DISCLOSURES = (
     "D1 Trigger locator: a count-only re-run of the exit study's L1 trigger pass (kit 0c8c987a, arena_screen b37282c7, l1_rule cefdc4c6), joined to grid.pkl h24_tp1.5 keys (blk, pool crc32, sd, T); "
     "no exit priced and no outcome field read; 332/332 keys matched uniquely; reconciliation counters equal to the study run.",
@@ -77,6 +86,7 @@ DISCLOSURES = (
     "D4 locator_incomplete count per block (txev_missing, mint_missing, mint_not_canon); these triggers are censored.",
     "D5 The 332 are the study's priced set. Its membership already depends on exits (overlap after the previous trade's exit, block-edge exclusion) and on a 12-cell selection (h24_tp1.5). "
     "The veto is measured inside that set, and the selection is carried, not removed.",
+    "D7 Dr uses the trigger print's post-trade state (the rule's own q_post approximation, fee 0.0125), not the kit's entry state at sd + D + k. The entry can land on a different state.",
     "D6 The mint comes from the PumpSwap trade row the kit loaded and is checked against the rule's own mint->pool map. oracle-live's mints are not checked against migrations; that block is censored as oracle_live_proxy anyway.",
 )
 
@@ -176,7 +186,7 @@ def crc(pool: str) -> int:
 
 
 def join(recs: list, grid: list, block_names: list[str], expect_n: int = EXPECT_N) -> list[dict]:
-    """recs: (block name, hour T, pool, slot, tx, ev, mint, canon_ok) in kit order. grid: (blk, crc32, sd, T). Returns locator dicts (unsorted) or raises with counts only."""
+    """recs: (block name, hour T, pool, slot, tx, ev, mint, canon_ok, Q, B, V) in kit order. grid: (blk, crc32, sd, T). Returns locator dicts (unsorted) or raises with counts only."""
     if len(grid) != expect_n:
         raise BuilderRefused(f"grid_count_{len(grid)}_not_{expect_n}")
     if len(set((b, c, s) for b, c, s, _ in grid)) != len(grid):
@@ -199,7 +209,7 @@ def join(recs: list, grid: list, block_names: list[str], expect_n: int = EXPECT_
             hour_bad += 1
             continue
         out.append({"blk": b, "block": first[0], "pool": first[2], "pool_crc32": c, "slot": s, "hourT": int(first[1]), "tx_index": first[4], "event_index": first[5],
-                    "mint": first[6], "canon_ok": first[7], "n_qual_in_slot": len(cand)})
+                    "mint": first[6], "canon_ok": first[7], "n_qual_in_slot": len(cand), "Q": first[8], "B": first[9], "V": first[10]})
     if unmatched or ambiguous or hour_bad or len(out) != expect_n:
         raise BuilderRefused(f"join_failed: matched {len(out)}/{expect_n}, unmatched {unmatched}, ambiguous {ambiguous}, hour_mismatch {hour_bad}")
     return out
@@ -247,8 +257,15 @@ def scan_keys(path: str, wanted: dict, lines=_zstd_lines) -> dict:
     return res
 
 
-def finish_rows(loc: list[dict], keycheck: dict) -> list[dict]:
-    """keycheck: (pool, slot) -> [n, ok]. Adds locator_ok / locator_problem, sorts by (blk, slot, pool), assigns ordinals, projects to OUT_KEYS."""
+def split_of(block: str, hourT: int) -> str:
+    if block == EXPLORE:
+        return "D" if hourT < SPLIT_D_END else "C1"
+    return "C2"
+
+
+def finish_rows(loc: list[dict], keycheck: dict) -> tuple[list[dict], list[dict]]:
+    """keycheck: (pool, slot) -> [n, ok]. Returns (locator rows, dstate rows): locator_ok / locator_problem added, sorted by (blk, slot, pool), ordinals assigned, each projected to
+    its own key allowlist. The dstate rows carry Q, B, V and the split; the locator rows carry no reserve."""
     rows = []
     for d in loc:
         ok_keys = keycheck.get((d["pool"], d["slot"]), [0, False])[1]
@@ -258,32 +275,40 @@ def finish_rows(loc: list[dict], keycheck: dict) -> list[dict]:
         if problem == "none" and not d["canon_ok"]:
             problem = "mint_not_canon"
         hour = datetime.fromtimestamp(d["hourT"], tz=timezone.utc).strftime("%Y-%m-%dT%H")
-        rows.append({**d, "hour": hour, "locator_ok": problem == "none", "locator_problem": problem})
+        rows.append({**d, "hour": hour, "locator_ok": problem == "none", "locator_problem": problem, "split": split_of(d["block"], d["hourT"])})
     rows.sort(key=lambda d: (d["blk"], d["slot"], d["pool"]))
-    out = []
+    out, st = [], []
     for i, d in enumerate(rows, 1):
         d["ordinal"] = i
         out.append({k: d[k] for k in OUT_KEYS})
-    return out
+        st.append({k: d[k] for k in DSTATE_KEYS})
+    return out, st
 
 
-def write_rows(rows: list[dict], out_dir: str, root: str = OUT_ROOT) -> tuple[str, str]:
+def write_files(files: dict, out_dir: str, root: str = OUT_ROOT) -> dict:
+    """files: name -> (rows, allowed keys). Writes every file (tmp then rename, mode 0640) only after all pass the allowlist; returns name -> (path, sha256)."""
     real = os.path.realpath(out_dir)
     if real != os.path.realpath(root):
         raise BuilderRefused(f"out_dir_not_{root}: {out_dir}")
-    for r in rows:
-        if tuple(r) != OUT_KEYS:
-            raise BuilderRefused("output_key_not_allowed")
-    os.makedirs(real, exist_ok=True)
-    path = os.path.join(real, "drainveto_triggers.jsonl")
-    tmp = path + ".tmp"
-    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o640)
-    with os.fdopen(fd, "w") as fh:
+    for rows, keys in files.values():
         for r in rows:
-            fh.write(json.dumps(r, sort_keys=False) + "\n")
-    os.chmod(tmp, 0o640)
-    os.replace(tmp, path)
-    return path, sha256_file(path)
+            if tuple(r) != keys:
+                raise BuilderRefused("output_key_not_allowed")
+    os.makedirs(real, exist_ok=True)
+    tmps = {}
+    for name, (rows, _) in files.items():
+        path = os.path.join(real, name)
+        fd = os.open(path + ".tmp", os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o640)
+        with os.fdopen(fd, "w") as fh:
+            for r in rows:
+                fh.write(json.dumps(r) + "\n")
+        os.chmod(path + ".tmp", 0o640)
+        tmps[name] = path
+    out = {}
+    for name, path in tmps.items():
+        os.replace(path + ".tmp", path)
+        out[name] = (path, sha256_file(path))
+    return out
 
 
 def counts_only(rows: list[dict]) -> dict:
@@ -349,11 +374,12 @@ def main(argv: list[str] | None = None) -> int:
                 if f is None:
                     raise BuilderRefused("trigger_hour_file_missing")
                 keycheck.update(scan_keys(f, {p: set(s) for p, s in pools.items()}))
-        rows = finish_rows(loc, keycheck)
-        path, sha = write_rows(rows, a.out_dir)
+        rows, st = finish_rows(loc, keycheck)
+        written = write_files({"drainveto_triggers.jsonl": (rows, OUT_KEYS), "drainveto_dstate.jsonl": (st, DSTATE_KEYS)}, a.out_dir)
         print(json.dumps(counts_only(rows), sort_keys=True))
         print("reconciliation PASS", {k: dict(scr.counters).get(k) for k in EXPECT_COUNTERS})
-        print("trigger file sha256", sha)
+        for name, (_, sha) in sorted(written.items()):
+            print(name, "sha256", sha)
         for d in DISCLOSURES:
             print(d)
         return 0
