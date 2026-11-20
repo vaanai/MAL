@@ -3,8 +3,8 @@
 What it reads: pumpfun curve rows and PumpSwap rows of each trigger pool's mint, ONLY inside the trigger's own exploration block, from the pool's create hour to the FLOOR
 decision instant. Fields kept per row: trader (crc32), side, token amount, slot, event_index, block time, venue/prog, mint. Nothing else is ever kept (no SOL or quote amount,
 reserve, price, fee, creator, name). No hour before the block's first hour, none after the decision hour, none at or after 2026-10-01T00Z, none in the D2/D3 hours.
-The decision cut is (slot, tx_index, event_index), STRICTLY BEFORE the trigger print (the kit's print order); the trigger print and everything after it are dropped before they are
-counted. A row in the trigger's slot lacking tx_index or event_index is dropped and counted, never defaulted. Creates hours are read only up to the latest decision hour.
+The decision cut is (slot, tx_index, event_index) up to AND INCLUDING the trigger print (the kit's print order, 1120b "up to and including"); only rows with a greater key are dropped
+before they are counted. The trigger print is a sell, so counting it removes the tokens already sold; per block the reader counts trigger_print_seen (a sell row with exactly the locator key was read). A row in the trigger's slot lacking tx_index or event_index is dropped and counted, never defaulted. Creates hours are read only up to the latest decision hour.
 
 What it writes: counts and per-pool flags. No pool or mint or trader id, no price, no P&L, no exit outcome. The per-pool file is keyed by the ordinal of the trigger in the input
 file only.
@@ -14,10 +14,12 @@ Modes:
   (default)       the reader proper; needs --triggers.
 
 Trigger input: the pinned locator file of tools/drainveto_triggers.py (JSONL, exactly LOCATOR_KEYS), passed with --triggers-sha256; the reader refuses to run if the file's sha256
-differs. Decision-time state comes from --dstate (JSONL, exactly DSTATE_KEYS: ordinal, Q, B, V, split optional D, C1 or C2). A trigger with locator_ok false is censored
+differs. Decision state comes from the builder's drainveto_dstate.jsonl via --dstate with --dstate-sha256 (exactly DSTATE_KEYS; its ordinal set must equal the locator's). --schema-json needs
+--schema-sha256. A trigger with locator_ok false is censored
 (locator_incomplete); the key is never defaulted.
-Q, B, V are the decision-time post-buy state (PART1 S2 algebra, same units as token amounts). D = k/V - B with k = (Q+V)*B, i.e. D = Q*B/V: the token amount a holder must
-add to the pool to drive the real quote reserve to 0. The reader never opens grid.pkl and does not derive triggers from tape. The pinned dstate builder (Q, B, V per ordinal) is a separate step still to be specified.
+Q, B, V are the TRIGGER PRINT's own post-trade state from the pinned builder (not grid Qe/Be): Q = the rule's qpost, real quote reserve in lamports, V excluded; B = base reserve after the
+sell in token_raw; V = VMap V in lamports. Dr = k/V - B with k = (Q+V)*B, i.e. Dr = Q*B/V in token_raw: the token amount a holder must add to drive the real quote reserve to 0.
+Ranges (never clipped; outside -> censored dstate_invalid): V in [17.5e9, 17.7e9], Q in [0, 0.5e9], B > 0. The reader never opens grid.pkl and does not derive triggers from tape. The dstate file is written by the same pinned builder.
 Measurability: a block is measurable only if >= 99% of its pumpfun rows AND of its pumpswap rows carry mint, trader, token_raw, slot, tx_index and event_index (MIN_FIELD_SHARE, fixed
 before any schema output). The reader proper takes the filed --schema-count output via --schema-json, or else re-runs the licensed schema pass itself.
 Field allowlist: rows are JSON-parsed and projected to the allowlist as the first operation (QP-accepted at 0d0e3a5a while projection stays first).
@@ -50,10 +52,12 @@ DSTATE_KEYS = ("ordinal", "Q", "B", "V", "split")  # decision-time state from th
 SPLITS = ("D", "C1", "C2")
 HARD_END = datetime(2026, 10, 1, tzinfo=timezone.utc)  # no hour at or after this instant, ever
 VENUES = ("pumpfun", "pumpswap")
-REASONS = ("locator_incomplete", "block_not_measurable", "oracle_live_proxy", "no_create_in_block", "create_after_decision", "no_usable_rows_before_cut", "bad_trigger_row")
+REASONS = ("locator_incomplete", "dstate_invalid", "block_not_measurable", "oracle_live_proxy", "no_create_in_block", "create_after_decision", "no_usable_rows_before_cut", "bad_trigger_row")
 # no_create_in_block merges "created before the block start" with "no create row found" (the creates dir is the block's own; the two cannot be told apart).
 SIX = ("mint", "trader", "token_raw", "slot", "tx_index", "event_index")
 MIN_FIELD_SHARE = 0.99
+V_RANGE = (17.5e9, 17.7e9)  # lamports, VMap V
+Q_RANGE = (0.0, 0.5e9)  # real quote after the trigger print, lamports, V excluded
 ORACLE_LIVE = "oracle-live-2026-09-25_27"
 _MINT_RE = re.compile(rb'"mint"\s*:\s*"([^"]+)"')
 
@@ -214,14 +218,19 @@ def sha256_file(path: str) -> str:
     return h.hexdigest()
 
 
-def load_triggers(path: str, sha256: str, dstate_path: str) -> list[dict]:
+def load_triggers(path: str, sha256: str, dstate_path: str, dstate_sha256: str = "") -> list[dict]:
     """Locator file (sha256-pinned) merged by ordinal with the decision-state file. Refuses on any sha or key mismatch."""
     if not sha256 or sha256_file(path) != sha256.lower():
         raise ReaderRefused("trigger_file_sha256_mismatch")
+    if not dstate_sha256 or sha256_file(dstate_path) != dstate_sha256.lower():
+        raise ReaderRefused("dstate_file_sha256_mismatch")
     loc = _jsonl(path, LOCATOR_KEYS, "locator")
-    st = {r["ordinal"]: r for r in _jsonl(dstate_path, DSTATE_KEYS, "dstate")}
-    if len({r["ordinal"] for r in loc}) != len(loc):
-        raise ReaderRefused("locator_ordinals_not_unique")
+    dl = _jsonl(dstate_path, DSTATE_KEYS, "dstate")
+    st = {r["ordinal"]: r for r in dl}
+    if len({r["ordinal"] for r in loc}) != len(loc) or len(st) != len(dl):
+        raise ReaderRefused("ordinals_not_unique")
+    if set(st) != {r["ordinal"] for r in loc}:
+        raise ReaderRefused("dstate_ordinals_differ_from_locator")
     out = []
     for r in loc:
         d = st.get(r["ordinal"])
@@ -238,9 +247,13 @@ def trigger_ok(t: dict) -> bool:
     try:
         datetime.strptime(t["hour"], "%Y-%m-%dT%H")
         return (t["blk"] in AS.CANONICAL_BLOCKS and isinstance(t["mint"], str) and t["mint"] != "" and int(t["slot"]) >= 0 and int(t["tx_index"]) >= 0 and int(t["event_index"]) >= 0
-                and float(t["Q"]) >= 0 and float(t["B"]) >= 0 and float(t["V"]) > 0)
+                and float(t["Q"]) == float(t["Q"]) and float(t["B"]) == float(t["B"]) and float(t["V"]) == float(t["V"]))
     except (KeyError, TypeError, ValueError):
         return False
+
+
+def dstate_ok(t: dict) -> bool:
+    return V_RANGE[0] <= float(t["V"]) <= V_RANGE[1] and Q_RANGE[0] <= float(t["Q"]) <= Q_RANGE[1] and float(t["B"]) > 0
 
 
 def decision_hour(t: dict) -> datetime:
@@ -279,10 +292,12 @@ def read_block(blk: str, trig: list[tuple[int, dict]], block_measurable: bool) -
     skips: collections.Counter = collections.Counter()
     good = []
     for i, t in trig:
-        if not trigger_ok(t):
-            res[i] = {"status": "censored", "reason": "bad_trigger_row"}
-        elif not t.get("locator_ok"):
+        if not t.get("locator_ok"):  # first: an empty mint or missing key is locator_incomplete, whatever else is wrong
             res[i] = {"status": "censored", "reason": "locator_incomplete"}
+        elif not trigger_ok(t):
+            res[i] = {"status": "censored", "reason": "bad_trigger_row"}
+        elif not dstate_ok(t):
+            res[i] = {"status": "censored", "reason": "dstate_invalid"}
         else:
             good.append((i, t))
     if not block_measurable:
@@ -313,7 +328,7 @@ def read_block(blk: str, trig: list[tuple[int, dict]], block_measurable: bool) -
             res[i] = {"status": "censored", "reason": "create_after_decision"}
             continue
         act.setdefault(t["mint"], []).append((i, t, h0, h1))
-    state = {i: {"bal": collections.defaultdict(float), "n_curve": 0, "n_ps": 0} for lst in act.values() for i, *_ in lst}
+    state = {i: {"bal": collections.defaultdict(float), "n_curve": 0, "n_ps": 0, "seen": False} for lst in act.values() for i, *_ in lst}
     for hr, f in files:
         live = {m: [a for a in lst if a[2] <= hr <= a[3]] for m, lst in act.items()}
         live = {m: v for m, v in live.items() if v}
@@ -357,9 +372,11 @@ def read_block(blk: str, trig: list[tuple[int, dict]], block_measurable: bool) -
                     if r.get("tx_index") is None or r.get("event_index") is None:  # never defaulted
                         skips["same_slot_missing_key"] += 1
                         continue
-                    if (int(r["tx_index"]), int(r["event_index"])) >= (int(t["tx_index"]), int(t["event_index"])):  # strictly before the trigger print
+                    if (int(r["tx_index"]), int(r["event_index"])) > (int(t["tx_index"]), int(t["event_index"])):  # after the trigger print; the print itself counts
                         skips["after_cut"] += 1
                         continue
+                    if (int(r["tx_index"]), int(r["event_index"])) == (int(t["tx_index"]), int(t["event_index"])) and r["side"] == "sell":
+                        state[i]["seen"] = True
                 s = state[i]
                 s["bal"][tid] += amt
                 s["n_curve" if v == "pumpfun" else "n_ps"] += 1
@@ -374,7 +391,7 @@ def read_block(blk: str, trig: list[tuple[int, dict]], block_measurable: bool) -
             D = drain_tokens(float(t["Q"]), float(t["B"]), float(t["V"]))
             top1, top3 = pos[0], sum(pos[:3])
             res[i] = {"status": "measured", "n_curve_rows": s["n_curve"], "n_pumpswap_rows": s["n_ps"], "n_holders": len(pos),
-                      "top1_share": top1 / tot, "top3_share": top3 / tot, "top1_ge_D": bool(top1 >= D), "top3_ge_D": bool(top3 >= D)}
+                      "trigger_print_seen": s["seen"], "top1_share": top1 / tot, "top3_share": top3 / tot, "top1_ge_D": bool(top1 >= D), "top3_ge_D": bool(top3 >= D)}
     return res, dict(skips)
 
 
@@ -390,11 +407,12 @@ def aggregate(trigs: list[dict], res: dict) -> list[dict]:
                 c["censored_" + r["reason"]] += 1
             else:
                 c["measured"] += 1
+                c["trigger_print_seen"] += int(r["trigger_print_seen"])
                 c["flag_top1"] += int(r["top1_ge_D"])
                 c["flag_top3"] += int(r["top3_ge_D"])
     out = []
     for (b, s), c in sorted(rows.items(), key=lambda kv: (str(kv[0][0]), kv[0][1])):
-        d = {"block": b, "split": s, **{k: c.get(k, 0) for k in ("triggers", "censored", "measured", "flag_top1", "flag_top3")}}
+        d = {"block": b, "split": s, **{k: c.get(k, 0) for k in ("triggers", "censored", "measured", "trigger_print_seen", "flag_top1", "flag_top3")}}
         for rs in REASONS:
             d["censored_" + rs] = c.get("censored_" + rs, 0)
         m = d["measured"]
@@ -404,9 +422,9 @@ def aggregate(trigs: list[dict], res: dict) -> list[dict]:
     return out
 
 
-def run(triggers_path: str, out_dir: str, schema_json: str | None = None, *, triggers_sha256: str = "", dstate_path: str = "") -> dict:
+def run(triggers_path: str, out_dir: str, schema_json: str | None = None, *, triggers_sha256: str = "", dstate_path: str = "", dstate_sha256: str = "", schema_sha256: str = "") -> dict:
     out = AS.check_out_dir(out_dir)
-    trigs = load_triggers(triggers_path, triggers_sha256, dstate_path)
+    trigs = load_triggers(triggers_path, triggers_sha256, dstate_path, dstate_sha256)
     by_blk: dict = collections.defaultdict(list)
     res: dict = {}
     for i, t in enumerate(trigs):
@@ -414,6 +432,8 @@ def run(triggers_path: str, out_dir: str, schema_json: str | None = None, *, tri
             by_blk[t["blk"]].append((i, t))
         else:
             raise ReaderRefused(f"not_one_of_the_four_blocks: {t.get('blk')!r}")
+    if schema_json and (not schema_sha256 or sha256_file(schema_json) != schema_sha256.lower()):
+        raise ReaderRefused("schema_file_sha256_mismatch")
     filed = load_schema_json(schema_json) if schema_json else {}
     skip_by_blk: dict = {}
     for blk, lst in by_blk.items():
@@ -453,7 +473,9 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--blocks", nargs="*", default=list(AS.CANONICAL_BLOCKS))
     ap.add_argument("--triggers", help="locator JSONL built by tools/drainveto_triggers.py")
     ap.add_argument("--triggers-sha256", help="the notebooked sha256 of the locator file; the reader refuses on any difference")
-    ap.add_argument("--dstate", help="decision-state JSONL (ordinal, Q, B, V, split)")
+    ap.add_argument("--dstate", help="drainveto_dstate.jsonl from the pinned builder (ordinal, Q, B, V, split)")
+    ap.add_argument("--dstate-sha256", help="the notebooked sha256 of the dstate file")
+    ap.add_argument("--schema-sha256", help="the notebooked sha256 of the --schema-json file (required with it)")
     ap.add_argument("--schema-json", help="filed --schema-count output (counts only); measurability is read from it instead of re-running the schema pass")
     ap.add_argument("--out", help="output dir (not inside the arena or clean view)")
     a = ap.parse_args(argv)
@@ -463,10 +485,10 @@ def main(argv: list[str] | None = None) -> int:
             for b in a.blocks:
                 print(json.dumps(schema_count(b), sort_keys=True))
             return 0
-        if not (a.triggers and a.out and a.triggers_sha256 and a.dstate):
-            ap.error("--triggers, --triggers-sha256, --dstate and --out are required unless --schema-count")
+        if not (a.triggers and a.out and a.triggers_sha256 and a.dstate and a.dstate_sha256):
+            ap.error("--triggers, --triggers-sha256, --dstate, --dstate-sha256 and --out are required unless --schema-count")
         print(STAMP)
-        print(json.dumps(run(a.triggers, a.out, a.schema_json, triggers_sha256=a.triggers_sha256, dstate_path=a.dstate), sort_keys=True))
+        print(json.dumps(run(a.triggers, a.out, a.schema_json, triggers_sha256=a.triggers_sha256, dstate_path=a.dstate, dstate_sha256=a.dstate_sha256, schema_sha256=a.schema_sha256 or ""), sort_keys=True))
         return 0
     except (ReaderRefused, AS.Refused) as e:
         print(f"REFUSED: {e}", file=sys.stderr)
