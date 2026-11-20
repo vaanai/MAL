@@ -1,0 +1,28 @@
+{
+  "schema": "rotation-decay-calibration.v1",
+  "bot_id": "rot-e1-v1",
+  "stake_lamports": 100000000,
+  "winsor_lo": "TODO-QP-E1-WINSOR-LO",
+  "winsor_hi": "TODO-QP-E1-WINSOR-HI",
+  "mu0": "TODO-QP-E1-MU0-0.10",
+  "mu1": "TODO-QP-E1-MU1-0.10",
+  "h_w": "TODO-QP-E1-HW-0.10",
+  "h_a": "TODO-QP-E1-HA-0.10",
+  "n0": 25,
+  "sim_source_sha256": "TODO-QP-E1-SIM-SOURCE-SHA256",
+  "mu0_by_rung": {
+    "50000000": "TODO-QP-E1-MU0-0.05",
+    "100000000": "TODO-QP-E1-MU0-0.10"
+  },
+  "_draft": "DRAFT, not loadable on purpose: every TODO-QP token is a string, so tools/rotation_decay_monitor.load_calibration refuses this file (exit 2) until QP fills it. When the numbers are filled, drop the .draft suffix, delete the _draft and _sources keys (or keep them: the monitor ignores unknown keys, but the pinned sha256 is of the final bytes), and record the file's sha256 on the card (section 6) and in the belief record. Paper and records only; nothing here says any book makes money.",
+  "_sources": {
+    "schema_and_keys": "tools/rotation_decay_monitor.py docstring at main 0cf0f6ef (PR #1468): one rung per file; mu0_by_rung REQUIRED to cover every step-down target (0.10 -> 0.05); if it holds the rung itself it must equal mu0",
+    "stake_lamports": "DEC-036 s5 item 1 and s9 item 2: every new book starts at 100000000; a 0.25 calibration file is owed before any up-step record, with mu0_by_rung for 125000000 and 50000000",
+    "winsor_lo/hi": "DEC-036 s6 item 2: 2.5th and 97.5th percentiles of x = r/s in osb-e1's sim (strict book, stake 0.10, forward entries at or after its start instant 2026-11-14T07:17:23Z, on the overlap basis QP rules: card s1 item 3); needs per-trade rows that no agent opens",
+    "mu0": "DEC-036 s6 item 3: shrunk sim mean of w, pressure leg, net at 0.10, at the deciding latency cell (card s4; TODO-QP-LATENCY-HAIRCUT), shrink per card s3 item 6",
+    "mu1": "DEC-036 s6 item 3: mu1 = min(0, mu0 - delta), delta > 0 set on the card (TODO-QP-E1-DELTA)",
+    "h_w/h_a": "DEC-036 s6 item 4: 10,000 bootstrap paths, seed 1, re-centred on mu0, 20% / 5% first passage within 100 trades; osb-e1 has 6 complete forward days (11-14..11-19 at board 2026-11-20T16:30:58Z), fewer than 10, so trades are resampled one by one unless QP rules otherwise, and the card says the rates understate clustering",
+    "n0": "DEC-036 s6 item 6 default 25; retire prior from the s8 table (0.03825 at 0.10)",
+    "sim_source_sha256": "DEC-036 s6 item 4: sha256 of the calibration run's sim source, recorded with the run's path"
+  }
+}
