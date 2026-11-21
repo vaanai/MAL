@@ -1,0 +1,17 @@
+{
+ "counts": {
+  "read": 60,
+  "mayhem_byte_243_true": 60,
+  "is_mayhem_mode_field_true": 60,
+  "coin_creator_equal": 59,
+  "coin_creator_differs": 1,
+  "differs|1121 M_pre/pre": 0,
+  "differs|1115/post": 1,
+  "differs|1115/pre": 0,
+  "post_new10_differing_pools": 1,
+  "post_differing_is_mayhem_mode_byte": [
+   1
+  ]
+ },
+ "n_pools": 60
+}
