@@ -1,0 +1,295 @@
+{
+ "mode": "post",
+ "K": 8,
+ "n_kept": 8,
+ "n_candidates_tried": 9,
+ "kept": [
+  {
+   "migration_slot": 471855429,
+   "bc_sigs_listed": 100,
+   "fetched": 1,
+   "found": true,
+   "slot": 471855428,
+   "sig": "2Rho9yt1Rn356H3RNHFzv4thYiauksvCo8fWuukpUEGkF2An8BsJCiy13yWm61oGg1FwH5NoxYh3mUYRkJt3qC6V",
+   "slot_ok": true,
+   "blob_len": [
+    144
+   ],
+   "trailing": [
+    0
+   ],
+   "unmatched": [],
+   "unknown_disc": 0
+  },
+  {
+   "migration_slot": 471855632,
+   "bc_sigs_listed": 100,
+   "fetched": 1,
+   "found": true,
+   "slot": 471855630,
+   "sig": "3XErxhPSuxMipemTkQWc1BBCooMngSD3vLKFUZPQ3eQXcX6UuSodYHiSBhM1guB7oLa1tbkx4fnqMfaS9CZsGWpQ",
+   "slot_ok": true,
+   "blob_len": [
+    144
+   ],
+   "trailing": [
+    0
+   ],
+   "unmatched": [],
+   "unknown_disc": 0
+  },
+  {
+   "migration_slot": 471855748,
+   "bc_sigs_listed": 100,
+   "fetched": 1,
+   "found": true,
+   "slot": 471855747,
+   "sig": "63FzqcoVbQcL8AZjiZ8U1gzgbQ28dUvSBoNneESgHrxHyBYBidqjNEPdC4zojVKWcNLgNWcRatQwovCQYFTt32YT",
+   "slot_ok": true,
+   "blob_len": [
+    144
+   ],
+   "trailing": [
+    0
+   ],
+   "unmatched": [],
+   "unknown_disc": 0
+  },
+  {
+   "migration_slot": 471856172,
+   "bc_sigs_listed": 100,
+   "fetched": 1,
+   "found": true,
+   "slot": 471856172,
+   "sig": "2o3fJ6i85BxBsgxQzayBBj6RggCsona2fd1z6H7JaLhKPZdA2PqE5teERDKSS5b7tTEJDSKr29NG6WvWsJVMKCp4",
+   "slot_ok": true,
+   "blob_len": [
+    144
+   ],
+   "trailing": [
+    0
+   ],
+   "unmatched": [],
+   "unknown_disc": 0
+  },
+  {
+   "migration_slot": 471856559,
+   "bc_sigs_listed": 100,
+   "fetched": 1,
+   "found": true,
+   "slot": 471856556,
+   "sig": "4qNTwqkGGHnBN2Rzybeuwgpac4hg8dvutUbUraUN4sa8ipkVtpXPZ7P2MNxZh29yTebozBGudhmtzLauxhcjHoYC",
+   "slot_ok": true,
+   "blob_len": [
+    144
+   ],
+   "trailing": [
+    0
+   ],
+   "unmatched": [],
+   "unknown_disc": 0
+  },
+  {
+   "migration_slot": 471856609,
+   "bc_sigs_listed": 100,
+   "fetched": 1,
+   "found": true,
+   "slot": 471856607,
+   "sig": "38Eyan44zXcEYSpC4KNNf4umCMcLXomHmgtUKCaewrUA2h526Zmcd5fi25bC76JqCAJK2MYa4eZbRbn9MCiG4Kaz",
+   "slot_ok": true,
+   "blob_len": [
+    144
+   ],
+   "trailing": [
+    0
+   ],
+   "unmatched": [],
+   "unknown_disc": 0
+  },
+  {
+   "migration_slot": 471857562,
+   "bc_sigs_listed": 100,
+   "fetched": 1,
+   "found": true,
+   "slot": 471857560,
+   "sig": "3Bxe1mvonBremyJ8pwjfhgpVyTsZgWQmbb2WDJtM45YchBphsStik7Mf3j4Mqf63T3rgBqUMqvLkcT9Tq9D1eYLH",
+   "slot_ok": true,
+   "blob_len": [
+    144
+   ],
+   "trailing": [
+    0
+   ],
+   "unmatched": [],
+   "unknown_disc": 0
+  },
+  {
+   "migration_slot": 471858535,
+   "bc_sigs_listed": 100,
+   "fetched": 1,
+   "found": true,
+   "slot": 471858533,
+   "sig": "4P5oHGhmADaWC1dfHkEYca83b7UXdjFR4R5gj66vSmQmzEnioUjGsJN31KBcax5AMfV9bbJXnTPRc973NysUiHgK",
+   "slot_ok": true,
+   "blob_len": [
+    144
+   ],
+   "trailing": [
+    0
+   ],
+   "unmatched": [],
+   "unknown_disc": 0
+  }
+ ],
+ "tried": [
+  {
+   "migration_slot": 471855429,
+   "bc_sigs_listed": 100,
+   "fetched": 1,
+   "found": true,
+   "slot": 471855428,
+   "sig": "2Rho9yt1Rn356H3RNHFzv4thYiauksvCo8fWuukpUEGkF2An8BsJCiy13yWm61oGg1FwH5NoxYh3mUYRkJt3qC6V",
+   "slot_ok": true,
+   "blob_len": [
+    144
+   ],
+   "trailing": [
+    0
+   ],
+   "unmatched": [],
+   "unknown_disc": 0
+  },
+  {
+   "migration_slot": 471855632,
+   "bc_sigs_listed": 100,
+   "fetched": 1,
+   "found": true,
+   "slot": 471855630,
+   "sig": "3XErxhPSuxMipemTkQWc1BBCooMngSD3vLKFUZPQ3eQXcX6UuSodYHiSBhM1guB7oLa1tbkx4fnqMfaS9CZsGWpQ",
+   "slot_ok": true,
+   "blob_len": [
+    144
+   ],
+   "trailing": [
+    0
+   ],
+   "unmatched": [],
+   "unknown_disc": 0
+  },
+  {
+   "migration_slot": 471855748,
+   "bc_sigs_listed": 100,
+   "fetched": 1,
+   "found": true,
+   "slot": 471855747,
+   "sig": "63FzqcoVbQcL8AZjiZ8U1gzgbQ28dUvSBoNneESgHrxHyBYBidqjNEPdC4zojVKWcNLgNWcRatQwovCQYFTt32YT",
+   "slot_ok": true,
+   "blob_len": [
+    144
+   ],
+   "trailing": [
+    0
+   ],
+   "unmatched": [],
+   "unknown_disc": 0
+  },
+  {
+   "migration_slot": 471856172,
+   "bc_sigs_listed": 100,
+   "fetched": 1,
+   "found": true,
+   "slot": 471856172,
+   "sig": "2o3fJ6i85BxBsgxQzayBBj6RggCsona2fd1z6H7JaLhKPZdA2PqE5teERDKSS5b7tTEJDSKr29NG6WvWsJVMKCp4",
+   "slot_ok": true,
+   "blob_len": [
+    144
+   ],
+   "trailing": [
+    0
+   ],
+   "unmatched": [],
+   "unknown_disc": 0
+  },
+  {
+   "migration_slot": 471856559,
+   "bc_sigs_listed": 100,
+   "fetched": 1,
+   "found": true,
+   "slot": 471856556,
+   "sig": "4qNTwqkGGHnBN2Rzybeuwgpac4hg8dvutUbUraUN4sa8ipkVtpXPZ7P2MNxZh29yTebozBGudhmtzLauxhcjHoYC",
+   "slot_ok": true,
+   "blob_len": [
+    144
+   ],
+   "trailing": [
+    0
+   ],
+   "unmatched": [],
+   "unknown_disc": 0
+  },
+  {
+   "migration_slot": 471856609,
+   "bc_sigs_listed": 100,
+   "fetched": 1,
+   "found": true,
+   "slot": 471856607,
+   "sig": "38Eyan44zXcEYSpC4KNNf4umCMcLXomHmgtUKCaewrUA2h526Zmcd5fi25bC76JqCAJK2MYa4eZbRbn9MCiG4Kaz",
+   "slot_ok": true,
+   "blob_len": [
+    144
+   ],
+   "trailing": [
+    0
+   ],
+   "unmatched": [],
+   "unknown_disc": 0
+  },
+  {
+   "migration_slot": 471857057,
+   "bc_sigs_listed": 100,
+   "fetched": 40,
+   "found": false
+  },
+  {
+   "migration_slot": 471857562,
+   "bc_sigs_listed": 100,
+   "fetched": 1,
+   "found": true,
+   "slot": 471857560,
+   "sig": "3Bxe1mvonBremyJ8pwjfhgpVyTsZgWQmbb2WDJtM45YchBphsStik7Mf3j4Mqf63T3rgBqUMqvLkcT9Tq9D1eYLH",
+   "slot_ok": true,
+   "blob_len": [
+    144
+   ],
+   "trailing": [
+    0
+   ],
+   "unmatched": [],
+   "unknown_disc": 0
+  },
+  {
+   "migration_slot": 471858535,
+   "bc_sigs_listed": 100,
+   "fetched": 1,
+   "found": true,
+   "slot": 471858533,
+   "sig": "4P5oHGhmADaWC1dfHkEYca83b7UXdjFR4R5gj66vSmQmzEnioUjGsJN31KBcax5AMfV9bbJXnTPRc973NysUiHgK",
+   "slot_ok": true,
+   "blob_len": [
+    144
+   ],
+   "trailing": [
+    0
+   ],
+   "unmatched": [],
+   "unknown_disc": 0
+  }
+ ],
+ "bars": {
+  "field_inequalities": 0,
+  "blob_len_not_144": 0,
+  "trailing_nonzero": 0,
+  "unknown_disc": 0
+ },
+ "rpc_attempts": 57
+}

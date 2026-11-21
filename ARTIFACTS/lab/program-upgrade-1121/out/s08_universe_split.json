@@ -1,0 +1,3118 @@
+{
+ "base_mints": {
+  "n_rows": 164,
+  "n_unique_base_mints": 82,
+  "rows": [
+   {
+    "base_mint": "282z8bEctTSpQNa9p1mg6dwK1Yrt8fkG65iCceLEpump",
+    "extensions": [
+     18,
+     19
+    ],
+    "kind": "CreatePool",
+    "len": 488,
+    "owner": "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb",
+    "quote_mint": "So11111111111111111111111111111111111111112",
+    "sample": "pre",
+    "transfer_fee_config": null
+   },
+   {
+    "base_mint": "282z8bEctTSpQNa9p1mg6dwK1Yrt8fkG65iCceLEpump",
+    "extensions": [
+     18,
+     19
+    ],
+    "kind": "Migration",
+    "len": 488,
+    "owner": "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb",
+    "quote_mint": "So11111111111111111111111111111111111111112",
+    "sample": "pre",
+    "transfer_fee_config": null
+   },
+   {
+    "base_mint": "282zT4jsjx6wfZTcNiqJyet2ANkN9z3R6KUdzo4Zpump",
+    "extensions": [
+     18,
+     19
+    ],
+    "kind": "CreatePool",
+    "len": 482,
+    "owner": "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb",
+    "quote_mint": "So11111111111111111111111111111111111111112",
+    "sample": "pre",
+    "transfer_fee_config": null
+   },
+   {
+    "base_mint": "282zT4jsjx6wfZTcNiqJyet2ANkN9z3R6KUdzo4Zpump",
+    "extensions": [
+     18,
+     19
+    ],
+    "kind": "Migration",
+    "len": 482,
+    "owner": "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb",
+    "quote_mint": "So11111111111111111111111111111111111111112",
+    "sample": "pre",
+    "transfer_fee_config": null
+   },
+   {
+    "base_mint": "2CwReJxETLJqjtEeq6CNuY4FLuQCUyLWfHvya6fZpump",
+    "extensions": [
+     18,
+     19
+    ],
+    "kind": "CreatePool",
+    "len": 411,
+    "owner": "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb",
+    "quote_mint": "So11111111111111111111111111111111111111112",
+    "sample": "pre",
+    "transfer_fee_config": null
+   },
+   {
+    "base_mint": "2CwReJxETLJqjtEeq6CNuY4FLuQCUyLWfHvya6fZpump",
+    "extensions": [
+     18,
+     19
+    ],
+    "kind": "Migration",
+    "len": 411,
+    "owner": "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb",
+    "quote_mint": "So11111111111111111111111111111111111111112",
+    "sample": "pre",
+    "transfer_fee_config": null
+   },
+   {
+    "base_mint": "2SiB3ycY1FwNgcZQXWgBsVV6spRWNGnuSBThsFitpump",
+    "extensions": [
+     18,
+     19
+    ],
+    "kind": "CreatePool",
+    "len": 411,
+    "owner": "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb",
+    "quote_mint": "So11111111111111111111111111111111111111112",
+    "sample": "post",
+    "transfer_fee_config": null
+   },
+   {
+    "base_mint": "2SiB3ycY1FwNgcZQXWgBsVV6spRWNGnuSBThsFitpump",
+    "extensions": [
+     18,
+     19
+    ],
+    "kind": "Migration",
+    "len": 411,
+    "owner": "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb",
+    "quote_mint": "So11111111111111111111111111111111111111112",
+    "sample": "post",
+    "transfer_fee_config": null
+   },
+   {
+    "base_mint": "2VAwrG3dLVJnoKCMoETCbBKoAzVbsjkNaV5WZ8m7pump",
+    "extensions": [
+     18,
+     19
+    ],
+    "kind": "CreatePool",
+    "len": 413,
+    "owner": "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb",
+    "quote_mint": "kbNBBMKQ9by1Fy4mTUns7yJb936iG3nQRGwpAdypump",
+    "sample": "pre",
+    "transfer_fee_config": null
+   },
+   {
+    "base_mint": "2VAwrG3dLVJnoKCMoETCbBKoAzVbsjkNaV5WZ8m7pump",
+    "extensions": [
+     18,
+     19
+    ],
+    "kind": "Migration",
+    "len": 413,
+    "owner": "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb",
+    "quote_mint": "kbNBBMKQ9by1Fy4mTUns7yJb936iG3nQRGwpAdypump",
+    "sample": "pre",
+    "transfer_fee_config": null
+   },
+   {
+    "base_mint": "39pUqKH9gY1D47hyp8CHEcKzY5Csr6cdjAb6fFPspump",
+    "extensions": [
+     18,
+     19
+    ],
+    "kind": "CreatePool",
+    "len": 392,
+    "owner": "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb",
+    "quote_mint": "So11111111111111111111111111111111111111112",
+    "sample": "post",
+    "transfer_fee_config": null
+   },
+   {
+    "base_mint": "39pUqKH9gY1D47hyp8CHEcKzY5Csr6cdjAb6fFPspump",
+    "extensions": [
+     18,
+     19
+    ],
+    "kind": "Migration",
+    "len": 392,
+    "owner": "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb",
+    "quote_mint": "So11111111111111111111111111111111111111112",
+    "sample": "post",
+    "transfer_fee_config": null
+   },
+   {
+    "base_mint": "3LVdXmfiupVL1cea1SPSURMHtHW6vomjewQ2HcWGpump",
+    "extensions": [
+     18,
+     19
+    ],
+    "kind": "CreatePool",
+    "len": 391,
+    "owner": "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb",
+    "quote_mint": "SBFfiiCTiBDdkw6zbFsG7iEe2GJLxkN5h1u55b1mxjY",
+    "sample": "post",
+    "transfer_fee_config": null
+   },
+   {
+    "base_mint": "3LVdXmfiupVL1cea1SPSURMHtHW6vomjewQ2HcWGpump",
+    "extensions": [
+     18,
+     19
+    ],
+    "kind": "Migration",
+    "len": 391,
+    "owner": "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb",
+    "quote_mint": "SBFfiiCTiBDdkw6zbFsG7iEe2GJLxkN5h1u55b1mxjY",
+    "sample": "post",
+    "transfer_fee_config": null
+   },
+   {
+    "base_mint": "3SqtczzgSzTnfsWMTmxB9iMaKRNcb361vmoQbqA5pump",
+    "extensions": [
+     18,
+     19
+    ],
+    "kind": "CreatePool",
+    "len": 377,
+    "owner": "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb",
+    "quote_mint": "So11111111111111111111111111111111111111112",
+    "sample": "post",
+    "transfer_fee_config": null
+   },
+   {
+    "base_mint": "3SqtczzgSzTnfsWMTmxB9iMaKRNcb361vmoQbqA5pump",
+    "extensions": [
+     18,
+     19
+    ],
+    "kind": "Migration",
+    "len": 377,
+    "owner": "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb",
+    "quote_mint": "So11111111111111111111111111111111111111112",
+    "sample": "post",
+    "transfer_fee_config": null
+   },
+   {
+    "base_mint": "3fWhdo8bQCamw5ed6yNGdvaru1qS5UVwB6dYp9znpump",
+    "extensions": [
+     18,
+     19
+    ],
+    "kind": "CreatePool",
+    "len": 413,
+    "owner": "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb",
+    "quote_mint": "So11111111111111111111111111111111111111112",
+    "sample": "post",
+    "transfer_fee_config": null
+   },
+   {
+    "base_mint": "3fWhdo8bQCamw5ed6yNGdvaru1qS5UVwB6dYp9znpump",
+    "extensions": [
+     18,
+     19
+    ],
+    "kind": "Migration",
+    "len": 413,
+    "owner": "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb",
+    "quote_mint": "So11111111111111111111111111111111111111112",
+    "sample": "post",
+    "transfer_fee_config": null
+   },
+   {
+    "base_mint": "446LPr3ZVVdoYdNcQUrTWt9YFo2q4DWiLrP5CeQopump",
+    "extensions": [
+     18,
+     19
+    ],
+    "kind": "CreatePool",
+    "len": 406,
+    "owner": "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb",
+    "quote_mint": "So11111111111111111111111111111111111111112",
+    "sample": "pre",
+    "transfer_fee_config": null
+   },
+   {
+    "base_mint": "446LPr3ZVVdoYdNcQUrTWt9YFo2q4DWiLrP5CeQopump",
+    "extensions": [
+     18,
+     19
+    ],
+    "kind": "Migration",
+    "len": 406,
+    "owner": "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb",
+    "quote_mint": "So11111111111111111111111111111111111111112",
+    "sample": "pre",
+    "transfer_fee_config": null
+   },
+   {
+    "base_mint": "4Bvy6z6GUqWsW9L5wfiNdajJHRi5mMFh73uqdB9Ypump",
+    "extensions": [
+     18,
+     19
+    ],
+    "kind": "CreatePool",
+    "len": 414,
+    "owner": "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb",
+    "quote_mint": "So11111111111111111111111111111111111111112",
+    "sample": "post",
+    "transfer_fee_config": null
+   },
+   {
+    "base_mint": "4Bvy6z6GUqWsW9L5wfiNdajJHRi5mMFh73uqdB9Ypump",
+    "extensions": [
+     18,
+     19
+    ],
+    "kind": "Migration",
+    "len": 414,
+    "owner": "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb",
+    "quote_mint": "So11111111111111111111111111111111111111112",
+    "sample": "post",
+    "transfer_fee_config": null
+   },
+   {
+    "base_mint": "4e65dXGnv48hewYYnwKiRxG5LycXtiuFrmsXXiyzpump",
+    "extensions": [
+     18,
+     19
+    ],
+    "kind": "CreatePool",
+    "len": 399,
+    "owner": "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb",
+    "quote_mint": "So11111111111111111111111111111111111111112",
+    "sample": "post",
+    "transfer_fee_config": null
+   },
+   {
+    "base_mint": "4e65dXGnv48hewYYnwKiRxG5LycXtiuFrmsXXiyzpump",
+    "extensions": [
+     18,
+     19
+    ],
+    "kind": "Migration",
+    "len": 399,
+    "owner": "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb",
+    "quote_mint": "So11111111111111111111111111111111111111112",
+    "sample": "post",
+    "transfer_fee_config": null
+   },
+   {
+    "base_mint": "4wtXDDQ9tkRSnsaS3w88FAkJwAtnCrfNKGkFXgNNpump",
+    "extensions": [
+     18,
+     19
+    ],
+    "kind": "CreatePool",
+    "len": 387,
+    "owner": "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb",
+    "quote_mint": "So11111111111111111111111111111111111111112",
+    "sample": "pre",
+    "transfer_fee_config": null
+   },
+   {
+    "base_mint": "4wtXDDQ9tkRSnsaS3w88FAkJwAtnCrfNKGkFXgNNpump",
+    "extensions": [
+     18,
+     19
+    ],
+    "kind": "Migration",
+    "len": 387,
+    "owner": "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb",
+    "quote_mint": "So11111111111111111111111111111111111111112",
+    "sample": "pre",
+    "transfer_fee_config": null
+   },
+   {
+    "base_mint": "4zE226WfY1GG13LiPzBGrqnyef1xzUF9tmq4SftWpump",
+    "extensions": [
+     18,
+     19
+    ],
+    "kind": "CreatePool",
+    "len": 401,
+    "owner": "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb",
+    "quote_mint": "So11111111111111111111111111111111111111112",
+    "sample": "post",
+    "transfer_fee_config": null
+   },
+   {
+    "base_mint": "4zE226WfY1GG13LiPzBGrqnyef1xzUF9tmq4SftWpump",
+    "extensions": [
+     18,
+     19
+    ],
+    "kind": "Migration",
+    "len": 401,
+    "owner": "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb",
+    "quote_mint": "So11111111111111111111111111111111111111112",
+    "sample": "post",
+    "transfer_fee_config": null
+   },
+   {
+    "base_mint": "59gDhQeyy2ouKFwE7mQBh1JsFnxiUWFXP1pAuR2Jpump",
+    "extensions": [
+     18,
+     19
+    ],
+    "kind": "CreatePool",
+    "len": 410,
+    "owner": "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb",
+    "quote_mint": "So11111111111111111111111111111111111111112",
+    "sample": "pre",
+    "transfer_fee_config": null
+   },
+   {
+    "base_mint": "59gDhQeyy2ouKFwE7mQBh1JsFnxiUWFXP1pAuR2Jpump",
+    "extensions": [
+     18,
+     19
+    ],
+    "kind": "Migration",
+    "len": 410,
+    "owner": "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb",
+    "quote_mint": "So11111111111111111111111111111111111111112",
+    "sample": "pre",
+    "transfer_fee_config": null
+   },
+   {
+    "base_mint": "5RXkTanxqi7WpwFehxJn6zs8uteuPDk3QiGPtnrSpump",
+    "extensions": [
+     18,
+     19
+    ],
+    "kind": "CreatePool",
+    "len": 418,
+    "owner": "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb",
+    "quote_mint": "So11111111111111111111111111111111111111112",
+    "sample": "post",
+    "transfer_fee_config": null
+   },
+   {
+    "base_mint": "5RXkTanxqi7WpwFehxJn6zs8uteuPDk3QiGPtnrSpump",
+    "extensions": [
+     18,
+     19
+    ],
+    "kind": "Migration",
+    "len": 418,
+    "owner": "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb",
+    "quote_mint": "So11111111111111111111111111111111111111112",
+    "sample": "post",
+    "transfer_fee_config": null
+   },
+   {
+    "base_mint": "5aHPQXzs4PzmZKfh1spmCNLVGfHeQerPijeHUzdmpump",
+    "extensions": [
+     18,
+     19
+    ],
+    "kind": "CreatePool",
+    "len": 408,
+    "owner": "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb",
+    "quote_mint": "So11111111111111111111111111111111111111112",
+    "sample": "pre",
+    "transfer_fee_config": null
+   },
+   {
+    "base_mint": "5aHPQXzs4PzmZKfh1spmCNLVGfHeQerPijeHUzdmpump",
+    "extensions": [
+     18,
+     19
+    ],
+    "kind": "Migration",
+    "len": 408,
+    "owner": "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb",
+    "quote_mint": "So11111111111111111111111111111111111111112",
+    "sample": "pre",
+    "transfer_fee_config": null
+   },
+   {
+    "base_mint": "5ovitGYxd8y8Mchyx44oNbcj43YdiHMv4e2E61gbpump",
+    "extensions": [
+     18,
+     19
+    ],
+    "kind": "CreatePool",
+    "len": 401,
+    "owner": "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb",
+    "quote_mint": "So11111111111111111111111111111111111111112",
+    "sample": "post",
+    "transfer_fee_config": null
+   },
+   {
+    "base_mint": "5ovitGYxd8y8Mchyx44oNbcj43YdiHMv4e2E61gbpump",
+    "extensions": [
+     18,
+     19
+    ],
+    "kind": "Migration",
+    "len": 401,
+    "owner": "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb",
+    "quote_mint": "So11111111111111111111111111111111111111112",
+    "sample": "post",
+    "transfer_fee_config": null
+   },
+   {
+    "base_mint": "5qpk6CNxNkto6himEh5yHYsYuDoC34s7CTAW1KUKpump",
+    "extensions": [
+     18,
+     19
+    ],
+    "kind": "CreatePool",
+    "len": 408,
+    "owner": "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb",
+    "quote_mint": "So11111111111111111111111111111111111111112",
+    "sample": "post",
+    "transfer_fee_config": null
+   },
+   {
+    "base_mint": "5qpk6CNxNkto6himEh5yHYsYuDoC34s7CTAW1KUKpump",
+    "extensions": [
+     18,
+     19
+    ],
+    "kind": "Migration",
+    "len": 408,
+    "owner": "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb",
+    "quote_mint": "So11111111111111111111111111111111111111112",
+    "sample": "post",
+    "transfer_fee_config": null
+   },
+   {
+    "base_mint": "65tFKeAXpYYSMUbzSG13LMuyREvyr2hLE84MCQv8pump",
+    "extensions": [
+     18,
+     19
+    ],
+    "kind": "CreatePool",
+    "len": 372,
+    "owner": "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb",
+    "quote_mint": "So11111111111111111111111111111111111111112",
+    "sample": "pre",
+    "transfer_fee_config": null
+   },
+   {
+    "base_mint": "65tFKeAXpYYSMUbzSG13LMuyREvyr2hLE84MCQv8pump",
+    "extensions": [
+     18,
+     19
+    ],
+    "kind": "Migration",
+    "len": 372,
+    "owner": "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb",
+    "quote_mint": "So11111111111111111111111111111111111111112",
+    "sample": "pre",
+    "transfer_fee_config": null
+   },
+   {
+    "base_mint": "6UejfT1GX2hUU8vfpvNfYNS3KsGEuuiypqK21Dwppump",
+    "extensions": [
+     18,
+     19
+    ],
+    "kind": "CreatePool",
+    "len": 389,
+    "owner": "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb",
+    "quote_mint": "SPCXxcqXj6e5dJDVNovHN8744zkbhM2bYudU45BimGb",
+    "sample": "pre",
+    "transfer_fee_config": null
+   },
+   {
+    "base_mint": "6UejfT1GX2hUU8vfpvNfYNS3KsGEuuiypqK21Dwppump",
+    "extensions": [
+     18,
+     19
+    ],
+    "kind": "Migration",
+    "len": 389,
+    "owner": "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb",
+    "quote_mint": "SPCXxcqXj6e5dJDVNovHN8744zkbhM2bYudU45BimGb",
+    "sample": "pre",
+    "transfer_fee_config": null
+   },
+   {
+    "base_mint": "6xBTtMkkeuuE42NTz67FBb6kBByLJ8kPmZg7wnSdpump",
+    "extensions": [
+     18,
+     19
+    ],
+    "kind": "CreatePool",
+    "len": 405,
+    "owner": "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb",
+    "quote_mint": "So11111111111111111111111111111111111111112",
+    "sample": "post",
+    "transfer_fee_config": null
+   },
+   {
+    "base_mint": "6xBTtMkkeuuE42NTz67FBb6kBByLJ8kPmZg7wnSdpump",
+    "extensions": [
+     18,
+     19
+    ],
+    "kind": "Migration",
+    "len": 405,
+    "owner": "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb",
+    "quote_mint": "So11111111111111111111111111111111111111112",
+    "sample": "post",
+    "transfer_fee_config": null
+   },
+   {
+    "base_mint": "7FJhdVdvCC67mVwiLUeixpCkiF1GP42KpfNiQFWapump",
+    "extensions": [
+     18,
+     19
+    ],
+    "kind": "CreatePool",
+    "len": 425,
+    "owner": "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb",
+    "quote_mint": "So11111111111111111111111111111111111111112",
+    "sample": "post",
+    "transfer_fee_config": null
+   },
+   {
+    "base_mint": "7FJhdVdvCC67mVwiLUeixpCkiF1GP42KpfNiQFWapump",
+    "extensions": [
+     18,
+     19
+    ],
+    "kind": "Migration",
+    "len": 425,
+    "owner": "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb",
+    "quote_mint": "So11111111111111111111111111111111111111112",
+    "sample": "post",
+    "transfer_fee_config": null
+   },
+   {
+    "base_mint": "7KUg78hyohckj8i728YuCu6CweTArxhwRrVrFyvHpump",
+    "extensions": [
+     18,
+     19
+    ],
+    "kind": "CreatePool",
+    "len": 424,
+    "owner": "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb",
+    "quote_mint": "So11111111111111111111111111111111111111112",
+    "sample": "pre",
+    "transfer_fee_config": null
+   },
+   {
+    "base_mint": "7KUg78hyohckj8i728YuCu6CweTArxhwRrVrFyvHpump",
+    "extensions": [
+     18,
+     19
+    ],
+    "kind": "Migration",
+    "len": 424,
+    "owner": "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb",
+    "quote_mint": "So11111111111111111111111111111111111111112",
+    "sample": "pre",
+    "transfer_fee_config": null
+   },
+   {
+    "base_mint": "7R4MP6VX7n3RMNhL9zsk5Zu5ibZvwq8npUYnRq7epump",
+    "extensions": [
+     18,
+     19
+    ],
+    "kind": "CreatePool",
+    "len": 420,
+    "owner": "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb",
+    "quote_mint": "So11111111111111111111111111111111111111112",
+    "sample": "post",
+    "transfer_fee_config": null
+   },
+   {
+    "base_mint": "7R4MP6VX7n3RMNhL9zsk5Zu5ibZvwq8npUYnRq7epump",
+    "extensions": [
+     18,
+     19
+    ],
+    "kind": "Migration",
+    "len": 420,
+    "owner": "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb",
+    "quote_mint": "So11111111111111111111111111111111111111112",
+    "sample": "post",
+    "transfer_fee_config": null
+   },
+   {
+    "base_mint": "8PNBLuTC7poYX9mEg5FLzXYvH8ZHymJbRM3ErZzfpump",
+    "extensions": [
+     18,
+     19
+    ],
+    "kind": "CreatePool",
+    "len": 400,
+    "owner": "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb",
+    "quote_mint": "So11111111111111111111111111111111111111112",
+    "sample": "post",
+    "transfer_fee_config": null
+   },
+   {
+    "base_mint": "8PNBLuTC7poYX9mEg5FLzXYvH8ZHymJbRM3ErZzfpump",
+    "extensions": [
+     18,
+     19
+    ],
+    "kind": "Migration",
+    "len": 400,
+    "owner": "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb",
+    "quote_mint": "So11111111111111111111111111111111111111112",
+    "sample": "post",
+    "transfer_fee_config": null
+   },
+   {
+    "base_mint": "8pHKcLRFsbLhJYyGH8ihV7ih16EMweyvvUJHgj1upump",
+    "extensions": [
+     18,
+     19
+    ],
+    "kind": "CreatePool",
+    "len": 404,
+    "owner": "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb",
+    "quote_mint": "So11111111111111111111111111111111111111112",
+    "sample": "pre",
+    "transfer_fee_config": null
+   },
+   {
+    "base_mint": "8pHKcLRFsbLhJYyGH8ihV7ih16EMweyvvUJHgj1upump",
+    "extensions": [
+     18,
+     19
+    ],
+    "kind": "Migration",
+    "len": 404,
+    "owner": "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb",
+    "quote_mint": "So11111111111111111111111111111111111111112",
+    "sample": "pre",
+    "transfer_fee_config": null
+   },
+   {
+    "base_mint": "9GRCihaCDXqmQDoPVDnHPwEGgjew1XcgZXLgwbrxpump",
+    "extensions": [
+     18,
+     19
+    ],
+    "kind": "CreatePool",
+    "len": 375,
+    "owner": "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb",
+    "quote_mint": "So11111111111111111111111111111111111111112",
+    "sample": "post",
+    "transfer_fee_config": null
+   },
+   {
+    "base_mint": "9GRCihaCDXqmQDoPVDnHPwEGgjew1XcgZXLgwbrxpump",
+    "extensions": [
+     18,
+     19
+    ],
+    "kind": "Migration",
+    "len": 375,
+    "owner": "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb",
+    "quote_mint": "So11111111111111111111111111111111111111112",
+    "sample": "post",
+    "transfer_fee_config": null
+   },
+   {
+    "base_mint": "9KL6m34xx5mRuxgQWQdUsq4qHr4gwCpAswm7kAqwpump",
+    "extensions": [
+     18,
+     19
+    ],
+    "kind": "CreatePool",
+    "len": 393,
+    "owner": "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb",
+    "quote_mint": "So11111111111111111111111111111111111111112",
+    "sample": "post",
+    "transfer_fee_config": null
+   },
+   {
+    "base_mint": "9KL6m34xx5mRuxgQWQdUsq4qHr4gwCpAswm7kAqwpump",
+    "extensions": [
+     18,
+     19
+    ],
+    "kind": "Migration",
+    "len": 393,
+    "owner": "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb",
+    "quote_mint": "So11111111111111111111111111111111111111112",
+    "sample": "post",
+    "transfer_fee_config": null
+   },
+   {
+    "base_mint": "9LtDmBP2TX9LeD48A5iUr4kuqjoLcHeR9V5uvRJspump",
+    "extensions": [
+     18,
+     19
+    ],
+    "kind": "CreatePool",
+    "len": 401,
+    "owner": "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb",
+    "quote_mint": "So11111111111111111111111111111111111111112",
+    "sample": "post",
+    "transfer_fee_config": null
+   },
+   {
+    "base_mint": "9LtDmBP2TX9LeD48A5iUr4kuqjoLcHeR9V5uvRJspump",
+    "extensions": [
+     18,
+     19
+    ],
+    "kind": "Migration",
+    "len": 401,
+    "owner": "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb",
+    "quote_mint": "So11111111111111111111111111111111111111112",
+    "sample": "post",
+    "transfer_fee_config": null
+   },
+   {
+    "base_mint": "9WcGenJJraGbS3x8bAvHp1bk9Zg2DV3NYcePbD9jpump",
+    "extensions": [
+     18,
+     19
+    ],
+    "kind": "CreatePool",
+    "len": 409,
+    "owner": "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb",
+    "quote_mint": "So11111111111111111111111111111111111111112",
+    "sample": "pre",
+    "transfer_fee_config": null
+   },
+   {
+    "base_mint": "9WcGenJJraGbS3x8bAvHp1bk9Zg2DV3NYcePbD9jpump",
+    "extensions": [
+     18,
+     19
+    ],
+    "kind": "Migration",
+    "len": 409,
+    "owner": "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb",
+    "quote_mint": "So11111111111111111111111111111111111111112",
+    "sample": "pre",
+    "transfer_fee_config": null
+   },
+   {
+    "base_mint": "9bezW3ohaJ8e7g3hbQwyffBKGvx6g9dty3RcifWHpump",
+    "extensions": [
+     18,
+     19
+    ],
+    "kind": "CreatePool",
+    "len": 414,
+    "owner": "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb",
+    "quote_mint": "CUg7AzWL5p8imZVqqdjEPgRhUsXAkBMW5JxkSJ9fpump",
+    "sample": "pre",
+    "transfer_fee_config": null
+   },
+   {
+    "base_mint": "9bezW3ohaJ8e7g3hbQwyffBKGvx6g9dty3RcifWHpump",
+    "extensions": [
+     18,
+     19
+    ],
+    "kind": "Migration",
+    "len": 414,
+    "owner": "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb",
+    "quote_mint": "CUg7AzWL5p8imZVqqdjEPgRhUsXAkBMW5JxkSJ9fpump",
+    "sample": "pre",
+    "transfer_fee_config": null
+   },
+   {
+    "base_mint": "9sdToQnoJr8LLRJnjHFNnsyJQkEDYSajE7AsYiHvpump",
+    "extensions": [
+     18,
+     19
+    ],
+    "kind": "CreatePool",
+    "len": 431,
+    "owner": "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb",
+    "quote_mint": "So11111111111111111111111111111111111111112",
+    "sample": "post",
+    "transfer_fee_config": null
+   },
+   {
+    "base_mint": "9sdToQnoJr8LLRJnjHFNnsyJQkEDYSajE7AsYiHvpump",
+    "extensions": [
+     18,
+     19
+    ],
+    "kind": "Migration",
+    "len": 431,
+    "owner": "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb",
+    "quote_mint": "So11111111111111111111111111111111111111112",
+    "sample": "post",
+    "transfer_fee_config": null
+   },
+   {
+    "base_mint": "9ua4qb2mV4MKVJ2UuG8n3e7Gs5f5WKr3AockFUZEpump",
+    "extensions": [
+     18,
+     19
+    ],
+    "kind": "CreatePool",
+    "len": 388,
+    "owner": "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb",
+    "quote_mint": "8mnJZnxaNLqVwkaWWGH7dKmoEzyYzGJx5pHaCp7spump",
+    "sample": "post",
+    "transfer_fee_config": null
+   },
+   {
+    "base_mint": "9ua4qb2mV4MKVJ2UuG8n3e7Gs5f5WKr3AockFUZEpump",
+    "extensions": [
+     18,
+     19
+    ],
+    "kind": "Migration",
+    "len": 388,
+    "owner": "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb",
+    "quote_mint": "8mnJZnxaNLqVwkaWWGH7dKmoEzyYzGJx5pHaCp7spump",
+    "sample": "post",
+    "transfer_fee_config": null
+   },
+   {
+    "base_mint": "A5R2XtNgRg8y7RxYmrJdnGZmMA6KuqKGv4sfdAe7pump",
+    "extensions": [
+     18,
+     19
+    ],
+    "kind": "CreatePool",
+    "len": 403,
+    "owner": "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb",
+    "quote_mint": "So11111111111111111111111111111111111111112",
+    "sample": "post",
+    "transfer_fee_config": null
+   },
+   {
+    "base_mint": "A5R2XtNgRg8y7RxYmrJdnGZmMA6KuqKGv4sfdAe7pump",
+    "extensions": [
+     18,
+     19
+    ],
+    "kind": "Migration",
+    "len": 403,
+    "owner": "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb",
+    "quote_mint": "So11111111111111111111111111111111111111112",
+    "sample": "post",
+    "transfer_fee_config": null
+   },
+   {
+    "base_mint": "A5S83MXbjN9bePQTJ882MdVA5E9uRUasHJTp6Pu6pump",
+    "extensions": [
+     18,
+     19
+    ],
+    "kind": "CreatePool",
+    "len": 411,
+    "owner": "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb",
+    "quote_mint": "AkisXJmsjtYzeMmKq3s1AWsEf45Jo2UmW3rsnDjspump",
+    "sample": "post",
+    "transfer_fee_config": null
+   },
+   {
+    "base_mint": "A5S83MXbjN9bePQTJ882MdVA5E9uRUasHJTp6Pu6pump",
+    "extensions": [
+     18,
+     19
+    ],
+    "kind": "Migration",
+    "len": 411,
+    "owner": "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb",
+    "quote_mint": "AkisXJmsjtYzeMmKq3s1AWsEf45Jo2UmW3rsnDjspump",
+    "sample": "post",
+    "transfer_fee_config": null
+   },
+   {
+    "base_mint": "A6JHTeCpNtNoKL1Hb6UZUC7x1pcQi2M3BUyDZGRapump",
+    "extensions": [
+     18,
+     19
+    ],
+    "kind": "CreatePool",
+    "len": 397,
+    "owner": "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb",
+    "quote_mint": "So11111111111111111111111111111111111111112",
+    "sample": "pre",
+    "transfer_fee_config": null
+   },
+   {
+    "base_mint": "A6JHTeCpNtNoKL1Hb6UZUC7x1pcQi2M3BUyDZGRapump",
+    "extensions": [
+     18,
+     19
+    ],
+    "kind": "Migration",
+    "len": 397,
+    "owner": "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb",
+    "quote_mint": "So11111111111111111111111111111111111111112",
+    "sample": "pre",
+    "transfer_fee_config": null
+   },
+   {
+    "base_mint": "AJoP7w5peGF3EWxmvyJ9ZwB2NR6Kn2G8Tcsj3r5opump",
+    "extensions": [
+     18,
+     19
+    ],
+    "kind": "CreatePool",
+    "len": 398,
+    "owner": "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb",
+    "quote_mint": "So11111111111111111111111111111111111111112",
+    "sample": "post",
+    "transfer_fee_config": null
+   },
+   {
+    "base_mint": "AJoP7w5peGF3EWxmvyJ9ZwB2NR6Kn2G8Tcsj3r5opump",
+    "extensions": [
+     18,
+     19
+    ],
+    "kind": "Migration",
+    "len": 398,
+    "owner": "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb",
+    "quote_mint": "So11111111111111111111111111111111111111112",
+    "sample": "post",
+    "transfer_fee_config": null
+   },
+   {
+    "base_mint": "ATp3AuJK5kJKghJqv4yU1uneurM54zKfD455W8ffpump",
+    "extensions": [
+     18,
+     19
+    ],
+    "kind": "CreatePool",
+    "len": 415,
+    "owner": "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb",
+    "quote_mint": "So11111111111111111111111111111111111111112",
+    "sample": "pre",
+    "transfer_fee_config": null
+   },
+   {
+    "base_mint": "ATp3AuJK5kJKghJqv4yU1uneurM54zKfD455W8ffpump",
+    "extensions": [
+     18,
+     19
+    ],
+    "kind": "Migration",
+    "len": 415,
+    "owner": "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb",
+    "quote_mint": "So11111111111111111111111111111111111111112",
+    "sample": "pre",
+    "transfer_fee_config": null
+   },
+   {
+    "base_mint": "B4C3Jbueio385X9zH3ezXRLZpuAKJcVcjH2ZaDhapump",
+    "extensions": [
+     18,
+     19
+    ],
+    "kind": "CreatePool",
+    "len": 415,
+    "owner": "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb",
+    "quote_mint": "So11111111111111111111111111111111111111112",
+    "sample": "pre",
+    "transfer_fee_config": null
+   },
+   {
+    "base_mint": "B4C3Jbueio385X9zH3ezXRLZpuAKJcVcjH2ZaDhapump",
+    "extensions": [
+     18,
+     19
+    ],
+    "kind": "Migration",
+    "len": 415,
+    "owner": "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb",
+    "quote_mint": "So11111111111111111111111111111111111111112",
+    "sample": "pre",
+    "transfer_fee_config": null
+   },
+   {
+    "base_mint": "BTVXkLQ1NADjeUbsz52jrqegzJu7xAoPDgHm1rztpump",
+    "extensions": [
+     18,
+     19
+    ],
+    "kind": "CreatePool",
+    "len": 416,
+    "owner": "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb",
+    "quote_mint": "So11111111111111111111111111111111111111112",
+    "sample": "post",
+    "transfer_fee_config": null
+   },
+   {
+    "base_mint": "BTVXkLQ1NADjeUbsz52jrqegzJu7xAoPDgHm1rztpump",
+    "extensions": [
+     18,
+     19
+    ],
+    "kind": "Migration",
+    "len": 416,
+    "owner": "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb",
+    "quote_mint": "So11111111111111111111111111111111111111112",
+    "sample": "post",
+    "transfer_fee_config": null
+   },
+   {
+    "base_mint": "C2As2w55q3V3snKVCyA3nZvmQJSx2NApM5SLK5krpump",
+    "extensions": [
+     18,
+     19
+    ],
+    "kind": "CreatePool",
+    "len": 413,
+    "owner": "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb",
+    "quote_mint": "So11111111111111111111111111111111111111112",
+    "sample": "pre",
+    "transfer_fee_config": null
+   },
+   {
+    "base_mint": "C2As2w55q3V3snKVCyA3nZvmQJSx2NApM5SLK5krpump",
+    "extensions": [
+     18,
+     19
+    ],
+    "kind": "Migration",
+    "len": 413,
+    "owner": "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb",
+    "quote_mint": "So11111111111111111111111111111111111111112",
+    "sample": "pre",
+    "transfer_fee_config": null
+   },
+   {
+    "base_mint": "C3WmqLYvpHF6t8Z2KCh35nEZ1TZGBhuKUsLTtmEDpump",
+    "extensions": [
+     18,
+     19
+    ],
+    "kind": "CreatePool",
+    "len": 390,
+    "owner": "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb",
+    "quote_mint": "8mnJZnxaNLqVwkaWWGH7dKmoEzyYzGJx5pHaCp7spump",
+    "sample": "post",
+    "transfer_fee_config": null
+   },
+   {
+    "base_mint": "C3WmqLYvpHF6t8Z2KCh35nEZ1TZGBhuKUsLTtmEDpump",
+    "extensions": [
+     18,
+     19
+    ],
+    "kind": "Migration",
+    "len": 390,
+    "owner": "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb",
+    "quote_mint": "8mnJZnxaNLqVwkaWWGH7dKmoEzyYzGJx5pHaCp7spump",
+    "sample": "post",
+    "transfer_fee_config": null
+   },
+   {
+    "base_mint": "CDpTzrbzTsc65ocCboqv6F2c4HFG6VueKTA67bq3pump",
+    "extensions": [
+     18,
+     19
+    ],
+    "kind": "CreatePool",
+    "len": 406,
+    "owner": "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb",
+    "quote_mint": "So11111111111111111111111111111111111111112",
+    "sample": "post",
+    "transfer_fee_config": null
+   },
+   {
+    "base_mint": "CDpTzrbzTsc65ocCboqv6F2c4HFG6VueKTA67bq3pump",
+    "extensions": [
+     18,
+     19
+    ],
+    "kind": "Migration",
+    "len": 406,
+    "owner": "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb",
+    "quote_mint": "So11111111111111111111111111111111111111112",
+    "sample": "post",
+    "transfer_fee_config": null
+   },
+   {
+    "base_mint": "CWGpe3SXRmoD2BRt4Uo6z5ZdTZiaTqPzynLPxUKgpump",
+    "extensions": [
+     18,
+     19
+    ],
+    "kind": "CreatePool",
+    "len": 399,
+    "owner": "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb",
+    "quote_mint": "So11111111111111111111111111111111111111112",
+    "sample": "post",
+    "transfer_fee_config": null
+   },
+   {
+    "base_mint": "CWGpe3SXRmoD2BRt4Uo6z5ZdTZiaTqPzynLPxUKgpump",
+    "extensions": [
+     18,
+     19
+    ],
+    "kind": "Migration",
+    "len": 399,
+    "owner": "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb",
+    "quote_mint": "So11111111111111111111111111111111111111112",
+    "sample": "post",
+    "transfer_fee_config": null
+   },
+   {
+    "base_mint": "CjLVtMqhuTJX6a4B23xiz3xKa9aZKqnXPWX44N5Cpump",
+    "extensions": [
+     18,
+     19
+    ],
+    "kind": "CreatePool",
+    "len": 382,
+    "owner": "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb",
+    "quote_mint": "8mnJZnxaNLqVwkaWWGH7dKmoEzyYzGJx5pHaCp7spump",
+    "sample": "post",
+    "transfer_fee_config": null
+   },
+   {
+    "base_mint": "CjLVtMqhuTJX6a4B23xiz3xKa9aZKqnXPWX44N5Cpump",
+    "extensions": [
+     18,
+     19
+    ],
+    "kind": "Migration",
+    "len": 382,
+    "owner": "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb",
+    "quote_mint": "8mnJZnxaNLqVwkaWWGH7dKmoEzyYzGJx5pHaCp7spump",
+    "sample": "post",
+    "transfer_fee_config": null
+   },
+   {
+    "base_mint": "CmttffjsmC9txBdtW5Vg7Q73ouY6Q3WrMKN8QqXEpump",
+    "extensions": [
+     18,
+     19
+    ],
+    "kind": "CreatePool",
+    "len": 424,
+    "owner": "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb",
+    "quote_mint": "So11111111111111111111111111111111111111112",
+    "sample": "pre",
+    "transfer_fee_config": null
+   },
+   {
+    "base_mint": "CmttffjsmC9txBdtW5Vg7Q73ouY6Q3WrMKN8QqXEpump",
+    "extensions": [
+     18,
+     19
+    ],
+    "kind": "Migration",
+    "len": 424,
+    "owner": "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb",
+    "quote_mint": "So11111111111111111111111111111111111111112",
+    "sample": "pre",
+    "transfer_fee_config": null
+   },
+   {
+    "base_mint": "DDFyXFMXNC74vx2eGYFTRXRvuGGcjTtEmhCCeAchpump",
+    "extensions": [
+     18,
+     19
+    ],
+    "kind": "CreatePool",
+    "len": 379,
+    "owner": "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb",
+    "quote_mint": "So11111111111111111111111111111111111111112",
+    "sample": "pre",
+    "transfer_fee_config": null
+   },
+   {
+    "base_mint": "DDFyXFMXNC74vx2eGYFTRXRvuGGcjTtEmhCCeAchpump",
+    "extensions": [
+     18,
+     19
+    ],
+    "kind": "Migration",
+    "len": 379,
+    "owner": "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb",
+    "quote_mint": "So11111111111111111111111111111111111111112",
+    "sample": "pre",
+    "transfer_fee_config": null
+   },
+   {
+    "base_mint": "DJBvW4noqQmcfk5RY3SdpCU2tL63mohVvdLf9uS2aZ4Z",
+    "extensions": [
+     18,
+     19
+    ],
+    "kind": "CreatePool",
+    "len": 376,
+    "owner": "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb",
+    "quote_mint": "SQQQAa3gUxgnqcEsdjPA4RQNQBgB97TnG2hJhk2WaGE",
+    "sample": "pre",
+    "transfer_fee_config": null
+   },
+   {
+    "base_mint": "DJBvW4noqQmcfk5RY3SdpCU2tL63mohVvdLf9uS2aZ4Z",
+    "extensions": [
+     18,
+     19
+    ],
+    "kind": "Migration",
+    "len": 376,
+    "owner": "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb",
+    "quote_mint": "SQQQAa3gUxgnqcEsdjPA4RQNQBgB97TnG2hJhk2WaGE",
+    "sample": "pre",
+    "transfer_fee_config": null
+   },
+   {
+    "base_mint": "DPJywqPwD1JcBvo5YV4u5WUo46enYXer7RERQuUQpump",
+    "extensions": [
+     18,
+     19
+    ],
+    "kind": "CreatePool",
+    "len": 428,
+    "owner": "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb",
+    "quote_mint": "So11111111111111111111111111111111111111112",
+    "sample": "post",
+    "transfer_fee_config": null
+   },
+   {
+    "base_mint": "DPJywqPwD1JcBvo5YV4u5WUo46enYXer7RERQuUQpump",
+    "extensions": [
+     18,
+     19
+    ],
+    "kind": "Migration",
+    "len": 428,
+    "owner": "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb",
+    "quote_mint": "So11111111111111111111111111111111111111112",
+    "sample": "post",
+    "transfer_fee_config": null
+   },
+   {
+    "base_mint": "Da9626X6SvCMhaAntEBX53hgr7RWiJ1jMnb1YQmJpump",
+    "extensions": [
+     18,
+     19
+    ],
+    "kind": "CreatePool",
+    "len": 412,
+    "owner": "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb",
+    "quote_mint": "So11111111111111111111111111111111111111112",
+    "sample": "pre",
+    "transfer_fee_config": null
+   },
+   {
+    "base_mint": "Da9626X6SvCMhaAntEBX53hgr7RWiJ1jMnb1YQmJpump",
+    "extensions": [
+     18,
+     19
+    ],
+    "kind": "Migration",
+    "len": 412,
+    "owner": "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb",
+    "quote_mint": "So11111111111111111111111111111111111111112",
+    "sample": "pre",
+    "transfer_fee_config": null
+   },
+   {
+    "base_mint": "DcV7bCteg7FRF17ZDa2DRJ5Ude2kpVQijiwQQLNmpump",
+    "extensions": [
+     18,
+     19
+    ],
+    "kind": "CreatePool",
+    "len": 416,
+    "owner": "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb",
+    "quote_mint": "So11111111111111111111111111111111111111112",
+    "sample": "pre",
+    "transfer_fee_config": null
+   },
+   {
+    "base_mint": "DcV7bCteg7FRF17ZDa2DRJ5Ude2kpVQijiwQQLNmpump",
+    "extensions": [
+     18,
+     19
+    ],
+    "kind": "Migration",
+    "len": 416,
+    "owner": "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb",
+    "quote_mint": "So11111111111111111111111111111111111111112",
+    "sample": "pre",
+    "transfer_fee_config": null
+   },
+   {
+    "base_mint": "DoFqJKatPPGjgUhL8gQxPfsqzqvo9nkxH8NWAhh2pump",
+    "extensions": [
+     18,
+     19
+    ],
+    "kind": "CreatePool",
+    "len": 403,
+    "owner": "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb",
+    "quote_mint": "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",
+    "sample": "post",
+    "transfer_fee_config": null
+   },
+   {
+    "base_mint": "DoFqJKatPPGjgUhL8gQxPfsqzqvo9nkxH8NWAhh2pump",
+    "extensions": [
+     18,
+     19
+    ],
+    "kind": "Migration",
+    "len": 403,
+    "owner": "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb",
+    "quote_mint": "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",
+    "sample": "post",
+    "transfer_fee_config": null
+   },
+   {
+    "base_mint": "Eak6BbEBGLnbFNyqbKbMTgk5ToWshJGxc1cKXipXpump",
+    "extensions": [
+     18,
+     19
+    ],
+    "kind": "CreatePool",
+    "len": 401,
+    "owner": "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb",
+    "quote_mint": "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",
+    "sample": "post",
+    "transfer_fee_config": null
+   },
+   {
+    "base_mint": "Eak6BbEBGLnbFNyqbKbMTgk5ToWshJGxc1cKXipXpump",
+    "extensions": [
+     18,
+     19
+    ],
+    "kind": "Migration",
+    "len": 401,
+    "owner": "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb",
+    "quote_mint": "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",
+    "sample": "post",
+    "transfer_fee_config": null
+   },
+   {
+    "base_mint": "EdUc2NRSbuWp1g6H5eQkiaWhb8qV35ETGGPTUGJzpump",
+    "extensions": [
+     18,
+     19
+    ],
+    "kind": "CreatePool",
+    "len": 394,
+    "owner": "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb",
+    "quote_mint": "So11111111111111111111111111111111111111112",
+    "sample": "pre",
+    "transfer_fee_config": null
+   },
+   {
+    "base_mint": "EdUc2NRSbuWp1g6H5eQkiaWhb8qV35ETGGPTUGJzpump",
+    "extensions": [
+     18,
+     19
+    ],
+    "kind": "Migration",
+    "len": 394,
+    "owner": "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb",
+    "quote_mint": "So11111111111111111111111111111111111111112",
+    "sample": "pre",
+    "transfer_fee_config": null
+   },
+   {
+    "base_mint": "F5DNFX5HvjL52dptMYB1WyVvvrLPzVqCBYgPir2Tpump",
+    "extensions": [
+     18,
+     19
+    ],
+    "kind": "CreatePool",
+    "len": 412,
+    "owner": "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb",
+    "quote_mint": "So11111111111111111111111111111111111111112",
+    "sample": "post",
+    "transfer_fee_config": null
+   },
+   {
+    "base_mint": "F5DNFX5HvjL52dptMYB1WyVvvrLPzVqCBYgPir2Tpump",
+    "extensions": [
+     18,
+     19
+    ],
+    "kind": "Migration",
+    "len": 412,
+    "owner": "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb",
+    "quote_mint": "So11111111111111111111111111111111111111112",
+    "sample": "post",
+    "transfer_fee_config": null
+   },
+   {
+    "base_mint": "FBKkoVcXaHzpLHheCRnPk3zvLgiqhugbwGcegc9Ykvxx",
+    "extensions": [
+     18,
+     19
+    ],
+    "kind": "CreatePool",
+    "len": 388,
+    "owner": "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb",
+    "quote_mint": "SPCXxcqXj6e5dJDVNovHN8744zkbhM2bYudU45BimGb",
+    "sample": "pre",
+    "transfer_fee_config": null
+   },
+   {
+    "base_mint": "FBKkoVcXaHzpLHheCRnPk3zvLgiqhugbwGcegc9Ykvxx",
+    "extensions": [
+     18,
+     19
+    ],
+    "kind": "Migration",
+    "len": 388,
+    "owner": "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb",
+    "quote_mint": "SPCXxcqXj6e5dJDVNovHN8744zkbhM2bYudU45BimGb",
+    "sample": "pre",
+    "transfer_fee_config": null
+   },
+   {
+    "base_mint": "FKiK98JR2hgpJVEfiusqyPGpnZN3BdwmLepMebXKpump",
+    "extensions": [
+     18,
+     19
+    ],
+    "kind": "CreatePool",
+    "len": 404,
+    "owner": "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb",
+    "quote_mint": "SQQQAa3gUxgnqcEsdjPA4RQNQBgB97TnG2hJhk2WaGE",
+    "sample": "pre",
+    "transfer_fee_config": null
+   },
+   {
+    "base_mint": "FKiK98JR2hgpJVEfiusqyPGpnZN3BdwmLepMebXKpump",
+    "extensions": [
+     18,
+     19
+    ],
+    "kind": "Migration",
+    "len": 404,
+    "owner": "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb",
+    "quote_mint": "SQQQAa3gUxgnqcEsdjPA4RQNQBgB97TnG2hJhk2WaGE",
+    "sample": "pre",
+    "transfer_fee_config": null
+   },
+   {
+    "base_mint": "FNkSgW99sP9GRvgd9XmBiU2q17MsAp6oyYNkpqVGpump",
+    "extensions": [
+     18,
+     19
+    ],
+    "kind": "CreatePool",
+    "len": 375,
+    "owner": "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb",
+    "quote_mint": "So11111111111111111111111111111111111111112",
+    "sample": "pre",
+    "transfer_fee_config": null
+   },
+   {
+    "base_mint": "FNkSgW99sP9GRvgd9XmBiU2q17MsAp6oyYNkpqVGpump",
+    "extensions": [
+     18,
+     19
+    ],
+    "kind": "Migration",
+    "len": 375,
+    "owner": "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb",
+    "quote_mint": "So11111111111111111111111111111111111111112",
+    "sample": "pre",
+    "transfer_fee_config": null
+   },
+   {
+    "base_mint": "FPM1Pv3RiweWF9RTMfe6dD1hWgUvbyKEPg1CJFLrpump",
+    "extensions": [
+     18,
+     19
+    ],
+    "kind": "CreatePool",
+    "len": 384,
+    "owner": "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb",
+    "quote_mint": "TTWofwAge91oFhZs7kpQdyrVRkmevgM88xijGvQFbKo",
+    "sample": "post",
+    "transfer_fee_config": null
+   },
+   {
+    "base_mint": "FPM1Pv3RiweWF9RTMfe6dD1hWgUvbyKEPg1CJFLrpump",
+    "extensions": [
+     18,
+     19
+    ],
+    "kind": "Migration",
+    "len": 384,
+    "owner": "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb",
+    "quote_mint": "TTWofwAge91oFhZs7kpQdyrVRkmevgM88xijGvQFbKo",
+    "sample": "post",
+    "transfer_fee_config": null
+   },
+   {
+    "base_mint": "FRHkMqnH93NQUDcvA6KNFqD2TPVAM9psjh3aJeXMkBmo",
+    "extensions": [
+     18,
+     19
+    ],
+    "kind": "CreatePool",
+    "len": 391,
+    "owner": "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb",
+    "quote_mint": "So11111111111111111111111111111111111111112",
+    "sample": "pre",
+    "transfer_fee_config": null
+   },
+   {
+    "base_mint": "FRHkMqnH93NQUDcvA6KNFqD2TPVAM9psjh3aJeXMkBmo",
+    "extensions": [
+     18,
+     19
+    ],
+    "kind": "Migration",
+    "len": 391,
+    "owner": "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb",
+    "quote_mint": "So11111111111111111111111111111111111111112",
+    "sample": "pre",
+    "transfer_fee_config": null
+   },
+   {
+    "base_mint": "FqjZnuzRv3QYQQQrRRxt6fAGtrnaXnPXFabExM7Ppump",
+    "extensions": [
+     18,
+     19
+    ],
+    "kind": "CreatePool",
+    "len": 425,
+    "owner": "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb",
+    "quote_mint": "So11111111111111111111111111111111111111112",
+    "sample": "pre",
+    "transfer_fee_config": null
+   },
+   {
+    "base_mint": "FqjZnuzRv3QYQQQrRRxt6fAGtrnaXnPXFabExM7Ppump",
+    "extensions": [
+     18,
+     19
+    ],
+    "kind": "Migration",
+    "len": 425,
+    "owner": "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb",
+    "quote_mint": "So11111111111111111111111111111111111111112",
+    "sample": "pre",
+    "transfer_fee_config": null
+   },
+   {
+    "base_mint": "FwBAnfYhZawMB5eLQKDtmQMTfi3SqvZ21XqQhTjcpump",
+    "extensions": [
+     18,
+     19
+    ],
+    "kind": "CreatePool",
+    "len": 379,
+    "owner": "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb",
+    "quote_mint": "So11111111111111111111111111111111111111112",
+    "sample": "pre",
+    "transfer_fee_config": null
+   },
+   {
+    "base_mint": "FwBAnfYhZawMB5eLQKDtmQMTfi3SqvZ21XqQhTjcpump",
+    "extensions": [
+     18,
+     19
+    ],
+    "kind": "Migration",
+    "len": 379,
+    "owner": "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb",
+    "quote_mint": "So11111111111111111111111111111111111111112",
+    "sample": "pre",
+    "transfer_fee_config": null
+   },
+   {
+    "base_mint": "G2nMwS4ynqLy2EmhYBiFuR5SbHQCQZe9ZfGrvUeHpump",
+    "extensions": [
+     18,
+     19
+    ],
+    "kind": "CreatePool",
+    "len": 400,
+    "owner": "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb",
+    "quote_mint": "So11111111111111111111111111111111111111112",
+    "sample": "post",
+    "transfer_fee_config": null
+   },
+   {
+    "base_mint": "G2nMwS4ynqLy2EmhYBiFuR5SbHQCQZe9ZfGrvUeHpump",
+    "extensions": [
+     18,
+     19
+    ],
+    "kind": "Migration",
+    "len": 400,
+    "owner": "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb",
+    "quote_mint": "So11111111111111111111111111111111111111112",
+    "sample": "post",
+    "transfer_fee_config": null
+   },
+   {
+    "base_mint": "G6H8DjYRPomfmG5KrEAMpxoUU2uRLxdeTrkxnSiXpump",
+    "extensions": [
+     18,
+     19
+    ],
+    "kind": "CreatePool",
+    "len": 387,
+    "owner": "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb",
+    "quote_mint": "So11111111111111111111111111111111111111112",
+    "sample": "pre",
+    "transfer_fee_config": null
+   },
+   {
+    "base_mint": "G6H8DjYRPomfmG5KrEAMpxoUU2uRLxdeTrkxnSiXpump",
+    "extensions": [
+     18,
+     19
+    ],
+    "kind": "Migration",
+    "len": 387,
+    "owner": "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb",
+    "quote_mint": "So11111111111111111111111111111111111111112",
+    "sample": "pre",
+    "transfer_fee_config": null
+   },
+   {
+    "base_mint": "GRtNE4YwpADcP6gnw3vWoiXEEhhk9oSqtK6Tj6Zspump",
+    "extensions": [
+     18,
+     19
+    ],
+    "kind": "CreatePool",
+    "len": 406,
+    "owner": "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb",
+    "quote_mint": "So11111111111111111111111111111111111111112",
+    "sample": "pre",
+    "transfer_fee_config": null
+   },
+   {
+    "base_mint": "GRtNE4YwpADcP6gnw3vWoiXEEhhk9oSqtK6Tj6Zspump",
+    "extensions": [
+     18,
+     19
+    ],
+    "kind": "Migration",
+    "len": 406,
+    "owner": "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb",
+    "quote_mint": "So11111111111111111111111111111111111111112",
+    "sample": "pre",
+    "transfer_fee_config": null
+   },
+   {
+    "base_mint": "GXbkoLjUFUvV9sxzTZjwQtpp8ckHsg4izHaQYLscpump",
+    "extensions": [
+     18,
+     19
+    ],
+    "kind": "CreatePool",
+    "len": 399,
+    "owner": "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb",
+    "quote_mint": "So11111111111111111111111111111111111111112",
+    "sample": "post",
+    "transfer_fee_config": null
+   },
+   {
+    "base_mint": "GXbkoLjUFUvV9sxzTZjwQtpp8ckHsg4izHaQYLscpump",
+    "extensions": [
+     18,
+     19
+    ],
+    "kind": "Migration",
+    "len": 399,
+    "owner": "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb",
+    "quote_mint": "So11111111111111111111111111111111111111112",
+    "sample": "post",
+    "transfer_fee_config": null
+   },
+   {
+    "base_mint": "GdqJ3D4BF6ZKtpXajVqZTP39vrwD8wDXZGgw7tBA8PAY",
+    "extensions": [
+     18,
+     19
+    ],
+    "kind": "CreatePool",
+    "len": 407,
+    "owner": "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb",
+    "quote_mint": "So11111111111111111111111111111111111111112",
+    "sample": "post",
+    "transfer_fee_config": null
+   },
+   {
+    "base_mint": "GdqJ3D4BF6ZKtpXajVqZTP39vrwD8wDXZGgw7tBA8PAY",
+    "extensions": [
+     18,
+     19
+    ],
+    "kind": "Migration",
+    "len": 407,
+    "owner": "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb",
+    "quote_mint": "So11111111111111111111111111111111111111112",
+    "sample": "post",
+    "transfer_fee_config": null
+   },
+   {
+    "base_mint": "GfrmGNjtwWtbVJLhvrM6JABEsPJsSaszJychkpskpump",
+    "extensions": [
+     18,
+     19
+    ],
+    "kind": "CreatePool",
+    "len": 381,
+    "owner": "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb",
+    "quote_mint": "So11111111111111111111111111111111111111112",
+    "sample": "pre",
+    "transfer_fee_config": null
+   },
+   {
+    "base_mint": "GfrmGNjtwWtbVJLhvrM6JABEsPJsSaszJychkpskpump",
+    "extensions": [
+     18,
+     19
+    ],
+    "kind": "Migration",
+    "len": 381,
+    "owner": "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb",
+    "quote_mint": "So11111111111111111111111111111111111111112",
+    "sample": "pre",
+    "transfer_fee_config": null
+   },
+   {
+    "base_mint": "Ghx3SVJtXrLy4BBhZfTCHMmTDgXNmCzQjWNFoberpump",
+    "extensions": [
+     18,
+     19
+    ],
+    "kind": "CreatePool",
+    "len": 401,
+    "owner": "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb",
+    "quote_mint": "So11111111111111111111111111111111111111112",
+    "sample": "pre",
+    "transfer_fee_config": null
+   },
+   {
+    "base_mint": "Ghx3SVJtXrLy4BBhZfTCHMmTDgXNmCzQjWNFoberpump",
+    "extensions": [
+     18,
+     19
+    ],
+    "kind": "Migration",
+    "len": 401,
+    "owner": "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb",
+    "quote_mint": "So11111111111111111111111111111111111111112",
+    "sample": "pre",
+    "transfer_fee_config": null
+   },
+   {
+    "base_mint": "Gmf5DoZ2PsciPQi8CKFRoNH9HDa7LFg2VXkMQ5rTpump",
+    "extensions": [
+     18,
+     19
+    ],
+    "kind": "CreatePool",
+    "len": 412,
+    "owner": "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb",
+    "quote_mint": "So11111111111111111111111111111111111111112",
+    "sample": "pre",
+    "transfer_fee_config": null
+   },
+   {
+    "base_mint": "Gmf5DoZ2PsciPQi8CKFRoNH9HDa7LFg2VXkMQ5rTpump",
+    "extensions": [
+     18,
+     19
+    ],
+    "kind": "Migration",
+    "len": 412,
+    "owner": "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb",
+    "quote_mint": "So11111111111111111111111111111111111111112",
+    "sample": "pre",
+    "transfer_fee_config": null
+   },
+   {
+    "base_mint": "GxVptPJE21HV9d7adCJoDLCPUqSaJTM3BsDjNWwHpump",
+    "extensions": [
+     18,
+     19
+    ],
+    "kind": "CreatePool",
+    "len": 405,
+    "owner": "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb",
+    "quote_mint": "So11111111111111111111111111111111111111112",
+    "sample": "post",
+    "transfer_fee_config": null
+   },
+   {
+    "base_mint": "GxVptPJE21HV9d7adCJoDLCPUqSaJTM3BsDjNWwHpump",
+    "extensions": [
+     18,
+     19
+    ],
+    "kind": "Migration",
+    "len": 405,
+    "owner": "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb",
+    "quote_mint": "So11111111111111111111111111111111111111112",
+    "sample": "post",
+    "transfer_fee_config": null
+   },
+   {
+    "base_mint": "H8BevoVvtuhUJzwQBrJzWvBxcpKaJw19HXzvUh9upump",
+    "extensions": [
+     18,
+     19
+    ],
+    "kind": "CreatePool",
+    "len": 420,
+    "owner": "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb",
+    "quote_mint": "So11111111111111111111111111111111111111112",
+    "sample": "pre",
+    "transfer_fee_config": null
+   },
+   {
+    "base_mint": "H8BevoVvtuhUJzwQBrJzWvBxcpKaJw19HXzvUh9upump",
+    "extensions": [
+     18,
+     19
+    ],
+    "kind": "Migration",
+    "len": 420,
+    "owner": "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb",
+    "quote_mint": "So11111111111111111111111111111111111111112",
+    "sample": "pre",
+    "transfer_fee_config": null
+   },
+   {
+    "base_mint": "HGWXvkfruJhaC69CqKEeSQKyF5fHC5WCJ76h2gqbpump",
+    "extensions": [
+     18,
+     19
+    ],
+    "kind": "CreatePool",
+    "len": 415,
+    "owner": "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb",
+    "quote_mint": "So11111111111111111111111111111111111111112",
+    "sample": "post",
+    "transfer_fee_config": null
+   },
+   {
+    "base_mint": "HGWXvkfruJhaC69CqKEeSQKyF5fHC5WCJ76h2gqbpump",
+    "extensions": [
+     18,
+     19
+    ],
+    "kind": "Migration",
+    "len": 415,
+    "owner": "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb",
+    "quote_mint": "So11111111111111111111111111111111111111112",
+    "sample": "post",
+    "transfer_fee_config": null
+   },
+   {
+    "base_mint": "HMFv9XEMiuJZUhsWPXqVsye8EvTaQZhHqcdzrTEdpump",
+    "extensions": [
+     18,
+     19
+    ],
+    "kind": "CreatePool",
+    "len": 414,
+    "owner": "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb",
+    "quote_mint": "So11111111111111111111111111111111111111112",
+    "sample": "post",
+    "transfer_fee_config": null
+   },
+   {
+    "base_mint": "HMFv9XEMiuJZUhsWPXqVsye8EvTaQZhHqcdzrTEdpump",
+    "extensions": [
+     18,
+     19
+    ],
+    "kind": "Migration",
+    "len": 414,
+    "owner": "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb",
+    "quote_mint": "So11111111111111111111111111111111111111112",
+    "sample": "post",
+    "transfer_fee_config": null
+   },
+   {
+    "base_mint": "J4tVRdoAHAhvFnUSV1ajsrkir3BLfSBK8gME5U4qpump",
+    "extensions": [
+     18,
+     19
+    ],
+    "kind": "CreatePool",
+    "len": 395,
+    "owner": "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb",
+    "quote_mint": "So11111111111111111111111111111111111111112",
+    "sample": "pre",
+    "transfer_fee_config": null
+   },
+   {
+    "base_mint": "J4tVRdoAHAhvFnUSV1ajsrkir3BLfSBK8gME5U4qpump",
+    "extensions": [
+     18,
+     19
+    ],
+    "kind": "Migration",
+    "len": 395,
+    "owner": "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb",
+    "quote_mint": "So11111111111111111111111111111111111111112",
+    "sample": "pre",
+    "transfer_fee_config": null
+   },
+   {
+    "base_mint": "Np3iwdNmfzQxuTCUTjFiBy1e6u3XK6L3fwDopmDpump",
+    "extensions": [
+     18,
+     19
+    ],
+    "kind": "CreatePool",
+    "len": 378,
+    "owner": "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb",
+    "quote_mint": "JA1QWKi667PhbJoqUWB1GkQHK4h51CRsFS2UEyT7pump",
+    "sample": "post",
+    "transfer_fee_config": null
+   },
+   {
+    "base_mint": "Np3iwdNmfzQxuTCUTjFiBy1e6u3XK6L3fwDopmDpump",
+    "extensions": [
+     18,
+     19
+    ],
+    "kind": "Migration",
+    "len": 378,
+    "owner": "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb",
+    "quote_mint": "JA1QWKi667PhbJoqUWB1GkQHK4h51CRsFS2UEyT7pump",
+    "sample": "post",
+    "transfer_fee_config": null
+   },
+   {
+    "base_mint": "So11111111111111111111111111111111111111112",
+    "kind": "CreatePool",
+    "len": 82,
+    "owner": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+    "quote_mint": "EA7u3hkzfvWbY3BPUz3o1Mh1q3UMYMZNxaHgEvR6H7Jx",
+    "sample": "post",
+    "transfer_fee_config": null
+   },
+   {
+    "base_mint": "So11111111111111111111111111111111111111112",
+    "kind": "CreatePool",
+    "len": 82,
+    "owner": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+    "quote_mint": "CHGXW33ShRRc4N1oLy6daygYrmgLscN5wcC2tmx3esyg",
+    "sample": "pre",
+    "transfer_fee_config": null
+   },
+   {
+    "base_mint": "bTsK3bg69oAuJTmWwHQV9mzc4ZqDHLguWpZKwutpump",
+    "extensions": [
+     18,
+     19
+    ],
+    "kind": "CreatePool",
+    "len": 405,
+    "owner": "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb",
+    "quote_mint": "So11111111111111111111111111111111111111112",
+    "sample": "pre",
+    "transfer_fee_config": null
+   },
+   {
+    "base_mint": "bTsK3bg69oAuJTmWwHQV9mzc4ZqDHLguWpZKwutpump",
+    "extensions": [
+     18,
+     19
+    ],
+    "kind": "Migration",
+    "len": 405,
+    "owner": "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb",
+    "quote_mint": "So11111111111111111111111111111111111111112",
+    "sample": "pre",
+    "transfer_fee_config": null
+   },
+   {
+    "base_mint": "jUVy8abbJDofiP1Dx3SYAr8FLjRAs9agHGwnDsjpump",
+    "extensions": [
+     18,
+     19
+    ],
+    "kind": "CreatePool",
+    "len": 404,
+    "owner": "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb",
+    "quote_mint": "So11111111111111111111111111111111111111112",
+    "sample": "pre",
+    "transfer_fee_config": null
+   },
+   {
+    "base_mint": "jUVy8abbJDofiP1Dx3SYAr8FLjRAs9agHGwnDsjpump",
+    "extensions": [
+     18,
+     19
+    ],
+    "kind": "Migration",
+    "len": 404,
+    "owner": "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb",
+    "quote_mint": "So11111111111111111111111111111111111111112",
+    "sample": "pre",
+    "transfer_fee_config": null
+   },
+   {
+    "base_mint": "kpY9mihBkaQTU18K7NBLCn89YeBU2h1oAYgdoCopump",
+    "extensions": [
+     18,
+     19
+    ],
+    "kind": "CreatePool",
+    "len": 404,
+    "owner": "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb",
+    "quote_mint": "So11111111111111111111111111111111111111112",
+    "sample": "pre",
+    "transfer_fee_config": null
+   },
+   {
+    "base_mint": "kpY9mihBkaQTU18K7NBLCn89YeBU2h1oAYgdoCopump",
+    "extensions": [
+     18,
+     19
+    ],
+    "kind": "Migration",
+    "len": 404,
+    "owner": "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb",
+    "quote_mint": "So11111111111111111111111111111111111111112",
+    "sample": "pre",
+    "transfer_fee_config": null
+   },
+   {
+    "base_mint": "qT1kj1Rzbo44gBpFNKJPxGp5CBAcC75P26H1xMLpump",
+    "extensions": [
+     18,
+     19
+    ],
+    "kind": "CreatePool",
+    "len": 424,
+    "owner": "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb",
+    "quote_mint": "So11111111111111111111111111111111111111112",
+    "sample": "post",
+    "transfer_fee_config": null
+   },
+   {
+    "base_mint": "qT1kj1Rzbo44gBpFNKJPxGp5CBAcC75P26H1xMLpump",
+    "extensions": [
+     18,
+     19
+    ],
+    "kind": "Migration",
+    "len": 424,
+    "owner": "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb",
+    "quote_mint": "So11111111111111111111111111111111111111112",
+    "sample": "post",
+    "transfer_fee_config": null
+   }
+  ],
+  "rpc_attempts": 3,
+  "summary": {
+   "post|non_wsol|CreatePool|TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA": 1,
+   "post|non_wsol|CreatePool|TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb": 9,
+   "post|non_wsol|Migration|TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb": 9,
+   "post|wsol|CreatePool|TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb": 32,
+   "post|wsol|Migration|TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb": 32,
+   "pre|non_wsol|CreatePool|TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA": 1,
+   "pre|non_wsol|CreatePool|TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb": 6,
+   "pre|non_wsol|Migration|TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb": 6,
+   "pre|wsol|CreatePool|TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb": 34,
+   "pre|wsol|Migration|TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb": 34
+  }
+ },
+ "extension_types_by_group": {
+  "post": {
+   "18": 82,
+   "19": 82,
+   "_owner_Tokenkeg": 1,
+   "_token2022_mints": 82
+  },
+  "pre": {
+   "18": 80,
+   "19": 80,
+   "_owner_Tokenkeg": 1,
+   "_token2022_mints": 80
+  }
+ },
+ "extension_types_post_not_in_pre": [],
+ "nonzero_field_quote_mints_account_info": {
+  "GTA6ot7gjnojk8WwAoxKrqDkrLtCPtSfzAikk6zu2koH": {
+   "extensions": [
+    1
+   ],
+   "len": 278,
+   "owner": "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb",
+   "transfer_fee_config": {
+    "newer_bps": 50,
+    "newer_max": 18446744073709551615,
+    "nonzero": true,
+    "older_bps": 50,
+    "older_max": 18446744073709551615
+   }
+  },
+  "PrekqLJvJ3qVdXmBGDiexvwUTF4rLFDa6HWS4HJbw9S": {
+   "extensions": [
+    12,
+    6,
+    1,
+    4,
+    16,
+    14,
+    25,
+    18,
+    26,
+    19
+   ],
+   "len": 911,
+   "owner": "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb",
+   "transfer_fee_config": {
+    "newer_bps": 100,
+    "newer_max": 18446744073709551615,
+    "nonzero": true,
+    "older_bps": 300,
+    "older_max": 18446744073709551615
+   }
+  }
+ },
+ "post": {
+  "amm_txs_by_class": {
+   "mixed": 10,
+   "no_amm_trade_ix": 149,
+   "non_wsol_only": 3165,
+   "wsol_only": 3476
+  },
+  "amm_txs_truncated_by_class": {
+   "no_amm_trade_ix": 4,
+   "non_wsol_only": 5,
+   "wsol_only": 13
+  },
+  "n_tx": 16676,
+  "pump_trade_events_by_event_quote_mint": {
+   "11111111111111111111111111111111": 2078,
+   "2S8uNgZoU7vhM8eme2XtHMQ7gEHvXfqmhkmMVwpGMF7U": 1,
+   "2q68mqEbjwmnMjs1o3KZDNZVyMv6RZKkHcm64iinpump": 3,
+   "3NZ9JMVBmGAqocybic2c7LQCJScmgsAZ6vQqTDzcqmJh": 1,
+   "58QyXQ1UDgHh64EiTsCeevVM9cLPqBDNf3qZE6EdfUhZ": 6,
+   "5GDX5fJTQns4arM1J94wjxdA8KXFsV5qW46MLFpHpump": 2,
+   "66DfFP76PkzWb5RmPTxcoy44wYTqG9T6LWzYymWjpump": 1,
+   "6p6xgHyF7AeE6TZkSmFsko444wqoP15icUSqi2jfGiPN": 2,
+   "7pq9QyFN1cPmC2Sdr3v4CxMcPM9vfNrbKMhxtpXNpump": 1,
+   "8EzKJgqebVHTsmaQZCDVebtJLDMq7DZ3ADoZeDsQpump": 1,
+   "8fWsV1u1SYcN358tSA6dyTjfpmaQTziftcHwKBFSpump": 2,
+   "8mnJZnxaNLqVwkaWWGH7dKmoEzyYzGJx5pHaCp7spump": 63,
+   "98kfF7rmsg1QDUEoCqNE7g7M1FdrTt92TEp2CLzypump": 6,
+   "9cmXfuC26anZtH9AUWVzpUxU1UJ7PPogYxftYTepump": 2,
+   "9k2nqjUrSh9p2ZBnWxNE3QRWYiLocrWZfoDm3Vdxpump": 1,
+   "A7bdiYdS5GjqGFtxf17ppRHtDKPkkRqbKtR27dxvQXaS": 2,
+   "AMC1qwR9KhiyrQBRPrxnfo4JfMeMZqEBvt5tgTytNNoc": 70,
+   "ANTBTZQ1EUuTxUs3tfeampxdqTWPHmwyJmcWj4xoAyNe": 2,
+   "Aykavwa4Z1Z2pW3CRuRpXBXrNZAtuhzAskgBFXFgpump": 4,
+   "CfNmk6r5zDChpbmYtqmv5aEcPptqaqh93kBpmbDrpump": 2,
+   "Cm6fNnMk7NfzStP9CZpsQA2v3jjzbcYGAxdJySmHpump": 18,
+   "CsKK9d5wtc9ykh6ZL6ERSRRjRnSZU5QTjVosEo2xpump": 4,
+   "DJBvW4noqQmcfk5RY3SdpCU2tL63mohVvdLf9uS2aZ4Z": 4,
+   "DoGEV7LASBkQbibMc5k5vKnTZoMg423GpJ5QtJEGfm7R": 6,
+   "ELbCDkRuUTuzPCR6CarMVtR1CYh71AzGhuZTBPePpump": 2,
+   "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v": 70,
+   "GSp4qePZUHBtt5f4gE6AsRC9JUUqeZEJLeN2JZxLpump": 1,
+   "GT8WxWKEgxzZiKL89Uu288vb8jnescwpNSrvyHzcpump": 1,
+   "HiMSSzzwkZkrXJ4PGVJRdtfLaANeAztjjcgk5Dxe7Lwx": 1,
+   "JA1QWKi667PhbJoqUWB1GkQHK4h51CRsFS2UEyT7pump": 4,
+   "LLYuwZ33keFihgwoxXsBawy31AiRFLFSva32TYq5TvD": 1,
+   "NFLX7qV57zuVxCoHy3s1jiGZyALraLNwttbxdvmYJLJ": 2,
+   "PrekqLJvJ3qVdXmBGDiexvwUTF4rLFDa6HWS4HJbw9S": 4,
+   "Q1vecEMQEgDyrw1txmBgFwUrkeQurqkEe1bGMzFpump": 2,
+   "SPCXxcqXj6e5dJDVNovHN8744zkbhM2bYudU45BimGb": 19,
+   "SPHFHU7sz2EZQYqyxMrZjgFdiYSCXJxRBE4giAjpump": 5,
+   "SQQQAa3gUxgnqcEsdjPA4RQNQBgB97TnG2hJhk2WaGE": 58,
+   "TTWofwAge91oFhZs7kpQdyrVRkmevgM88xijGvQFbKo": 121,
+   "WXMRyRZhsa19ety5erZhHg4N3xj3EVN92u94422teJp": 2,
+   "Xs2yquAgsHByNzx68WJC55WHjHBvG9JsMB7CWjTLyPy": 2,
+   "Xs8S1uUs1zvS2p7iwtsG3b6fkhpvmwz4GYU3gWAmWHZ": 7,
+   "XsDoVfqeBukxuZHWhdvWHBhgEHjGNst4MLodqsJHzoB": 17,
+   "Xsa62P5mvPszXL1krVUnU5ar38bBSVcWAB6fmPCo5Zu": 3,
+   "XsbEhLAtcf6HdfpFZ5xEMdqW8nfAvcsP5bdudRLJzJp": 5,
+   "XsgSaSvNSqLTtFuyWPBhK9196Xb9Bbdyjj4fH3cPJGo": 1,
+   "XsqE9cRRpzxcGKDXj1BJ7Xmg4GRhZoyY1KpmGSxAWT2": 4,
+   "Xsv9hRk1z5ystj9MhnA7Lq4vjSsLwzL2nxrwmwtD3re": 1,
+   "he1iusmfkpAdwvxLNGV8Y1iSbj4rUy6yMhEA3fotn9A": 6,
+   "pumpCmXqMfrsAkQ5r49WcJnRayYRqmXz6ae8H7H9Dfn": 35,
+   "zK42Ztz6TdFUgd1f7cULoJMduX2B91auZpFK7hvpump": 4
+  },
+  "pump_trade_nonzero_by_event_quote_mint": {
+   "PrekqLJvJ3qVdXmBGDiexvwUTF4rLFDa6HWS4HJbw9S": 4
+  },
+  "pumpswap_events_by_quote_mint": {
+   "(none)": 191,
+   "12pDg7WVnEwMyTpHN6bsUyWbLZNMW1rF5tc6kj9iuB6J": 17,
+   "137wpR25wmjgSLMSKXs3aBRvLiteQfdnVDA7PsdA2YYb": 8,
+   "13ADwLBAELih7h2QkAadGZQMDZZzaGcCZqeRe4bbQzgg": 5,
+   "13xHYYTUus4rShDK1ZqKEUkRCFSYk4uUKhhc7EHATX8M": 33,
+   "149Rw3SgtvSyHkJ9Eo1v8wUxtUAFhrhd9A9nTUvjCUqA": 9,
+   "14Y1REGqPCQgQzss81Pqu1QBBydjVbi9xUEAyghCfPcT": 18,
+   "14ggMvUeNWoDcxu3PmrYVzxmTxYNKPbYFvYTpjuNJkfu": 8,
+   "14rpVYF31o5nNKzkgtt25k1qQpsgd6aExG7cPMyf77ya": 7,
+   "1Li9y6K87BoD8LNMoZQ2LsRPECcQy5mxt4xVbeP24nc": 20,
+   "1MXre4aj35VMgJf7JKvvCTb8ogtZd2LnP2AhwHUb5MA": 22,
+   "1urRZDT83BsB4XCjA5CdxAvp6idm46AwthJu5m5sQf5": 36,
+   "22suvuhaARLycKMVM7qsHU9QXkn6kMAvjFHRiBH22WhB": 2,
+   "23S8EwFDvV6ShX5i1BdVLUAtYtuQFgNAcff46yujZs45": 6,
+   "25rt8Xbtrpz3t2qPa8jrZeV4RBXpAdHXMfo3NUuLbvLa": 12,
+   "284uYF2ffHKaRF5bzmM9CjBQBAMgRvDk3LKT8LNL5p5u": 2,
+   "28zrmrWKjTnNhjw9GcPibfSeYWy2aXGXGjYmxkipyB5g": 4,
+   "2D69LQUPvGXRG67YEyi73HoQPZd4arzZYVRQFYHheGRi": 3,
+   "2Kdh7MwGAgxJDEQEJy6EKsDsc8ZHNxLAYqB824DEusez": 2,
+   "2S8uNgZoU7vhM8eme2XtHMQ7gEHvXfqmhkmMVwpGMF7U": 4,
+   "2W8e2cLJjy7ycjDaShomL4QfgKPHLGT7Qvd567bUx2uU": 2,
+   "2aBYoNYcd8GCzJVGHXFuMDEeuF3oLxHoWwaQM4wzPE2b": 7,
+   "2fC3huo7ho2uQqyTyNdSHYwaiWVHpTdjkcRGMCPVsdTT": 22,
+   "2fJav4Nd8rbBMBkCtooKtVEQ9qf5X8gLMFWMznp46rid": 1,
+   "2fjJL9tWwe4NzGmhs1iCahanCKLoMPZPQ9ws8DYo8iyr": 4,
+   "2gcvTA96rXNAmG8YUsmjZWEmokTqWWSzxqHgT4CNDAnu": 9,
+   "2pMk6vGLVRkViyceW2HpM9QAfs1jV6QdirMS5g4m5kfS": 7,
+   "2syT8BjDG72iXepqJBfagDD3CvH71HCDQndRK3okbonk": 1,
+   "2wHKFyAqB3qJ35wsgJwLsyRRWRGTXyeGh5HqQUJYnns6": 8,
+   "31G4iEGEuQk2A9cN5K1SvEEpYQBqP6DkN1rZ12mbftrP": 2,
+   "31HzUsjzTt7FBCGnDy68cBnELayVsnd3zYEBtsXXpump": 2,
+   "34WuxJrbEMKqqMU9uRjtYKJ9hMAQ85zVBzHqqwRTtcWb": 5,
+   "34h3QJVGWWXNdQQmEpQqq7viM6nXXtyPpz6xbc9J9MEV": 2,
+   "37i5qpkfifqNxpkaHgqJVqBEytPxuJvyND3JSvumnNdH": 7,
+   "39xUR5wUWDxEHSSrt1oSmVSYMUK4sU47c2jeFCJ5Hku5": 5,
+   "3HF33aL1eKRcqjLBB7SCWYAt6sUKFGtC4dRa99PFKPDL": 4,
+   "3KpVP3iwoh1SYKG3xhRnCKznnvvAk5zriTrSAYefUrA1": 2,
+   "3LXVoGR1Ux3VG4N7usR1yBKd6epH461jwoRTQjQ6m2Fv": 2,
+   "3NKSPCt6cfzcE44WTSSj8rB7rNFfiajfmemJdvyVMhBz": 2,
+   "3NZ9JMVBmGAqocybic2c7LQCJScmgsAZ6vQqTDzcqmJh": 1,
+   "3Rgub9izYU9VpMnujTd6pDao6NgJhwty4YhVxNr6cjQa": 3,
+   "3cqSVCRiCbRKmfe8o9v6AEGvKU1hG2ZLRN7ZHhexGn9L": 1,
+   "3eJHmJVniE1qc5Gv6upqYrn7HvSwe2En7ZNXD13mnQ8B": 1,
+   "3fiSmvfxCrdVdhiRN3KHis3CP2RgyP5qzeKGbwQYYeHG": 1,
+   "3fwCoNpYQkvHemcZXtNvjfiLc8zHyeZEV1Q3sYtHgBpY": 11,
+   "3g6hwTj6fiJAipy96S9vyKnKdrrN8sw6DsXS5D1fwdkg": 7,
+   "3hLv1qEokB9pfpWEJgVYa2NBKbEotZsYHDYyYozdWgh4": 4,
+   "3ncDDSN2KLUgjhwkuVm5vkTGfZxkKMEzKFAt6VBzo7gm": 13,
+   "3niG1xK8rj1YCjNDCFq19CQtgfqqtJAC9G6T8k9qXHWe": 13,
+   "3r1z5NYGVJX6RWj96nmneDq8LCvtKJvdjWvLR7G18G2H": 3,
+   "3uokbM3HVcJDMfBeHBGSckAM6xSBrj1inh3d7jLut4k7": 29,
+   "3ysanRR2CqgeEE6vxavavmbCAejoHZ68zwGEMPU5hke6": 9,
+   "47RhnMN1jpiKcr9FvCCmv5ncCF2mY5fmM1oqkfCuTvt4": 6,
+   "4CxjZyMNoF1p6eXHXHv1TWpS2X47CuUmLwtGe18spump": 1,
+   "4H6wqSi248UDnv8RhPtfXfm2AxXFi4BK4yFnZqP7o24G": 2,
+   "4HwBGXKNDJWAPKg9JjfVbDQJwdcCqtQkuuYhm455wNvQ": 2,
+   "4Q9yUS6mo6BykcEqXAcpM4vinsV1mdYtMb5ZcgyM1KhH": 1,
+   "4SgBRFRFRLWpmCsLfwerM6ZrX8MVejcvxCLVMhfZLvfN": 6,
+   "4Y14WYBRgLw6L6h9b5N56uRoyPYBGEWGAbvcvizsQstG": 16,
+   "4bZWLHJujy2EeE5NMw5ESwgQFNiAhxbcVRytnu2XVk1X": 11,
+   "4eoNVC3yUE69pXU4CspogouFZS5ATS5zWaArMqVxYGpw": 23,
+   "4ghCpjQ91FDxNX3s83EgeGCHyAgs2ms2cVxZ7rY9HrcT": 2,
+   "4jd5V2ueSTx3tEcFAxPjAmeHgWyAwadhYCnxe2a7Nh9B": 5,
+   "4oU1HSeWFgZVDbTdQzST9428VyZMQyzQ9V1SEu2dVKxm": 7,
+   "4wEowdgy48X1MNsrwd7ZXeSSPjXKcZvxcMdMV35Nmoon": 1,
+   "4xqezfx7RNnPYXtAk1pXgzQ6m6Fd1JcCXSksXCGZTZqy": 3,
+   "4yMtXWB332aFgQGDLpMNzerZkbvwh8Zq3bLxxHBhBAGS": 1,
+   "58KDMtofVpqwUZAAra4nFUZGSAc8FjPLjXorrKRxpUz1": 4,
+   "58ahQYiLTwoXi8qb2JwbdQZegYZkzrPPxw2KrPkSK3d": 12,
+   "59UcMHY513HgVpjLD6FFmx9nVjmGUdrwFraCEh4bHe7T": 32,
+   "5JDjhX6cxmH25sNhHpfm7r2EbAdFbUhCydGKCHzuM913": 4,
+   "5K5UnNbFabEiFH5Cr2kD8LXsnPA7r1gMAqLdGQ5R38Z": 10,
+   "5KnHxq8DTZMjuxR7kEmnR9iamDoUM4xW3BD1qgCdvZEG": 7,
+   "5LjzeZ29p17NxN8VEYaKqdmHCLykyVdgWvcptDSeRYF6": 5,
+   "5VfHawZmGxY21NWWYFnGFe7NRRrYcnbkhLiMezMPVkpn": 7,
+   "5W47dxZXrs4JZrXW37qk79rxPkkL3huCybuyqcXzVp8C": 11,
+   "5WyASPzQsaNgsEYYmc1GNj2zzdJjjQZfocs9JTnauk3i": 7,
+   "5XsK2BR6qWFJ1PYiHePrQVwMDmsnS7EFyujevDLXvWuA": 4,
+   "5Yd6gbi4iaA1M8hsMFHaDfvF7EvuwjUdbcGWYGvtSeq": 23,
+   "5dG6M5CFEgsiKVxugsxJmM9LfnAzYQedSTfNKeSwQKmU": 1,
+   "5eBgXJYK9HnT5hNfg9QJQ7KZJnmFJ6wydRf61PGScrkZ": 6,
+   "5gDDcVogz12S2NctiEFVZGq4JHwEESZng4WNTmu9WHom": 3,
+   "5gi38MDwSM5KAEP5wgj2jfjJYVagJMsdHaEtbtQnmJdq": 1,
+   "5hsDZruR75FfHgjQ5ivCkBTcz8NH2RSpD7jMrn5JBibj": 2,
+   "5hzndqzRfGw419FpVvK83AzX6UhuMi3abHPp9sYpbba9": 5,
+   "5kXRpFTZy8j9vykoPpffqY5tDF5aXMgyhVvt7bLWupJM": 7,
+   "5mjUDEMn9ucionLtSXTjHb96xAjUrUg2xo7FxN4puNQ5": 4,
+   "5pBt1QoEjf8CeDLHuA3N1gB42WqKpJ9jj7ZrbS3wuGJz": 10,
+   "5qUn5kskHXV3VvNcLNXfPydZWW6MXBR86EjFYoqrxpDW": 3,
+   "5rDMySC3buoNTY6gE6sWzpFzvHfBpP5LGAVpjGCMaijV": 14,
+   "5s1JDBTsFiCKWbDeLNFLKyybSTdb7fDEbaRqso4ZtLPN": 1,
+   "5sqyff7fdHdyg4v7us2xYbPQ85hP76kPazLJagbuBmy1": 41,
+   "5u64izcDVfAo32jRSE8NTCQJYuE14F2idPTuWSUnTQiP": 4,
+   "5v3Gg7ou2bfpARm1viGcwg64HwDohdeV8wU3dHty1Cjb": 6,
+   "5v8fVymDqzKKG4erxDzqruuDqdU5draCAhybvfUsLsG7": 20,
+   "5wZTuz1kpjDUbBQiniL7WQY8uG1fsSbBndkyah4AwGew": 4,
+   "5zTnyt8xPCH6bY5JHiu8jTxZCMAEDLSrnnoxiFUw545X": 5,
+   "6226QkTEGVQ8ksxv9xwkLYjS6hyppqiPeA6b7r7PszFf": 6,
+   "65PATQKx68KQp1P8vZqjzSU6EeznfyVhsMgF8BTCU33": 5,
+   "676tZECtUU1ruNXbT1GEBAdKR7b6C38esVoxdPrRjqA": 10,
+   "67v6rEcEAfkxCmVKZRcrpkBjF9oAkwd3nkVFQhMe2GZw": 28,
+   "68V2zcH22ZK2TZG7UrZ4DhkpRYvVVxmWuVGKZRGTjeaP": 7,
+   "6AHhGZtrr9VTAcAJ4TDGawB1NAZCZ4adAF8odo3vswyQ": 19,
+   "6DVb5M7jvJumVpfKXK8t593V7iaYGEk3u2vgwkxuhDrs": 3,
+   "6GmAFSYs4gk3FDao5FzzySQpPZaWsa4rUJHacpMpUNgx": 2,
+   "6GrTxECJtRsubcTa2ep46He2zxFye6LZKpeuAi3MDyov": 7,
+   "6HThvyfrm8E8Cm8abdJLuZrjY4vyqepQwaDK1Q4h6R2": 5,
+   "6Jbp4SuWWGs7QRqHKHBkUFy4VyBaRvoyXZS21piLdwr4": 4,
+   "6KNJech4JJ7B7ox7TfRTAyZke9fhY6KpyhcvEgJHsG8p": 12,
+   "6Kchzc7o9MHrNPw5jwJrNDwoCkUWLcA2hhjWLyq98rqQ": 1,
+   "6LHenq6a7VP5UZxGeVHvrjmHHEP1ZtQ3Sv2YdaUzU4Gd": 8,
+   "6LqGTPsqGrfndL7dfi75fKzaduy6inRFrkGPVLBZh3MT": 1,
+   "6NUt5uKsPJXq5exkzxgnbAXSEu9i6v4XbKjruu7H7q3": 8,
+   "6Qg4Jp8RdWd3xQ7jj6aXYVkynSfCqQzp8dV7j1YkoY36": 2,
+   "6RHMjxLoQh5qe5dUCRvnjUPf67vbzzgPA2f9Eabw9s26": 4,
+   "6Saz48U2497cQowpghzaWsFBLrLCkYHBLM8P7hpivRBg": 3,
+   "6UpQcMAb5xMzxc7ZfPaVMgx3KqsvKZdT5U718BzD5We2": 3,
+   "6aoWtKN6r33ViRNaZrJWU4y8V9qr4R7KVDUAwSB2s4bD": 3,
+   "6cgmqSrNSMS3M8UFtmZFUC2vbMUUNJPKoj8GCEyG4ETJ": 12,
+   "6fScxyLzR44g4oMCB1co2mZ2kyXnCC37eeQiy3zauJwj": 11,
+   "6hAvv5UBCesidfeyHJv4boT55uKxAoRCEg47NqbjdLuS": 1,
+   "6hggdVioCR6i264c1HH8yG3JtV97fyWEcfzgHUqSc3oU": 2,
+   "6oA8yep6vXWZz5G9aNGYC9fNvwiDvrZbT7L6ro6kw35r": 13,
+   "6p6xgHyF7AeE6TZkSmFsko444wqoP15icUSqi2jfGiPN": 1,
+   "6pPVM8hnrs4mJXmSyouewxjDqkmMw9ozKmmLuEZoMuBa": 25,
+   "6ttS2LgFqs47nXuYk8oejcPQrUxvjEyuTAFs24wj2As3": 2,
+   "6w8HR6rAtb4YJkVTPHHVTJuPeaBqzuh1rw9CZxRoMz5g": 3,
+   "6y8ZE8db8ZgiWdfnBckQDH4TZEU5sxES67oTiUCHVjpD": 20,
+   "6zKWGcUSkyvaJKLFJ3sSPB51u9ZCDrL4hVcuFCPvvWoC": 8,
+   "6zNupZyC9LW14cWvvpZQXnYtifzHQgFv3XwUfQ9yXnso": 8,
+   "6zmY8cQd4K5hL1Di1eeh9ToXTh3AjFc3UV42yTvzTftv": 20,
+   "788zdRjKFZmDD64tBA4ojfMUpcb7RjsPa2mG2PnRzFQM": 8,
+   "7A4uNaf6o1ghEEayrru6Pnjo3m4gEBezEsjRcGe4juW": 14,
+   "7ABsdL6T9cNsnW3zEVSKGLfpoTXeZMaTukJNohEAWZnq": 9,
+   "7DGRQuFQ2Bgx6SCtYbf85vpBgbSHceKKxjgngo3Yj9HX": 6,
+   "7DKztjnefbQcQTdGaXzYuqNzryQXvXUxhtrBM7eH5mh7": 4,
+   "7E3qLiafPhxHGPngG5haUjynV5i4YxzvMJybRMBLvptt": 24,
+   "7M7b5vZuR1BKMy9YVktAUa9z17a7hrcGQHooLi7shkTE": 4,
+   "7Rz7nF4ncx8JykcJXgkepwcchN2ZhNqiLDQtHYNAGEpE": 5,
+   "7SULuHqqTox6Qq8V9dzUpnx7zPo7RJXU68LUjG1ihoJR": 2,
+   "7TR6thiXNygX9dG5LnAd8wax2bBpVw5kPWveU6KNpXtJ": 7,
+   "7TvBEXAWciQRhT6kHerjnVmtsGUyrGctYJPZQGfppWwW": 5,
+   "7USBZR2uugCAT5W1bhNW2j3VPr3SSeUgvR1KxPJsRBG9": 21,
+   "7VMbP8MSTbSQotSJxnuJrTKECHQnMHkNhmHL1BQ9pneB": 7,
+   "7ajmRaJbChXpv4P6K5sZnYgJy7v47hNiyHfMfrrByqPE": 1,
+   "7cRkGZ9C3CBXbd6vVhbHQW3xzoQqiehjNcP7ZCe25bTH": 12,
+   "7gBXwQsgbckySwGra8cwrdZ9knBYu5RNWbmbcvkfb5Mk": 2,
+   "7ixmWCa1U8JC67AYAn95oEeYEjKL1BpYFQbbeLrGFWW": 8,
+   "7jG34d3pEehtQttqhVm8NpG5L8BcVtdZaN7vRSmzMWi": 16,
+   "7jkftdFRfkdwJRqv51Ha298xogcW2TStrdDNGCG3AdZh": 5,
+   "7mzCBAxNGPPHignKQMLHNsZ9AszkEVkeh5DSdHtUseu4": 8,
+   "7og9YtYZj6jXxNX551dQcjCrYv1QAW9hT3TUjyTfFgrm": 4,
+   "7onUzKbtG9GxcmEzzE4fohLPhbCq6eLGqJLuU49uzXDJ": 28,
+   "7pnj7aF8JwYKswCvJUdXLLRRAE5YXpnKzHNaYoi7hWf9": 8,
+   "7wBCcEHzEjJ97rdu3GnTAB5zkMoWwea5Hbt7XLQdvTLN": 1,
+   "7zEou2ZQKBgHMhr7ZXk5JNmeHXi59wmXAZRCurBbxDMy": 7,
+   "7zpnr1cxRgF5WQBEJYHJyXZ2FQx1amroJXHn8TdSUYtb": 2,
+   "84JoFSwLEgdsfh6QaBNiH7fF95pQY1xYZHNebRE8Gce8": 3,
+   "86E7ehwRBooTaMeJo6aFBXr5VB2e4NizjRwYrPAvRgJ": 4,
+   "86dhkKaSHFp5kYnBjRz5vMbqp1QcUcCQMUuix769a5xK": 3,
+   "882yMiqcLBM5x5ceh26iaJCTvR5DtH8KwTZ1dAKvHwqe": 5,
+   "88DQUBbxT5ChpAfFLFLqUHv3yDdhdPi1RN83vwXXFXRe": 3,
+   "8ACuG8trgtJwmzGjG2yMHir4opuffbUDXskuPqN8bWBv": 12,
+   "8ASQ2qB9UJdMeATY8Ep4KRN5E6nerNxnuZ5GbEX4m5Yo": 6,
+   "8DoNihq4AWPidt7FUG9URyFA3bZM71ZJjXy9hPJv3qcK": 1,
+   "8EAXWatMrAHfNmByXTEtKva7ibNXrmuyzCxKT9kxQBpN": 9,
+   "8GaGEw2AaTiB6k6ggv37xYS3hxuFj9wXK25UpkcGjsub": 3,
+   "8KPYSju2GwX7JcUGucQSyDhDFPrRcW4W12Z9ASC3V5zx": 5,
+   "8cZgBJt5e9E7YVuJYb5GXEBtggBDgGJQ5HLvhCvdfV6L": 4,
+   "8cs2nBrnkxJEuoWPuvAPzVh2Vc9DGsmvL8EYtXpePkz": 8,
+   "8gwBhiNMeerXWDKEpQEakH7NiddNFGiXDLXPVBKCEh3": 30,
+   "8hh78gujMVrnzf4D4wiro6KSMQguNjN2JRSNuJpBTvZN": 3,
+   "8ht1Vxz9GP9tMBnSBjLpHgUy48RPoRtT44sjzE3DYop": 3,
+   "8k1bF5WmoSZerYtyjZr6uDwCL5yCEAQy6MXyaryiBAGS": 7,
+   "8kyktPzrNqNegsCJ3RVRBuzvmto8vcesiAM57LpuAqsj": 9,
+   "8qaRQtGVBnhL4b9mNJtXPhFTW3G6wfTtv2PhcxfRQV2b": 10,
+   "8rp3szyw1k9ai3vwt32wQw8TVbcDFD553ZFMdrxPUWpP": 2,
+   "8uJtSXX9fzQepSQfE8BjHzEDc7s7tcjkN64ovTLynbhE": 4,
+   "8wK18h2Gnz2t1kGcfTBP91oZGj34cQbKj4nxR5iKbVZ": 16,
+   "8xQpAwho2CDQeeXfejtTjE2bn2pkcvycjHDDpmTwZjtr": 1,
+   "97Z6Q5fvkodDsy4qZtxf5txJgqEirxMRCNCevdtZF2TF": 35,
+   "98LNUve4zZrfBJhQabUb4LVTgk1mAGmqHd6a8UUdKRsh": 5,
+   "98kfF7rmsg1QDUEoCqNE7g7M1FdrTt92TEp2CLzypump": 3,
+   "98sMhvDwXj1RQi5c5Mndm3vPe9cBqPrbLaufMXFNMh5g": 1,
+   "99BH3cGiY76NT984sDwisHgsnnVoBzkd8iJbyjqu93Rz": 17,
+   "9AhHjb6y61VJww5Lc5serkSsRgoY9q8yPs1nbdHT6WQu": 3,
+   "9DDhrTrCGQm231wayM6V8PzB3QFqY1ZC512BUCCWX3JS": 1,
+   "9E5FrLju7CtZqk1ZZhh1q9FJpFaC3L4aDgKDGP8Sgax": 4,
+   "9Mj56RV4kMUt1VycFDZfcpqHxUgtXmgAAQjfiM2XnKf": 9,
+   "9NUHFfj3Md8TC2KjXZV6XexKDPKtKMjPfzJH2t3ox9dM": 8,
+   "9P2Uiv7YAYnxYJFgdRis9qhUn8P7d4hx9AGGD8hfZkeP": 27,
+   "9PkhApAuGXJ7WDDNcTjUqoBeFvBCAt5Aq81MfXbXbiLS": 16,
+   "9S8xUWfuBAvbvboD5fj9R3s6Bht1BL8w7yiDLS8GLv5W": 14,
+   "9TEUt4S7jGpj7LFA2aLueESAiDeKmXY2Jqvu6E2Hsfgh": 5,
+   "9TssTigduM1quYtdPXJNdQfrKCLXiyPEgCeYjBpn3ucz": 4,
+   "9Usyh14qsmE3Q1XCaJ6ANjapyRsaVubYdgo92SqR8w5f": 5,
+   "9VFeVB9mhSn9Xven3DhiPYgkgGAX9E2UBqQraARsmkPf": 22,
+   "9VZJoGZ6oe5MJ3oZxgGoYNDCHvpFQMXYg4o9EA3oCa8": 21,
+   "9XbZq7zozCENj6L836X4c7LzRX1hQob5kb7e6PDrCR8": 12,
+   "9YdnwYjdabbVvYph2pJephU2k7aziPfAoV1CmR5QCJnt": 2,
+   "9ZbV5WsCBPJwjtJhsJrrcLG92TwHHAqRtCfXKKb3p9NJ": 1,
+   "9ayPE9dzaCRMdvjuA8PCF9FQJVru1fNu22Xxg4dtxje": 5,
+   "9eWJk8zaQgnqHUud4tNKGzFouqyqzaY6r4PjeMzJ1fjJ": 4,
+   "9hjBLBrc7WZW2H8UQvBAvG5WiTZotXUv2Bdcn4f4pump": 3,
+   "9oase85mMYAwRjMXLDkbA98QfzjyLvyYYPF5HMbRNLVV": 8,
+   "9q68EXuedDY6iUkuUVAfJTRAvXGyLDRr6Ea76uaDUoL5": 1,
+   "9r2XhgUUFDr8Z9EibPw8LHhGooLFAeRPUqNpiy8Jadwr": 2,
+   "9wrd5ikoDVbk2XLjZSk5G97rK3Lpy9y351YpE28QjXL": 12,
+   "A4UKQtbiE9SqAQzXpSaZ4XwyVNzDMuASsbtbdCLkBAGS": 1,
+   "A7bdiYdS5GjqGFtxf17ppRHtDKPkkRqbKtR27dxvQXaS": 19,
+   "A7hmnhsszEa7QkR1NW1UMu4Hk86kDdLQm7pBAKhNkXKZ": 2,
+   "A7tXVJhz1oQXToL5kzBbLwxdLfJCyhjvdbHh2tqQUm3X": 2,
+   "AFHS3ERmXjAzVS7PZoq2wj92QJNmV4cmU3s2UPdLSWcK": 14,
+   "AMC1qwR9KhiyrQBRPrxnfo4JfMeMZqEBvt5tgTytNNoc": 12,
+   "AMvAJcaG8eSxBYHUTg5MPrF39f23r7yyLQ8DEncsFMEx": 4,
+   "ANTBTZQ1EUuTxUs3tfeampxdqTWPHmwyJmcWj4xoAyNe": 5,
+   "ASFPtohMLD7oXWiJ3ojpundsheZ5Z4ci6AHfbfCsBZk9": 6,
+   "AajCxNr3pTZ1LeuYUHncCYpvtBX9dahPsDTsadyTnxbW": 1,
+   "AhMzaatEyYNA1xbVLTVuDGu8ik9hNJRcRhoacASZxZbY": 13,
+   "AhvA3kVJwgB4NrW2nvR2ouKtpoRCmA6sPWqvXgkMS3en": 8,
+   "AmfbPRWd7AwT1QnnexP1Bidgedgxgxy7cwiMjey6pYMF": 3,
+   "AogHmS3pfpUBqzUwcynZtcqPdy69EViqERpBAA9RKGSc": 28,
+   "Aouk24pxVEPi5BtL5Ak1v17uJLPr5RkrJqWUQZo3LG3b": 9,
+   "Aphai4tdG86rEcEiS1TeUU1ncBptWChxZNJbDcdQpNB2": 8,
+   "AppJedyc8sDwHV3uvKAPR4p1yTCb9Unkzstgm8ABH2R3": 3,
+   "ArrxZ3RStcJpog7njR9qRQtzNRikAmGwdHM19vw5VF8w": 3,
+   "AtaZVoppfhsUX7WAfXKZVKS9SQPBksFdkeYNsvRQmJeo": 13,
+   "AxmGCDpoDaeFCH9KMcuc2bjDtEqYysTsYLQvwbKBwEbp": 4,
+   "B1E3aYfrchVwB7sE3waBYEe6FfRrsWPWLXuqSxTVkMVJ": 21,
+   "B61a9GNXfA65uforMYYkWBxNVqPcjyu3LFNiMcU2ZgjP": 12,
+   "B6dwR5k7N6cYxHsQJSxqSG9koLm8qhJ5HGHxCVZJWrxt": 4,
+   "B8RPokbqcBD9XCkWad3eE3DNztvzxk2gpNX9i95BfMoz": 18,
+   "B8X2ycczSyWK2HqemPsw7DwuA9QrMKeEmYdU82qJ5Y2S": 19,
+   "BFJJMJ3tg9Pun9autNjk4riEiQiG6bWoSPQ89Ju8tT8n": 5,
+   "BFassStXkSxWNZJ7SyGxk3E3ERWecL1wiSfZy4oCTmgJ": 1,
+   "BLZ96sPvD9d2ZWBvzJLfeLs2JNRgiE2Viv6cypqPJE8": 2,
+   "BMtJv7Fzu41TsjoRRhqHFVSJCRYRagib4aqoMQ9hctm7": 6,
+   "BNCJjifHtnLQEusYadF59D72gLYHzBkinHHyWmx4QoWy": 15,
+   "BSeWGF24V3vkw3MVVt8dsXtCSP9pPJYQ88virx27N91t": 12,
+   "BVW44vhb8u2Q6VhDVvqY97gFJjj4FuUw5v9ECVasyPr8": 9,
+   "BX8XYfUmGvh7e5hTwwPVffSvcWBdk9e38W1LouCvYrAE": 2,
+   "BYqjx25BNKAJHgB6J9e2JeZBfURFzScRvXWXtqZyTSZf": 3,
+   "BZBY4yfc3PrWqHX1JeYLCpsLtKfr31LiHAetELkQqE52": 4,
+   "BcsZpPD2vNYRw2k8PWgLRfX4xzbzd3uy8EsQ9Ae9gzJV": 4,
+   "BgdcFQ9toqZq3CCZZLDkVtHDcgUsmmbxoTFUqi9SB6wX": 14,
+   "BijBWkhN1U2rGHJa9pNJoQVkNK4pbmq2xsCRXZCjSrF8": 32,
+   "Bntx7Tb4Uqkbk79PEjDHv64fdrfDpasLch9Djzzq6Usb": 4,
+   "Bu1drUfadQ6q3VchKEFfPb8vaoWuovyGWziYND2hH4b7": 2,
+   "BxLEshZTR3maXPURUxsq2p3yjPhEm37FKezBzeRKeL3z": 7,
+   "ByRzThwnkfRvn7qXLswU6JEZS3aexKK1nkGLfg6LJTVL": 3,
+   "Bz277pFUFjA4uRLBpes2gCchLqJvQUVJ3rRqai6oF9mE": 8,
+   "C1jEoTNoAD6w6Yj2VUMMYaEQZd48e3RaGMd1qivXBAGS": 1,
+   "C5xph2yL6gMdxmuLGxJBkGpmuDFfyi5fqkBNhvL6pump": 2,
+   "CBZ1jihAESx5x4he44jVukzXyGLUU8DwhrEpuqpBZgJU": 5,
+   "CE5i9JGHXx9CWnsa1FYeG1W1MPippBgMtSPCdofWodtN": 2,
+   "CHGXW33ShRRc4N1oLy6daygYrmgLscN5wcC2tmx3esyg": 3,
+   "CMGDhuCNbcf8quz4JcXRe2BaKGTYS4V3M3D6a7r2rES": 4,
+   "CUg7AzWL5p8imZVqqdjEPgRhUsXAkBMW5JxkSJ9fpump": 2,
+   "CWhqQbvxV4VfhMMvoYwfdJ49Cq6UWp7RvmwuKL5GXH4G": 9,
+   "CZATUQ4wsJX3oBhKHCihTY62gfMqXumuNVoJLXuCY3Z7": 8,
+   "CakBgpkME8qAcqNtYr671x4fxpGAGcKdqCmGXkh4JZTC": 10,
+   "Cc4XmfL9wffRaEbNg3ybjNhUTUdPGidwA9U3YJXxn2WV": 8,
+   "Ccqx7ntEGN9LBb7y3z6enaE6yYjM1ucS6R4PAAThpJsf": 9,
+   "Ccsh4DgfbUtdaq5fyqZTVx63N56AbE2JheP4xcQ9pk6a": 5,
+   "CfTdKu1v6ZhijM6DEuA37PWXxWxfQ2YejwfzU56hk2w": 4,
+   "ChdVFcCAx4xkQA884KgULWBfgvqs8Ey1AiMtXc4Sxh6s": 8,
+   "CjcH7eVSFJmMbNx9v2fFEKGKgmXeGfWYEbV2vQ5u6PWd": 3,
+   "CkuA615mQA6ZDXncmXJLrTR5kDkZCaKqJmuf758zPZY6": 14,
+   "CmMtAFNUUoJpACqHzRkikyn2tnr3mHpLAFZG7bBAmoon": 1,
+   "CogbrgiRd5HM5qKG8xim1q4uW8K7enXsYmeiDSjMCSpb": 6,
+   "Ct55BG15jBXpQSmpBEf62PhouytgVJJfWjE3k8TL2xD": 5,
+   "Cu57qmZLnVrdkavgGh4zww8YiWZRuRCqqGdViSZ1ZuZd": 7,
+   "CzHD9NSVHkRvfkafDPTt2LK7RSmoZTVtf4M4upEAVUXG": 8,
+   "Czu457GvKU5JZvbMhfSo1HCdMfdRfgjKgZDbLBKnKY2H": 5,
+   "D2aVGECcyFLu52tgDs1QyJJeaNapQTBWvY7ECUNKnTRU": 5,
+   "D41Ch2UxcCGPAxLAjxhZ5PaSjX6QrnwsJuEPApFu8yEJ": 14,
+   "D5MCjdZn5TbFK7cUTnY1ABn7zWzJ652UShH2uAYxKV9": 6,
+   "D78B25vCF87xCMH8B4fvJz3rrzvJjKFDuxctgVYXMzot": 4,
+   "D9YQUBLbYG9SBzsSoxeH2Y6m66Lg7KT8msSmy62p3kA": 10,
+   "DF57EuMn1FaTCRDBP5iZ8wXLMuSa6YzRZbL3UKs8moon": 1,
+   "DH5Dc9mkuGMExZAvuejJC3SgD4ASKVmyNSYfkbcxY5D3": 4,
+   "DHLN33eQ4GRsyF7gemfxou6TQh7PGyvBg1PRocFRo3mC": 27,
+   "DJTu7vi8norVzdVAffgvb39VP7wjKeTsgaMBJrzfxvoF": 2,
+   "DJYwgKD8xNdm8dTdSrxNv22S39C5s2Ev5Nie8fRHjsKS": 3,
+   "DMF6ubfq692qmnpoW6ZqnUr7EGjKhjoLx8XVFAp5uvBn": 7,
+   "DPAMKqnxq5mQnLW8znoZVmrPpYn2YsEP7LS9KAJ1LVq": 14,
+   "DWastnCu8xp9MqvZbAHqwxEugFQ4db34erTnRpck17Gf": 6,
+   "DYDSuJumtLMPg8B24p1xVT4yQSjRSawmk261cQs5EeXw": 84,
+   "DZ22UZ9dPzvpcRdPK2EC8qv22iASPZvAQPW9p4KuWce3": 18,
+   "DbXrH5tggALr1tPh8ySnqXwhmpGurACsMfBtn7CvBjmV": 4,
+   "DddSU96JwW5zdHBW2vy7boyzJXgynwAargwCfr6wbdk": 10,
+   "De1Gu5FGr295QVXDNUyepGtdY1KnXf2XGZAUZVSzhnLr": 3,
+   "De8tR8mkVQj72SJVaFk5Gur5j8n1n3F9k6HmswRaEPCd": 8,
+   "DgbN8Smyw1XBMkWrmJeqUXdJfMGyrtz5JhYxgfyMbt7B": 5,
+   "DhwubGaFQoUXj783ffxERPToJnBur7Gv3qzvEhyE438K": 4,
+   "DokJvknTACDYDx23LPbuHjwn4VnwuFNYmdCJ5Cez7HTP": 18,
+   "DsUNhHCF7GHWhjjPTNS4vsf28YFm8bk8D7QCkHLg1BCa": 6,
+   "Dv4dPLByYa4uyE9WYzRegZ6qkegAf54MaFmRaZfo9g3z": 17,
+   "DyHz352jb2YucaEREcyGHjec7HiPnaD7m7hmWYhKhSDD": 19,
+   "DzCqjc51oms9XhWdaQKDwjFnfga9Qt4sDqWmjTxxVAFa": 14,
+   "DzkenunGdpR6YWUk6oAAkLTJt5mfYLPZYvCDZmGYRaEF": 7,
+   "E3f2fTayZpABbRAYiWgSMnYkzJnm5nzEntrbNc3aByK9": 40,
+   "E49nBrTEznShHsdfZrsQaeJ1kHBWPMPaLDndXAwUqVPe": 6,
+   "E6xxokDAemSAvbvJj2NMuC4MLh59Ao2yGy2qdzLqyEL": 4,
+   "E7orsWDWCqiyLwDtE41jVqmttwUmmP2hkC5Xo6zvUcJ1": 14,
+   "EA7u3hkzfvWbY3BPUz3o1Mh1q3UMYMZNxaHgEvR6H7Jx": 5,
+   "EAVsYfJH4NCEh9BziPePXgjHgg5T7HgMXMrTgzGS42M": 24,
+   "EDqN6SYsFVogAFgkyraeweZLi9EkCDYbE9tKcc5CPsDU": 4,
+   "EHHN1hh8m8Rkgkwx3rcRRMErd7DG4qbfrjs3AQakTzc4": 29,
+   "ELbCDkRuUTuzPCR6CarMVtR1CYh71AzGhuZTBPePpump": 2,
+   "ENNLp8dYfkFZvzKECKMe8tPAeqziWbSgYMwyJiTNbonk": 1,
+   "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v": 60,
+   "ESa2BKAB8tnEDhGDx53ZZnzFBZhZEZddnMP6AM9M1yxG": 4,
+   "ETEP2sJqRoYZHpmKuP5PPFCgw2jyqUfUbtZD5ZiCJ8sG": 6,
+   "EaY2A7obSH81HcvNP11beXPHxH2D3DsToVDdtDuMsGPs": 1,
+   "EbjKTm8bT1PKDLsKJEW6Wa1Y4UcV8rd9dFk43DwkKsdA": 9,
+   "EcHE9TtHS7LTytkqKAZwF9ApzmEJrfEmZRrW1rT4c3un": 12,
+   "EfeovWKdVrSM5XPh74pSiF1r1r91kFQnmfjC3oaWoh9w": 6,
+   "Eh7iHZ1QjqSFRe7r8aq4UdWwgumj8oGzjZ1TEwh93hqP": 9,
+   "EmcepobxztbvfnLpSfW6GJfTbjUVTuqjpFsc4t9JkEn": 4,
+   "Emz7QvaZ62NznKNDZkRGHpg3ecH5ht287acvY1zzqmNh": 3,
+   "EpTyXuodmEcvV7BN2c5i6P9jgSqAa9gAv2Qkv9dKoBqs": 4,
+   "ErTFskvTztsQf2Df6HBzqBgAjkeTNqeKm9PctynzRhdz": 24,
+   "Eu37QTztAGQSEjUboGmp25eLk6SE8QUTbrMetAndmxpr": 4,
+   "EzAif4aq4832dJDm9wMc2FKPwqbPrmvdTnF8jrYJRkQq": 4,
+   "F4kgqrCJwQAhR68xuxhjXvf7eGPLgax5BMLsDq64pump": 2,
+   "F745cZ1d8gsr55QA1RKKoCqGeLW5hzq3wcQ37VyCLW5K": 3,
+   "F8AqTUhmCrxZJsiYMsc9FiGgA8bo32uSxqoue8r6GQVk": 3,
+   "F9AMsMtDAume2y3M9qLp19JJpdk5QVTbDkRf8uWE9Rje": 4,
+   "FBfSkZS3CPrRQs1messwGnsbDys6ARUNaTNaUG8hepDZ": 22,
+   "FEqgGdNvjtnZ76VQ5bMdER1ejGssQjcmhbpbnmiPYmon": 4,
+   "FEvmApgK8tCX4VYZ5Vh2mYLngmamoditid8kKp9uFgn9": 28,
+   "FFqXZfxvPzo6Q4dmkie1uA2TBduqD8cr5PMxuudvUYSE": 9,
+   "FJ8pd3JRhoxbowdPLgpV7x6k8Nn7kFZ35RNfsde1XRwZ": 19,
+   "FLWYZ2ECgLucrgKsn1GbCeXCg5axryRnNw8zD5qCi4xu": 2,
+   "FNhEELq97LKEGem8LzmeeTMVh1qYjuNRbijqNPayd46H": 5,
+   "FPNKhKozpXK9Pjmj4J9bCY3vRMTbd58g8HoUpWetq6HN": 16,
+   "FQKVxWHdvTkMrNq7WKsKsLi2ybJho84bTM38e1SUSZsv": 2,
+   "FTx66jkjy5opaSjbb8QPp5y3wDJ4MzYVzCc9gEdbPZG": 5,
+   "FdVXeQXSc3mmDFUEKe8ey7mQi85KswPKXQn9AQ5u7YrA": 4,
+   "FfXe9MmGRkdXcCKgUFLrUS4ncihtQf2ByEe6dy6Hbonk": 2,
+   "Ffi9Ckqb37Jy1tKkL5hmUk9KS89GJ1Yoov7E2Vp7gWve": 4,
+   "FsY9dyTNBgRZ8LTDp6xr5Y4Cad8QatqGdeC9NP9nnPgj": 4,
+   "FsvrNu1NA6M987S7HSXuc88HghnoqHN7Pqqk34eitpvq": 12,
+   "FvHyqFFPr1V8mxLQJ5sx1bwXyRq5z6PRaU4nkrv9Gcc": 18,
+   "FwcG5Mugr2fk9YrAX1Z6ixCr29QQjYX9WTBT85m8UNxW": 4,
+   "FzaqaLQVnm7MKFR5TtbMPe3utpmqyqZWqFpsW7ynhY54": 4,
+   "G2SNgJ4tSXjuCXorDV5a8X9qisKgbc4hy3M3tJf5R7ap": 8,
+   "G2Z4fmScZ1RSHGwCZZ27NLT1iy4Zewts9Avb5TunEuci": 2,
+   "G437jxj6smw3WAZPZD6LyBky9mNeWQNwmkKubYA4V9j": 18,
+   "G7h56SJxBqUWt63PmHJJeGrAWbk1W6zst2ffoRKEzqGL": 23,
+   "GEGEEhffFHpzfTrDYKqpyV2Us5HyiAeUCK5uXJpK3wFy": 6,
+   "GFZCcY9svrKNwZi8oDcvA1TfkkB6ouw2NHmA4SLZaTUQ": 4,
+   "GFdWttAHpcZJUJBpU716xBW3NdW7MEnwj64A9S1udCT": 4,
+   "GSp4qePZUHBtt5f4gE6AsRC9JUUqeZEJLeN2JZxLpump": 8,
+   "GTA6ot7gjnojk8WwAoxKrqDkrLtCPtSfzAikk6zu2koH": 1,
+   "GTQQ34CU2e278RGrXh3prUeNMT3MeTvDoC6823CtjBr2": 27,
+   "GWrQGewTSoCbWZhHbXnYmo6J8AyDtuEBy4hphgjBcVSu": 8,
+   "GXnFj9ejJKcfLRhtSC7SaZLyB3K2XEDtwHEMPd2kztWE": 6,
+   "GcLCNLYZXsiWPbPEC7yxa2cUY1TqS7QZMz76wFybCa4m": 3,
+   "GfRvaCckTPLYzNx7fSfVNVzEaUx79pySb6Jau5Rs7tRe": 13,
+   "GmSQQiLw2pMeAzLJf9V22FL45wQGum7HGyXh979NrwGj": 1,
+   "GnVNPFAeeEcnUrYitdvUvcvUTAsEsAcMr6Ubtxs3khT5": 9,
+   "GovVn1YnYoWJqduPpE7gWzUyDX4vQ9xjVDUFGGv2pump": 1,
+   "GpDRNYN3rwcm9X6MrxHzR6XfzsxTxN43YhQreAGSQWQE": 7,
+   "GpfWigpF8rzemzMKtMZvM8S2vsa4NrzaMAgrcyuTiZRC": 5,
+   "GqmJkKn12AFixpykeuddu91F87Rz1AnvRvWNRFM2L663": 14,
+   "Gv78tyz2Mo9oSEPPaptN85c84YjfT99yKrXHeJ1fbch": 19,
+   "GxGdGRd2G6bVzvxXCBs7wV1KasbPpxZF9fTVa5TExGPM": 7,
+   "GyDywECoEv26AZAHtMMPFV4mxEgC7ybsWwwcoKWzuCFB": 4,
+   "H599Le7rNtyNU3iKVyg6SJkLN1m3fiAPNiZ5nA5e1m4z": 7,
+   "H6ZsokvgNYK3YN6Sc7UgzSbJLYGJDQKYsmxFTEiUEH1D": 5,
+   "H8YfG4Hee64BmYKkV52AzEdsCMqHfZd8b64wmLbFbonk": 3,
+   "HCkynmZexWQyJp5NK1LHDpgm4hg6voidD1NwpbwuHjCk": 6,
+   "HCpf8M9HqrsTr2eBXZ4c5eu4Q5PMSTJwtsQHHtFcuZZt": 6,
+   "HFaMvewQybBwComnxQWeY7BngkwRy8iybFc3sgjujWj3": 10,
+   "HGvwwcqPZSgvA5eVGY1NgLpfMVp9KytcuAY9GkuQdpvB": 4,
+   "HMfgvEUUS9Rno5gTTfWhRkktYhBGnvKAgFp78mMpEU8n": 7,
+   "HNBXuRk7o5P8HWmpxHsMD74NmfDWSg5TssCZFfPqPyto": 21,
+   "HQpXLikutvxbpW3cdKyHt6VCSwq8ubQMRmXvs4crqiUj": 8,
+   "HfcaafSEoRNHwDqXNqprWBByK9T3oceKo7tJRsSoKTzN": 1,
+   "Hg5Ja55T5wESq4vyFoiVCMeHXtGyVA69X2UHq8hgpump": 6,
+   "Hp6UZPvLbN1N4tJutBgEvqv8aSKgEhwAZvdg5Bj56ZrG": 2,
+   "Hpx2qFJY1NM7KTuYkdyzZpMJLDX68ytenw5z6PX96bS6": 3,
+   "Hq3L8maD9rwcu3nHv6JhWK8ebXbp3qTCVKSJ8nhkyVUa": 1,
+   "HqLQUDaYk6HGjPkXq3dK1SCht4DwfsKsPmdrFzSJ8vV1": 4,
+   "HrfQTbnnLbdM6nSiaboNkteK21Egoi1ZNeVheQqGxFWf": 21,
+   "J4dLFCykzLR3iYt5CLPUk4CXi6MSmkMyzvz9uNZo2UmC": 15,
+   "J59ygevYkH4Y8TcGpNXe8tioKcbposxrVgdapHLJxAgA": 2,
+   "J5LFPpCqk2B7o2wRrsyuXs6euLRHgcuEFZDmCip5CeKp": 72,
+   "J88WvwAfXYUEdapVwEsYDYBFeqQkqBnJt2XamGoRdyVC": 4,
+   "J8mnzjtyJbVuqvPHFr8Ne1A5164u2F3QTp5L1xYcf1AP": 2,
+   "JAydpxyVaxyHS9etCpLXLdcrg38K3aGwmvTTjhtuatoc": 6,
+   "JBH6LtgfC8iCfBVnpAgJP7iS78epexjJUtf5KHRedyeq": 6,
+   "JBZ7iyGqhpp5ujhANibnf6pFTKUGtW6gfjpahvfvEMnU": 7,
+   "JBfhWtsEoiHkuTk2oGAnqBc75MSqibXiDUo1fhkGs2XX": 4,
+   "JZJ9iVDMEPoeRdiueco56Dr8TVdRAgQqCNMBLbF972i": 6,
+   "KLEj1HHYrfJCjAruq9gwi6FNkjF5WhV1S1BfoEiFAFJ": 4,
+   "KX2CBQFZqSzYggA4N7zbs6rNi7dXxq7WqJyQDJDVDFs": 5,
+   "M6Cgjp7RLroaw3oBh52Lm8eCgARFJLWLcLv9tDbhEdC": 3,
+   "M7ZUSa6kbZcaDBQWDaBgw2HorWruJNXfT89c8nd522W": 4,
+   "M8onAsQXzP2VWJ86wwmYuEp7dYLoSGDuZXvKvSwfGsc": 13,
+   "MHrKHzHdV5GJmvwmocUVivukiJtW55we9rCG1ymEmFf": 3,
+   "MXcCb8WCVwCx11RFGav5UkG6VPpUgJifF7mVMTkD7gw": 21,
+   "MkztxnQCxiqtoGtEWnmJuRNABpJXhkfe3LtACovCLZx": 8,
+   "Mp2s8V1PzkoS1WVsaNbZr5TAzAdRvjDwUpJn7CVbyoL": 6,
+   "NFLX7qV57zuVxCoHy3s1jiGZyALraLNwttbxdvmYJLJ": 4,
+   "NFVYiU62aWrtyVKPk5Jdxe1nmbsqP4SWv9Bk5rB7QMX": 8,
+   "NVjYryd4UYZnRs9o9kyKRggv1rWbUvevZEQpBQSjaQw": 2,
+   "Npcpqjws4GVZmsNes7yQ7NuurdhDyfbcN96h9SNNicb": 10,
+   "P3FTGP82mucvwdQZzpwGRmQp8ytTwXQGm1T625oM7Uv": 7,
+   "PRtsiFtzdhq7WEzKQtfJzpjPbRLks99N8D8jGeakw5Z": 4,
+   "PTY95RwWtExr9B1UsvEkPQY5Rk8ZbE6p9yb6cD8HqHA": 10,
+   "PfZQrNe2DsQQTg6Gdp9yF8gdVsXUm3ESUbJmshDTapH": 3,
+   "PoFr1Fb5gwaP9aJNrASugEyxqf9WNqkL8j8J7QsGqZq": 4,
+   "PtV9cACfnbt3B7xj5v1fyBanX97YkSM51wYfL2aQEKB": 23,
+   "QB5qXeuawyThXjhNQSiZKBL9tQgDhyqiWKK57Yn2ZdL": 7,
+   "QUtUJHxVoE1rfvtHGzz68f5WZdhEdy25KsgvhzwbqSK": 20,
+   "RL2bACcMzSGWcCdVHzLaLnxoCmMi1xwhNhyDFEsbp7e": 6,
+   "RMmTrsaBRtMFkdgWuGqfW3XLWXFqggeYuTzDhBfbExh": 2,
+   "RnnUjKDJMKEZYnaHZwLePrQouGkgSXbRnjnAstebu8f": 10,
+   "Rt4WvhsDQK1b6wtqba6Vyi3osv8zGV6C9cXXpsEtN4p": 15,
+   "RyTpEtQu6Z1nFrsMYC3cWbLYb1hbYvKaBuDTDesfPdg": 14,
+   "SPCXxcqXj6e5dJDVNovHN8744zkbhM2bYudU45BimGb": 17,
+   "SQQQAa3gUxgnqcEsdjPA4RQNQBgB97TnG2hJhk2WaGE": 63,
+   "ShEviVFnex8Q9EguE9EaZg8ptDxFZXB3nrJPU2x3GQS": 3,
+   "So11111111111111111111111111111111111111112": 3614,
+   "TTWofwAge91oFhZs7kpQdyrVRkmevgM88xijGvQFbKo": 41,
+   "WUV7xjLqdJEsRz6AXRHhWNNyzL7zUvMYhHekaBzzDLd": 13,
+   "XDJjB3U1APZUoRNVNoYnuhYNv557m7tqkRQZA5pDJvZ": 8,
+   "XGUebhftUtBEYt3rNtfLimCf7xCZa4vGuL4uhkvAdrq": 8,
+   "XsbEhLAtcf6HdfpFZ5xEMdqW8nfAvcsP5bdudRLJzJp": 4,
+   "Xsc9qvGR1efVDFGLrVsmkzv3qi45LTBjeUKSPmx9qEh": 2,
+   "XsgSaSvNSqLTtFuyWPBhK9196Xb9Bbdyjj4fH3cPJGo": 4,
+   "XsoCS1TfEyfFhfvj8EtZ528L3CaKBDBRqRapnBbDF2W": 1,
+   "Xsv9hRk1z5ystj9MhnA7Lq4vjSsLwzL2nxrwmwtD3re": 1,
+   "Y3q8TyczdPgibhKJM22vt1L77xjoaVDtp876vmkaKH7": 25,
+   "ZX9yL5Z9Pxp2TBNTJq27YaC2dJCPmo9tvqAm8965Txr": 4,
+   "bVNvseeXLDFgraEBioQ2pbkVkLENHzGrscMxPQ62PZX": 4,
+   "g48auSroizYNmnqEBkT3SUkstPCM4zP4uRTqV9QXGCv": 6,
+   "gJ2vweFfeLhrpUXmCmY87Vf6ZFqK8VTFKuehXit85YM": 4,
+   "h8AXymh18FvurtTPob2F3tFiATGkbQZijQeqE8eegHb": 6,
+   "he1iusmfkpAdwvxLNGV8Y1iSbj4rUy6yMhEA3fotn9A": 20,
+   "mQ4Rd5A6T2C6n4M7CKeSdXCts2CUaA72AuQ1ujYsK3U": 10,
+   "nxzHKMatRb7Ckv1e46R6KZWNYWh93THF7fevGrUNrWq": 1,
+   "pE3NonSn1VLqWDh63z1EH7yA4Q3HqRvY56x4LNHz6Mp": 6,
+   "pS8vXNrEzAhKPrnfbaQ4Nky2fV9Ksgo61kxzSoGG5o1": 3,
+   "piRCpSDYWSeAMewLUYbj2uE7JYmFjsedTqvLEMZh73U": 9,
+   "pumpCmXqMfrsAkQ5r49WcJnRayYRqmXz6ae8H7H9Dfn": 18,
+   "tAtxwFn3SmHAjXTA52ahSwiZSXeD4E9L6DPFwZmBAGS": 1,
+   "ud1av6EekCawmvH95mWxkp85avuhX3i5Xcf7PTub5va": 12,
+   "vffrUot5TJRW3SyneBXqzimUdzZj8MtPiYnj8jEPNMx": 11,
+   "zPNuKs7KDYAk5KsCWRnGRgwULtgSRZ3JiVeoYK9q5GC": 9
+  },
+  "pumpswap_nonzero_by_quote_mint": {
+   "GTA6ot7gjnojk8WwAoxKrqDkrLtCPtSfzAikk6zu2koH": 1
+  },
+  "trailing_by_class": {
+   "mixed": {
+    "zero": 20
+   },
+   "no_amm_trade_ix": {
+    "zero": 191
+   },
+   "non_wsol_only": {
+    "nonzero": 1,
+    "zero": 3857
+   },
+   "pump_trade_quote_other": {
+    "nonzero": 4,
+    "zero": 578
+   },
+   "pump_trade_quote_wsol_or_zero": {
+    "zero": 2078
+   },
+   "wsol_only": {
+    "zero": 3594
+   }
+  },
+  "wsol_only_BuyEvents": {
+   "cpi_only": 6,
+   "total": 2052
+  },
+  "wsol_only_SellEvents": {
+   "total": 1542
+  },
+  "wsol_only_txs_excluding_episode_pool": 3476,
+  "wsol_only_txs_truncated_excluding_episode_pool": 13
+ },
+ "pre": {
+  "amm_txs_by_class": {
+   "mixed": 10,
+   "no_amm_trade_ix": 75,
+   "non_wsol_only": 2521,
+   "wsol_only": 2229
+  },
+  "amm_txs_truncated_by_class": {
+   "mixed": 3,
+   "no_amm_trade_ix": 2,
+   "non_wsol_only": 6,
+   "wsol_only": 22
+  },
+  "n_tx": 11936,
+  "pump_trade_events_by_event_quote_mint": {
+   "11111111111111111111111111111111": 1280,
+   "2j5SaS7xy776qCBpyPQbZjyQSAtKiFgrwjfErthnW2ZM": 2,
+   "3B7SHozUFoiGnFC7i6WHZ8zNMbDrhtz9WpXqWt51pump": 4,
+   "4CxjZyMNoF1p6eXHXHv1TWpS2X47CuUmLwtGe18spump": 1,
+   "4La95NEVJdYK9kr375SfKPXnLA8ef8GtsjfVfW27pump": 1,
+   "4PPKYmok2JW7UJgoBpBS1Rk6ZgPR3qd6vekznSCXpump": 1,
+   "7SL2VnfYsChvog5oQY9Nmtqu1wceaMiQzWoqoLQpump": 7,
+   "7vfCXTUXx5WJV5JADk17DUJ4ksgau7utNKj4b963voxs": 9,
+   "81GUiw6M1KMgvgzCWrjCLc4YBJr8HM9GWXcvCm2Ppump": 4,
+   "85RhcSEMy15SNhFLmSArNm7udPKXVagVgsq4YmSopump": 4,
+   "8mnJZnxaNLqVwkaWWGH7dKmoEzyYzGJx5pHaCp7spump": 18,
+   "95ETjH9xbUUqyFZjQgv3NyfHVcBDEitE5zKvHjHkyQ9M": 11,
+   "98kfF7rmsg1QDUEoCqNE7g7M1FdrTt92TEp2CLzypump": 1,
+   "AMC1qwR9KhiyrQBRPrxnfo4JfMeMZqEBvt5tgTytNNoc": 1,
+   "ANTBTZQ1EUuTxUs3tfeampxdqTWPHmwyJmcWj4xoAyNe": 10,
+   "BABANGA4JE7Kkam4nTrALAwAVgsNJUuFJnnkF7S16BZp": 7,
+   "CARDSccUMFKoPRZxt5vt3ksUbxEFEcnZ3H2pd3dKxYjp": 2,
+   "CUg7AzWL5p8imZVqqdjEPgRhUsXAkBMW5JxkSJ9fpump": 1,
+   "CZEB3WNZuF2Yz1z2H81RcCk8T7fsw82KB33zqamASVsg": 11,
+   "DoGEV7LASBkQbibMc5k5vKnTZoMg423GpJ5QtJEGfm7R": 1,
+   "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v": 80,
+   "EYX45DKQCMyCf7PtMyD9kKpokE9PVThVRbtUKPQvpump": 10,
+   "FFX4A793iYsb8CVENR6eyn4pTxyEJDADyW2zbDyipump": 1,
+   "HXxJdaQbrYRvwTAM8M8mUPyoRPvmyuUbPFBRkiAAMASS": 1,
+   "Hh3oTaqDCKKfdBgsQEvxp9sUwyNf8x9qmKqEMLBWpump": 1,
+   "Pren1FvFX6J3E4kXhJuCiAD5aDmGEb7qJRncwA8Lkhw": 1,
+   "SPCXxcqXj6e5dJDVNovHN8744zkbhM2bYudU45BimGb": 14,
+   "SQQQAa3gUxgnqcEsdjPA4RQNQBgB97TnG2hJhk2WaGE": 51,
+   "TTWofwAge91oFhZs7kpQdyrVRkmevgM88xijGvQFbKo": 22,
+   "Xs6B6zawENwAbWVi7w92rjazLuAr5Az59qgWKcNb45x": 7,
+   "XsbEhLAtcf6HdfpFZ5xEMdqW8nfAvcsP5bdudRLJzJp": 1,
+   "Xsc9qvGR1efVDFGLrVsmkzv3qi45LTBjeUKSPmx9qEh": 18,
+   "XsoCS1TfEyfFhfvj8EtZ528L3CaKBDBRqRapnBbDF2W": 12,
+   "XsqE9cRRpzxcGKDXj1BJ7Xmg4GRhZoyY1KpmGSxAWT2": 8,
+   "ei5DwkdJy6ewCW4tgxmiRfoJjU3CyXJdEtL23uHpump": 1,
+   "he1iusmfkpAdwvxLNGV8Y1iSbj4rUy6yMhEA3fotn9A": 4,
+   "pumpCmXqMfrsAkQ5r49WcJnRayYRqmXz6ae8H7H9Dfn": 135,
+   "shib5gSoVKPjwkXrxRk7SbQFzb2R9rQB3TgQWYX4RwW": 2
+  },
+  "pump_trade_nonzero_by_event_quote_mint": {
+   "Pren1FvFX6J3E4kXhJuCiAD5aDmGEb7qJRncwA8Lkhw": 1
+  },
+  "pumpswap_events_by_quote_mint": {
+   "(none)": 92,
+   "12DMzJjheuVRHjjqNu8syTaW9dSLdnuVjsEP7MRLKJjN": 5,
+   "12V1yfeqtPg2bYc81KcRRJ5wruuPYMbqd8BaMkrAoy6X": 5,
+   "135yrmFXxE3E87fAg3FfTmvLqrgSbsrWenwGbu1ebgZr": 27,
+   "13SMLtwJufG4RK7FVXBWSMz8v5jooVwXSxpWZdZp6XtJ": 17,
+   "13ciGnFhL3829ufmWRJC9jbBfBVhxm1eY6P1squfiHX8": 20,
+   "14YjHZAMa2LqVNsyqtujaoWHui1M7Do3jKs3K8co4N7m": 14,
+   "18LmvT4qcw949fbR3XurNRYrbqF4c57Zri1vXrhmqYF": 8,
+   "213ziYvSpaCcpCp8oqvF7mRozXtW7yNNSSwjFFadwQQi": 4,
+   "284uYF2ffHKaRF5bzmM9CjBQBAMgRvDk3LKT8LNL5p5u": 11,
+   "2GJZuE5Y7vnf2yYv7WDGnbKzUFVW2hMjguiXQSjaU87w": 9,
+   "2H3CV59dqVREfdHwTotPC1yAnAcFtYEVnso1P2Md8MqL": 15,
+   "2JURgSyYTUMnj1Aa64LAHXdvm4MGFFURSkAmd4Eg8t2C": 2,
+   "2PSMgJa76DrUmQ2va8B3LT45ZRnXNNx3f24GYS9jXh1g": 8,
+   "2RsNXzLpwCVYjTS9ddtNtGB4ap6E1uY6kGPWV7ApqBgc": 4,
+   "2Vv1g7a65xN7B8qq2fcWsCPGuCAg2MqWKi2799NJy4V5": 33,
+   "2WyTTrpypJttbHm87qSfYLSANDRPGv8fRZPZC3aDr8Gx": 28,
+   "2XygP6EeBLLPyZ1NigJNqbNJeFwGLQhP4vELCtEFFPmR": 3,
+   "2gaJCZZsu3cwQ9SKkXfubmBME4Koh5Hg74TWCp4FJ8iT": 8,
+   "2pDXqBkMGDb3htgrk3LdUvjoJApsgWvApRXfyf88UZyf": 4,
+   "2vnRafLASGpYXNwk7agDGhfhgQrnMeKXfok1ZJVbWPmv": 1,
+   "2wpKCGNDAakgbjN3jFjaBkZdnqYbpHhZEodGnthXJN83": 12,
+   "2xyf8KNPknbm4DuyPBKfWjawwkny3mvgSrRxSb5gmYvN": 27,
+   "33jENUQnjoitkMFpvNJcSHyLAHFWJuHwT6E3E8CNpump": 2,
+   "383pUb8vQbhg7748k8JAdYy4QDgTYcvgwECRsRrFUigY": 20,
+   "384x1CpXYTJGVLtRsnyRPqQs6LNgCNBEnsCMDyibRnCy": 17,
+   "39dFkf3eXEMgWp8hWXUhtw4YsukBVVTWABkxJqrVdtQv": 8,
+   "3E4XnPEWS1NMow3gZsoomN7B72PWed9SPvmbfUrwE1Bm": 4,
+   "3GBHCKyZBqFhvhExs6uvc6V3S8YbeYa2HdnEaMbAP8dM": 9,
+   "3KwSiBvKksafvWXrnHyhkkuc7YhMz9GZ8EMeiWHux24P": 6,
+   "3NBasbBGdLgoxZTRshmHwMZXWvTnqyUK62hQCpBnQZqS": 34,
+   "3NZ9JMVBmGAqocybic2c7LQCJScmgsAZ6vQqTDzcqmJh": 4,
+   "3QtbuLPmq9y8ZJkUPJtSLDckYcX2tG45JWEoJi2SVSje": 21,
+   "3Y7CVBNeBwVZfgEnvK9u22yN9fB4KKBekNZASFYGsG6o": 34,
+   "3fdFaHEBkfxusSDP2RroEBK47G8WwZ9runWs1njgViZW": 4,
+   "3gpYa8QbznRdeL41uTuwSK9TcTnawbea4d5LRFGAU8om": 6,
+   "3mGzMtRKVsn9iuAauQGxX5szohafZavvRHo4k8DjcZZz": 9,
+   "3rRNKtknpPzXrEBi1WytFhzHEbmyxhjJVDS73YxeKMox": 14,
+   "3uA4toGk73BtjpqmZjq4z61eoDomQ188Nhaw3Yzd3NT9": 12,
+   "3uANYMWQvXiH2Jn3UdvGWZcqzRLyG3mdmHqwzZJpU5Sn": 20,
+   "433JEn1E3fHiZr8PTqffGhZrVeNbeTv6C5xQMYh5BLWy": 6,
+   "43MncRUGHj3W2B6vK3pRRLJ8AvN1hKg1YABdrm41Juj7": 6,
+   "4FdwRW3pLokpyF9af11wcEHTRBQuGkeu8GBnMMaVBwtT": 11,
+   "4KKBbcjdYTGxjxxeUAcCKrwrSnsftgCqHeriFyLx7NrM": 3,
+   "4M16QvRPV6asX9itcbT5cby7q7h7H4N1QE5n4D6C1K6S": 14,
+   "4YyJiS2aySuhyV3mzBNkiKjHh2sKv96mQMagh4yTVtPr": 6,
+   "4aHPq26F2hDnxUAMJEBpfY1mQkaBzYY47E4Hi5EEQrDJ": 17,
+   "4f7h9AmnuRTvFLm3C8ZnutE1kWPc1Fov8TLdp1VzjmcB": 1,
+   "4hvfgDCVnQCqZcinsG2y5DuUmqDtEwMDbQ5WhSvof8QH": 7,
+   "4kgnpiMbXkdRNVkpN22AXuBYGbSZSFcHUL3grwPc4xLg": 6,
+   "4uN59KouCkqVFcDW2Y3AfF97GfsXZ2zagPNivccx5muB": 5,
+   "4z9DSJZpxTtV7Xz1BwetktTJfnNoY4gvMnCsWSG2h6QX": 10,
+   "52FNM3yoQRsEeP2ExqsYwQBKjq7tyPCotABNH78HS53r": 6,
+   "56EQAo2bc9VcuK4mWYYb3XPvTXFDgmGtRcUU2HrYxXCp": 15,
+   "5771PQdKgjZkqUjVtrmNJN8ZJD5hooZUJ89JApAFLbM3": 5,
+   "5KnHxq8DTZMjuxR7kEmnR9iamDoUM4xW3BD1qgCdvZEG": 17,
+   "5LjzeZ29p17NxN8VEYaKqdmHCLykyVdgWvcptDSeRYF6": 6,
+   "5PT7vp8vcW3D4PT5LhS3EqizuxZG3RddnMXjm4JAwynp": 10,
+   "5TMTFLtijpJC2AdNXz2Q89XbmjiYibJjPneGQUzMyS3Z": 5,
+   "5i67kgkee54kfrR1qQ5k2tJvKAKpvidYRwJgjUXhBAGS": 1,
+   "5iB6UkLWrh6jhdYxgTzrCCu9SebfLug99UXdKeCahgpD": 12,
+   "5jNFxcxNRADwC6vCYeBy8oFeB5G88bh9ukZugLfMzpJ8": 16,
+   "5mxZW2mA9csGyEhwqf4DyM2UXFeY7ag64jY9QGtEeVyW": 5,
+   "5oNmSLYaYxQFtPdz6SXjivL2ERZr4h2Hw1Psf8iALBeM": 16,
+   "5s1JDBTsFiCKWbDeLNFLKyybSTdb7fDEbaRqso4ZtLPN": 6,
+   "5s24eBumkpkw72jYx2J65cQnG5zcRK3sVNwJTS9rf6m9": 6,
+   "5xcCr3jxDL6J8BD2hSqd1QKg4NBCLzG4JP4oN9aEZhtY": 5,
+   "5zxPc856gVc9KZFeJTJpT2tRBtv6EPvaXwCcbofTweQe": 14,
+   "6226QkTEGVQ8ksxv9xwkLYjS6hyppqiPeA6b7r7PszFf": 5,
+   "62e47RPixvd8WyqJgHczSUGEAbreH6rPkobMLQpHFzHw": 12,
+   "66EMPVvkbm2SEXDDUCpStCmY563gkqmX8QUQhZP7MsN": 16,
+   "66NJsrVqcnEgXVoUFmQfFcvin8xzGCE2bj5Hnd1isJVx": 18,
+   "68q42VKpYvgNeE2Zc5grqXY6fCW4AoTYtwsyMsre6ECg": 7,
+   "6DSgDkpdDk7qDtnSUBysXPCgY56zgzGndAMxh1V3MMdH": 11,
+   "6E7Y4suFvePw75acE24idqpn4Btm39AKB6LYuuedNHe2": 4,
+   "6HT1P8BUdPyGfQuRZfZbfWdfGb4oofw8wvQ1cyGXicKQ": 6,
+   "6fpjgG4fkCUZgsEpxwNi8DgZ55Qc8QJCJoZ6QbawSoqG": 1,
+   "6fszUFt5rwokEymvk37jusnGFQbjePwwumZAKuT6JQyp": 24,
+   "6hAvv5UBCesidfeyHJv4boT55uKxAoRCEg47NqbjdLuS": 5,
+   "6i9yFErE6AhTj6NnW2Cup7dt8iEtMtBFVaS2e6PaXnYM": 6,
+   "6iN1bfxMimnRzBAasNC65SspkTEo5z1ArTNpc7CD2pK": 24,
+   "6p6xgHyF7AeE6TZkSmFsko444wqoP15icUSqi2jfGiPN": 1,
+   "6pLPaabU92U2d5TaYiYngGWSUj4Qc9wFZEan2H1daR3e": 19,
+   "6pVsLQwDQwDkMmgbGecu4zxhdXotcFwWQH3DLNV9pump": 8,
+   "6s2eQeqS4MvktLyZ75dqfGVSFzTfbnomLXh1mYkusN5": 7,
+   "6uVCwn3BMBQx2NukMczSUw5YJgocj598khRKZa6umV4n": 1,
+   "6vwSHcc6uici8B1QVoimfQwBqjV4LQAob5uhzag62sua": 6,
+   "6wGhFVB6DS9bHw7UApyM8rMj3oECRLwFFkMRsasbJ9aJ": 10,
+   "72JwRpcMRdDansowQsbQCGTHxS5Y2eaNG5rDwrXvySeA": 2,
+   "73SB7yt2zV4YN8GgZPGRGKfTk8798xFbQiEsSdTuKJUR": 1,
+   "74XxfZkt4bXYgUtho6FdSstr7uUW8MJaJBqzxViFizdQ": 6,
+   "756YmGB7bnmdwyKEcUmBwzmorcKG17J7ZYxUt26cz2ei": 9,
+   "75Mq8mtMBthrRzS6LmPHX8yE2jjwj87JrHThzUHoxShP": 6,
+   "79sYcgfkXayGiLVBkyq6hrC6LxDTfTXWagkr6e4dhGpd": 6,
+   "7SL2VnfYsChvog5oQY9Nmtqu1wceaMiQzWoqoLQpump": 4,
+   "7VgzDiyYVs6ZNT6YL87x8qp28vVtN1kjZMXjGk5vQXvD": 3,
+   "7WusMUjXv7b3oLApB8D1zpL94UEDQWGuuNtGnq3sJJju": 4,
+   "7fmbwxBAFZGXxAsRqYsPu8HDNvKvgaMGxiGsdkp6Ktc": 9,
+   "7nEHhezTE3GdxtQ7UcUUaiBbWFQKJfzoaHkhwupb2Jvw": 13,
+   "7onUzKbtG9GxcmEzzE4fohLPhbCq6eLGqJLuU49uzXDJ": 25,
+   "7psdg3rRPzmMfobrRyyHK2nyh38CTHGRAXeizrAg2AUH": 5,
+   "83ABeEGKmsRc8aK2XKaVczqiSHYFKipvGFJXVh4LLcDz": 5,
+   "87E6URyEQVkYV5K4g7zVxHyfVK7dbcvZuq1njDkwgv6E": 6,
+   "89Yp6PRKQw9zGPCSUXTDeeCeFhSsE8ZRX2UKWih7KcPv": 6,
+   "89sE9YB2DVPEG1sJ4cH3YxucTWo7gYg47D8eHahgsd5G": 15,
+   "8ACuG8trgtJwmzGjG2yMHir4opuffbUDXskuPqN8bWBv": 8,
+   "8DG7BJEe1mgR9PN2WGLyt2J1gnJVD4WhsnC8xBi4RwoD": 9,
+   "8DoNihq4AWPidt7FUG9URyFA3bZM71ZJjXy9hPJv3qcK": 6,
+   "8RNr8ph1FLc1r3wWtLtFSi2yM1iKhN8ajJbrYiMPEmWy": 5,
+   "8Z6jbzDsB1EovhfQZvW3gxxobEJ8pTkPL9UpdXx6ypGD": 2,
+   "8dLicTvteTbFaZDAq3925Q7AFjvtYdHshzz8w7VCe2h": 2,
+   "8g1fFsjZBEMQXbxrnBGBfZF3zAZnFyNbzv9gYrzfnKxb": 10,
+   "8rp3szyw1k9ai3vwt32wQw8TVbcDFD553ZFMdrxPUWpP": 8,
+   "8uQ36p67Nx4JmFmSVP7AW9GS9m5TKggG7KC3RdPKTpL": 10,
+   "8vGr1eX9vfpootWiUPYa5kYoGx9bTuRy2Xc4dNMrpump": 2,
+   "92GtZofCNjgGKpA1StptokFi8xQzQnMbx3oxWpi5uHCb": 5,
+   "98kfF7rmsg1QDUEoCqNE7g7M1FdrTt92TEp2CLzypump": 6,
+   "9DDhrTrCGQm231wayM6V8PzB3QFqY1ZC512BUCCWX3JS": 5,
+   "9HjsPutyGGPpxnRn4ibH1hTfPvitAY5EPvtAwGFkpump": 2,
+   "9MqpNPfga2a9pjjsPmN3CHthHWbpNxkHc34mvKtWqygd": 11,
+   "9QiekuZAcgnNyQovCbh99SMvTPwDMN3MdcNJdLfV2K9F": 27,
+   "9V1Y9yiwFbK9raBaQ4xCUKHeYMXaWKA7q22La91KRmvM": 16,
+   "9XNqZxYdj8mjyDkEzLBL2aeP734p4pdzofhhbEFguCiK": 4,
+   "9kD2db3aAwKwJv3kMnZDLWVWYMLm4KAHoGMhQm3e988": 7,
+   "9kYffTMZawqcDjuKX6wnSiSve6mSdRbdJaFad7YkWSam": 11,
+   "9mApVW3EvcSpQJiirYbSs8DMRVQMNRD3rv2midiEYsab": 8,
+   "9nmGhhXXveXcbvY3LVJyTmVEY7FTRQrUyjnuANqzst6b": 9,
+   "A2ESTw3xw9VK9JwMj4NfftWftqJBskAV9ZnwmMR6Sb6o": 7,
+   "A5R5xtrL3SbfKLFdgvEfFQqrXSZtZURRnwH3b7c4LU4X": 24,
+   "ABNiAebaE2kNcpXn4AvUpuhjH8r31Mm7Aq4h9UR9BAGS": 1,
+   "AFHS3ERmXjAzVS7PZoq2wj92QJNmV4cmU3s2UPdLSWcK": 32,
+   "AHS8p9XYXy79GmhKZyj24RxypMw8iCziBoj2tNYA1vqk": 4,
+   "AMC1qwR9KhiyrQBRPrxnfo4JfMeMZqEBvt5tgTytNNoc": 8,
+   "AMvAJcaG8eSxBYHUTg5MPrF39f23r7yyLQ8DEncsFMEx": 5,
+   "ANTBTZQ1EUuTxUs3tfeampxdqTWPHmwyJmcWj4xoAyNe": 14,
+   "AcTTgXajkpg6fgnoc78YcDwhih2eVCfaULSUkD6iRLH4": 5,
+   "AhMzaatEyYNA1xbVLTVuDGu8ik9hNJRcRhoacASZxZbY": 19,
+   "AhvA3kVJwgB4NrW2nvR2ouKtpoRCmA6sPWqvXgkMS3en": 10,
+   "AjXk2Ti2AwHYxLGoLvp57aX499ynHFG89vVMjve3cKSZ": 13,
+   "Akpsh7MwdCafoPKxQvMCb6LhYA5an8S7J66B1KKVHtKR": 7,
+   "Aq3TB3hNy51pEUeEDLywvCHUFL8UGSRJFeBt7yuuGv5i": 6,
+   "AthNbgAa4R3Bdf8FDskMxNpGQ7hHQWqFV6xzakEodUGR": 18,
+   "AumjKjpVoUC44jLhwHDbc95AMDE6mEf4ZS7wYrtMr9nH": 11,
+   "Awv4331XWCiwHKRTN9FHqWDndz2RZRrP1e2TpEPB4oaK": 7,
+   "BFassStXkSxWNZJ7SyGxk3E3ERWecL1wiSfZy4oCTmgJ": 3,
+   "BJ3cb8ekxiJiQ4gv4TAghcbXdVb3RCWkFkVNaoKjCKJN": 6,
+   "BQ3bx8TDnPtLi23Hou1ZXYjdPdp7YDzk88xfyjr16xD": 20,
+   "BcFwMmC3uUbvX57BT2b4uj9Y1EFZdukTvAWMnr6GrBdo": 5,
+   "BrmDdvUaEuHG78chGpWyu8XKbbR2911j7bQBYdNXZsTz": 19,
+   "Bw1qoSkReDgUP7zFU4B2roqosQDVmGxi4ArTdVGXs2v": 10,
+   "C2ht77JHEyx1JMbYD2D7qENKv7qsUDaneE9ivLiSd9xq": 19,
+   "CARDSccUMFKoPRZxt5vt3ksUbxEFEcnZ3H2pd3dKxYjp": 1,
+   "CFHumdP4sZmjeXgyGZs4FT1Z6n1nSEsFB3pqM8xRnc58": 23,
+   "CG1JDTKcp2uNSqRfvaTVdAexHhsWLteYW9UmUvNKRDYc": 22,
+   "CHGXW33ShRRc4N1oLy6daygYrmgLscN5wcC2tmx3esyg": 9,
+   "CNu3Pf6vQsJQaaCQv9SnTtACbyCife2ei4ghbiv1ojdJ": 11,
+   "CSR4dmCVcCFDbk5PTC9qSRHfAkT6mfty3emzc6uPX9qG": 7,
+   "CTC9PPiYNJTyeK7fdffiqdiFzuZ3SBwXVKogTFJUjRYU": 3,
+   "CUg7AzWL5p8imZVqqdjEPgRhUsXAkBMW5JxkSJ9fpump": 6,
+   "CbAN4jS3FEFHRrmNeJS9PAadMABeAGqNvAteRftTKmER": 26,
+   "CcM464EqtqPTwNngcGM9kFX2nikzgmzV2bRN4gHcSJyY": 3,
+   "CkuA615mQA6ZDXncmXJLrTR5kDkZCaKqJmuf758zPZY6": 77,
+   "CptDkxR8rV68ngdh2JgFdSodu2KQSmyNEyyin9RdWZp1": 47,
+   "CqpjG6geizVgbRNaLXRbCjcBuXSfRnT7fnaGc87hBvU1": 10,
+   "D4Si9JZoP7xqi7LsaQpvjqfVjuxcH5uanZmCJo2hVmvQ": 28,
+   "D8Q6XHmmXGGtzeayXoFd4PZ5q2VbVSQQkDmgNPAf1VRR": 20,
+   "D8k8sgMCFLGnyMSjTcwv6DfX5xVPKcapC37YrQqc7hCd": 4,
+   "DDGpnE6cMnpLFhTTkxs3azChjUud9N2EdaYM5euzhtn2": 28,
+   "DHmcttT95joUUXdAZ9JSgNdBff2sE8nGPqb7vRqQhri7": 7,
+   "DJTu7vi8norVzdVAffgvb39VP7wjKeTsgaMBJrzfxvoF": 18,
+   "DLGE8873i8jBqe7dv5VgHN2c49PdxcRrFZvEi4ep3ksp": 5,
+   "DMF6ubfq692qmnpoW6ZqnUr7EGjKhjoLx8XVFAp5uvBn": 5,
+   "DSMVMHroNz5LzfHHkCnJe7KXYgGkCn9S2N6V6c4zk7AC": 17,
+   "DYDSuJumtLMPg8B24p1xVT4yQSjRSawmk261cQs5EeXw": 43,
+   "DYc8mChcizCPWXH9WnLeiFrBJABTYFny4MdCUjGfDgH": 14,
+   "DZq8tvccuPaYXoaSeBwVdMxfefbpK4ZQEpMtpcQABv1H": 4,
+   "DbXrH5tggALr1tPh8ySnqXwhmpGurACsMfBtn7CvBjmV": 4,
+   "DgeaafxBcWTiiTUQTeLF3eJTpsr7nss37LQeAk9CRmaw": 5,
+   "DoGEV7LASBkQbibMc5k5vKnTZoMg423GpJ5QtJEGfm7R": 3,
+   "Du3od8hU59Kq8Dom3hjZwMnrHz21uGRJh4iVChpj4oit": 8,
+   "Dv4dPLByYa4uyE9WYzRegZ6qkegAf54MaFmRaZfo9g3z": 10,
+   "Dw1TSEdair3FHxMjPg5v9PEfbPodDrdzB9Hd6VdqrHzZ": 3,
+   "E52gmY2eMPacauWKmdKAwU5iFcEDUDkkpzDtvpFnhcmT": 2,
+   "EBJZHVEUQTL3Ec9pwZGr6RiCbbX7eazkPe9BtHjV1ULG": 22,
+   "EMsvC1jpLgKiwhkDRqjSeyRpurQabHS7NwyRoffNVqE": 5,
+   "ENwzDLfXjEQ9HEM2epJQGd7uCzTXhPqHBFL9cQcmwuGP": 6,
+   "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v": 82,
+   "EVoJaPvzGDfyJVRmCZvdNFjBrbTbEjp3ShdSWTQgDX93": 1,
+   "Eu37QTztAGQSEjUboGmp25eLk6SE8QUTbrMetAndmxpr": 6,
+   "Ev9rG14N9oEED4fbzfDXiUKhq5J574CuD4Gj6zdbbonk": 1,
+   "EvqrwbV1fwtdfyLPeEMydMQqJmThqMvhEvhDLzi4Eon": 9,
+   "F54bkg4duC9GaGkELW6hJyTyLqrsvNCfV8WUm2W529BY": 12,
+   "FBfSkZS3CPrRQs1messwGnsbDys6ARUNaTNaUG8hepDZ": 7,
+   "FJ8pd3JRhoxbowdPLgpV7x6k8Nn7kFZ35RNfsde1XRwZ": 15,
+   "FQudijfFSdVTPYfxEzWXPNaCHvbRrqWVtrj3eoWiae8G": 18,
+   "FVFxbKBSxDN5xWSuNoM73o3PparCnrxRrqhoWQKpfuXq": 2,
+   "FaXAHQb8gwCeCKzvcHz9xmX2axnq8yFbd3GEwi9xT9kS": 4,
+   "FbUVaCVyXQqD1ZASsaVUUfeuRsymvG5i7jANdQ3V9U8": 3,
+   "FgyDA1gBpyhmdqfj9pxAZ9gvfs4dG8zbNgPFCG3hDMME": 6,
+   "FiijXd9WpvAZakmPpEQXhPH8cwbygzQsHi24ri3yg53r": 15,
+   "Fsw2fBrfeyN55vfaWHoSqWCX48E31RBZd7TZHVpd9jS": 4,
+   "FtN6cicw8QddiKGSpE82QRFzaRKMPi1NyCVgagpXnVBK": 12,
+   "Fxb1wzBqZ1dY78VMsAXBHgxPdKivE7wqudBQpV3jhxG": 27,
+   "GD1RVuQdtShuwnkhQuTF4Jr8uPpKDYoEP322sCkTSheP": 9,
+   "GKhtspEZPcgKdZZb2ygkPHz8YBs9vaBYHZTYqw9qC1jD": 6,
+   "GNdLcAkU3VLgf6av5mzagHqEN5mQRsWtRr7pYRAE6Mrf": 35,
+   "GNoGQX8C3D4NAnNeF8dM8YaRBbjQVNYyVwzg8ButmqPR": 9,
+   "GVy2jgr2tYAvSYNQAfDX5v9tqhsrdgw9xkFmr1S31QE": 3,
+   "Ge87EtsjwRQbHaqQmKRno69RFTwh9bfSsm99XNxTpump": 3,
+   "GhF3MQLeL36hnAFBXc4H8P1yirY1o7VmxWehtMGYpump": 1,
+   "GhkxgzDQLWADASRDrqwdtB6tTWzvHUUxGRAg5F8v4tQD": 4,
+   "GksxX1jKCDs4BTV97j54A6hEPweuoCiruzTUNgcjzWwW": 5,
+   "Gm5Bzk7b8m6toaQei1f99pcF3QA21JomdGkfvDZxXcHh": 7,
+   "GutFaCZkHHkHFpAkqSwYc8Lcf7wLB3ww1E3v7bfdh3M1": 2,
+   "GuzX8bitmtt51GfE2R97rPDnttro3KDTShUxoC3WjCWZ": 24,
+   "GvMqhPoDZR5qkPujwMkZngNfRnC96TFxnpGd3F8huiyU": 5,
+   "H1rLeJRMyK8oYVg4Kn4DYbMRQJdScj6GNsypLbLXjt8X": 16,
+   "H2U7Qbwqf9yTdaV5PJWV5KpfRwLnau9G8Gq4qhjzW6AM": 19,
+   "H75GmeG9FqxpcwFkV6JCKUxqMD1jj4A9TthH9r7uHenz": 30,
+   "H8n8vFTZTnZDvnD1dgD7RQYDc9uk4zJexuqUiorFAU4J": 14,
+   "HBZre4aUxkRjMjshZSynCjKp7XpAvberW9rXwLg85k7B": 20,
+   "HWVTZV8S3HtRZJukS3BPXJdg5FxK8aMYi2oSswmrWHj9": 82,
+   "HaVN2TV7QB97bjaWYSw9YNAqGozb9vdaRr7ZoDhHPVQr": 2,
+   "Hg5Ja55T5wESq4vyFoiVCMeHXtGyVA69X2UHq8hgpump": 6,
+   "HihL5Hsc9vGdj5AqbpM3bgrHEWyLRBAz4bRDyCKqmoon": 1,
+   "HkAtjEnPbMq3rCvBgfEhrQaiXG7G9kQWDpB4XmnUyFqD": 14,
+   "J88WvwAfXYUEdapVwEsYDYBFeqQkqBnJt2XamGoRdyVC": 1,
+   "J88sUHbSUUtSkM2aQTQ88UYG41gw62wNcNrPME4Ytge2": 23,
+   "K4j9KUTDgQaF1q4jZZpRWbKmNckvCQVWiTzwgcAqA2y": 18,
+   "KwkiPNkBaa5LUapyPB5REiVuhJPHTQNSANNaprpsVCm": 5,
+   "MaNmAp912hez24wncMT2nuN2SynEePwTmt5CcuioTS6": 11,
+   "MczGi45ekawSDUXnK9c3eVEGgiAV9GKr4Fvh4nShuTo": 5,
+   "MfFfoeAJaw3ahAvmBjH7kyfWfYyq1jpqMrbHF5YmVa2": 4,
+   "NhsNTrM95ueoD95M1JVXz1PQWyRAjjthNHCisfk8YJj": 13,
+   "Npcpqjws4GVZmsNes7yQ7NuurdhDyfbcN96h9SNNicb": 8,
+   "Pren1FvFX6J3E4kXhJuCiAD5aDmGEb7qJRncwA8Lkhw": 1,
+   "PsevWgMW2bZrTLxPA9GaFht2LefanXqTb9PArq3XvVf": 8,
+   "Q6dEJ3Vj9L9ki19UYZpxgiudPLeHf5j9TV7LNsWxY2x": 9,
+   "QpmaLm2urRgmTfijw1SVaCmUg1dXFeD4n5u6SQ8oBS8": 5,
+   "RV45eERt7baE3aDhgJGZSRwVh3EUeXERRvvYqfGJjiU": 10,
+   "SPCXxcqXj6e5dJDVNovHN8744zkbhM2bYudU45BimGb": 30,
+   "SQQQAa3gUxgnqcEsdjPA4RQNQBgB97TnG2hJhk2WaGE": 8,
+   "STXCQkoNnWAMgSb2Kk1UPZ5g7THGvdZU1VurNjLFrFA": 7,
+   "Scku7rTZVZWKu2k9537oKEHWVkj8ajodTseP6sJkXHT": 10,
+   "So11111111111111111111111111111111111111112": 2263,
+   "TTWofwAge91oFhZs7kpQdyrVRkmevgM88xijGvQFbKo": 26,
+   "XsbEhLAtcf6HdfpFZ5xEMdqW8nfAvcsP5bdudRLJzJp": 6,
+   "Xsc9qvGR1efVDFGLrVsmkzv3qi45LTBjeUKSPmx9qEh": 1,
+   "Xsf9mBktVB9BSU5kf4nHxPq5hCBJ2j2ui3ecFGxPRGc": 1,
+   "XsgSaSvNSqLTtFuyWPBhK9196Xb9Bbdyjj4fH3cPJGo": 4,
+   "XsqE9cRRpzxcGKDXj1BJ7Xmg4GRhZoyY1KpmGSxAWT2": 17,
+   "Xsv9hRk1z5ystj9MhnA7Lq4vjSsLwzL2nxrwmwtD3re": 1,
+   "Zurt5MrbGKEFZVSDpXLj5wGL51vyZpvWxUnpznnkbXp": 19,
+   "eyytxbG2eQ8rv3AvAZJDLS1YvwDeiMnNavgxqPxtZWC": 6,
+   "fjW1omcHCJd2pEdvPizgnhCEm8CjNTAAGby6SgwquGC": 10,
+   "he1iusmfkpAdwvxLNGV8Y1iSbj4rUy6yMhEA3fotn9A": 21,
+   "jodkupUwKvzD9qiDsmFU7R3vYFz5gYHstcQLhRGUDch": 22,
+   "mhTCnZvkV8rviJN7rruzTncKLq1fJzydYXoNtbWgVzw": 5,
+   "p5ZtH529ELo4zQx7V36FUUi3jVXWt9n5b9eL7PJh6ZA": 26,
+   "pooE5S3wHwuUTtx6byEHMENmwTqxov1X2TU4vbE8Gwz": 3,
+   "pumpCmXqMfrsAkQ5r49WcJnRayYRqmXz6ae8H7H9Dfn": 4
+  },
+  "pumpswap_nonzero_by_quote_mint": {
+   "Pren1FvFX6J3E4kXhJuCiAD5aDmGEb7qJRncwA8Lkhw": 1
+  },
+  "trailing_by_class": {
+   "mixed": {
+    "zero": 22
+   },
+   "no_amm_trade_ix": {
+    "zero": 92
+   },
+   "non_wsol_only": {
+    "nonzero": 1,
+    "zero": 2860
+   },
+   "pump_trade_quote_other": {
+    "nonzero": 1,
+    "zero": 464
+   },
+   "pump_trade_quote_wsol_or_zero": {
+    "zero": 1280
+   },
+   "wsol_only": {
+    "zero": 2241
+   }
+  },
+  "wsol_only_BuyEvents": {
+   "cpi_only": 7,
+   "total": 1394
+  },
+  "wsol_only_SellEvents": {
+   "cpi_only": 1,
+   "total": 847
+  },
+  "wsol_only_txs_excluding_episode_pool": 2229,
+  "wsol_only_txs_truncated_excluding_episode_pool": 22
+ },
+ "wsol_mint": {
+  "len": 82,
+  "owner": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA",
+  "transfer_fee_config": null
+ }
+}

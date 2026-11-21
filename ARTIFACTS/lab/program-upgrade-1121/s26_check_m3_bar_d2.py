@@ -7,7 +7,7 @@ import base64, json, math, os, statistics
 from pathlib import Path
 from common import LClient
 OUTD = Path(os.environ.get("UPGRADE_OUT", "out"))
-S2 = Path(__file__).resolve().parent / "out_stage2" / "s25_migration_bar_d.json"
+S2 = OUTD / "s25_migration_bar_d.json"   # 1121: written by s25 (union includes the 1114 and 1115 reviews, all pre-deploy)
 s11 = json.load(open(OUTD / "s11_migration_economics.json")); s24 = json.load(open(OUTD / "s24_stage2_checks.json"))
 rows = s11["post"]["rows"]; n = len(rows)
 UNION = json.load(open(S2))["union_range"]   # ADD1 D union of pre data (this review's M_pre + 1114 P and M)
