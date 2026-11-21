@@ -8,7 +8,11 @@ Standard: `/data/mal/hunt-1008/ops/QP-RULING-1121-a3-repin-triple.md` (sha256 d7
 
 **Clean on every declared bar; (c1) sell failed share referred to QP and accepted by QP-RULING-1121a (post hoc slippage split, said plainly).** (QP-RULING-1121a, sha256 32caa44aa9aa2ec03c9cf998e1dd3e69921a3f65eadf47c624ecd91586227f3e; parent QP-RULING-1121-a3-repin-triple.md sha256 d704d78608de3e9e26a9f193a37094c2accebf2a7c6e604aafaf952703684392.)
 
-**HOLD found by the addendum's required 6013 check (section 12, item 3; characterised in section 13, where the 3 failures are all buys on MAYHEM pools using a regular recipient, which is a hypothesis of caller error, not established): the re-pin is NOT applied and the PR stays a draft until QP rules.** Of the 6 post WSOL buy/sell instructions that failed with `6013 InvalidProtocolFeeRecipient`, 3 sit in transactions whose 6013 was raised by PumpSwap itself, on a `buy_exact_quote_in` (26 accounts), and for all 3 the account at position 9 IS in `pumpswap_global_config.protocol_fee_recipients`; the other 3 (sells) share those transactions and are not the erroring instruction. 0 such failures occur in this review's P or in the 1115 caches (old binary). The addendum says a listed-and-failed case comes to QP before merge. Counts and method are in section 12.
+**6013 check (QP-RULING-1121a section 4, file sha256 f8c95f19a9e9209834c7c9f4fe58fd516747ab5d3310e1a5a8edc648137fa151): item 3 CLOSED by QP; the re-pin is applied (section 9).** Disclosure, verbatim:
+
+> "6013 InvalidProtocolFeeRecipient: 3 post-deploy transactions (2026-11-21T00:13Z), each pairing a mayhem pool with a regular protocol fee recipient; the program accepts only reserved recipients on mayhem pools, a rule this repo encoded on 2026-10-27 (eef5bf2f, PR #1025) against the earlier program; mode-correct pairs: 0 of 1,535 non-mayhem buys and 0 of 14 successful mayhem buys involved; decompile and pre-sample split not done."
+
+The 3 `sell` 6013 rows of s20 are the same 3 transactions as the 3 buy rows (signature equality, `s36_6013_sig_equality.py`: 3 buy txs, 3 sell txs, 3 equal signatures, 0 on either side not in the other).
 
 **(c1) disclosure, verbatim from QP-RULING-1121a:**
 
@@ -29,7 +33,7 @@ The referral was a routing rule of 1115 (c1), not a pass/fail bar. Reproduction:
 | CompleteEvent (ADD1 C) | met: 8 kept post, 5 kept pre (section 7) |
 | Migration D2 items 1-4 | met on 31 WSOL migrations (section 7) |
 | (c1) 20+20 shape and failure share | shapes met; sell failed share +8.55 points referred to QP, accepted by QP-RULING-1121a (sections 11, 12) |
-| 6013 check (1121a item 4) | HOLD: 3 listed-recipient 6013 failures raised at PumpSwap `buy_exact_quote_in` post, 0 pre: to QP (section 12) |
+| 6013 check (1121a item 4) | closed by QP-RULING-1121a section 4 (sha256 f8c95f19...): 3 mayhem-pool buys with a regular recipient, old program rule (sections 12, 13) |
 | (c2') live sends | met, manager job #3204 (section 11) |
 | (c3) pool accounts | 24 of 24 equal 1114; 10 new pools owner/len/disc as 1114; one coin_creator difference disclosed |
 
@@ -111,9 +115,14 @@ Source: `out/s06_parity*.json`, `s17`, `s19`, `s24`, `s28`, `s08`, `s14`.
 - **(iii) Pool accounts (c3).** The 24 pool accounts of the 11-14 review: 24 of 24 same owner, data length and 8-byte discriminator as the 1114 values. 10 pools created after `D` (first 10 WSOL pools of M): owner `pAMMBay6...`, data length 301 on 10 of 10, discriminator `f19a6d0411b16dbc`; `coin_creator` set 10 of 10; base mint equals the event's 10 of 10; **`coin_creator` equals the CreatePoolEvent's on 9 of 10** (the one difference is a mayhem pool; 1115: 10 of 10): disclosed to QP, not a declared bar (not investigated further here: the pool may have changed creator after creation).
 - **(iv) Fees accounts.** `out/s01_programdata.json`: `bonding_fee_config`, `pumpswap_fee_config`, `pumpswap_global_config` equal their pinned sha256 and length.
 
-## 9. Pins diff (item 11) and re-pin
+## 9. Pins diff (item 11) and re-pin (stage 7, applied)
 
-The monitor's own `--write-pins` path (`s02`) at slot 472058264 (2026-11-21T07:39:17Z) shows exactly the three deploy slots and hashes of section 1 and no other change (no newer write). **The pins file, fixture and test list are NOT changed in this PR yet**: the addendum's 6013 check (section 12 item 4) found a hold for QP. After QP rules on it, the re-pin is: `tools/pump_structure_pins.json` via `--write-pins` (a read at a slot after this review's last sample block 472057747), `tools/fixtures/pump_structure_monitor/programdata.json` re-recorded by `program-upgrade-1121/s15_rerecord_fixture.py` (expects [471854454, 471854493, 471854409]), and the line-354 list in `tools/test_pump_structure_monitor.py` to `[471854454, 471854493, 471854409]` plus its comment line.
+The monitor's own `--write-pins` path (`s02`) at slot 472067720 (2026-11-21T08:13:06Z; after the last sample block 472057747) shows exactly the three deploy slots and hashes of section 1 and no other change (no newer write; no unexpected key). Exactly three files changed in `tools/`, nothing else:
+- `tools/pump_structure_pins.json`: copied from the monitor's `--write-pins` output: `pinned_utc` 2026-11-21T08:13:06Z, `pinned_at_slot` 472067720; `programs.pump` 471854454 / 2026-11-20T19:28:03Z / `46bf6c8e...`; `programs.pumpswap` 471854493 / 2026-11-20T19:28:12Z / `92d73e65...`; `programs.fees` 471854409 / 2026-11-20T19:27:54Z / `519e166e...`; data_len unchanged; accounts and boost byte-identical.
+- `tools/fixtures/pump_structure_monitor/programdata.json`: re-recorded by `program-upgrade-1121/s15_rerecord_fixture.py` (context slot 472067874; all three 45-byte headers; decodes to [471854454, 471854493, 471854409]).
+- `tools/test_pump_structure_monitor.py`: the line-354 list `[471854454, 471854493, 471854409]` and its comment line.
+
+Tests (`MAL_ARENA_TEST=1 /data/mal/venv/bin/python -m pytest -q tools/test_pump_structure_monitor.py tools/test_a3_redeploy_check.py tools/test_a3_halt.py tools/test_h5_shadow_synthetic.py`, research-0 venv): at the old pins (head `2017b4e0`) **346 passed, 1 skipped, 0 failed**; at the new head **346 passed, 1 skipped, 0 failed**. Equal. (The ruling's 345 / 2 baseline is for `/usr/bin/python3` on mal-fast-0; that run is the manager's.)
 
 ## 10. Binary diff (report only) (s04)
 
