@@ -156,9 +156,9 @@ def refusals(br):
 
 # ------------------------------------------------------------------------------------------------ constants and config
 def test_constants_follow_dec035_s2():
-    assert X.FLOOR_LANE_STAKE_BOUNDS_LAMPORTS == (20_000_000, 250_000_000)
+    assert X.FLOOR_LANE_STAKE_BOUNDS_LAMPORTS == (20_000_000, 400_000_000)
     assert (H.LANE_STAKE_MIN_LAMPORTS, H.LANE_STAKE_MAX_LAMPORTS) == (20_000_000, 30_000_000)  # the H5 lane's own copy is unchanged
-    assert (X.LANE_MAX_OPEN, X.LANE_BUDGET_MAX_LAMPORTS, X.FLOOR_LANE_DAILY_MAX_LAMPORTS, X.LANE_MARK_STALE_MAX_S) == (16, 4_000_000_000, 500_000_000, 60)
+    assert (X.LANE_MAX_OPEN, X.LANE_BUDGET_MAX_LAMPORTS, X.FLOOR_LANE_DAILY_MAX_LAMPORTS, X.LANE_MARK_STALE_MAX_S) == (16, 5_000_000_000, 800_000_000, 60)
     assert (X.LANE_MAX_OPEN_DEFAULT, X.LANE_BUDGET_DEFAULT_LAMPORTS) == (8, 300_000_000)  # what a block without the keys gets: unchanged
     assert X.LANE_BOT_ID == "floor-lane-1" and X.BOOK_BOT_ID == "l1-floor-v2" and X.FROZEN_SHA == F.FROZEN_SHA
     assert X.LANE_MIN_FEE_RESERVE == 2_100_000 + 160_000 + 1_600_000
@@ -170,7 +170,7 @@ def test_floor_arena_executor_stays_dry():
         F.make_config(cfg_dict(Path("/x"), mode="live"))
 
 
-@pytest.mark.parametrize("stake", [0, 19_999_999, 250_000_001, 100_000_000.5, None, True, 25_000_000.5])
+@pytest.mark.parametrize("stake", [0, 19_999_999, 400_000_001, 100_000_000.5, None, True, 25_000_000.5])
 def test_refuse_on_bad_stake_config(tmp_path, stake):
     raw = lane_raw(tmp_path)
     if stake is None:
@@ -197,7 +197,7 @@ def test_bounds_come_from_one_constant(tmp_path, monkeypatch):
     raw["lane"]["stake_lamports"] = 120_000_000
     cfg, lane, _ = X.make_config(raw)
     assert cfg.stake_lamports == 120_000_000 and lane.stake_lamports == 120_000_000
-    monkeypatch.setattr(X, "FLOOR_LANE_STAKE_BOUNDS_LAMPORTS", (20_000_000, 250_000_000))
+    monkeypatch.setattr(X, "FLOOR_LANE_STAKE_BOUNDS_LAMPORTS", (20_000_000, 400_000_000))
     with pytest.raises(SystemExit):  # the bridge refuses to start outside the bounds even with a config object that slipped through
         X.FloorLaneBridge(cfg, B.DryPort(1), lane, now_ms=Clock(T0))
 
@@ -211,7 +211,7 @@ def test_bridge_refuses_stake_mismatch_and_bad_max_open(tmp_path):
         X.FloorLaneBridge(dataclasses.replace(cfg, max_open=17), B.DryPort(1), lane, now_ms=Clock(T0))
 
 
-@pytest.mark.parametrize("k,v", [("max_open", 17), ("budget_lamports", 4_000_000_001), ("daily_loss_lamports", 500_000_001), ("mark_stale_s", 61), ("fee_reserve_lamports", 1),
+@pytest.mark.parametrize("k,v", [("max_open", 17), ("budget_lamports", 5_000_000_001), ("daily_loss_lamports", 800_000_001), ("mark_stale_s", 61), ("fee_reserve_lamports", 1),
                                  ("bot_id", "h5-lane"), ("surprise", 1)])
 def test_lane_config_only_lowers(tmp_path, k, v):
     raw = lane_raw(tmp_path)
@@ -353,7 +353,7 @@ def test_step_up_bounds_accept_010_stake_060_budget_and_refuse_one_lamport_over(
     cfg, lane, _ = X.make_config(raw)
     assert (lane.stake_lamports, lane.budget_lamports, lane.max_open) == (100_000_000, 600_000_000, 16)
     assert cfg.stake_lamports == 100_000_000 and cfg.total_loss_lamports == 600_000_000 and cfg.per_trade_loss_lamports == 100_000_000 + lane.fee_reserve_lamports
-    for k, v in (("stake_lamports", 250_000_001), ("budget_lamports", 4_000_000_001), ("max_open", 17)):
+    for k, v in (("stake_lamports", 400_000_001), ("budget_lamports", 5_000_000_001), ("max_open", 17)):
         bad = lane_raw(tmp_path)
         bad["lane"].update(stake_lamports=100_000_000, budget_lamports=600_000_000, max_open=16)
         bad["lane"][k] = v
@@ -370,7 +370,7 @@ def test_live_config_stake_30m_budget_300m_max_open_8_validates_and_decides_as_b
     view = H.lane_fold([], {}, T0, lane.mark_stale_s, X.LANE_BOT_ID)
     assert led.evaluate(view, T0, 30_000_000) is None
     assert led.evaluate(view, T0, 30_000_001) is None  # in bounds for the ledger (the config pins the stake); the old 0.03 ceiling no longer applies
-    assert led.evaluate(view, T0, 250_000_001) == "lane_stake_out_of_bounds"
+    assert led.evaluate(view, T0, 400_000_001) == "lane_stake_out_of_bounds"
 
 
 def test_port_sets_probe_size_and_loss_cap_to_the_lane_values(tmp_path):
@@ -1083,8 +1083,8 @@ def test_am5_bounds_accept_ceilings_and_refuse_one_lamport_over(tmp_path):
     cfg, lane, _ = X.make_config(raw)
     assert (lane.budget_lamports, lane.daily_loss_lamports) == (1_200_000_000, 200_000_000)
     assert (cfg.total_loss_lamports, cfg.daily_loss_lamports) == (1_200_000_000, 200_000_000)  # no inner clamp: the C0 table is not used for a lane config
-    assert X.FLOOR_LANE_STAKE_BOUNDS_LAMPORTS == (20_000_000, 250_000_000) and X.LANE_MAX_OPEN == 16
-    for k, v in (("budget_lamports", 4_000_000_001), ("daily_loss_lamports", 500_000_001), ("stake_lamports", 250_000_001), ("max_open", 17)):
+    assert X.FLOOR_LANE_STAKE_BOUNDS_LAMPORTS == (20_000_000, 400_000_000) and X.LANE_MAX_OPEN == 16
+    for k, v in (("budget_lamports", 5_000_000_001), ("daily_loss_lamports", 800_000_001), ("stake_lamports", 400_000_001), ("max_open", 17)):
         bad = lane_raw(tmp_path)
         bad["lane"].update(stake_lamports=STAKE10, budget_lamports=1_200_000_000, daily_loss_lamports=200_000_000, max_open=16)
         bad["lane"][k] = v
@@ -1190,14 +1190,17 @@ def test_am5_daily_stop_via_the_bridge_at_minus_200m(tmp_path):
 
 def test_am5_shared_daily_ceiling_stays_100m_for_the_dsl_lane():
     """The DSL lane reads the shared LANE_DAILY_MAX_LAMPORTS; Am.5 raises the floor-only constant."""
-    assert X.LANE_DAILY_MAX_LAMPORTS == 100_000_000 and X.FLOOR_LANE_DAILY_MAX_LAMPORTS == 500_000_000  # Am.6 (Am.5 had 200M)
+    assert X.LANE_DAILY_MAX_LAMPORTS == 100_000_000 and X.FLOOR_LANE_DAILY_MAX_LAMPORTS == 800_000_000  # 0.40 step (Am.6 had 500M, Am.5 200M)
 
 
 # ------------------------------------------------------------------------------------------------ Amendment 6: stake ceiling 0.25 SOL, budget 2.10 SOL, daily stop 0.50 SOL
 STAKE25 = 250_000_000
 BUDGET21 = 2_100_000_000
 DAILY05 = 500_000_000
-BUDGET40 = 4_000_000_000  # code ceiling (budget-raise amendment, pending); live value stays BUDGET21
+BUDGET40 = 4_000_000_000  # the running config ceiling before the 0.40 step
+BUDGET50 = 5_000_000_000  # code ceiling for the 0.40 step; the live value stays BUDGET21 until the amendment and install
+STAKE40 = 400_000_000
+DAILY08 = 800_000_000
 
 
 def _am6_raw(tmp_path, **over):
@@ -1211,8 +1214,8 @@ def test_am6_each_ceiling_accepts_the_max_and_refuses_one_lamport_over(tmp_path)
     cfg, lane, _ = X.make_config(_am6_raw(tmp_path))
     assert (lane.stake_lamports, lane.budget_lamports, lane.daily_loss_lamports, lane.max_open) == (STAKE25, BUDGET21, DAILY05, 16)
     assert (cfg.stake_lamports, cfg.total_loss_lamports, cfg.daily_loss_lamports) == (STAKE25, BUDGET21, DAILY05)
-    assert X.FLOOR_LANE_STAKE_BOUNDS_LAMPORTS == (20_000_000, STAKE25) and X.LANE_BUDGET_MAX_LAMPORTS == BUDGET40 and X.FLOOR_LANE_DAILY_MAX_LAMPORTS == DAILY05
-    for k, v in (("stake_lamports", STAKE25 + 1), ("budget_lamports", BUDGET40 + 1), ("daily_loss_lamports", DAILY05 + 1), ("max_open", 17)):
+    assert X.FLOOR_LANE_STAKE_BOUNDS_LAMPORTS == (20_000_000, STAKE40) and X.LANE_BUDGET_MAX_LAMPORTS == BUDGET50 and X.FLOOR_LANE_DAILY_MAX_LAMPORTS == DAILY08
+    for k, v in (("stake_lamports", STAKE40 + 1), ("budget_lamports", BUDGET50 + 1), ("daily_loss_lamports", DAILY08 + 1), ("max_open", 17)):
         with pytest.raises(ValueError):
             X.make_config(_am6_raw(tmp_path, **{k: v}))
 
@@ -1222,7 +1225,8 @@ def test_am6_ledger_stake_bound_is_the_new_ceiling(tmp_path):
     led = X.FloorLaneLedger(lc)
     view = H.lane_fold([], {}, T0, lc.mark_stale_s, X.LANE_BOT_ID)
     assert led.evaluate(view, T0, STAKE25) is None
-    assert led.evaluate(view, T0, STAKE25 + 1) == "lane_stake_out_of_bounds"
+    assert led.evaluate(view, T0, STAKE40) is None
+    assert led.evaluate(view, T0, STAKE40 + 1) == "lane_stake_out_of_bounds"
 
 
 def test_am6_shared_and_dsl_limits_did_not_move():
@@ -1298,14 +1302,14 @@ def test_ceiling_budget_2_10_still_validates_and_presend_math_unchanged(tmp_path
     assert res[8] == (-2_269_658_405, "lane_budget_presend")
 
 
-def test_ceiling_budget_4_0_validates(tmp_path):
-    cfg, lane, _ = X.make_config(_am6_raw(tmp_path, budget_lamports=BUDGET40))
-    assert lane.budget_lamports == BUDGET40 and cfg.total_loss_lamports == BUDGET40
+def test_ceiling_budget_5_0_validates(tmp_path):
+    cfg, lane, _ = X.make_config(_am6_raw(tmp_path, budget_lamports=BUDGET50))
+    assert lane.budget_lamports == BUDGET50 and cfg.total_loss_lamports == BUDGET50
 
 
-def test_ceiling_budget_one_lamport_over_4_0_is_refused(tmp_path):
+def test_ceiling_budget_one_lamport_over_5_0_is_refused(tmp_path):
     with pytest.raises(X.LaneConfigError):
-        X.make_config(_am6_raw(tmp_path, budget_lamports=BUDGET40 + 1))
+        X.make_config(_am6_raw(tmp_path, budget_lamports=BUDGET50 + 1))
 
 
 def test_presend_at_budget_3_0_allows_10th_open_and_refuses_when_wipe_bound_crosses(tmp_path):
@@ -1325,3 +1329,19 @@ def test_presend_at_budget_3_0_allows_10th_open_and_refuses_when_wipe_bound_cros
     assert res[9] == (-2_523_518_405, None)
     assert res[10] == (-2_777_378_405, None)
     assert res[11] == (-3_031_238_405, "lane_budget_presend")
+
+
+# ------------------------------------------------------------------------------------------------ 0.40 step code ceilings: stake 0.40, budget 5.00, daily 0.80 SOL (QP-RULING-1121 s1.2 item 3)
+def test_ceilings_040_each_max_accepted_and_one_lamport_over_refused(tmp_path):
+    cfg, lane, _ = X.make_config(_am6_raw(tmp_path, stake_lamports=STAKE40, budget_lamports=BUDGET50, daily_loss_lamports=DAILY08))
+    assert (lane.stake_lamports, lane.budget_lamports, lane.daily_loss_lamports) == (400_000_000, 5_000_000_000, 800_000_000)
+    assert (cfg.stake_lamports, cfg.total_loss_lamports, cfg.daily_loss_lamports) == (400_000_000, 5_000_000_000, 800_000_000)
+    for k, v in (("stake_lamports", 400_000_001), ("budget_lamports", 5_000_000_001), ("daily_loss_lamports", 800_000_001)):
+        with pytest.raises(ValueError):
+            X.make_config(_am6_raw(tmp_path, **{k: v}))
+
+
+def test_ceilings_040_running_config_still_validates(tmp_path):
+    cfg, lane, _ = X.make_config(_am6_raw(tmp_path, budget_lamports=4_000_000_000))
+    assert (lane.stake_lamports, lane.budget_lamports, lane.daily_loss_lamports) == (STAKE25, 4_000_000_000, DAILY05)
+
