@@ -9,7 +9,7 @@ Steps per migration (a LaunchLab `ix` row naming a Migrate instruction, from the
 then getTransactionsForAddress(pool_state) from the migration block time for 24 h (cut at the exploration end), succeeded transactions only, rows in the venue_tape schema
 (venue `raydium_cpmm`, type `swap` from the program's `SwapEvent`, `ix` for CPMM instructions without a decodable event, `pool_meta` once per pool).
 
-WINDOW MODE (`window`, FLOOR-CPMM step 2): migrations come from a JSON list ([{pool, bt, ...}]), not from the tape; each pool's history is fetched from bt to min(bt + 21 d, run end), window
+WINDOW MODE (`window`, FLOOR-CPMM step 2): migrations come from a JSON list ([{pool, bt, ...}]), not from the tape; each pool's history is fetched from bt to min(bt + 225 h, run end), window
 [2026-10-24T01:00:00Z, run end) only: a migration with bt before WIN_START is refused (this also excludes the LaunchLab holdout [10-17T00, 10-24T00)), and any row with block_time before WIN_START is
 dropped and counted. No getTransaction call: pool, mints and vaults come from the list. The old `probe` / `run` modes are unchanged.
 
@@ -51,7 +51,12 @@ SWAP_DISC = hashlib.sha256(b"event:SwapEvent").digest()[:8]
 VENUE = "raydium_cpmm"
 HIST_S = 24 * 3600
 WIN_START = int(datetime(2026, 10, 24, 1, tzinfo=timezone.utc).timestamp())  # window mode: nothing before this instant (the LaunchLab holdout ends 10-24T00)
-WIN_HIST_S = 21 * 24 * 3600
+WIN_HIST_S = 225 * 3600  # 200 h entry age limit + 24 h hold + 1 h; nothing later is used by the DECLARE (QP 1480 item 6)
+# window mode refuses an out dir at or under any of these (HOLDOUT_LEDGER roots and the venue-tape trees; job #1474's launchlab_cpmm dir is under the first)
+WINDOW_FORBIDDEN_OUT = ("/data2/mal/venue-tape-backfill", "/data2/mal/venue-tape", "/data/mal/arena", "/data/mal/blocks", "/data/mal/meta-capture", "/data/mal/tip-tape-archive",
+                        "/data/mal/exp012-forward", "/data/mal/clean-view", "/data2/mal/arena-tip-feed", "/data2/mal/fast0-offload-1104", "/data2/mal/fast0-offload-1113",
+                        "/data2/mal/r4b-preview", "/data2/mal/scratch/r4b-price-keep", "/data2/mal/gradscore", "/var/lib/mal/sealed", "/var/lib/mal/fast-tip-follower")
+WINDOW_CP = "window-checkpoint.json"
 COST_GTFA, COST_GETTX = 50, 10
 DEFAULT_OUT = "/data2/mal/venue-tape-backfill/launchlab_cpmm"
 EXIT_CAP = vb.EXIT_CAP
@@ -317,6 +322,17 @@ def load_window_migrations(path: str) -> list[dict[str, Any]]:
     return sorted(out, key=lambda r: (r["bt"], r["pool"]))
 
 
+def check_window_out_dir(out: Path) -> None:
+    """Window mode writes only to a fresh dir of its own: refuse a path at or under a ledger root / venue-tape tree, and a dir holding another run's `checkpoint.json`."""
+    r = os.path.realpath(str(out))
+    for root in WINDOW_FORBIDDEN_OUT:
+        root = os.path.realpath(root)
+        if r == root or r.startswith(root + os.sep):
+            raise L.Refused(f"window_out_dir_under_sealed_root: {root}")
+    if (Path(r) / "checkpoint.json").exists():
+        raise L.Refused("window_out_dir_holds_other_run_checkpoint")
+
+
 def check_window_migration(m: dict[str, Any], run_end: int) -> None:
     """Refuse a migration before WIN_START (covers the LaunchLab holdout [10-17T00, 10-24T00) and the hour after it) or at/after the run end."""
     if m["bt"] < WIN_START:
@@ -378,7 +394,7 @@ def acquire_slot(lockdir: str):
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("mode", choices=["probe", "run", "window"])
-    ap.add_argument("--out-dir", default=DEFAULT_OUT)
+    ap.add_argument("--out-dir", default=None, help="probe/run default " + DEFAULT_OUT + "; REQUIRED in window mode")
     ap.add_argument("--env-file", default=vb.HELIUS_ENV)
     ap.add_argument("--lockdir", default=vb.LOCKDIR)
     ap.add_argument("--rps", type=float, default=6.0)
@@ -389,15 +405,24 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--wait-backfill", action="store_true", help="run: keep re-scanning until all 552 exploration hours exist (max --wait-h hours)")
     ap.add_argument("--wait-h", type=float, default=8.0)
     ap.add_argument("--migrations", help="window: JSON list of {pool, bt, ...}")
-    ap.add_argument("--run-end", help="window: run end, ISO UTC (e.g. 2026-11-21T20:00:00Z); default now")
+    ap.add_argument("--run-end", help="window: REQUIRED run end (the cut), ISO UTC, e.g. 2026-11-21T20:00:00Z")
     a = ap.parse_args(argv)
     if a.mode == "window":
         if not a.migrations:
             print("refused: window needs --migrations", file=sys.stderr)
             return 2
+        if not a.run_end:
+            print("refused: window needs --run-end (the cut is pre-registered, there is no default)", file=sys.stderr)
+            return 2
+        if not a.out_dir:
+            print("refused: window needs an explicit --out-dir", file=sys.stderr)
+            return 2
         if a.rps > 8:
             print("refused: rps > 8", file=sys.stderr)
             return 2
+        check_window_out_dir(Path(a.out_dir))
+    elif a.out_dir is None:
+        a.out_dir = DEFAULT_OUT
     try:
         url = vb.make_url(vb.read_key(a.env_file))
     except ValueError as exc:
@@ -407,7 +432,7 @@ def main(argv: list[str] | None = None) -> int:
     out.mkdir(parents=True, exist_ok=True)
     if out.resolve().is_relative_to(Path(L.BACKFILL_ROOT).resolve()):
         raise L.Refused("out_dir_inside_launchlab_tape")
-    cpf = out / "checkpoint.json"
+    cpf = out / (WINDOW_CP if a.mode == "window" else "checkpoint.json")
     cp = vb.load_cp(cpf) if cpf.is_file() else {"version": 1, "credits_used": 0, "hours": {}}
     cp.setdefault("migrations", {})
     credits = vb.Credits(a.credit_cap, COST_GTFA, int(cp.get("credits_used", 0)))
@@ -450,7 +475,7 @@ def main(argv: list[str] | None = None) -> int:
         return 0
 
     if a.mode == "window":
-        run_end = int(datetime.fromisoformat(a.run_end.replace("Z", "+00:00")).timestamp()) if a.run_end else int(time.time())
+        run_end = int(datetime.fromisoformat(a.run_end.replace("Z", "+00:00")).timestamp())
         if run_end <= WIN_START:
             raise L.Refused("run_end_not_after_window_start")
         migs = load_window_migrations(a.migrations)
@@ -461,6 +486,8 @@ def main(argv: list[str] | None = None) -> int:
         call = vb.http_rpc(url, vb.Pacer(a.rps))
         rc = run_window(out, call, credits, migs, run_end, cp, lambda: vb.save_cp(cpf, cp), a.max_pages)
         slot.close()
+        if rc:
+            progress("credit cap reached: the pools not done are missing, the read is NOT_DECIDABLE (DECLARE section 8)")
         progress(f"window done rc={rc} credits_used={credits.used}")
         return rc
     if a.mode == "probe":
