@@ -1,0 +1,7 @@
+{
+ "n_buy_tx": 3,
+ "n_sell_tx": 3,
+ "n_equal_signatures": 3,
+ "sell_not_in_buy": 0,
+ "buy_not_in_sell": 0
+}

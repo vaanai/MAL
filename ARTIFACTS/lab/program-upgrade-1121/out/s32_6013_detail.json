@@ -1,0 +1,351 @@
+[
+ {
+  "err_top_index": 3,
+  "n_top": 4,
+  "err_ix_program": "BoobsBSM",
+  "n_amm_trade_ixs": 0,
+  "amm_ixs": [],
+  "top_programs": [
+   "11111111",
+   "ComputeB",
+   "ComputeB",
+   "BoobsBSM"
+  ],
+  "err_top_ix_is_amm": false,
+  "inner_amm_under_err_ix": false
+ },
+ {
+  "err_top_index": 4,
+  "n_top": 6,
+  "err_ix_program": "HpNfyc2S",
+  "n_amm_trade_ixs": 0,
+  "amm_ixs": [],
+  "top_programs": [
+   "11111111",
+   "ComputeB",
+   "ComputeB",
+   "9VFiimgx",
+   "HpNfyc2S",
+   "11111111"
+  ],
+  "err_top_ix_is_amm": false,
+  "inner_amm_under_err_ix": false
+ },
+ {
+  "err_top_index": 3,
+  "n_top": 4,
+  "err_ix_program": "BoobsBSM",
+  "n_amm_trade_ixs": 0,
+  "amm_ixs": [],
+  "top_programs": [
+   "11111111",
+   "ComputeB",
+   "ComputeB",
+   "BoobsBSM"
+  ],
+  "err_top_ix_is_amm": false,
+  "inner_amm_under_err_ix": false
+ },
+ {
+  "err_top_index": 4,
+  "n_top": 5,
+  "err_ix_program": "HpNfyc2S",
+  "n_amm_trade_ixs": 0,
+  "amm_ixs": [],
+  "top_programs": [
+   "11111111",
+   "ComputeB",
+   "ComputeB",
+   "9VFiimgx",
+   "HpNfyc2S"
+  ],
+  "err_top_ix_is_amm": false,
+  "inner_amm_under_err_ix": false
+ },
+ {
+  "err_top_index": 4,
+  "n_top": 6,
+  "err_ix_program": "REALQqNE",
+  "n_amm_trade_ixs": 0,
+  "amm_ixs": [],
+  "top_programs": [
+   "11111111",
+   "ComputeB",
+   "ComputeB",
+   "9VFiimgx",
+   "REALQqNE",
+   "11111111"
+  ],
+  "err_top_ix_is_amm": false,
+  "inner_amm_under_err_ix": false
+ },
+ {
+  "err_top_index": 3,
+  "n_top": 4,
+  "err_ix_program": "BoobsBSM",
+  "n_amm_trade_ixs": 0,
+  "amm_ixs": [],
+  "top_programs": [
+   "11111111",
+   "ComputeB",
+   "ComputeB",
+   "BoobsBSM"
+  ],
+  "err_top_ix_is_amm": false,
+  "inner_amm_under_err_ix": false
+ },
+ {
+  "err_top_index": 4,
+  "n_top": 6,
+  "err_ix_program": "REALQqNE",
+  "n_amm_trade_ixs": 0,
+  "amm_ixs": [],
+  "top_programs": [
+   "11111111",
+   "ComputeB",
+   "ComputeB",
+   "9VFiimgx",
+   "REALQqNE",
+   "11111111"
+  ],
+  "err_top_ix_is_amm": false,
+  "inner_amm_under_err_ix": false
+ },
+ {
+  "err_top_index": 4,
+  "n_top": 6,
+  "err_ix_program": "HpNfyc2S",
+  "n_amm_trade_ixs": 0,
+  "amm_ixs": [],
+  "top_programs": [
+   "11111111",
+   "ComputeB",
+   "ComputeB",
+   "9VFiimgx",
+   "HpNfyc2S",
+   "11111111"
+  ],
+  "err_top_ix_is_amm": false,
+  "inner_amm_under_err_ix": false
+ },
+ {
+  "err_top_index": 4,
+  "n_top": 9,
+  "err_ix_program": "pAMMBay6",
+  "n_amm_trade_ixs": 2,
+  "amm_ixs": [
+   {
+    "cls": "buy_exact_quote_in",
+    "where": "top",
+    "pos9_listed": true
+   },
+   {
+    "cls": "sell",
+    "where": "top",
+    "pos9_listed": true
+   }
+  ],
+  "top_programs": [
+   "ATokenGP",
+   "11111111",
+   "Tokenkeg",
+   "ATokenGP",
+   "pAMMBay6",
+   "Tokenkeg",
+   "ATokenGP",
+   "pAMMBay6",
+   "Tokenkeg"
+  ],
+  "err_top_ix_is_amm": true,
+  "inner_amm_under_err_ix": false
+ },
+ {
+  "err_top_index": 4,
+  "n_top": 9,
+  "err_ix_program": "pAMMBay6",
+  "n_amm_trade_ixs": 2,
+  "amm_ixs": [
+   {
+    "cls": "buy_exact_quote_in",
+    "where": "top",
+    "pos9_listed": true
+   },
+   {
+    "cls": "sell",
+    "where": "top",
+    "pos9_listed": true
+   }
+  ],
+  "top_programs": [
+   "ATokenGP",
+   "11111111",
+   "Tokenkeg",
+   "ATokenGP",
+   "pAMMBay6",
+   "Tokenkeg",
+   "ATokenGP",
+   "pAMMBay6",
+   "Tokenkeg"
+  ],
+  "err_top_ix_is_amm": true,
+  "inner_amm_under_err_ix": false
+ },
+ {
+  "err_top_index": 4,
+  "n_top": 9,
+  "err_ix_program": "pAMMBay6",
+  "n_amm_trade_ixs": 2,
+  "amm_ixs": [
+   {
+    "cls": "buy_exact_quote_in",
+    "where": "top",
+    "pos9_listed": true
+   },
+   {
+    "cls": "sell",
+    "where": "top",
+    "pos9_listed": true
+   }
+  ],
+  "top_programs": [
+   "ATokenGP",
+   "11111111",
+   "Tokenkeg",
+   "ATokenGP",
+   "pAMMBay6",
+   "Tokenkeg",
+   "ATokenGP",
+   "pAMMBay6",
+   "Tokenkeg"
+  ],
+  "err_top_ix_is_amm": true,
+  "inner_amm_under_err_ix": false
+ },
+ {
+  "err_top_index": 3,
+  "n_top": 4,
+  "err_ix_program": "BoobsBSM",
+  "n_amm_trade_ixs": 0,
+  "amm_ixs": [],
+  "top_programs": [
+   "11111111",
+   "ComputeB",
+   "ComputeB",
+   "BoobsBSM"
+  ],
+  "err_top_ix_is_amm": false,
+  "inner_amm_under_err_ix": false
+ },
+ {
+  "err_top_index": 3,
+  "n_top": 4,
+  "err_ix_program": "BoobsBSM",
+  "n_amm_trade_ixs": 0,
+  "amm_ixs": [],
+  "top_programs": [
+   "11111111",
+   "ComputeB",
+   "ComputeB",
+   "BoobsBSM"
+  ],
+  "err_top_ix_is_amm": false,
+  "inner_amm_under_err_ix": false
+ },
+ {
+  "err_top_index": 4,
+  "n_top": 6,
+  "err_ix_program": "HpNfyc2S",
+  "n_amm_trade_ixs": 0,
+  "amm_ixs": [],
+  "top_programs": [
+   "11111111",
+   "ComputeB",
+   "ComputeB",
+   "9VFiimgx",
+   "HpNfyc2S",
+   "11111111"
+  ],
+  "err_top_ix_is_amm": false,
+  "inner_amm_under_err_ix": false
+ },
+ {
+  "err_top_index": 4,
+  "n_top": 6,
+  "err_ix_program": "HpNfyc2S",
+  "n_amm_trade_ixs": 0,
+  "amm_ixs": [],
+  "top_programs": [
+   "11111111",
+   "ComputeB",
+   "ComputeB",
+   "9VFiimgx",
+   "HpNfyc2S",
+   "11111111"
+  ],
+  "err_top_ix_is_amm": false,
+  "inner_amm_under_err_ix": false
+ },
+ {
+  "err_top_index": 4,
+  "n_top": 5,
+  "err_ix_program": "HpNfyc2S",
+  "n_amm_trade_ixs": 0,
+  "amm_ixs": [],
+  "top_programs": [
+   "11111111",
+   "ComputeB",
+   "ComputeB",
+   "9VFiimgx",
+   "HpNfyc2S"
+  ],
+  "err_top_ix_is_amm": false,
+  "inner_amm_under_err_ix": false
+ },
+ {
+  "err_top_index": 4,
+  "n_top": 6,
+  "err_ix_program": "HpNfyc2S",
+  "n_amm_trade_ixs": 0,
+  "amm_ixs": [],
+  "top_programs": [
+   "11111111",
+   "ComputeB",
+   "ComputeB",
+   "9VFiimgx",
+   "HpNfyc2S",
+   "11111111"
+  ],
+  "err_top_ix_is_amm": false,
+  "inner_amm_under_err_ix": false
+ },
+ {
+  "err_top_index": 3,
+  "n_top": 4,
+  "err_ix_program": "BoobsBSM",
+  "n_amm_trade_ixs": 0,
+  "amm_ixs": [],
+  "top_programs": [
+   "11111111",
+   "ComputeB",
+   "ComputeB",
+   "BoobsBSM"
+  ],
+  "err_top_ix_is_amm": false,
+  "inner_amm_under_err_ix": false
+ },
+ {
+  "err_top_index": 3,
+  "n_top": 4,
+  "err_ix_program": "BoobsBSM",
+  "n_amm_trade_ixs": 0,
+  "amm_ixs": [],
+  "top_programs": [
+   "11111111",
+   "ComputeB",
+   "ComputeB",
+   "BoobsBSM"
+  ],
+  "err_top_ix_is_amm": false,
+  "inner_amm_under_err_ix": false
+ }
+]

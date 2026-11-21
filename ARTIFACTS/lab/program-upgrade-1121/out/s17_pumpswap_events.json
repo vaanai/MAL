@@ -1,0 +1,343 @@
+{
+ "fee_triples_new_in_post": [
+  "0,5,0",
+  "0,93,0",
+  "20,5,18",
+  "20,5,25",
+  "20,5,28",
+  "20,5,40"
+ ],
+ "fee_triples_post_subset_of_pre": false,
+ "notes_and_deviations": [],
+ "post": {
+  "n_tx": 16676,
+  "types": {
+   "BoostBuyAndBurnEvent": {
+    "len_max": 208,
+    "len_min": 208,
+    "n": 8,
+    "n3_short": 0,
+    "trailing": {
+     "0": 8
+    }
+   },
+   "BuyEvent": {
+    "len_max": 515,
+    "len_min": 497,
+    "n": 3705,
+    "n3_short": 0,
+    "trailing": {
+     "8": 3705
+    }
+   },
+   "ClaimCashbackEvent": {
+    "len_max": 72,
+    "len_min": 72,
+    "n": 4,
+    "n3_short": 0,
+    "trailing": {
+     "0": 4
+    }
+   },
+   "CloseUserVolumeAccumulatorEvent": {
+    "len_max": 80,
+    "len_min": 80,
+    "n": 266,
+    "n3_short": 0,
+    "trailing": {
+     "0": 266
+    }
+   },
+   "CollectCoinCreatorFeeEvent": {
+    "len_max": 120,
+    "len_min": 120,
+    "n": 6,
+    "n3_short": 0,
+    "trailing": {
+     "0": 6
+    }
+   },
+   "CreatePoolEvent": {
+    "len_max": 344,
+    "len_min": 344,
+    "n": 42,
+    "n3_short": 0,
+    "trailing": {
+     "0": 42
+    }
+   },
+   "ExtendAccountEvent": {
+    "len_max": 96,
+    "len_min": 96,
+    "n": 1,
+    "n3_short": 0,
+    "trailing": {
+     "0": 1
+    }
+   },
+   "InitBoostEvent": {
+    "len_max": 136,
+    "len_min": 136,
+    "n": 25,
+    "n3_short": 0,
+    "trailing": {
+     "0": 25
+    }
+   },
+   "InitUserVolumeAccumulatorEvent": {
+    "len_max": 80,
+    "len_min": 80,
+    "n": 78,
+    "n3_short": 0,
+    "trailing": {
+     "0": 78
+    }
+   },
+   "SellEvent": {
+    "len_max": 449,
+    "len_min": 449,
+    "n": 3958,
+    "n3_short": 0,
+    "trailing": {
+     "8": 3958
+    }
+   },
+   "SweepPoolFeeEvent": {
+    "len_max": 185,
+    "len_min": 185,
+    "n": 3,
+    "n3_short": 0,
+    "trailing": {
+     "0": 3
+    }
+   },
+   "WithdrawEvent": {
+    "len_max": 264,
+    "len_min": 264,
+    "n": 1,
+    "n3_short": 0,
+    "trailing": {
+     "8": 1
+    }
+   }
+  },
+  "wsol_only_fee_triples": {
+   "0,0,0|BuyEvent": 6,
+   "0,0,0|SellEvent": 8,
+   "0,5,0|BuyEvent": 3,
+   "0,93,0|SellEvent": 1,
+   "2,93,0|BuyEvent": 6,
+   "2,93,0|SellEvent": 10,
+   "2,93,30|BuyEvent": 176,
+   "2,93,30|SellEvent": 155,
+   "20,5,0|BuyEvent": 1,
+   "20,5,0|SellEvent": 1,
+   "20,5,10|BuyEvent": 2,
+   "20,5,10|SellEvent": 6,
+   "20,5,13|BuyEvent": 2,
+   "20,5,13|SellEvent": 3,
+   "20,5,15|BuyEvent": 2,
+   "20,5,15|SellEvent": 3,
+   "20,5,18|BuyEvent": 3,
+   "20,5,20|SellEvent": 1,
+   "20,5,25|BuyEvent": 1,
+   "20,5,25|SellEvent": 2,
+   "20,5,28|BuyEvent": 3,
+   "20,5,28|SellEvent": 3,
+   "20,5,30|BuyEvent": 5,
+   "20,5,30|SellEvent": 4,
+   "20,5,35|BuyEvent": 10,
+   "20,5,35|SellEvent": 10,
+   "20,5,40|BuyEvent": 22,
+   "20,5,40|SellEvent": 23,
+   "20,5,45|BuyEvent": 20,
+   "20,5,45|SellEvent": 17,
+   "20,5,50|SellEvent": 3,
+   "20,5,55|BuyEvent": 8,
+   "20,5,55|SellEvent": 9,
+   "20,5,5|BuyEvent": 346,
+   "20,5,5|SellEvent": 49,
+   "20,5,60|BuyEvent": 56,
+   "20,5,60|SellEvent": 43,
+   "20,5,65|BuyEvent": 93,
+   "20,5,65|SellEvent": 39,
+   "20,5,70|BuyEvent": 99,
+   "20,5,70|SellEvent": 58,
+   "20,5,75|BuyEvent": 125,
+   "20,5,75|SellEvent": 119,
+   "20,5,80|BuyEvent": 75,
+   "20,5,80|SellEvent": 86,
+   "20,5,85|BuyEvent": 104,
+   "20,5,85|SellEvent": 62,
+   "20,5,8|BuyEvent": 1,
+   "20,5,90|BuyEvent": 161,
+   "20,5,90|SellEvent": 140,
+   "20,5,95|BuyEvent": 696,
+   "20,5,95|SellEvent": 668,
+   "25,5,0|BuyEvent": 26,
+   "25,5,0|SellEvent": 19
+  }
+ },
+ "pre": {
+  "n_tx": 11936,
+  "types": {
+   "BoostBuyAndBurnEvent": {
+    "len_max": 208,
+    "len_min": 208,
+    "n": 3,
+    "n3_short": 0,
+    "trailing": {
+     "0": 3
+    }
+   },
+   "BuyEvent": {
+    "len_max": 515,
+    "len_min": 497,
+    "n": 2629,
+    "n3_short": 0,
+    "trailing": {
+     "8": 2629
+    }
+   },
+   "ClaimCashbackEvent": {
+    "len_max": 72,
+    "len_min": 72,
+    "n": 3,
+    "n3_short": 0,
+    "trailing": {
+     "0": 3
+    }
+   },
+   "CloseUserVolumeAccumulatorEvent": {
+    "len_max": 80,
+    "len_min": 80,
+    "n": 188,
+    "n3_short": 0,
+    "trailing": {
+     "0": 188
+    }
+   },
+   "CollectCoinCreatorFeeEvent": {
+    "len_max": 120,
+    "len_min": 120,
+    "n": 6,
+    "n3_short": 0,
+    "trailing": {
+     "0": 6
+    }
+   },
+   "CreatePoolEvent": {
+    "len_max": 344,
+    "len_min": 344,
+    "n": 41,
+    "n3_short": 0,
+    "trailing": {
+     "0": 41
+    }
+   },
+   "ExtendAccountEvent": {
+    "len_max": 96,
+    "len_min": 96,
+    "n": 3,
+    "n3_short": 0,
+    "trailing": {
+     "0": 3
+    }
+   },
+   "InitBoostEvent": {
+    "len_max": 136,
+    "len_min": 136,
+    "n": 25,
+    "n3_short": 0,
+    "trailing": {
+     "0": 25
+    }
+   },
+   "InitUserVolumeAccumulatorEvent": {
+    "len_max": 80,
+    "len_min": 80,
+    "n": 94,
+    "n3_short": 0,
+    "trailing": {
+     "0": 94
+    }
+   },
+   "SellEvent": {
+    "len_max": 449,
+    "len_min": 449,
+    "n": 2587,
+    "n3_short": 0,
+    "trailing": {
+     "8": 2587
+    }
+   },
+   "SweepPoolFeeEvent": {
+    "len_max": 185,
+    "len_min": 185,
+    "n": 36,
+    "n3_short": 0,
+    "trailing": {
+     "0": 36
+    }
+   },
+   "WithdrawEvent": {
+    "len_max": 264,
+    "len_min": 264,
+    "n": 3,
+    "n3_short": 0,
+    "trailing": {
+     "8": 3
+    }
+   }
+  },
+  "wsol_only_fee_triples": {
+   "0,0,0|BuyEvent": 2,
+   "0,0,0|SellEvent": 2,
+   "2,93,0|BuyEvent": 11,
+   "2,93,0|SellEvent": 9,
+   "2,93,30|BuyEvent": 184,
+   "2,93,30|SellEvent": 205,
+   "20,5,0|BuyEvent": 1,
+   "20,5,0|SellEvent": 2,
+   "20,5,10|BuyEvent": 1,
+   "20,5,10|SellEvent": 3,
+   "20,5,13|BuyEvent": 1,
+   "20,5,13|SellEvent": 1,
+   "20,5,15|BuyEvent": 1,
+   "20,5,15|SellEvent": 1,
+   "20,5,20|SellEvent": 1,
+   "20,5,23|BuyEvent": 1,
+   "20,5,30|BuyEvent": 4,
+   "20,5,35|BuyEvent": 1,
+   "20,5,35|SellEvent": 1,
+   "20,5,45|BuyEvent": 35,
+   "20,5,45|SellEvent": 13,
+   "20,5,50|BuyEvent": 3,
+   "20,5,50|SellEvent": 1,
+   "20,5,55|BuyEvent": 14,
+   "20,5,55|SellEvent": 5,
+   "20,5,5|BuyEvent": 229,
+   "20,5,5|SellEvent": 22,
+   "20,5,60|BuyEvent": 21,
+   "20,5,60|SellEvent": 5,
+   "20,5,65|BuyEvent": 49,
+   "20,5,65|SellEvent": 12,
+   "20,5,70|BuyEvent": 2,
+   "20,5,70|SellEvent": 1,
+   "20,5,75|BuyEvent": 43,
+   "20,5,75|SellEvent": 32,
+   "20,5,80|BuyEvent": 100,
+   "20,5,80|SellEvent": 17,
+   "20,5,85|BuyEvent": 32,
+   "20,5,85|SellEvent": 25,
+   "20,5,8|BuyEvent": 5,
+   "20,5,8|SellEvent": 2,
+   "20,5,90|BuyEvent": 168,
+   "20,5,90|SellEvent": 86,
+   "20,5,95|BuyEvent": 469,
+   "20,5,95|SellEvent": 392,
+   "25,5,0|BuyEvent": 17,
+   "25,5,0|SellEvent": 9
+  }
+ }
+}

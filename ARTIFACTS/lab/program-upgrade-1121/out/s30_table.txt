@@ -1,0 +1,46 @@
+A (1121 post) sell ALL: failed 650 of 1821 share 0.3569; slip 484; ex-slip 166 of 1337 share 0.1242
+A (1121 post) buy_exact_quote_in ALL: failed 376 of 1562 share 0.2407; slip 304; ex-slip 72 of 1258 share 0.0572
+   A (1121 post) sell 2026-11-20T19Z: 45/95 share 0.4737 slip 43 ex-slip 0.0385
+   A (1121 post) sell 2026-11-20T20Z: 27/106 share 0.2547 slip 25 ex-slip 0.0247
+   A (1121 post) sell 2026-11-20T21Z: 49/122 share 0.4016 slip 34 ex-slip 0.1705
+   A (1121 post) sell 2026-11-20T22Z: 48/113 share 0.4248 slip 2 ex-slip 0.4144
+   A (1121 post) sell 2026-11-20T23Z: 6/69 share 0.0870 slip 0 ex-slip 0.0870
+   A (1121 post) sell 2026-11-21T00Z: 15/66 share 0.2273 slip 1 ex-slip 0.2154
+   A (1121 post) sell 2026-11-21T01Z: 8/90 share 0.0889 slip 1 ex-slip 0.0787
+   A (1121 post) sell 2026-11-21T02Z: 366/478 share 0.7657 slip 357 ex-slip 0.0744
+   A (1121 post) sell 2026-11-21T03Z: 5/84 share 0.0595 slip 0 ex-slip 0.0595
+   A (1121 post) sell 2026-11-21T04Z: 9/103 share 0.0874 slip 1 ex-slip 0.0784
+   A (1121 post) sell 2026-11-21T05Z: 30/269 share 0.1115 slip 1 ex-slip 0.1082
+   A (1121 post) sell 2026-11-21T06Z: 28/108 share 0.2593 slip 19 ex-slip 0.1011
+   A (1121 post) sell 2026-11-21T07Z: 14/118 share 0.1186 slip 0 ex-slip 0.1186
+P (1121 pre) sell ALL: failed 222 of 818 share 0.2714; slip 121; ex-slip 101 of 697 share 0.1449
+P (1121 pre) buy_exact_quote_in ALL: failed 237 of 931 share 0.2546; slip 154; ex-slip 83 of 777 share 0.1068
+   P (1121 pre) sell 2026-11-20T15Z: 27/71 share 0.3803 slip 26 ex-slip 0.0222
+   P (1121 pre) sell 2026-11-20T16Z: 50/183 share 0.2732 slip 35 ex-slip 0.1014
+   P (1121 pre) sell 2026-11-20T17Z: 20/110 share 0.1818 slip 14 ex-slip 0.0625
+   P (1121 pre) sell 2026-11-20T18Z: 79/230 share 0.3435 slip 9 ex-slip 0.3167
+   P (1121 pre) sell 2026-11-20T19Z: 46/224 share 0.2054 slip 37 ex-slip 0.0481
+1115 A1 sell ALL: failed 331 of 907 share 0.3649; slip 233; ex-slip 98 of 674 share 0.1454
+1115 A1 buy_exact_quote_in ALL: failed 618 of 1278 share 0.4836; slip 493; ex-slip 125 of 785 share 0.1592
+   1115 A1 sell 2026-11-15T17Z: 95/283 share 0.3357 slip 77 ex-slip 0.0874
+   1115 A1 sell 2026-11-15T18Z: 49/335 share 0.1463 slip 32 ex-slip 0.0561
+   1115 A1 sell 2026-11-15T19Z: 187/289 share 0.6471 slip 124 ex-slip 0.3818
+1115 A2 sell ALL: failed 420 of 1515 share 0.2772; slip 236; ex-slip 184 of 1279 share 0.1439
+1115 A2 buy_exact_quote_in ALL: failed 461 of 1673 share 0.2756; slip 281; ex-slip 180 of 1392 share 0.1293
+   1115 A2 sell 2026-11-15T19Z: 3/38 share 0.0789 slip 2 ex-slip 0.0278
+   1115 A2 sell 2026-11-15T20Z: 79/138 share 0.5725 slip 67 ex-slip 0.1690
+   1115 A2 sell 2026-11-15T21Z: 58/220 share 0.2636 slip 28 ex-slip 0.1562
+   1115 A2 sell 2026-11-15T22Z: 63/454 share 0.1388 slip 2 ex-slip 0.1350
+   1115 A2 sell 2026-11-15T23Z: 122/232 share 0.5259 slip 102 ex-slip 0.1538
+   1115 A2 sell 2026-11-16T00Z: 11/114 share 0.0965 slip 0 ex-slip 0.0965
+   1115 A2 sell 2026-11-16T01Z: 47/117 share 0.4017 slip 33 ex-slip 0.1667
+   1115 A2 sell 2026-11-16T02Z: 9/119 share 0.0756 slip 2 ex-slip 0.0598
+   1115 A2 sell 2026-11-16T03Z: 28/83 share 0.3373 slip 0 ex-slip 0.3373
+1115 pre sell ALL: failed 115 of 307 share 0.3746; slip 107; ex-slip 8 of 200 share 0.0400
+1115 pre buy_exact_quote_in ALL: failed 334 of 682 share 0.4897; slip 250; ex-slip 84 of 432 share 0.1944
+   1115 pre sell 2026-11-15T13Z: 0/14 share 0.0000 slip 0 ex-slip 0.0000
+   1115 pre sell 2026-11-15T14Z: 0/53 share 0.0000 slip 0 ex-slip 0.0000
+   1115 pre sell 2026-11-15T15Z: 4/57 share 0.0702 slip 2 ex-slip 0.0364
+   1115 pre sell 2026-11-15T16Z: 88/145 share 0.6069 slip 83 ex-slip 0.0806
+   1115 pre sell 2026-11-15T17Z: 23/38 share 0.6053 slip 22 ex-slip 0.0625
+A sell without 2026-11-21T02Z: 284 of 1343 share 0.2115

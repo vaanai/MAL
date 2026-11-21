@@ -1,0 +1,138 @@
+{
+ "config": {
+  "mayhem_mode_enabled": true,
+  "n_nonzero_protocol_fee_recipients": 8,
+  "n_nonzero_reserved_fee_recipients": 8,
+  "n_nonzero_buyback_fee_recipients": 8,
+  "idl_fields_with_mayhem_in_name": [
+   "reserved_fee_recipient",
+   "mayhem_mode_enabled",
+   "reserved_fee_recipients"
+  ],
+  "idl_other_types_with_mayhem": [
+   "BondingCurve",
+   "CreatePoolEvent",
+   "GlobalConfig",
+   "Pool"
+  ]
+ },
+ "n_buy_exact_quote_in_instructions_in_A": 1562,
+ "n_pools": 124,
+ "n_pool_accounts_readable_now": 123,
+ "by_pool_mayhem_flag": {
+  "non_mayhem": {
+   "n_all": 1535,
+   "n_success": 1172,
+   "n_6013_at_pumpswap": 0,
+   "p9_list|protocol_fee_recipients[5]": 72,
+   "failed_p9_list|protocol_fee_recipients[5]": 59,
+   "p9_list|protocol_fee_recipients[1]": 69,
+   "p9_list|protocol_fee_recipients[2]": 71,
+   "p9_list|protocol_fee_recipients[0]": 715,
+   "failed_p9_list|protocol_fee_recipients[0]": 245,
+   "p9_list|protocol_fee_recipients[6]": 54,
+   "p9_list|protocol_fee_recipients[7]": 66,
+   "p9_list|protocol_fee_recipients[4]": 64,
+   "failed_p9_list|protocol_fee_recipients[2]": 7,
+   "failed_p9_list|protocol_fee_recipients[7]": 28,
+   "p9_list|protocol_fee_recipients[3]": 60,
+   "failed_p9_list|protocol_fee_recipients[6]": 16,
+   "failed_p9_list|protocol_fee_recipients[3]": 3,
+   "failed_p9_list|protocol_fee_recipients[4]": 4,
+   "failed_p9_list|protocol_fee_recipients[1]": 1,
+   "p9_list|none": 1
+  },
+  "pool_unreadable": {
+   "n_all": 1,
+   "n_success": 0,
+   "n_6013_at_pumpswap": 0,
+   "p9_list|protocol_fee_recipients[1]": 0,
+   "failed_p9_list|protocol_fee_recipients[1]": 1
+  },
+  "mayhem": {
+   "n_all": 26,
+   "n_success": 14,
+   "n_6013_at_pumpswap": 3,
+   "p9_list|reserved_fee_recipients[3]": 1,
+   "failed_p9_list|reserved_fee_recipients[3]": 2,
+   "p9_list|reserved_fee_recipients[7]": 2,
+   "failed_p9_list|reserved_fee_recipients[7]": 1,
+   "p9_list|reserved_fee_recipients[6]": 0,
+   "failed_p9_list|reserved_fee_recipients[6]": 1,
+   "p9_list|reserved_fee_recipients[0]": 8,
+   "p9_list|reserved_fee_recipients[1]": 2,
+   "p9_list|reserved_fee_recipients[2]": 1,
+   "p9_list|protocol_fee_recipients[0]": 0,
+   "failed_p9_list|protocol_fee_recipients[0]": 3,
+   "p9_list|reserved_fee_recipients[4]": 0,
+   "failed_p9_list|reserved_fee_recipients[4]": 1,
+   "failed_p9_list|reserved_fee_recipients[1]": 1,
+   "p9_list|reserved_fee_recipients[5]": 0,
+   "failed_p9_list|reserved_fee_recipients[5]": 2,
+   "failed_p9_list|reserved_fee_recipients[0]": 1
+  }
+ },
+ "rate_6013_overall": {
+  "n": 1562,
+  "n_6013": 3,
+  "share": 0.0019206145966709346
+ },
+ "rate_6013_by_flag": {
+  "non_mayhem": {
+   "n": 1535,
+   "n_6013": 0,
+   "share": 0.0
+  },
+  "pool_unreadable": {
+   "n": 1,
+   "n_6013": 0,
+   "share": 0.0
+  },
+  "mayhem": {
+   "n": 26,
+   "n_6013": 3,
+   "share": 0.11538461538461539
+  }
+ },
+ "the_6013_at_pumpswap_instructions": [
+  {
+   "pool_is_mayhem_mode_byte": 1,
+   "p9_in": [
+    "protocol_fee_recipients[0]"
+   ],
+   "slot": "471934114",
+   "utc": "2026-11-21T00:13Z",
+   "n_amm_ixs_before_failing": 0,
+   "n_top": 9,
+   "failing_top_index": 4,
+   "direct_top_level_pumpswap": true,
+   "other_top_level_programs": []
+  },
+  {
+   "pool_is_mayhem_mode_byte": 1,
+   "p9_in": [
+    "protocol_fee_recipients[0]"
+   ],
+   "slot": "471934118",
+   "utc": "2026-11-21T00:13Z",
+   "n_amm_ixs_before_failing": 0,
+   "n_top": 9,
+   "failing_top_index": 4,
+   "direct_top_level_pumpswap": true,
+   "other_top_level_programs": []
+  },
+  {
+   "pool_is_mayhem_mode_byte": 1,
+   "p9_in": [
+    "protocol_fee_recipients[0]"
+   ],
+   "slot": "471934119",
+   "utc": "2026-11-21T00:13Z",
+   "n_amm_ixs_before_failing": 0,
+   "n_top": 9,
+   "failing_top_index": 4,
+   "direct_top_level_pumpswap": true,
+   "other_top_level_programs": []
+  }
+ ]
+}

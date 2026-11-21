@@ -1,0 +1,298 @@
+{
+ "fees": {
+  "changed_runs_diff": [
+   [
+    {
+     "ctx_old": "t::unwrap()` on an `Err` value",
+     "new": "programs/pump-fees/src/instructions/protocol_fee_recipient.rsprotocol-fee-recipient",
+     "old": "",
+     "op": "insert"
+    },
+    {
+     "ctx_old": "ken_programNothing to withdraw",
+     "new": "Protocol fee recipient index must be between 1 and 8Token claims need quote_mint, recipient_token_account, admin_token_account and token_program",
+     "old": "",
+     "op": "insert"
+    },
+    {
+     "ctx_old": "or_vaultpump_creator_vault_ata",
+     "new": "protocol_fee_recipientprotocol_fee_withdrawal_adminrecipient_token_accountadmin_token_account",
+     "old": "",
+     "op": "insert"
+    },
+    {
+     "ctx_old": "ral_vaultvault_ataBuybackVault",
+     "new": "ProtocolFeeRecipient",
+     "old": "",
+     "op": "insert"
+    }
+   ],
+   [
+    {
+     "ctx_old": "cial-fee-pdaNothing to donate,",
+     "new": "",
+     "old": "ConstraintHasOneConstraintSignerFeeProgramGlobalconnection reset) when slicing `entity not foundhost unreachableinvalid filenamerange end index . Error Number: ",
+     "op": "delete"
+    }
+   ],
+   [
+    {
+     "ctx_old": "LimitInstruction: SetAuthority",
+     "new": "Instruction: SetProtocolFeeWithdrawalAdmin",
+     "old": "",
+     "op": "insert"
+    },
+    {
+     "ctx_old": "ionFeePdaInstruction: Withdraw",
+     "new": "Instruction: InitializeProtocolFeeRecipientInstruction: ClaimProtocolFees",
+     "old": "",
+     "op": "insert"
+    }
+   ]
+  ],
+  "instruction_pieces": {
+   "n_only_new": 7,
+   "n_only_old": 3
+  },
+  "n_only_new_runs": 4,
+  "n_only_old_runs": 3,
+  "new_len": 948989,
+  "new_sha256": "519e166ee513fc12254ad33d66a23ceba6ab1875320e0684dfcac918889e6868",
+  "new_standalone_runs": [
+   "ConstraintHasOneConstraintSignerFeeProgramGlobalconnection reset) when slicing `entity not foundhost unreachableinvalid filenamerange end index . Error Number: "
+  ],
+  "new_vs_idl": {
+   "binary_instruction_tokens_not_idl_names": [
+    "ClaimSocialFeePdaV2ProgramError",
+    "CrankDonationFeePdaFee",
+    "IdlCloseAccount",
+    "IdlCreateAccountanchor",
+    "IdlResizeAccountdata_len",
+    "IdlSetBuffer",
+    "IdlWrite",
+    "InitializeProtocolFeeRecipient",
+    "SetProtocolFeeWithdrawalAdmin"
+   ],
+   "idl_errors_missing_in_binary": [],
+   "idl_names_without_bare_occurrence": [
+    "ClaimSocialFeePdaV2",
+    "CrankDonationFeePda"
+   ],
+   "n_idl_errors": 37,
+   "n_idl_instructions": 31
+  },
+  "old_len": 948989,
+  "old_sha256": "3cf9ee9a380c0ced31171802d402551910ceb8c4819ede4ef44aaf63a12dbfac",
+  "old_standalone_runs": [],
+  "old_vs_idl": {
+   "binary_instruction_tokens_not_idl_names": [
+    "ClaimSocialFeePdaV2ProgramError",
+    "CrankDonationFeePdaFee",
+    "IdlCloseAccount",
+    "IdlCreateAccountanchor",
+    "IdlResizeAccountdata_len",
+    "IdlSetBuffer",
+    "IdlWrite",
+    "Withdrawaccountsol_destinationbufferidltoIdlAccount"
+   ],
+   "idl_errors_missing_in_binary": [],
+   "idl_names_without_bare_occurrence": [
+    "ClaimSocialFeePdaV2",
+    "CrankDonationFeePda",
+    "Withdraw"
+   ],
+   "n_idl_errors": 37,
+   "n_idl_instructions": 31
+  },
+  "pages_4k": {
+   "differing": 224,
+   "total": 231
+  },
+  "pieces_only_new": [
+   "ClaimProtocolFeesaccountsol_destinationbufferidltoIdlAccount",
+   "ConstraintHasOneConstraintSignerFeeProgramGlobalconnection reset) when slicing `entity not foundhost unreachableinvalid filenamerange end index . Error Number: ",
+   "InitializeProtocolFeeRecipient",
+   "SetProtocolFeeWithdrawalAdmin",
+   "Withdraw",
+   "donation_fee_pda already existsCreateDonationFeePda is currently disabledpool-authorityprograms/pump-fees/src/instructions/fee_sharing/create_donation_fee_pda.rsprograms/pump-fees/src/instructions/fee_sharing/create_fee_sharing_config.rsprograms/pump-fees/src/instructions/fee_sharing/create_social_fee_pda.rssocial_fee_pda already existsCreateSocialFeePda is currently disabledprograms/pump-fees/src",
+   "fee_config__event_authorityFee config account already has more than Fee config account already has the correct sizeprograms/pump-fees/src/instructions/admin/update_buyback_authority.rsprograms/pump-fees/src/instructions/admin/update_fee_program_global.rsprograms/pump-fees/src/instructions/buyback/mod.rsbuyback-vaultprograms/pump-fees/src/instructions/fee_sharing/admin_cto_sharing_config.rsClaim ra"
+  ],
+  "pieces_only_old": [
+   "Withdrawaccountsol_destinationbufferidltoIdlAccount",
+   "donation_fee_pda already existsCreateDonationFeePda is currently disabledpool-authorityprograms/pump-fees/src/instructions/fee_sharing/create_donation_fee_pda.rsprograms/pump-fees/src/instructions/fee_sharing/create_fee_sharing_config.rsprograms/pump-fees/src/instructions/fee_sharing/create_social_fee_pda.rssocial_fee_pda already existsCreateSocialFeePda is currently disabledprograms/pump-fees/src",
+   "fee_config__event_authorityFee config account already has more than Fee config account already has the correct sizeprograms/pump-fees/src/instructions/admin/update_buyback_authority.rsprograms/pump-fees/src/instructions/admin/update_fee_program_global.rsprograms/pump-fees/src/instructions/buyback/mod.rsbuyback-vaultprograms/pump-fees/src/instructions/fee_sharing/admin_cto_sharing_config.rsClaim ra"
+  ],
+  "runs": {
+   "new": 54,
+   "old": 53,
+   "only_new": 4,
+   "only_old": 3
+  }
+ },
+ "pump": {
+  "changed_runs_diff": [
+   [
+    {
+     "ctx_old": "ams/pump/src/extend_account.rs",
+     "new": "",
+     "old": "programs/pump/src/fee_recipient.rsfee_recipients[]programs/pump/src/migrate.rsBonding curve already migratedcalled `Result::unwrap()` on an `Err` value",
+     "op": "delete"
+    }
+   ]
+  ],
+  "instruction_pieces": {
+   "n_only_new": 2,
+   "n_only_old": 1
+  },
+  "n_only_new_runs": 2,
+  "n_only_old_runs": 1,
+  "new_len": 10485760,
+  "new_sha256": "46bf6c8ee4587208ba682e525184f3cb2ce4fdb5e618cd0cb3b4af246492fac8",
+  "new_standalone_runs": [
+   "programs/pump/src/fee_recipient.rsfee_recipients[]programs/pump/src/migrate.rsBonding curve already migratedcalled `Result::unwrap()` on an `Err` value"
+  ],
+  "new_vs_idl": {
+   "binary_instruction_tokens_not_idl_names": [
+    "AddQuoteControlMintBuybackFeeRecipientNotAuthorizedA",
+    "BuyCreateV2Disabled",
+    "IdlCloseAccount",
+    "IdlCreateAccount",
+    "IdlSetBuffer",
+    "IdlWrite",
+    "SetQuoteControlMintReservesNotAuthorizedAlreadyInitializedTooMuchSolRequiredTooLittleSolReceivedMintDoesNotMatchBondingCurveBondingCurveCompleteBondingCurveNotCompleteNotInitializedWithdrawTooFrequentNewSizeShouldBeGreaterThanCurrentSizeAccountTypeNotSupportedInitialRealTokenReservesShouldBeLessThanTokenTotalSupplyInitialVirtualTokenReservesShouldBeGreaterThanInitialRealTokenReservesAllZerosWithdrawAuthorityPoolMigrationFeeShouldBeLessThanFinalRealSolReservesPoolMigrationFeeShouldBeGreaterThanCreatorFeePlusMaxMigrateFeesDisabledMigrateInvalidCreatorBuyZeroAmountNotEnoughTokensToBuySellZeroAmountNotEnoughTokensToSellTruncationDivisionByZeroNotEnoughRemainingAccountsAllFeeRecipientsShouldBeNonZeroUnsortedNotUniqueFeeRecipientsCreatorShouldNotBeZeroStartTimeInThePastEndTimeBeforeStartTimeTimeRangeTooLargeEndTimeBeforeCurrentDaySupplyUpdateForFinishedRangeDayIndexAfterEndIndexInvalidIncentiveMintBuyNotEnoughSolToCoverRentBuyNotEnoughSolToCoverFeesBuySlippageBelowMinTokensOutNameTooLongSymbolTooLongUriTooLongCpitializeMayhemFailedMayhemModeDisabledCreatorMigratedToSharingConfigUnableToDistributeCreatorVaultMigratedToSharingConfigSharingConfigNotActiveUnableToDistributeCreatorFeesToExecutableRecipientBondingCurveAndSharingConfigCreatorMismatchShareholdersAndRemainingAccountsMismatchInvalidShareBpsCashbackNotEnabledAllBuybackFeeRecipientsShouldBeNonZeroNotUniqueBuybackFeeRecipientsBuybackBasisPointsOutOfRangeWrongBuybackFeeRecipientsCountBuybackFeeRecipientMissingUnsupportedQuoteMintInvalidQuoteTokenProgramInvalidAssociatedQuoteBondingCurveQuoteMintWhitelistFullQuoteMintAlreadyWhitelistedQuoteMintNotWhitelistedUnableToDistributeCreatorFeesToUninitializedAccountMayhemModeQuoteMintNotAllowedMissingCashbackAccountsInvalidCashbackAccumulatorInvalidBondingCurveV2InvalidQuoteControlInvalidCashbackRecipientCreatorFeeNotConfigurableCreatorFeeBpsOutOfRangeCreatorFeeNotEditableCreatorFeeNotAllowedForCashbackCoinBondingCurveAlreadyMigratedCashbackDeprecatedHolderRewardCreatorImmutableHolderRewardDisabledHolderRewardRecipientsMismatchHolderRewardsRentFloorHolderRewardTokenAccountMissingCtoNotAllowedForMayhemCoinCtoNewCreatorRequiredCtoNewCreatorNotAllowedCreatorFeeNotConfigurableForQuoteCtoCreatorAccountNotWritableCtoSharedVaultFrozenCashbackCoinNotSupportedCreatorFeesNotSweptFeeTiersEmptyFeeConfigTooShortMultiHopDiscontinuousPathInvalidQuoteBondingCurveQuoteBondingCurveNotEligibleQuotePoolAccountsRequiredQuotePoolNotFoundQuoteReservesOutOfRangeCurveDepthExceededMultiHopHopFeesMismatchQuoteCurveAwaitingMigrationMultiHopMayhemCurveNotSupportedQuoteChainAccountsRequiredQuoteMintNotWritableCreatorFeeRangeInvalidThe",
+    "UpdateBuybackConfigAn"
+   ],
+   "idl_errors_missing_in_binary": [
+    "Creator fee basis points must be between 1 and the configured maximum"
+   ],
+   "idl_names_without_bare_occurrence": [
+    "AddQuoteControlMint",
+    "Buy",
+    "SetQuoteControlMintReserves",
+    "UpdateBuybackConfig"
+   ],
+   "n_idl_errors": 110,
+   "n_idl_instructions": 56
+  },
+  "old_len": 10485760,
+  "old_sha256": "bfd2a2bd4a062f03f2c389bb836fb63c1b9b7983e255e4f84a826287ef31b8be",
+  "old_standalone_runs": [],
+  "old_vs_idl": {
+   "binary_instruction_tokens_not_idl_names": [
+    "AddQuoteControlMintBuybackFeeRecipientNotAuthorizedA",
+    "BuyCreateV2Disabled",
+    "IdlCloseAccount",
+    "IdlCreateAccount",
+    "IdlSetBuffer",
+    "IdlWrite",
+    "SetQuoteControlMintReservesNotAuthorizedAlreadyInitializedTooMuchSolRequiredTooLittleSolReceivedMintDoesNotMatchBondingCurveBondingCurveCompleteBondingCurveNotCompleteNotInitializedWithdrawTooFrequentNewSizeShouldBeGreaterThanCurrentSizeAccountTypeNotSupportedInitialRealTokenReservesShouldBeLessThanTokenTotalSupplyInitialVirtualTokenReservesShouldBeGreaterThanInitialRealTokenReservesAllZerosWithdrawAuthorityPoolMigrationFeeShouldBeLessThanFinalRealSolReservesPoolMigrationFeeShouldBeGreaterThanCreatorFeePlusMaxMigrateFeesDisabledMigrateInvalidCreatorBuyZeroAmountNotEnoughTokensToBuySellZeroAmountNotEnoughTokensToSellTruncationDivisionByZeroNotEnoughRemainingAccountsAllFeeRecipientsShouldBeNonZeroUnsortedNotUniqueFeeRecipientsCreatorShouldNotBeZeroStartTimeInThePastEndTimeBeforeStartTimeTimeRangeTooLargeEndTimeBeforeCurrentDaySupplyUpdateForFinishedRangeDayIndexAfterEndIndexInvalidIncentiveMintBuyNotEnoughSolToCoverRentBuyNotEnoughSolToCoverFeesBuySlippageBelowMinTokensOutNameTooLongSymbolTooLongUriTooLongCpitializeMayhemFailedMayhemModeDisabledCreatorMigratedToSharingConfigUnableToDistributeCreatorVaultMigratedToSharingConfigSharingConfigNotActiveUnableToDistributeCreatorFeesToExecutableRecipientBondingCurveAndSharingConfigCreatorMismatchShareholdersAndRemainingAccountsMismatchInvalidShareBpsCashbackNotEnabledAllBuybackFeeRecipientsShouldBeNonZeroNotUniqueBuybackFeeRecipientsBuybackBasisPointsOutOfRangeWrongBuybackFeeRecipientsCountBuybackFeeRecipientMissingUnsupportedQuoteMintInvalidQuoteTokenProgramInvalidAssociatedQuoteBondingCurveQuoteMintWhitelistFullQuoteMintAlreadyWhitelistedQuoteMintNotWhitelistedUnableToDistributeCreatorFeesToUninitializedAccountMayhemModeQuoteMintNotAllowedMissingCashbackAccountsInvalidCashbackAccumulatorInvalidBondingCurveV2InvalidQuoteControlInvalidCashbackRecipientCreatorFeeNotConfigurableCreatorFeeBpsOutOfRangeCreatorFeeNotEditableCreatorFeeNotAllowedForCashbackCoinBondingCurveAlreadyMigratedCashbackDeprecatedHolderRewardCreatorImmutableHolderRewardDisabledHolderRewardRecipientsMismatchHolderRewardsRentFloorHolderRewardTokenAccountMissingCtoNotAllowedForMayhemCoinCtoNewCreatorRequiredCtoNewCreatorNotAllowedCreatorFeeNotConfigurableForQuoteCtoCreatorAccountNotWritableCtoSharedVaultFrozenCashbackCoinNotSupportedCreatorFeesNotSweptFeeTiersEmptyFeeConfigTooShortMultiHopDiscontinuousPathInvalidQuoteBondingCurveQuoteBondingCurveNotEligibleQuotePoolAccountsRequiredQuotePoolNotFoundQuoteReservesOutOfRangeCurveDepthExceededMultiHopHopFeesMismatchQuoteCurveAwaitingMigrationMultiHopMayhemCurveNotSupportedQuoteChainAccountsRequiredQuoteMintNotWritableCreatorFeeRangeInvalidThe",
+    "UpdateBuybackConfigAn"
+   ],
+   "idl_errors_missing_in_binary": [
+    "Creator fee basis points must be between 1 and the configured maximum"
+   ],
+   "idl_names_without_bare_occurrence": [
+    "AddQuoteControlMint",
+    "Buy",
+    "SetQuoteControlMintReserves",
+    "UpdateBuybackConfig"
+   ],
+   "n_idl_errors": 110,
+   "n_idl_instructions": 56
+  },
+  "pages_4k": {
+   "differing": 473,
+   "total": 2560
+  },
+  "pieces_only_new": [
+   "AccountNotSignerPermissionDeniedTokenGroupMemberno storage spaceAddrNotAvailable right` failed: source_authority0123456789abcdefDataTypeMismatchInvalidProgramIdConfidentialMintBurnAccountprograms/pump/src/admin_set_idl_authority.rs__event_authorityanchor:idlprograms/pump/src/buy.rsbonding-curveprograms/pump/src/buy_v2.rsbuybuy_exact_quote_inprograms/pump/src/create_v2.rsquote-controlpool-authority",
+   "programs/pump/src/fee_recipient.rsfee_recipients[]programs/pump/src/migrate.rsBonding curve already migratedcalled `Result::unwrap()` on an `Err` value"
+  ],
+  "pieces_only_old": [
+   "AccountNotSignerPermissionDeniedTokenGroupMemberno storage spaceAddrNotAvailable right` failed: source_authority0123456789abcdefDataTypeMismatchInvalidProgramIdConfidentialMintBurnAccountprograms/pump/src/admin_set_idl_authority.rs__event_authorityanchor:idlprograms/pump/src/buy.rsbonding-curveprograms/pump/src/buy_v2.rsbuybuy_exact_quote_inprograms/pump/src/create_v2.rsquote-controlpool-authority"
+  ],
+  "runs": {
+   "new": 64,
+   "old": 63,
+   "only_new": 2,
+   "only_old": 1
+  }
+ },
+ "pumpswap": {
+  "changed_runs_diff": [
+   [
+    {
+     "ctx_old": "",
+     "new": "",
+     "old": "AccountNotSignerPermissionDeniedno storage spaceAvailable fees (AddrNotAvailable right` failed: 0123456789abcdefdivision by zeroDataTypeMismatchInvalidProgramId) below minimum transfer amount ():pool-authoritybonding-curveholder-rewardsprograms/pump-amm/src/instructions/create_pool.rsAccount already",
+     "op": "delete"
+    }
+   ]
+  ],
+  "instruction_pieces": {
+   "n_only_new": 2,
+   "n_only_old": 1
+  },
+  "n_only_new_runs": 2,
+  "n_only_old_runs": 1,
+  "new_len": 10485760,
+  "new_sha256": "92d73e652befd8495a83af09958f333ceff7507ec102c7e6beef1edf47efa6d1",
+  "new_standalone_runs": [],
+  "new_vs_idl": {
+   "binary_instruction_tokens_not_idl_names": [
+    "ClaimCashbacksol_destinationbufferidltoIdlAccount",
+    "IdlCloseAccount",
+    "IdlCreateAccountanchor",
+    "IdlResizeAccountdata_len",
+    "IdlSetBuffer",
+    "IdlWrite",
+    "UpdateBuybackConfigAn"
+   ],
+   "idl_errors_missing_in_binary": [],
+   "idl_names_without_bare_occurrence": [
+    "ClaimCashback",
+    "UpdateBuybackConfig"
+   ],
+   "n_idl_errors": 88,
+   "n_idl_instructions": 38
+  },
+  "old_len": 10485760,
+  "old_sha256": "78046072fdf83eee2ac366c9da0bee22cdb030a2d7b194aa9ab81a14ea13671e",
+  "old_standalone_runs": [],
+  "old_vs_idl": {
+   "binary_instruction_tokens_not_idl_names": [
+    "ClaimCashbacksol_destinationbufferidltoIdlAccount",
+    "IdlCloseAccount",
+    "IdlCreateAccountanchor",
+    "IdlResizeAccountdata_len",
+    "IdlSetBuffer",
+    "IdlWrite",
+    "UpdateBuybackConfigAn"
+   ],
+   "idl_errors_missing_in_binary": [],
+   "idl_names_without_bare_occurrence": [
+    "ClaimCashback",
+    "UpdateBuybackConfig"
+   ],
+   "n_idl_errors": 88,
+   "n_idl_instructions": 38
+  },
+  "pages_4k": {
+   "differing": 309,
+   "total": 2560
+  },
+  "pieces_only_new": [
+   "AccountNotSignerPermissionDeniedno storage spaceAvailable fees (AddrNotAvailable right` failed: 0123456789abcdefdivision by zeroDataTypeMismatchInvalidProgramId) below minimum transfer amount ():pool-authoritybonding-curveholder-rewardsprograms/pump-amm/src/instructions/create_pool.rsAccount already has more than Account already has the correct sizeprograms/pump-amm/src/instructions/extend_account",
+   "programs/pump-amm/src/instructions/swap/mod.rsprograms/pump-amm/src/instructions/sweep_fees.rsNo tokens to claimglobal_volume_accumulatorprograms/pump-amm/src/instructions/token_incentives/claim.rsNo changes in accumulator for user=programs/pump-amm/src/state/global_config.rsbuyback_fee never exceeds protocol_feebuyback fee is at most protocol_feeprograms/pump-amm/src/state/pool.rsOverflowing user"
+  ],
+  "pieces_only_old": [
+   "AccountNotSignerPermissionDeniedno storage spaceAvailable fees (AddrNotAvailable right` failed: 0123456789abcdefdivision by zeroDataTypeMismatchInvalidProgramId) below minimum transfer amount ():pool-authoritybonding-curveholder-rewardsprograms/pump-amm/src/instructions/create_pool.rsAccount already has more than Account already has the correct sizeprograms/pump-amm/src/instructions/extend_account"
+  ],
+  "runs": {
+   "new": 58,
+   "old": 57,
+   "only_new": 2,
+   "only_old": 1
+  }
+ }
+}

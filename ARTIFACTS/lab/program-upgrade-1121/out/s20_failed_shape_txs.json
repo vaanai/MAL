@@ -1,0 +1,78 @@
+{
+ "post": {
+  "buy_exact_quote_in": {
+   "success": 1186,
+   "failed": 376,
+   "failed_share": 0.2407170294494238,
+   "words": {
+    "InstructionError:Custom=6040": 304,
+    "InstructionError:Custom=6000": 12,
+    "InstructionError:Custom=15": 10,
+    "InstructionError:Custom=2052": 8,
+    "InstructionError:Custom=6001": 4,
+    "InstructionError:Custom=3": 3,
+    "InstructionError:Custom=1": 27,
+    "InstructionError:Custom=3012": 1,
+    "InstructionError:Custom=6013": 3,
+    "InstructionError:Custom=2006": 2,
+    "InstructionError:Custom=6002": 2
+   }
+  },
+  "sell": {
+   "success": 1171,
+   "failed": 650,
+   "failed_share": 0.35694673256452497,
+   "words": {
+    "InstructionError:Custom=6004": 484,
+    "InstructionError:Custom=1": 39,
+    "InstructionError:Custom=3012": 47,
+    "InstructionError:Custom=11": 4,
+    "InstructionError:Custom=6014": 10,
+    "InstructionError:Custom=13": 41,
+    "InstructionError:Custom=6013": 3,
+    "InstructionError:Custom=15": 9,
+    "InstructionError:Custom=6000": 6,
+    "InstructionError:ProgramFailedToComplete": 3,
+    "InstructionError:Custom=1000": 1,
+    "InstructionError:Custom=6001": 3
+   }
+  }
+ },
+ "pre": {
+  "buy_exact_quote_in": {
+   "success": 694,
+   "failed": 237,
+   "failed_share": 0.2545649838882922,
+   "words": {
+    "InstructionError:Custom=6001": 54,
+    "InstructionError:Custom=1": 25,
+    "InstructionError:Custom=6040": 154,
+    "InstructionError:Custom=6000": 1,
+    "InstructionError:Custom=10": 1,
+    "InstructionError:Custom=2052": 1,
+    "InstructionError:Custom=6002": 1
+   }
+  },
+  "sell": {
+   "success": 596,
+   "failed": 222,
+   "failed_share": 0.2713936430317848,
+   "words": {
+    "InstructionError:Custom=6004": 121,
+    "InstructionError:Custom=3012": 20,
+    "InstructionError:Custom=1": 14,
+    "InstructionError:Custom=6014": 5,
+    "InstructionError:Custom=6001": 5,
+    "InstructionError:Custom=13": 40,
+    "InstructionError:Custom=2052": 4,
+    "InstructionError:Custom=6002": 2,
+    "InstructionError:Custom=512": 1,
+    "InstructionError:Custom=11": 2,
+    "InstructionError:Custom=3": 1,
+    "InstructionError:Custom=6000": 3,
+    "InstructionError:Custom=6006": 4
+   }
+  }
+ },
+ "note": "a transaction counts once per instruction; a failed tx counts every matching instruction it carries"
+}

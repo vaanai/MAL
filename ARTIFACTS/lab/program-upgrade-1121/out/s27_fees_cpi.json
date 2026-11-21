@@ -1,0 +1,35 @@
+{
+ "post": {
+  "inner_fees_instruction_shapes": {
+   "get_fees_with_quote_mint|9aed8a5ca202a2bb|len=57|accts=2|fee_config_in=False|parent=other": 1,
+   "get_fees_with_quote_mint|9aed8a5ca202a2bb|len=57|accts=2|fee_config_in=True|parent=amm": 2592,
+   "get_fees_with_quote_mint|9aed8a5ca202a2bb|len=57|accts=2|fee_config_in=True|parent=other": 212,
+   "get_fees|e7257e55cf5b3f34|len=34|accts=2|fee_config_in=True|parent=other": 3
+  },
+  "n_txs": 2691,
+  "top_level_fees_ix_in_those_txs": 0,
+  "txs_with_inner_fees_ix": 2691,
+  "txs_with_wsol_amm_buy_sell": {
+   "buy": 435,
+   "buy+sell": 7,
+   "buy_exact_quote_in": 1185,
+   "sell": 1064
+  }
+ },
+ "pre": {
+  "inner_fees_instruction_shapes": {
+   "get_fees_with_quote_mint|9aed8a5ca202a2bb|len=57|accts=2|fee_config_in=True|parent=amm": 1525,
+   "get_fees_with_quote_mint|9aed8a5ca202a2bb|len=57|accts=2|fee_config_in=True|parent=other": 181
+  },
+  "n_txs": 1694,
+  "top_level_fees_ix_in_those_txs": 0,
+  "txs_with_inner_fees_ix": 1694,
+  "txs_with_wsol_amm_buy_sell": {
+   "buy": 411,
+   "buy+sell": 1,
+   "buy_exact_quote_in": 687,
+   "buy_exact_quote_in+sell": 3,
+   "sell": 592
+  }
+ }
+}

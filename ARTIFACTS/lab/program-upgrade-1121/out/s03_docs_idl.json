@@ -1,0 +1,30 @@
+{
+ "ahead_by": 1,
+ "compare_status": "ahead",
+ "files_changed": [
+  "README.md",
+  "docs/FEE_RECIPIENT_ROTATION.md"
+ ],
+ "idl": {
+  "pump@639b87f": "7616681ea557975f9f623ac211080f22a93060781eaf4765b0a488d980997207",
+  "pump@main": "7616681ea557975f9f623ac211080f22a93060781eaf4765b0a488d980997207",
+  "pump_amm@639b87f": "b7d8c57a4d9c4dd0109a9ab893052352333252d4eedced10ac091d4d66cab89b",
+  "pump_amm@main": "b7d8c57a4d9c4dd0109a9ab893052352333252d4eedced10ac091d4d66cab89b",
+  "pump_fees@639b87f": "6b9fa3eccc6e06273076a47b581f9fcb9e531bb7c3c88acbcd44db55a4002b29",
+  "pump_fees@main": "6b9fa3eccc6e06273076a47b581f9fcb9e531bb7c3c88acbcd44db55a4002b29"
+ },
+ "main_date": "2026-11-20T21:34:02Z",
+ "main_sha": "bc35796152027d2744ca02066d305438e34b67e7",
+ "pins_idl": {
+  "pump": {
+   "sha256": "7616681ea557975f9f623ac211080f22a93060781eaf4765b0a488d980997207"
+  },
+  "pump_amm": {
+   "sha256": "b7d8c57a4d9c4dd0109a9ab893052352333252d4eedced10ac091d4d66cab89b"
+  },
+  "pump_fees": {
+   "sha256": "6b9fa3eccc6e06273076a47b581f9fcb9e531bb7c3c88acbcd44db55a4002b29"
+  }
+ },
+ "total_commits": 1
+}

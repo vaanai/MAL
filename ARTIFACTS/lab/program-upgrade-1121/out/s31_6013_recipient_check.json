@@ -1,0 +1,55 @@
+{
+ "config_ctx_slot": 472066409,
+ "config_sha256_equals_pin": true,
+ "n_protocol_fee_recipients_nonzero": 8,
+ "post": {
+  "n_failed_6013_instructions": 6,
+  "by_class_and_membership": {
+   "buy_exact_quote_in|listed": 3,
+   "sell|listed": 3
+  },
+  "rows": [
+   [
+    "buy_exact_quote_in",
+    "listed",
+    "top",
+    26
+   ],
+   [
+    "sell",
+    "listed",
+    "top",
+    24
+   ],
+   [
+    "buy_exact_quote_in",
+    "listed",
+    "top",
+    26
+   ],
+   [
+    "sell",
+    "listed",
+    "top",
+    24
+   ],
+   [
+    "buy_exact_quote_in",
+    "listed",
+    "top",
+    26
+   ],
+   [
+    "sell",
+    "listed",
+    "top",
+    24
+   ]
+  ]
+ },
+ "pre": {
+  "n_failed_6013_instructions": 0,
+  "by_class_and_membership": {},
+  "rows": []
+ }
+}

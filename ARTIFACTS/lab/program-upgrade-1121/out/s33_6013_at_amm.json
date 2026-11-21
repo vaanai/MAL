@@ -1,0 +1,55 @@
+{
+ "A 1121 post": {
+  "counts": {
+   "6013_failed_txs": 19,
+   "raised_at_pumpswap_top_ix": 3
+  },
+  "erroring_pumpswap_ix": [
+   {
+    "cls": "buy_exact_quote_in",
+    "wsol": true,
+    "n_accts": 26,
+    "data_len": 25,
+    "pos9_listed": true
+   },
+   {
+    "cls": "buy_exact_quote_in",
+    "wsol": true,
+    "n_accts": 26,
+    "data_len": 25,
+    "pos9_listed": true
+   },
+   {
+    "cls": "buy_exact_quote_in",
+    "wsol": true,
+    "n_accts": 26,
+    "data_len": 25,
+    "pos9_listed": true
+   }
+  ]
+ },
+ "P 1121 pre": {
+  "counts": {
+   "6013_failed_txs": 14
+  },
+  "erroring_pumpswap_ix": []
+ },
+ "1115 A1": {
+  "counts": {
+   "6013_failed_txs": 5
+  },
+  "erroring_pumpswap_ix": []
+ },
+ "1115 A2": {
+  "counts": {
+   "6013_failed_txs": 10
+  },
+  "erroring_pumpswap_ix": []
+ },
+ "1115 pre": {
+  "counts": {
+   "6013_failed_txs": 2
+  },
+  "erroring_pumpswap_ix": []
+ }
+}
