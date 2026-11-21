@@ -1,6 +1,8 @@
-"""(c2) keyless simulation for the A3 re-pin review of the 2026-11-15T17:20Z pump + PumpSwap redeploys.
+"""(c2) keyless simulation for the A3 re-pin review of the 2026-11-20T19:28Z pump + PumpSwap + fees redeploys.
 
-QP-RULING-1115-a3-repin-dual Q1 (c2). Run from a CLEAN tree at the live executor commit (e5fd255b), cwd = tree root,
+Copied from /data/mal/hunt-1008/ops/manager23/s16_keyless_sim.py (the job #2839 script, sha256 632e6590...); only this docstring header was changed, the code is byte-for-byte the passing run-3 code.
+
+QP-RULING-1115-a3-repin-dual Q1 (c2). Run (brief 2026-11-21) from a CLEAN tree at (a) main e85447f8 and (b) the installed executor commit 5fc473b5 (tools/pumpswap_tx.py is byte-identical in both, sha256 2c71d3c0...), cwd = tree root,
 so that `tools.pumpswap_tx` is the module the lane executor imports:
 
     python -B -s s16_keyless_sim.py [--rpc URL] [--lane-pubkey PUBKEY]
@@ -49,7 +51,7 @@ SYSTEM = "11111111111111111111111111111111"
 WSOL = str(tx.WSOL_MINT)
 PAMM = str(tx.PUMPSWAP_PROGRAM)
 B58 = "123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz"
-D_SWAP = 471854493
+D_SWAP = 469811067
 ERR_RE = re.compile(r"Error|failed")
 
 
