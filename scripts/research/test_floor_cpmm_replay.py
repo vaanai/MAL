@@ -652,7 +652,19 @@ def test_refuses_cut_mismatch_in_either_direction(tmp_path, capsys):
     assert rc == 2 and "cut_mismatch" in err
 
 
-def test_same_slot_swaps_in_reverse_signature_order(tmp_path):
+def reverse_signatures_within_slots(f):
+    """Give the swaps of every slot the signatures in the OPPOSITE order of their execution (f.rows is in execution order)."""
+    by: dict[int, list[dict]] = {}
+    for r in f.rows:
+        by.setdefault(r["slot"], []).append(r)
+    for rows in by.values():
+        sigs = [r["signature"] for r in rows]
+        for r, sg in zip(rows, sorted(sigs, reverse=True) if len(rows) > 1 else sigs):
+            r["signature"] = sg
+    return any(len(v) > 1 for v in by.values())
+
+
+def test_same_slot_swaps_are_ordered_by_k_not_by_signature():
     f = Fx("SS")
     f.swap(1 * H, "buy", 1_000_000_000)
     sl = f.slot(2 * H)
@@ -660,14 +672,120 @@ def test_same_slot_swaps_in_reverse_signature_order(tmp_path):
     a_post = (f.q, f.r)
     b = f.swap(2 * H, "sell", 10**13, slot=sl)  # executes second
     b_post = (f.q, f.r)
-    a["signature"], b["signature"] = "sig_z", "sig_a"  # the fetcher's (slot, signature) order puts b first
-    f.swap(3 * H, "buy", 1_000)
+    sl2 = f.slot(3 * H)
+    x = f.swap(3 * H, "buy", 5_000_000, slot=sl2)  # executes first in the LATER slot
+    x_post = (f.q, f.r)
+    y = f.swap(3 * H, "buy", 6_000_000, slot=sl2)
+    a["signature"], b["signature"], x["signature"], y["signature"] = "sig_z", "sig_a", "sig_z", "sig_a"  # the signature order is the reverse of execution
     P = mkpool(f)
-    ia, ib = P.slots.index(sl), P.slots.index(sl) + 1
-    assert P.sw[ia] is b and P.sw[ib] is a
-    assert (P.q[ia], P.r[ia]) == (b["output_vault_before"] - b["output_amount"], b["input_vault_before"] + b["input_amount"])  # b: its OWN derived post-state, not a's pre-state
-    assert (P.q[ib], P.r[ib]) == b_post and b_post != a_post  # the last swap of the slot carries the exact slot-end state (= vault_before of the next, later-slot swap)
-    assert P.state_at_slot(sl) == ib
+    assert [id(r) for r in P.sw[1:5]] == [id(a), id(b), id(x), id(y)]
+    i = P.slots.index(sl)
+    assert (P.q[i], P.r[i]) == a_post and (P.q[i + 1], P.r[i + 1]) == b_post  # each swap carries its OWN post-state, also inside a slot
+    assert (P.q[i + 2], P.r[i + 2]) == x_post  # the state after the first swap of slot 2 does not contain the second (no look-ahead)
+    assert (P.q[i + 3], P.r[i + 3]) == (f.q, f.r)
+    assert P.state_at_slot(sl) == i + 1 and (P.q[P.state_at_slot(sl)], P.r[P.state_at_slot(sl)]) == b_post and P.state_at_slot(sl2) == i + 3
+
+
+def shuffled_pair(tmp_path):
+    """One fixture with several swaps per slot around the entry landing slot, the TP decision slot and the exit-lag slot; and the same fixture with reversed in-slot signatures."""
+    def build():
+        f = Fx("SH")
+        f.trigger_prelude(30 * H)
+        f.drain(30 * H)
+        sd = f.slot(30 * H)
+        f.swap(30 * H + 1, "buy", 1_000, slot=sd + 9)
+        f.swap(30 * H + 4, "buy", 100_000_000, slot=sd + 10)  # landing slot x = sd + 10 at lat 4.085: two swaps, both in the entry state
+        f.swap(30 * H + 4, "buy", 200_000_000, slot=sd + 10)
+        f.swap(30 * H + 5, "buy", 300_000_000, slot=sd + 11)  # slot x+1: NOT in the entry state, two swaps
+        f.swap(30 * H + 5, "buy", 400_000_000, slot=sd + 11)
+        sT = sd + 40
+        f.swap(30 * H + 16, "buy", 5_000_000_000, slot=sT)  # TP decision slot: two swaps (the big buy executes first)
+        f.swap(30 * H + 16, "buy", 1_000_000, slot=sT)
+        f.swap(30 * H + 17, "buy", 150_000_000, slot=sT + 2)  # inside the 2-slot exit lag: two swaps
+        f.swap(30 * H + 17, "buy", 250_000_000, slot=sT + 2)
+        f.swap(30 * H + 18, "buy", 777_000_000, slot=sT + 3)  # outside the lag: two swaps
+        f.swap(30 * H + 18, "buy", 888_000_000, slot=sT + 3)
+        return f
+    base = build()
+    shuf = build()
+    assert reverse_signatures_within_slots(shuf)
+    assert [r["signature"] for r in sorted(shuf.rows, key=lambda r: (r["slot"], r["signature"]))] != [r["signature"] for r in shuf.rows]
+    return base, shuf
+
+
+def test_shuffled_signatures_give_identical_entry_tp_and_exit(tmp_path):
+    base, shuf = shuffled_pair(tmp_path)
+    rb, rs = (R.simulate_pool(mkpool(f), R.Clock([], [(b, s) for b, s in zip(mkpool(f).bts, mkpool(f).slots)]), 0.25, 4.085, CUT) for f in (base, shuf))
+    assert len(rb["rows"]) == len(rs["rows"]) == 1 and rb["rows"][0] == rs["rows"][0]
+    row = rb["rows"][0]
+    assert row["reason"] == "tp_1.5x" and row["filled"]
+    # hand-picked states from the execution-order chain: entry = after the second swap of slot x (not the slot x+1 ones); exit = after both swaps of slot sT + 2
+    Pb = mkpool(base)
+    ent = Pb.state_at_slot(row["landing_slot"])
+    assert Pb.slots[ent] == row["landing_slot"] and Pb.wsol[ent] == 200_000_000 and Pb.slots[ent + 1] == row["landing_slot"] + 1
+    sT = Pb.slots[Pb.wsol.index(5_000_000_000)]
+    ex = Pb.state_at_slot(sT + 2)
+    assert Pb.wsol[ex] == 250_000_000 and Pb.slots[ex + 1] == sT + 3
+    rt = R.cpmm_round_trip(0.25e9, float(Pb.q[ent]), float(Pb.r[ent]), Pb.spot[Pb.slots.index(row["entry_slot"])], float(Pb.q[ex]), float(Pb.r[ex]), 0.0025)
+    assert row["pnl"] == pytest.approx(rt["pnl"], abs=1e-6)
+    assert cell(priced(tmp_path / "b", [base]))["flat"]["mean_sol"] == cell(priced(tmp_path / "s", [shuf]))["flat"]["mean_sol"]
+
+
+def set_creator(f, on_input, rate_ppm):
+    """Charge a creator fee on every swap at rate_ppm: input side (fee over input_amount) or output side (fee over the gross output = output_amount + fee)."""
+    for r in f.rows:
+        r["creator_fee_on_input"] = on_input
+        if on_input:
+            r["creator_fee"] = math.ceil(r["input_amount"] * rate_ppm / 1e6)
+        else:
+            r["creator_fee"] = round(r["output_amount"] * rate_ppm / (1_000_000 - rate_ppm))
+
+
+def test_creator_fee_charged_on_input_matches_config(tmp_path):
+    f = triggered_fixture()
+    set_creator(f, True, 500)
+    f.meta = meta_ok(creator_fee_rate=500)
+    res = priced(tmp_path, [f])
+    a = res["fee_audit_by_amm_config"]["CfgA"]
+    assert res["exclusions"] == {} and a["fee_rate_ppm"] == 3000 and a["creator_charged_pools"] == 1 and a["creator_cfg_nonzero_not_charged"] == 0
+
+
+def test_creator_fee_charged_on_output_matches_config_and_wrong_rate_excludes(tmp_path):
+    f = triggered_fixture()
+    set_creator(f, False, 500)
+    f.meta = meta_ok(creator_fee_rate=500)
+    res = priced(tmp_path / "ok", [f])
+    assert res["exclusions"] == {} and res["fee_audit_by_amm_config"]["CfgA"]["fee_rate_ppm"] == 3000
+    f.meta = meta_ok(creator_fee_rate=800)
+    assert priced(tmp_path / "bad", [f])["exclusions"] == {"fee_mismatch": 1}
+
+
+@pytest.mark.parametrize("on_input", [True, False])
+def test_events_show_a_creator_fee_but_the_decode_reads_zero_excludes_never_undercharges(tmp_path, on_input):
+    f = triggered_fixture()
+    set_creator(f, on_input, 500)
+    f.meta = meta_ok(creator_fee_rate=0)  # a garbage-zero AmmConfig decode
+    res = priced(tmp_path, [f])
+    assert res["exclusions"] == {"fee_mismatch": 1} and res["universe"] == 0 and cell(res)["flat"]["trades"] == 0
+
+
+def test_events_never_charge_a_creator_fee_so_the_effective_rate_is_zero(tmp_path):
+    f = triggered_fixture()  # every swap has creator_fee == 0
+    f.meta = meta_ok(creator_fee_rate=500)  # config says 500 but the pool does not charge it
+    res = priced(tmp_path, [f])
+    a = res["fee_audit_by_amm_config"]["CfgA"]
+    assert res["exclusions"] == {} and a["fee_rate_ppm"] == 2500 and a["creator_charged_pools"] == 0 and a["creator_cfg_nonzero_not_charged"] == 1
+
+
+def test_creator_fee_unobservable_when_events_lack_the_field_and_config_is_nonzero(tmp_path):
+    f = triggered_fixture()
+    for r in f.rows:
+        r.pop("creator_fee")
+        r.pop("creator_fee_on_input")
+    f.meta = meta_ok(creator_fee_rate=500)
+    assert priced(tmp_path / "a", [f])["exclusions"] == {"creator_fee_unobservable": 1}
+    f.meta = meta_ok(creator_fee_rate=0)
+    assert priced(tmp_path / "b", [f])["exclusions"] == {}
 
 
 def test_fee_check_sums_the_input_side_fee_within_two_lamports(tmp_path):
@@ -686,15 +804,6 @@ def test_fee_check_sums_the_input_side_fee_within_two_lamports(tmp_path):
     f.rows[2]["trade_fee"] -= 1  # 2 over: still inside the tolerance
     res = priced(tmp_path / "edge", [f])
     assert res["exclusions"] == {}
-
-
-def test_creator_fee_on_output_is_not_added_to_the_input_side_check(tmp_path):
-    f = triggered_fixture()
-    for r in f.rows:
-        r["creator_fee_on_input"], r["creator_fee"] = False, 123_456  # creator fee taken from the output: unchecked, not part of the input-side sum
-    f.meta = meta_ok(creator_fee_rate=500)
-    res = priced(tmp_path, [f])
-    assert res["exclusions"] == {} and res["fee_audit_by_amm_config"]["CfgA"]["fee_rate_ppm"] == 3000  # the creator rate still prices the round trip
 
 
 def test_parity_with_arena_stack_guarded_c2_c8_and_auto_strand():
