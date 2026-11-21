@@ -1,0 +1,336 @@
+{
+ "start_utc": "2026-11-20T19:00:00Z",
+ "start_epoch": 1795201200,
+ "pump": {
+  "address": "B5MvUwXdiW1NMM6QFFD3ssPKBujD4zMohncbM73Z2BQu",
+  "pages": 1,
+  "n_sigs_fetched": 1000,
+  "oldest_blockTime_fetched": 1794394421,
+  "COMPLETE_back_to_start": true,
+  "n_in_window": 3,
+  "n_failed_in_window": 0,
+  "successful_in_window": [
+   {
+    "slot": 471854454,
+    "utc": "2026-11-20T19:28:03Z",
+    "sig": "4T3znaQUqA3DbpgZcVGhpoG1a4rYTVV4rsp4vvVfuspkpsYLAcxNnHQF2Gk6SBtQmooRZ5xJd7uLhdpNBrgEretm",
+    "pd_writable": true,
+    "loader_ixs": [
+     [
+      "inner",
+      "03000000"
+     ]
+    ],
+    "upgrade_candidate": true,
+    "progs": [
+     "11111111",
+     "BPFLoade",
+     "ComputeB",
+     "SQDS4ep6"
+    ]
+   },
+   {
+    "slot": 472057901,
+    "utc": "2026-11-21T07:38:00Z",
+    "sig": "29mw6n7fEjrQWkTSfkLDUEKKw2y3VdYw7fd5ZLqvYStsT1p15EjYjsnrsRoNPGkLoU7z3eChocQroXRUREhx7JzK",
+    "pd_writable": false,
+    "loader_ixs": [],
+    "upgrade_candidate": false,
+    "progs": [
+     "11111111",
+     "6EF8rrec",
+     "ATokenGP",
+     "ComputeB",
+     "L2TExMFK",
+     "TokenzQd"
+    ]
+   },
+   {
+    "slot": 472058325,
+    "utc": "2026-11-21T07:39:31Z",
+    "sig": "4YvExc4QfHX1MGbMQiCwJGUBDgohmcXHdXAcU7YsUmrDUMvvT4SwQ7NZwWR2TvmegtSm1vQG2GyvYdqwKvtGywam",
+    "pd_writable": false,
+    "loader_ixs": [],
+    "upgrade_candidate": false,
+    "progs": [
+     "6EF8rrec",
+     "ComputeB",
+     "L2TExMFK",
+     "TokenzQd"
+    ]
+   }
+  ],
+  "upgrades": [
+   {
+    "slot": 471854454,
+    "utc": "2026-11-20T19:28:03Z",
+    "sig": "4T3znaQUqA3DbpgZcVGhpoG1a4rYTVV4rsp4vvVfuspkpsYLAcxNnHQF2Gk6SBtQmooRZ5xJd7uLhdpNBrgEretm",
+    "pd_writable": true,
+    "loader_ixs": [
+     [
+      "inner",
+      "03000000"
+     ]
+    ],
+    "upgrade_candidate": true,
+    "progs": [
+     "11111111",
+     "BPFLoade",
+     "ComputeB",
+     "SQDS4ep6"
+    ]
+   }
+  ]
+ },
+ "pumpswap": {
+  "address": "6naEzKeUuFh1Jeeu51NXQgr5qkXgXtc9WKNct4xynVJc",
+  "pages": 1,
+  "n_sigs_fetched": 1000,
+  "oldest_blockTime_fetched": 1794689902,
+  "COMPLETE_back_to_start": true,
+  "n_in_window": 10,
+  "n_failed_in_window": 0,
+  "successful_in_window": [
+   {
+    "slot": 471849293,
+    "utc": "2026-11-20T19:09:36Z",
+    "sig": "3mXMX3xjYQAPqxbS2hZvGpQifKoHYdm8JxRr26aQU2Ve1GWSdt4TWk7fkDP2WkYRdMCkFA19p9YiUZi5QqRLwV5E",
+    "pd_writable": false,
+    "loader_ixs": [],
+    "upgrade_candidate": false,
+    "progs": [
+     "11111111",
+     "ComputeB",
+     "L2TExMFK",
+     "Tokenkeg",
+     "TokenzQd",
+     "pAMMBay6"
+    ]
+   },
+   {
+    "slot": 471854493,
+    "utc": "2026-11-20T19:28:12Z",
+    "sig": "NToCjoWY2Re22gdpkVHvLbVCJDYjMuZGNvfGwsmtnKpz6pvXNzNxfGJqaHCoipuryLWYZBt8DxE8MChpAg2LQ3v",
+    "pd_writable": true,
+    "loader_ixs": [
+     [
+      "inner",
+      "03000000"
+     ]
+    ],
+    "upgrade_candidate": true,
+    "progs": [
+     "11111111",
+     "BPFLoade",
+     "ComputeB",
+     "SQDS4ep6"
+    ]
+   },
+   {
+    "slot": 472034743,
+    "utc": "2026-11-21T06:15:06Z",
+    "sig": "tUQjL4NzSs6bKouhieHXvPbQSCpwrDS3ajgSxGVZrd8zy4HmPjD9qNywTCEH7oj8ZoCUfLAe6u2vtLDqnRjeVG5",
+    "pd_writable": false,
+    "loader_ixs": [],
+    "upgrade_candidate": false,
+    "progs": [
+     "11111111",
+     "ATokenGP",
+     "ComputeB",
+     "L2TExMFK",
+     "Tokenkeg",
+     "TokenzQd",
+     "pAMMBay6"
+    ]
+   },
+   {
+    "slot": 472035005,
+    "utc": "2026-11-21T06:16:02Z",
+    "sig": "21YQnUY61ABQejpTHaDFkAkHVt9t5uBi8i6pmyNVgKojt5pNoXnJ3bzteCg5PW6ANJGQJZwEBW1jpvhYm5oohFhT",
+    "pd_writable": false,
+    "loader_ixs": [],
+    "upgrade_candidate": false,
+    "progs": [
+     "11111111",
+     "ComputeB",
+     "L2TExMFK",
+     "Tokenkeg",
+     "TokenzQd",
+     "pAMMBay6"
+    ]
+   },
+   {
+    "slot": 472040693,
+    "utc": "2026-11-21T06:36:26Z",
+    "sig": "3C4UFxwoUH8YWuADao3PwJ319dm47bSUF3JJ4sa8fe79uHAzeGvvgyASC7KC7xb3hcQLyhthqZPS5Jt2xhKpoZ8E",
+    "pd_writable": false,
+    "loader_ixs": [],
+    "upgrade_candidate": false,
+    "progs": [
+     "11111111",
+     "ATokenGP",
+     "ComputeB",
+     "L2TExMFK",
+     "Tokenkeg",
+     "TokenzQd",
+     "pAMMBay6"
+    ]
+   },
+   {
+    "slot": 472042579,
+    "utc": "2026-11-21T06:43:10Z",
+    "sig": "43Ak8LycwiSQVuJ5wW82hHc4iG2LhqQ2Ay9fHV7ygWeCa8co4o92SrgRAh4LgPe9bfeJaBFhmNPDKb5kSnkDLPtE",
+    "pd_writable": false,
+    "loader_ixs": [],
+    "upgrade_candidate": false,
+    "progs": [
+     "11111111",
+     "ATokenGP",
+     "ComputeB",
+     "L2TExMFK",
+     "Tokenkeg",
+     "TokenzQd",
+     "pAMMBay6"
+    ]
+   },
+   {
+    "slot": 472043266,
+    "utc": "2026-11-21T06:45:39Z",
+    "sig": "3LNMVsFRpFNnbJknZ7H4B9PoWpRe8eAmxC36frruM5XhdJ6aDyP5CuaxEUexmBwrBZpAFDuz8VEkxcNAoguR79n8",
+    "pd_writable": false,
+    "loader_ixs": [],
+    "upgrade_candidate": false,
+    "progs": [
+     "11111111",
+     "ComputeB",
+     "L2TExMFK",
+     "Tokenkeg",
+     "TokenzQd",
+     "pAMMBay6"
+    ]
+   },
+   {
+    "slot": 472044487,
+    "utc": "2026-11-21T06:50:01Z",
+    "sig": "23q3Tt13Ur3g9JBi6NRz6R3SWjT71mfX4U6LoYgixv3SsziiXBYEqBXU5ynv1vLLN37KuBZFDHfZJZ4uEf7ntpyw",
+    "pd_writable": false,
+    "loader_ixs": [],
+    "upgrade_candidate": false,
+    "progs": [
+     "11111111",
+     "ComputeB",
+     "L2TExMFK",
+     "Tokenkeg",
+     "TokenzQd",
+     "pAMMBay6"
+    ]
+   },
+   {
+    "slot": 472048015,
+    "utc": "2026-11-21T07:02:40Z",
+    "sig": "55on8u7GF1Xj6d7qRJHPdWSh6TMF3e5FDRmyQ5zoRydomXYwCUsttxqJuVM4bY5JPPcW4yx2VZr8vvFr8E4KDJU",
+    "pd_writable": false,
+    "loader_ixs": [],
+    "upgrade_candidate": false,
+    "progs": [
+     "11111111",
+     "ATokenGP",
+     "ComputeB",
+     "L2TExMFK",
+     "Tokenkeg",
+     "TokenzQd",
+     "pAMMBay6"
+    ]
+   },
+   {
+    "slot": 472051856,
+    "utc": "2026-11-21T07:16:23Z",
+    "sig": "WLWyiWo9fBKKMasxTUyq4dfCEGtHpM4YcHqYzpAiqiqm5Ag8acD6889oWVXzSNmMfbjr5KwHnP2EB9riiRFWWDR",
+    "pd_writable": false,
+    "loader_ixs": [],
+    "upgrade_candidate": false,
+    "progs": [
+     "11111111",
+     "ComputeB",
+     "L2TExMFK",
+     "Tokenkeg",
+     "TokenzQd",
+     "pAMMBay6"
+    ]
+   }
+  ],
+  "upgrades": [
+   {
+    "slot": 471854493,
+    "utc": "2026-11-20T19:28:12Z",
+    "sig": "NToCjoWY2Re22gdpkVHvLbVCJDYjMuZGNvfGwsmtnKpz6pvXNzNxfGJqaHCoipuryLWYZBt8DxE8MChpAg2LQ3v",
+    "pd_writable": true,
+    "loader_ixs": [
+     [
+      "inner",
+      "03000000"
+     ]
+    ],
+    "upgrade_candidate": true,
+    "progs": [
+     "11111111",
+     "BPFLoade",
+     "ComputeB",
+     "SQDS4ep6"
+    ]
+   }
+  ]
+ },
+ "fees": {
+  "address": "75Uu23mqWBb8LM8vDppqC1mQAnCcBuLXhVaDezVMQLRw",
+  "pages": 1,
+  "n_sigs_fetched": 1000,
+  "oldest_blockTime_fetched": 1790903890,
+  "COMPLETE_back_to_start": true,
+  "n_in_window": 1,
+  "n_failed_in_window": 0,
+  "successful_in_window": [
+   {
+    "slot": 471854409,
+    "utc": "2026-11-20T19:27:54Z",
+    "sig": "61kJr1wnvYjwYE9nJh89UNWmmJE4eYeA1ms3RAzrQGds4tScrEHdb3LBARWZfH2g3hpdYVnkvPY4Quv3xjrJLHrB",
+    "pd_writable": true,
+    "loader_ixs": [
+     [
+      "inner",
+      "03000000"
+     ]
+    ],
+    "upgrade_candidate": true,
+    "progs": [
+     "11111111",
+     "BPFLoade",
+     "ComputeB",
+     "SQDS4ep6"
+    ]
+   }
+  ],
+  "upgrades": [
+   {
+    "slot": 471854409,
+    "utc": "2026-11-20T19:27:54Z",
+    "sig": "61kJr1wnvYjwYE9nJh89UNWmmJE4eYeA1ms3RAzrQGds4tScrEHdb3LBARWZfH2g3hpdYVnkvPY4Quv3xjrJLHrB",
+    "pd_writable": true,
+    "loader_ixs": [
+     [
+      "inner",
+      "03000000"
+     ]
+    ],
+    "upgrade_candidate": true,
+    "progs": [
+     "11111111",
+     "BPFLoade",
+     "ComputeB",
+     "SQDS4ep6"
+    ]
+   }
+  ]
+ },
+ "rpc_attempts": 17
+}
