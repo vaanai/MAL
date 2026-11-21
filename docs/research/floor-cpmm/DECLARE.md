@@ -1,107 +1,113 @@
-# FLOOR-CPMM step 2: DECLARE (DRAFT for a QP ruling; written before any pricing)
+# FLOOR-CPMM step 2: DECLARE (DRAFT v2 for a QP ruling; written before any pricing)
 
-Status: **DRAFT, 2026-11-21T19:42Z, worker draft for manager24.** Nothing here is registered. No history has been fetched, no price read, no P&L computed. No book has cleared the promotion gate and nothing on this page says FLOOR-CPMM makes money. Every figure the replay later prints is in-sample, a screen, and "not blind" (the step-1 counts were read before this page).
+Status: **DRAFT v2, 2026-11-21T19:50Z, worker draft for manager24, after QP and reviewer CHANGES at eeb77191 (PR #1480).** Nothing here is registered. No history has been fetched, no price read, no P&L computed. No book has cleared the promotion gate and nothing on this page says FLOOR-CPMM makes money.
 
-Sources: `new-income-streams.md` sections 0 and A1 and `floor-cpmm-count.md` steps 1 and 1b (host `/data/mal/hunt-1008/ops/reports/2026-11-20/`); FLOOR's live rule `tools/arena_rule_l1.py` (line numbers below are that file's); template for porting FLOOR to a new pool type `tools/arena_rule_l1_oq.py` and `docs/rotation/books/osb-oq-v1.md`; fetcher window mode `tools/launchlab_cpmm_fetch.py` (this PR).
+**What this replay is, stated plainly (binding on every result text).**
+1. **In-sample, not blind.** The window [2026-10-24T01, cut) is the window whose step-1/1b counts were read before this page, and they were the reason to proceed (bar MET at 53 on the loose LP reading, NOT MET at 5 on the strict one). Nothing is held out. Every figure is an in-sample screen.
+2. **Survivorship and look-ahead.** The step-1 stock is current state (pools drained on 2026-11-21), not a history of when pools became eligible. The replay universe is all WSOL-quoted LaunchLab -> CPMM pools of the window, not only pools drained today, which avoids filtering on the outcome. But the universe vetoes are today's reads applied backwards: LP lock share, mint authority, freeze authority, transfer-fee extension and `S` (current supply; a later burn raises `k / S`, so `excess` can pass earlier than it could have been known). These are look-ahead toward eligibility and are declared as such.
+3. **It cannot clear any gate item.** The promotion gate needs out-of-sample trades. The replay prints in-sample analogues of the four items (trade count, distinct and positive UTC days, 90% CI lower bound, total after dropping the top 3) and none of them counts toward the gate. Both fail models are PumpSwap-calibrated; no CPMM live fill exists. A pass of K1-K4 earns only a forward open simulation book (which needs a CPMM recorder first).
+4. **Winner's curse.** The rule constants are l1-floor-v2's, a variant selected on PumpSwap data, carried over unchanged. E1 and E2 are new and fixed here before pricing; 0.5 SOL is not swapped for the 2.0 SOL of step 1. Four cells are priced (2 stakes x 2 latencies); the kill line reads one fixed cell.
+
+Sources: `new-income-streams.md` sections 0 and A1 and `floor-cpmm-count.md` steps 1 and 1b (host `/data/mal/hunt-1008/ops/reports/2026-11-20/`); FLOOR's live rule `tools/arena_rule_l1.py` (line numbers "rule:" below); FLOOR's deciding round trip `tools/arena_stack.py` (line numbers "stack:" below); template `tools/arena_rule_l1_oq.py` and `docs/rotation/books/osb-oq-v1.md`; fetcher window mode `tools/launchlab_cpmm_fetch.py` (this PR).
 
 ## 1. Seals and data
 
-- Window: **migrations with block_time in [2026-10-24T01:00:00Z, cut)** and CPMM history rows with block_time in [2026-10-24T01:00:00Z, run end). `cut` is fixed at the fetch job's `--run-end`, written in the job record before the fetch. A migration before the window start is refused by the fetcher; rows before it are dropped and counted.
-- LaunchLab holdout [2026-10-17T00, 2026-10-24T00) (HOLDOUT_LEDGER row "LaunchLab holdout"): never fetched, read or priced. D2/D3 domain seals and the arena/tip seals do not apply because no tape is read; the manager re-checks the ledger before pricing (this draft opened no ledger).
-- Data source: Helius `getTransactionsForAddress` per pool (public chain data), written under a new out dir outside the LaunchLab tape tree. No arena tape, venue tape or tip tape.
-- Pool list: the step-1b migration list (242 WSOL-quoted pools as of 2026-11-21T19:38Z). Pools migrated after the list was built are out of this read.
+- Window: **migrations with block_time in [2026-10-24T01:00:00Z, cut)**; history rows with block_time in [2026-10-24T01:00:00Z, min(migration + 225 h, cut)). `cut` is the fetch job's `--run-end`, which is **required** (no default) and is written in the job record, together with this file's blob sha, before the fetch starts.
+- 225 h = 200 h (G3 age limit) + 24 h (hold) + 1 h; nothing later is used. (This replaces the 21 d first proposed; it cuts the fetch by about 55%.)
+- LaunchLab holdout [2026-10-17T00, 2026-10-24T00) (HOLDOUT_LEDGER row "LaunchLab holdout"): never fetched, read or priced. The fetcher refuses a migration before 10-24T01:00:00Z, drops and counts rows before it, and refuses (code, with tests) an `--out-dir` at or under `/data2/mal/venue-tape-backfill` (job #1474's `launchlab_cpmm` dir included), `/data2/mal/venue-tape`, the arena, forward-block, meta-capture, tip-tape and other roots listed in the code, or holding another run's `checkpoint.json`. Window mode uses its own `window-checkpoint.json` and never loads another run's checkpoint. `--out-dir` is required.
+- Data: Helius `getTransactionsForAddress` per pool (public chain data). No arena, venue or tip tape. The manager re-checks the ledger (D2/D3) before pricing; this draft opened no ledger.
+- Pool list: the step-1b list (242 WSOL-quoted pools as of 2026-11-21T19:38Z); pools migrated after it are out of this read.
 
 ## 2. Universe
 
-A pool is in the universe if all hold, tested once at the pool's first eligible time (never re-tested later):
+A pool is in the universe if all hold (current-state reads, tested once, never re-tested; look-ahead declared above):
 
-1. WSOL-quoted LaunchLab -> Raydium CPMM (`initialize_with_permission` from the LaunchLab authority); non-WSOL quotes are out (no conversion leg in this book).
-2. LP burned-or-locked >= 95%: LP burned fraction (1 - LP mint supply / PoolState.lp_supply) plus the LP share held by the Raydium LP-lock authority `3f7GcQFG397GAaEnv51zR6tsTVihYRydnydDD1cXekxH` (PDA of the Raydium lock program, step 1b) >= 0.95. That the lock is permanent is Raydium's documentation, not verified from program code.
+1. WSOL-quoted LaunchLab -> Raydium CPMM; other quotes are out (no conversion leg).
+2. LP burned-or-locked >= 95%: burned fraction (1 - LP mint supply / PoolState.lp_supply) plus the LP share held by the Raydium LP-lock authority `3f7GcQFG397GAaEnv51zR6tsTVihYRydnydDD1cXekxH` >= 0.95. Permanence of the lock is Raydium's documentation, not verified from code.
 3. Token mint authority null.
-4. **Vesting: not checked. Stated as an unchecked veto**: a pool with a vesting or other pending-unlock structure is not excluded and the result carries that gap.
-5. WSOL-side depth: `q_floor = k / S >= 10 SOL` (below).
+4. **Token mint freeze authority null.** A mint with a freeze authority is excluded and counted (arena_stack treats freeze authority as stranded: stack:187-189 docstring).
+5. **No Token-2022 transfer-fee extension** (and the token program is the classic one or Token-2022 without that extension). A mint with a transfer-fee extension is excluded and counted; none is priced.
+6. **Vesting: not checked. Stated as an unchecked veto.**
+7. Depth `q_floor = k / S >= 10 SOL` is an entry condition (E2), not a universe filter.
 
-Reserves are the vault balance minus accrued protocol, fund and creator fees (PoolState), as in step 1; the raw-vault variant is reported beside it.
+Reserves are vault balances minus accrued protocol, fund and creator fees (PoolState); the raw-vault variant is reported beside it.
 
-## 3. Entry (decided on the history, in order, at the first time it holds after migration)
+## 3. Entry gates (rule: = arena_rule_l1.py), re-entry allowed
 
-Definitions: `q` = real WSOL reserve, `S` = token mint supply (getTokenSupply, constant while mint authority is null), `k = q * r_token`, `q_floor = k / S`, `excess = q - k / S`. All reserves are the pool's state **after** the print under test, as FLOOR tests its vault after the print (l1_rule.py:102-103; arena_rule_l1.py lines 98-102).
+Definitions: `q` real WSOL reserve, `S` token supply, `k = q * r_token`, `q_floor = k / S`, `excess = q - q_floor`; all reserves after the print under test (as FLOOR tests its vault after the print, rule:98-102).
 
-- **E1. Excess**: `excess <= 0.5 SOL` (the CPMM analogue of FLOOR's `qpost <= Q_STAR = 0.5e9`, line 102).
-- **E2. Depth**: `q_floor >= 10 SOL` (new in CPMM; replaces nothing in FLOOR; it is the step-1 E0 filter).
-- **First time it holds after migration**: the first SELL print (token in, WSOL out) at or after the migration at which E1 and E2 hold after the print. Same shape as FLOOR's trigger: a sell print (line 86: `row.get("side") != "sell"` returns).
-
-FLOOR entry gates (arena_rule_l1.py), ported or not, one by one:
+**Re-entry: a pool may re-enter**, as FLOOR does: one open position per pool, the next entry no earlier than 60 s after the exit decision (rule:51, 86, 104-106). The trigger is evaluated on every sell print (no "first time" rule).
 
 | # | FLOOR gate | Lines | CPMM port |
 | --- | --- | --- | --- |
-| G1 | canonical sell print of a WSOL pool, quote tested first | 72-77, 86 | Ported: a SwapEvent with `input_mint` = token, `output_mint` = WSOL. Quote WSOL is the universe test. |
-| G2 | V in [17.5e9, 17.7e9] on the deciding row | 88-90, constants 36 | **Not ported**: CPMM has no virtual reserve. It is replaced by E1 and E2, which are new, not FLOOR's. Disclosed: this makes the book a sibling, not a twin, of FLOOR. |
-| G3 | pool age print time minus base time M in [24 h, 200 h] | 42, 94-97 | Ported with M = migration block_time: age in [24 h, 200 h]. Consequence: nothing trades in the first 24 h; the 21 d history fetch covers the 200 h. |
-| G4 | quote vault after the print <= 0.5 SOL | 44, 98-102 | Ported as E1 (excess form). |
-| G5 | cooldown 60 s after the last exit decision of the pool, one open position per pool | 80, 86, 104-106 | Ported unchanged: one open position per pool, `COOLDOWN_MS = 60_000` after the exit decision. |
-| G6 | previous print within 6 h (`ALIVE_S`) | 45, 163 | Ported: previous CPMM swap of the pool within 6 h. |
-| G7 | volume over the last 24 h including this print >= 1 SOL | 46, 165-168 | Ported: sum of the pool's WSOL leg over swaps in the last 24 h, from `SwapEvent` amounts, >= 1 SOL. |
-| G8 | post-trade spot / post-trade spot of the last print at or before 6 h back < 0.80 | 47, 169-174 | Ported: spot = q / r_token after the print (pool's real reserves, no V); `r6 < 0.80`. |
-| G9 | history window of the prints: the last 26 arrival hours | 158 (`HIST_HOURS`) | Ported: the fetched swaps of the last 26 h. |
-| G10 | uncapped book, no attempt key | docstring line 15 | Ported: no cap. A K=4 FIFO report-only leg is printed beside it, as FLOOR's `fifo_cap` (lines 187-200). |
+| G1 | canonical sell print of a WSOL pool | rule:72-77, 86 | A SwapEvent with `input_mint` = token, `output_mint` = WSOL. |
+| G2 | V in [17.5e9, 17.7e9] | rule:88-90, 36 | **Not ported** (CPMM has no virtual reserve); replaced by E1 and E2, which are new, not FLOOR's. The book is a sibling, not a twin. |
+| E1 | (CPMM) `excess <= 0.5 SOL` | analogue of rule:44, 98-102 | New. |
+| E2 | (CPMM) `q_floor >= 10 SOL` | none | New (step-1 E0 depth). |
+| G3 | pool age in [24 h, 200 h] | rule:42, 94-97 | Ported, base time M = migration block_time. Nothing trades in the first 24 h. |
+| G5 | one open per pool; 60 s cooldown after the exit decision | rule:51, 86, 104-106 | Ported. |
+| G6 | previous print within 6 h | rule:43, 163 | Ported (previous CPMM swap of the pool). |
+| G7 | 24 h volume including this print >= 1 SOL | rule:45, 165-168 | Ported (WSOL leg of swaps, SwapEvent amounts). |
+| G8 | post-trade spot / spot at the last print <= 6 h back `< 0.80` | rule:46, 169-174 | Ported; spot = q / r_token after the print (real reserves, no V). |
+| G9 | prints of the last 26 h | rule:158 (`HIST_HOURS`) | Ported. |
+| G10 | uncapped book | rule docstring | Ported; a K=4 FIFO report-only leg beside it (rule:187-200). |
 
-Entry pricing: stake `s` WSOL into the pool's constant product with the pool's own trade fee, filled at the first swap at or after decision time + **1.9 s** (`LAT_DECIDING`, line 56). The 4.085 s pricing latency of osb-oq-v1 is the second, harsher cell, reported beside it. Entry reserves are the pre-trade state of the landing swap.
+## 4. The round trip, pinned to arena_stack (FLOOR's deciding stack)
 
-## 4. Exit (FLOOR's kit legs, ported 1:1)
+Every item is arena_stack's unless a named CPMM replacement is given. None is chosen after pricing.
 
-- **Take profit** at 1.5 x the **post-buy mark** (`TP = 1.5`, line 47; `_tp_hit`, lines 115-151): `mark = (Q + net) / (B - tokens)` at the landing state, hit when the post-trade spot **with our position kept** `(q_post + net) / (b_post - tokens)` is `>= 1.5 x mark`. The line-148 constants 0.99 / 1.01 are FLOOR's own sim approximations for a print's post-trade quote; on CPMM the post-trade reserves are exact (SwapEvent plus the vault balances), so they are replaced by the exact post-trade reserve, and the rest of the formula is unchanged. TP checks start at the landing swap (line 126 form: `slot >= signal_slot + FEED_D + k + 1` is not ported; on history the landing swap is the first check).
-- **Time exit** at decision + 24 h + 1.9 s (`HOLD_S = 86400`, `LEG_MS = 1_900`, lines 48-50, 178-179).
-- **No stop** (docstring line 16).
-- Exit pricing: first swap at or after the exit decision + 0.55 s (osb-oq-v1 `EXIT_LAG_MS`, reused), against the pre-trade reserves of that swap. A position still open at run end is marked "open" and reported separately, never as a win or a loss in the headline.
+- **Latency in slots** (stack:55-63, 85-93, 102-151): `k = round(lat_s / slot_s)` (`K_ROUNDING = "round"`, stack:26), landing slot `x = decision slot + k`; entry state = reserves **after all swaps with slot <= x** (stack:133-139: `QX[je]`, `je` = first swap with slot >= x + 1). Latency cells: **1.9 s** (`LAT_DECIDING`, rule:56) and **4.085 s** (osb-oq-v1). `slot_s` per UTC hour is measured on the fetched data: 3600 s over the slot span between the first swap with block_time >= the hour start and the first with block_time >= the next hour start, pooled over all fetched pools; an hour with no pooled span uses the fixed 0.4 s. (Whole-second block_time makes a single hour noisy; the pooled form is declared now.)
+- **Exit lag** (stack:66-75, 96-99, 143-148): `exit_lag_slots(slot_s)` = ceil(0.55 / slot_s), at least `MIN_EXIT_LAG_SLOTS = 2` (stack:25), replacing the time form; exit state = reserves after all swaps with slot <= (exit decision slot + lag).
+- **Guard** `GUARD = 1.15` (stack:27, 159-160, 177-178): the buy reverts and pays one send if `(net / tokens) / spot > 1.15`, `spot` = decision-time spot (post-trade spot of the deciding print). A guarded buy is `-send`, not filled, never stranded.
+- **Haircuts** `HAIRCUT_ENTRY = 0.002608` (tokens received / (1 + h)), `HAIRCUT_SELL = 0.0016` (proceeds x (1 - h)) (stack:32-33, 180, 191-193), unchanged.
+- **Own-buy re-injection at exit** (stack:181-184): the exit pool is `(Qx + net, Bx - tokens)`, as FLOOR's. At 0.25 SOL into a pool of about 18 SOL this is about 1.4 pp of impact per round trip; it is in the sim, not left out.
+- **Send fee** `SEND_FEE_DECIDING = 505,000` lamports per send (stack:28), **2 sends** per filled trip (buy, sell); a guarded buy pays one; `RENT_DECIDING = 0` (stack:29); rent is report-only (stack:30).
+- **Stranding** (stack:31, 187-195): a filled trip is stranded (`-stake - send - 2,039,280`, no sell send) when its proceeds are below one send (`auto_stranded`), or its entry or exit state is invalid (C2 state, C7 real-quote bound, C8 k-fall, stack:185-190), or the mint has a freeze authority (excluded earlier, so n/a). The V_LO (17.5e9) checks of stack are replaced by `Qe > 0`, `Be > 0`, finite, as CPMM has no V; C7 uses the pool's real quote (`Qa`), C8 the constant-product k, tolerance `K_TOL = 1e-3`.
+- **Fee tier**: `fee_ppm(Q, B)` (stack:78) is PumpSwap's and is **replaced** by the pool's own CPMM rate (section 5) on the entry, the TP mark, and the exit.
+- **TP mark and its stake** (rule:115-151, 137-140): `mark = (Qe + net) / (Be - tokens)` at the landing state with `net = stake x (1 - pool fee)`. **The mark uses the cell's own stake** (0.10 in the 0.10 cell, 0.25 in the 0.25 cell); FLOOR fixes 0.25 (rule:54, 137). This is a declared deviation. TP hit when the post-trade spot with our position kept `(q_post + net) / (b_post - tokens)` is `>= 1.5 x mark` (`TP = 1.5`, rule:47). The rule:148 factors 0.99 / 1.01 are FLOOR's approximation of a print's post-trade quote; CPMM post-trade reserves are exact, so they are not used. Checks start at the landing slot.
+- **Time exit** at decision + 24 h + 1.9 s (rule:48-50, 178-179). **No stop** (rule docstring).
+- **No later swap (never dropped).** CPMM reserves are constant between swaps, so an entry or exit whose landing slot has no later swap is **priced at the pool's last known state** (the state after its last swap at or before the landing slot, derived from that swap's amounts as stack:120-121 does for the final print). It is never excluded. A position whose exit decision falls after `cut` is "open at run end": priced at the last known state at `cut`, reported separately, and excluded from the headline totals but counted and printed (never silently). "Unfilled" means only a guarded buy (-send) or an entry whose landing slot falls after `cut`; both are counted and scored as stated.
 
-## 5. Costs (read from chain, not assumed)
+## 5. Costs read from chain
 
-- **Pool fee**: per pool, from the pool's own `AmmConfig` account (`amm_config` in the pool meta): `trade_fee_rate` (ppm of 1e6) and, where the config enables it, `creator_fee_rate`. Read by `getAccountInfo` at the pool's AmmConfig address, once per distinct config, recorded in the report with its address. Cross-check: the history's `SwapEvent` `trade_fee` / `creator_fee` over `input_amount` must equal the config rate on the sampled swaps; a pool whose observed fee differs from its config is excluded and counted, never priced with an assumed rate.
-- **Priority and tx fees**: FLOOR's sim stack as the osb-oq-v1 card quotes it: `send_lamports` 505,000 per send (`SEND_FEE_DECIDING`), **2 sends per round trip** (buy, sell; no conversion leg), i.e. 1,010,000 lamports; FLOOR's live figure is 160,000 per send and is not used for the decision. The worker did not open `tools/arena_stack.py` for this draft: QP to confirm the constant and the 2-send count against the code before pricing.
-- **Rent**: report-only, as in osb-oq-v1 (2,039,280 per ATA, deciding stack treats it as refunded).
-- **Fail legs**: both, by `tools/arena_oq_score.fail_legs` (calls `arena_stack.fail_legs` unchanged): flat 15% `(1-f)P - f*send` and pressure slope scale 1. **The flat leg is the gate leg**; a result positive only under pressure is never quoted. The CPMM pressure inputs are the pool's own (price impact is in the constant product, no V).
-- Price impact: from the pool's real reserves, at the stake. Reported at both stakes.
+- **Pool fee**: from the pool's own `AmmConfig` (`amm_config` in the pool meta), `trade_fee_rate` (ppm of 1e6) plus `creator_fee_rate` where the pool charges it, read by `getAccountInfo` once per distinct config; the address and rates are recorded. Cross-check: SwapEvent `trade_fee` + `creator_fee` over `input_amount` on the pool's swaps must equal the config rate; a pool that does not match is excluded and counted, never priced with an assumed rate.
+- Send fees as stack (section 4). Price impact from the pool's real reserves at the stake (no V).
 
-## 6. Stakes and outputs
+## 6. Fail legs (both) and ssb / nearby on CPMM
 
-Stakes **0.10 SOL and 0.25 SOL**, each at both entry latencies (1.9 s, 4.085 s): 4 cells, one trial per cell, no parameter picked after pricing. Rule constants are FLOOR's (winner's curse of the l1-floor-v2 variant search carries over). The count of rows watched is printed on every figure ("best of 4").
+`arena_stack.fail_legs` (stack:231-244) unchanged: flat 15% `(1-f)P - f*send` and pressure slope scale 1 (`0.8 ln(1+ssb) + 0.35 ln(1 + nearby/1e9)`, stack:35-36, 210-211), the intercept refit **per cell** on its filled rows to mean p = 0.289 (`press_intercept`, stack:37, 214-228).
+- `ssb` = number of CPMM **buy swaps** (WSOL in, token out) of the pool **in the landing slot x** (stack:136-138: `cib[je] - cib[ix]`).
+- `nearby` = WSOL lamports bought (SwapEvent `input_amount` of buy swaps) over slots `[x - round(2 / slot_s), x]` (stack:38, 134-139).
+Both are computed from the pool's own fetched swaps; no other pool's flow enters.
 
-Printed, per cell and under both fail legs (counts and sums only until QP releases per-pool lines):
+## 7. Stakes and outputs
 
-- trades (filled), unfilled, open at run end, universe size and pools that ever triggered;
-- trades per day (trades / days from the first eligible time to run end) and per migration day;
-- mean SOL per trade (net of pool fee, sends and fail blend) and `filled_no_fail` beside it, labelled as having no fail blend;
-- total SOL, total after dropping the top 3 trades, and per-UTC-day totals (day of the entry decision);
-- total after dropping the top pool, and after dropping the top 3 migration days (the 10-27..10-29 stock is 19 of 53 loose E0.5 pools);
-- the bootstrap lower 90% bound of mean SOL per trade (1,000 draws, seed 1, 5th percentile) as a read, not a gate claim at this size;
-- fee audit: pools by AmmConfig fee, config-vs-observed mismatches excluded;
-- exclusions with reasons.
+Stakes **0.10 and 0.25 SOL**, each at **1.9 s and 4.085 s**: 4 cells. Printed, per cell and under both fail legs:
+- trades (filled), unfilled (guarded or after cut), open at run end, universe size, pools that ever triggered, exclusions with reasons (freeze, transfer fee, fee mismatch);
+- trades per day = trades / D, with **D = (cut - 2026-10-24T01:00:00Z) / 86400** fixed now (not data-dependent), and per migration day;
+- mean SOL per trade after the fail leg, and `filled_no_fail` beside it, labelled as having no fail blend;
+- total SOL, total after dropping the top 3 trades, per-UTC-day totals (day of the entry decision) with the **number of distinct UTC days and the number of positive days**, total after dropping the top pool and after dropping the top 3 migration days;
+- bootstrap lower 90% bound of the mean (1,000 draws, seed 1, 5th percentile; `boot_lo`, stack:247) as an in-sample read;
+- fee audit by AmmConfig and actual credits used.
 
-## 7. Kill line (written now)
+## 8. Fetch plan, credits, and what a stop means
 
-Any one of these ends the line (no re-tuning on the same hours):
+- Window mode: one Helius flock slot, rps <= 8 (refused above), key never printed, hard credit cap, oldest migration first, `getTransactionsForAddress` 100 txs per page at the fetcher's assumed 50 credits per call; no `getTransaction` (pool, mints, vaults come from the list). No per-pool error retry: an RPC error ends the run and a re-run resumes from `window-checkpoint.json` (this was optional and is skipped).
+- **Estimate.** The plan (new-income-streams A1 step 2) put the cost at 50-150 credits per pool-day. With the 225 h clip that is 242 pools x 9.375 days = 2,269 pool-days, about **113k to 340k credits**; the earlier 12k-121k page estimate was a guess and is withdrawn. **Cap proposed: 400,000 credits** (under 2% of the 24.1M cycle). Actual credits are reported.
+- **What a stop means.** A pool the cap stops, or any pool truncated by `--max-pages` (not used), is missing or partial. **Any missing or truncated pool makes the read NOT_DECIDABLE and nothing is priced** until the fetch is completed under a raised cap; there is no pricing on a partial set, because oldest-first ordering would keep the 10-27..10-29 cluster (19 of 53 loose E0.5) and drop the newest pools, a selection by age. A raise of the cap is a manager step recorded before the re-run.
 
-- **K1**: mean SOL per trade <= 0 at 0.25 SOL under the realistic cost (4.085 s entry latency, flat 15% fail leg), or
-- **K2**: fewer than 0.3 trades per day (as defined in section 6) at 0.25 SOL, or
-- **K3**: fewer than 20 filled trades in the cell (NOT_DECIDABLE, recorded as a stop, not a pass), or
-- **K4**: total after dropping the top 3 trades <= 0 at 0.25 SOL under the same cost.
+## 9. Kill line (written now; a result needs BOTH fail legs)
 
-A pass of all four is **not** a promotion and is not "the book makes money": it is a reason to register a forward open simulation book on arriving CPMM data (no CPMM tape exists after 10-17 in our recorders, so a forward book needs a CPMM recorder first). The promotion gate (100 out-of-sample trades, 5 distinct UTC days, lower 90% CI bound > 0, positive after removing the top 3, under both fail models) stays unchanged and is not met by an in-sample replay.
+Read at the fixed cell **0.25 SOL, 4.085 s**. Each of K1 and K4 must hold under the flat 15% leg **and** under the pressure leg at slope scale 1 (CLAUDE.md promotion gate; osb-oq-v1 card), else the line ends:
+- **K1**: mean SOL per trade > 0 under both legs;
+- **K2**: trades per day >= 0.3 with D of section 7 (about 28.8 days at cut = 2026-11-21T20:00Z, so about 9 trades);
+- **K3**: at least 20 filled trades, else NOT_DECIDABLE (a stop, not a pass);
+- **K4**: total after dropping the top 3 trades > 0 under both legs.
 
-## 8. Fetch plan and credit estimate (nothing run)
+A pass of all four is **not** a promotion and not "the book makes money". The gate (100 out-of-sample trades, 5 distinct UTC days with a majority positive, 90% CI lower bound > 0, positive after dropping the top 3, under both fail models) is unchanged and cannot be met by this in-sample replay; with K3 at 20 trades, the 100-trade item is far off.
 
-- Window mode, one Helius flock slot, rps <= 8, hard credit cap, key never printed. Per pool: `getTransactionsForAddress` pages of 100 txs at an assumed 50 credits per call (the fetcher's `COST_GTFA`); no `getTransaction` calls (pool and mints come from the list).
-- Estimate: 242 pools x 21 days of history x pages per pool. Pages per pool are unknown before the fetch: at 1-10 pages per pool (100-1,000 transactions in 21 days) the fetch is 242 x (1..10) x 50 = **about 12k to 121k credits**; a pool with 3,000 transactions costs 1,500 credits and 30 such pools add 45k. The proposed cap is **250,000** credits; a pool the cap stops is marked missing, not partial.
-- Pool order: oldest migration first, so a cap stop leaves the newest pools out and is declared.
+## 10. Gaps declared in advance
 
-## 9. Gaps declared in advance
+1. Vesting unchecked. 2. G2 has no CPMM counterpart; E1 and E2 are untested. 3. `getTransactionsForAddress` on the pool sees transactions touching the pool account; a swap that does not list it is missed (vault-delta cross-check where possible). 4. Any non-swap CPMM instruction (liquidity add or remove) is counted and reported. 5. The step-1 stock of 53 is current state; the replay's trigger count may be far smaller. 6. No live CPMM fill exists; any live step needs a CPMM swap builder (T1 code PR with an md5 decision-equivalence proof for the PumpSwap path). 7. `slot_s` is estimated from whole-second block times (pooled, section 4). 8. The pool list's migration time is not re-verified on chain (the fetch filter still bounds rows to >= 10-24T01).
 
-1. Vesting is unchecked.
-2. G2 (the V band) has no CPMM counterpart; E1 and E2 are not FLOOR's and are tested here for the first time.
-3. History comes from `getTransactionsForAddress` on the pool, which sees transactions touching the pool account; a swap routed in a way that does not list the pool is missed (counted by comparing vault balance deltas to decoded swaps where possible).
-4. A liquidity add or remove on a lock-held pool is not expected, but any non-swap CPMM instruction in the history is counted and reported.
-5. The step-1 stock of 53 loose E0.5 pools is a current-state stock; history will show when each pool was eligible, and the replay's trigger count may be far smaller (pools drained at the time of the count may never have passed G3 to G8 in order).
-6. Fill, latency and cost bias: no live CPMM fill exists. Any live step needs a CPMM swap builder in the executor (T1 code PR with an md5 decision-equivalence proof for the PumpSwap path).
-
-QP ruling requested before the fetch job starts: universe, E1/E2, G3 (migration as base time), cost constants, kill line, cap.
+QP ruling requested before the fetch job: universe, E1/E2, G3, round trip (section 4), kill line, cap. Before the job starts the job record pins this file's blob sha and `--run-end`.
