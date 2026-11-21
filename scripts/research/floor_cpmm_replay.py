@@ -286,7 +286,7 @@ class Pool:
             ia = int(r["input_amount"])
             on_in = bool(r.get("creator_fee_on_input"))
             got = int(r["trade_fee"]) + (int(r.get("creator_fee") or 0) if on_in else 0)
-            dev = abs(got - ia * (cfg_rate + (cr_rate if on_in else 0)) / 1e6)
+            dev = abs(got * 1_000_000 - ia * (cfg_rate + (cr_rate if on_in else 0))) / 1_000_000  # exact integer numerator
             self.fee_max_dev = max(self.fee_max_dev, dev)
             self.fee_checked += 1
             self.fee_bad += dev > FEE_TOL

@@ -44,6 +44,7 @@ class Fx:
         self.pool, self.meta, self.q, self.r = pool, meta or meta_ok(), q, r
         self.rows: list[dict] = []
         self.n = 0
+        self.t_end = 225 * H  # the fetch window: min(M + 225 h, run_end) as seconds after M
 
     def slot(self, t):
         return 1000 + int(round(t * 2.5))
@@ -73,9 +74,10 @@ class Fx:
     def drain(self, t):
         return self.swap(t, "sell", int(0.125 * self.r))
 
-    def head(self, t_end=225 * H):
+    def head(self):
+        t_end = self.t_end
         return {"v": 1, "venue": "raydium_cpmm", "type": "pool_meta", "src": "backfill", "slot": 1, "t_recv_ms": M0 * 1000, "block_time": M0, "signature": "mig", "event_index": 0,
-                "cpmm_pool": self.pool, **self.meta, "window": [M0, M0 + t_end], "window_mode": True, "pages": 1, "txs": len(self.rows), "dropped_outside": 0, "rows": len(self.rows),
+                "cpmm_pool": self.pool, "window": [M0, M0 + t_end], "window_mode": True, "pages": 1, "txs": len(self.rows), "dropped_outside": 0, "rows": len(self.rows),
                 "truncated": False, "covered_to_bt": M0 + t_end}
 
 
@@ -83,6 +85,7 @@ def write_fetch(d: Path, fixtures: list[Fx], credits=123, cp_extra=None, skip_cp
     (d / "pools").mkdir(parents=True, exist_ok=True)
     cp = {"version": 1, "credits_used": credits, "hours": {}, "migrations": {}, "window": {}}
     migs = []
+    metas = {}
     for f in fixtures:
         head = f.head()
         if f.pool in truncated:
@@ -92,18 +95,32 @@ def write_fetch(d: Path, fixtures: list[Fx], credits=123, cp_extra=None, skip_cp
                 fh.write(json.dumps(r) + "\n")
         if f.pool not in skip_cp:
             cp["window"][f.pool] = {"pool": f.pool, "status": "ok", "block_time": M0, "credits": 1, "pages": 1, "truncated": f.pool in truncated}
-        migs.append({"pool": f.pool, "bt": M0, **f.meta})
+        migs.append({"pool": f.pool, "bt": M0})
+        metas[f.pool] = f.meta
     cp.update(cp_extra or {})
     (d / C.WINDOW_CP).write_text(json.dumps(cp))
     mp = d.parent / (d.name + "-migs.json")
     mp.write_text(json.dumps(migs))
+    (d.parent / (d.name + "-meta.json")).write_text(json.dumps({"schema": "floor-cpmm-meta-v2", "pools": metas}))
     return mp
+
+
+def meta_path(d):
+    return str(d.parent / (d.name + "-meta.json"))
+
+
+def run_fetch(d, cut):
+    return R.run(d, C.load_window_migrations(str(d.parent / (d.name + "-migs.json"))), cut, meta_path(d))
+
+
+def mkpool(f, rows=None):
+    return R.Pool({"meta": f.head(), "rows": rows if rows is not None else f.rows, "pool": f.pool}, R.normalize_meta(f.meta))
 
 
 def priced(tmp_path, fixtures, **kw):
     d = tmp_path / "fetch"
-    mp = write_fetch(d, fixtures, **kw)
-    return R.run(d, C.load_window_migrations(str(mp)), CUT)
+    write_fetch(d, fixtures, **kw)
+    return run_fetch(d, CUT)
 
 
 def triggered_fixture(pool="P1", t=30 * H, tail=True):
@@ -257,7 +274,7 @@ def test_tp_exit_state_uses_the_declared_lag(tmp_path):
     inside = f.swap(31 * H + 0.8, "buy", 200_000_000)  # slot +2: inside the lag of 2 slots
     f.swap(31 * H + 1.2, "buy", 400_000_000)  # slot +3: outside
     assert inside["slot"] == big["slot"] + 2
-    P = R.Pool({"meta": f.head(), "rows": f.rows, "pool": f.pool})
+    P = mkpool(f)
     ck = R.Clock([P], list(zip(P.bts, P.slots)))
     out = R.simulate_pool(P, ck, 0.25, 4.085, CUT)
     row = out["rows"][0]
@@ -300,15 +317,17 @@ def test_entry_after_cut_is_unfilled_and_open_at_run_end_is_reported_separately(
     base = 190 * H
     f2.trigger_prelude(base)
     f2.drain(base)
-    d = tmp_path / "fetch"
-    mp = write_fetch(d, [f2])
     cut_near = M0 + base + 3  # decision at base, landing at +1.9 s (< 3: fills), exit at +24 h > cut: open at run end
-    res = R.run(d, C.load_window_migrations(str(mp)), cut_near)
-    c = cell(res, lat=1.9)
+    f2.t_end = base + 3  # the fetch ran to the same cut
+    d = tmp_path / "fetch"
+    write_fetch(d, [f2])
+    c = cell(run_fetch(d, cut_near), lat=1.9)
     assert c["open_at_run_end"] == 1 and c["flat"]["trades"] == 0 and c["rows_closed"] == 0
     cut_early = M0 + base + 1  # landing (+1.9 s) after the cut
-    res2 = R.run(d, C.load_window_migrations(str(mp)), cut_early)
-    c2 = cell(res2, lat=1.9)
+    f2.t_end = base + 1
+    d2 = tmp_path / "fetch2"
+    write_fetch(d2, [f2])
+    c2 = cell(run_fetch(d2, cut_early), lat=1.9)
     assert c2["unfilled_after_cut"] == 1 and c2["open_at_run_end"] == 0
 
 
@@ -389,7 +408,7 @@ def test_ssb_and_nearby_count_cpmm_buys(tmp_path):
     f.swap(30 * H + 4, "buy", 1_000, slot=f.slot(30 * H) + 10)
     f.swap(30 * H + 4, "buy", 2_000, slot=f.slot(30 * H) + 10)
     f.swap(30 * H + 4, "sell", 1_000, slot=f.slot(30 * H) + 10)  # a sell: not counted
-    P = R.Pool({"meta": f.head(), "rows": f.rows, "pool": f.pool})
+    P = mkpool(f)
     ck = R.Clock([P], list(zip(P.bts, P.slots)))
     row = R.simulate_pool(P, ck, 0.25, 4.085, CUT)["rows"][0]
     assert row["landing_slot"] == f.slot(30 * H) + 10
@@ -421,7 +440,7 @@ def test_leg_stats_days_top3_pool_and_boot():
 
 # ------------------------------------------------------------------------------------------------------------------------ refusals (DECLARE s8) and the CLI
 def run_main(d, mp, capsys, run_end="2026-11-14T01:00:00Z", out=None):
-    argv = ["--fetch-dir", str(d), "--migrations", str(mp), "--run-end", run_end] + (["--out", str(out)] if out else [])
+    argv = ["--fetch-dir", str(d), "--migrations", str(mp), "--meta", meta_path(d), "--run-end", run_end] + (["--out", str(out)] if out else [])
     rc = R.main(argv)
     cap = capsys.readouterr()
     return rc, cap.out, cap.err
@@ -437,7 +456,9 @@ def test_cli_prices_and_prints_json_and_summary(tmp_path, capsys):
     assert res == json.loads((tmp_path / "res.json").read_text())
     assert res["kill_line"]["verdict"] == "NOT_DECIDABLE" and "IN-SAMPLE" in res["statement"] and res["credits_used"] == 123
     assert set(res["cells"]) == {"0.10@1.9", "0.10@4.085", "0.25@1.9", "0.25@4.085"}
-    assert "VERDICT NOT_DECIDABLE" in err and "makes money" in err and res["reserve_variants"]["raw_vault"].startswith("not_computed")
+    import hashlib
+    assert res["meta_sha256"] == hashlib.sha256(Path(meta_path(d)).read_bytes()).hexdigest() and "CURRENT-STATE" in res["statement"] and "NOT computed" in res["statement"]
+    assert "VERDICT NOT_DECIDABLE" in err and "makes money" in err and res["reserve_variants"]["raw_vault"].startswith("not_computed (declared deviation")
     assert res["window"]["D_days"] == pytest.approx((R.iso_ts("2026-11-14T01:00:00Z") - R.WIN_START) / 86400)
 
 
@@ -533,8 +554,7 @@ def test_zst_pool_file_is_read(tmp_path):
     subprocess.run(["zstd", "-q", "--rm", str(p)], check=True)
     rows = R.read_rows(Path(str(p) + ".zst"))
     assert rows[0]["type"] == "pool_meta" and len(rows) == len(f.rows) + 1
-    res = R.run(d, C.load_window_migrations(str(d.parent / "fetch-migs.json")), CUT)
-    assert cell(res)["flat"]["trades"] == 1
+    assert cell(run_fetch(d, CUT))["flat"]["trades"] == 1
 
 
 # ------------------------------------------------------------------------------------------------------------------------ reserve rebuild
@@ -542,14 +562,14 @@ def test_reserves_after_swap_are_next_vault_before_unless_a_nonswap_ix_sits_betw
     f = Fx("RS")
     a = f.swap(1 * H, "buy", 1_000_000_000)
     b = f.swap(2 * H, "buy", 500_000_000)
-    P = R.Pool({"meta": f.head(), "rows": f.rows, "pool": f.pool})
+    P = mkpool(f)
     assert (P.q[0], P.r[0]) == (b["input_vault_before"], b["output_vault_before"])
     assert (P.q[1], P.r[1]) == (f.q, f.r)  # last swap: derived from its own amounts (the fixture reserves carry no fee leak, so equal)
     # a liquidity change between the swaps: the state after swap 0 is derived from swap 0's amounts, not read from swap 1
     rows = list(f.rows)
     rows[1] = {**rows[1], "input_vault_before": rows[1]["input_vault_before"] + 777}
     rows.insert(1, {"type": "ix", "slot": a["slot"], "signature": a["signature"] + "z", "event_index": 0, "block_time": a["block_time"], "ix": ["deposit"]})
-    P2 = R.Pool({"meta": f.head(), "rows": rows, "pool": f.pool})
+    P2 = mkpool(f, rows)
     assert P2.n_ix == 1 and P2.q[0] == a["input_vault_before"] + a["input_amount"] and P2.r[0] == a["output_vault_before"] - a["output_amount"]
 
 
@@ -558,3 +578,167 @@ def test_derive_with_transfer_and_creator_fees():
     assert R.Pool._derive(row, (5_000, 9_000), True) == (5_000 + 1_000 - 10 - 7, 9_000 - 400 - 5)
     row["creator_fee_on_input"] = False
     assert R.Pool._derive(row, (5_000, 9_000), False) == (5_000 - 400 - 5 - 7, 9_000 + 1_000 - 10)
+
+
+# ------------------------------------------------------------------------------------------------------------------------ fix round (QP / reviewer on 2911ac79)
+def test_universe_fields_come_from_meta_not_from_the_fetch_head(tmp_path):
+    f = triggered_fixture()
+    d = tmp_path / "fetch"
+    write_fetch(d, [f])
+    head = json.loads((d / "pools" / "pool-P1.jsonl").read_text().splitlines()[0])
+    assert "freeze_authority" not in head and "supply" not in head  # the fixture head carries none: only --meta can supply them
+    assert cell(run_fetch(d, CUT))["flat"]["trades"] == 1
+    # a head WITH a freeze authority and a clean meta: the meta wins (the head is not read for universe fields)
+    lines = (d / "pools" / "pool-P1.jsonl").read_text().splitlines()
+    lines[0] = json.dumps({**json.loads(lines[0]), "freeze_authority": "Frz", "supply": 1})
+    (d / "pools" / "pool-P1.jsonl").write_text("\n".join(lines) + "\n")
+    assert run_fetch(d, CUT)["exclusions"] == {}
+
+
+def test_v1_shaped_meta_record_is_mapped_explicitly_and_never_gives_q_fields(tmp_path):
+    v1 = {"pool": "P1", "S": S0, "mint_auth_null": True, "tokmint": TOK, "burned": 1, "top_share": 0.9, "q": 1, "qfloor": 2, "excess": 3}
+    n = R.normalize_meta(v1)
+    assert n == {"supply": S0, "mint_authority": None, "token_mint": TOK}  # q / qfloor / excess / burned / top_share are never copied
+    assert R.normalize_meta({**v1, "mint_auth_null": False})["mint_authority"] == "set"
+    assert R.universe_reason(n) == "meta_missing:freeze_authority"  # v1 cannot supply the rest: excluded and counted, never assumed
+    f = triggered_fixture()
+    d = tmp_path / "fetch"
+    write_fetch(d, [f])
+    Path(meta_path(d)).write_text(json.dumps([v1]))
+    res = run_fetch(d, CUT)
+    assert res["exclusions"] == {"meta_missing:freeze_authority": 1} and res["universe"] == 0
+
+
+def test_unreadable_meta_record_is_excluded(tmp_path):
+    f = triggered_fixture()
+    d = tmp_path / "fetch"
+    write_fetch(d, [f])
+    Path(meta_path(d)).write_text(json.dumps({"pools": {"P1": {"unreadable": "mint_undecodable"}}}))
+    assert run_fetch(d, CUT)["exclusions"] == {"meta_unreadable:mint_undecodable": 1}
+
+
+def test_refuses_meta_pool_set_mismatch(tmp_path, capsys):
+    a, b = triggered_fixture("A"), triggered_fixture("B")
+    d = tmp_path / "fetch"
+    mp = write_fetch(d, [a, b])
+    Path(meta_path(d)).write_text(json.dumps({"pools": {"A": a.meta}}))
+    rc, _o, err = run_main(d, mp, capsys)
+    assert rc == 2 and "meta_pool_set_differs" in err
+    Path(meta_path(d)).write_text(json.dumps({"pools": {"A": a.meta, "B": b.meta, "C": b.meta}}))
+    assert run_main(d, mp, capsys)[0] == 2
+
+
+def test_refuses_fetch_dir_with_a_pool_file_not_in_the_list(tmp_path, capsys):
+    a, b = triggered_fixture("A"), triggered_fixture("B")
+    d = tmp_path / "fetch"
+    mp = write_fetch(d, [a, b])
+    mp.write_text(json.dumps([{"pool": "A", "bt": M0}]))
+    Path(meta_path(d)).write_text(json.dumps({"pools": {"A": a.meta}}))
+    assert run_main(d, mp, capsys)[0] == 2
+
+
+def test_refuses_cut_mismatch_in_either_direction(tmp_path, capsys):
+    f = triggered_fixture()
+    d = tmp_path / "fetch"
+    mp = write_fetch(d, [f])  # fetched to min(M + 225 h, 2026-11-14T01:00Z) = M + 225 h
+    assert run_main(d, mp, capsys)[0] == 0
+    f.t_end = 100 * H  # the fetch stopped earlier than the pre-registered cut allows (e.g. a shorter run end)
+    d2 = tmp_path / "fetch2"
+    mp2 = write_fetch(d2, [f])
+    rc, _o, err = run_main(d2, mp2, capsys)
+    assert rc == 2 and "cut_mismatch" in err
+    # a cut earlier than the fetch: min(M + 225 h, run_end) = run_end differs from the head
+    rc, _o, err = run_main(d, mp, capsys, run_end="2026-10-30T00:00:00Z")
+    assert rc == 2 and "cut_mismatch" in err
+
+
+def test_same_slot_swaps_in_reverse_signature_order(tmp_path):
+    f = Fx("SS")
+    f.swap(1 * H, "buy", 1_000_000_000)
+    sl = f.slot(2 * H)
+    a = f.swap(2 * H, "buy", 800_000_000, slot=sl)  # executes first
+    a_post = (f.q, f.r)
+    b = f.swap(2 * H, "sell", 10**13, slot=sl)  # executes second
+    b_post = (f.q, f.r)
+    a["signature"], b["signature"] = "sig_z", "sig_a"  # the fetcher's (slot, signature) order puts b first
+    f.swap(3 * H, "buy", 1_000)
+    P = mkpool(f)
+    ia, ib = P.slots.index(sl), P.slots.index(sl) + 1
+    assert P.sw[ia] is b and P.sw[ib] is a
+    assert (P.q[ia], P.r[ia]) == (b["output_vault_before"] - b["output_amount"], b["input_vault_before"] + b["input_amount"])  # b: its OWN derived post-state, not a's pre-state
+    assert (P.q[ib], P.r[ib]) == b_post and b_post != a_post  # the last swap of the slot carries the exact slot-end state (= vault_before of the next, later-slot swap)
+    assert P.state_at_slot(sl) == ib
+
+
+def test_fee_check_sums_the_input_side_fee_within_two_lamports(tmp_path):
+    f = triggered_fixture()
+    for r in f.rows:  # split the fee Raydium-style: trade 2000 ppm + creator 500 ppm on input, each ceil-rounded: the sum can be off by 1 lamport from the config rate
+        ia = r["input_amount"]
+        r["trade_fee"], r["creator_fee"], r["creator_fee_on_input"] = math.ceil(ia * 2000 / 1e6), math.ceil(ia * 500 / 1e6), True
+    f.meta = meta_ok(trade_fee_rate=2000, creator_fee_rate=500)
+    res = priced(tmp_path / "ok", [f])
+    assert res["exclusions"] == {} and res["fee_audit_by_amm_config"]["CfgA"]["fee_bad"] == 0 and res["fee_audit_by_amm_config"]["CfgA"]["fee_checked"] == len(f.rows)
+    assert res["fee_audit_by_amm_config"]["CfgA"]["max_dev_lamports"] <= 2 and res["fee_audit_by_amm_config"]["CfgA"]["fee_rate_ppm"] == 2500
+    f.rows[2]["input_amount"], f.rows[2]["trade_fee"], f.rows[2]["creator_fee"] = 10**14, 2 * 10**11, 5 * 10**10  # an exact multiple: no rounding in the deviation
+    f.rows[2]["trade_fee"] += 3  # 3 lamports over the summed rate: a real mismatch
+    res = priced(tmp_path / "bad", [f])
+    assert res["exclusions"] == {"fee_mismatch": 1}
+    f.rows[2]["trade_fee"] -= 1  # 2 over: still inside the tolerance
+    res = priced(tmp_path / "edge", [f])
+    assert res["exclusions"] == {}
+
+
+def test_creator_fee_on_output_is_not_added_to_the_input_side_check(tmp_path):
+    f = triggered_fixture()
+    for r in f.rows:
+        r["creator_fee_on_input"], r["creator_fee"] = False, 123_456  # creator fee taken from the output: unchecked, not part of the input-side sum
+    f.meta = meta_ok(creator_fee_rate=500)
+    res = priced(tmp_path, [f])
+    assert res["exclusions"] == {} and res["fee_audit_by_amm_config"]["CfgA"]["fee_rate_ppm"] == 3000  # the creator rate still prices the round trip
+
+
+def test_parity_with_arena_stack_guarded_c2_c8_and_auto_strand():
+    Qe, Be = 37.5e9, 1e9  # Q >= V_LO, top PumpSwap fee tier (3000 ppm) at every state below
+    spot = Qe / Be
+    cases = {
+        "guarded": (250_000_000, Qe, Be, spot * 0.8, 37.5e9, 1e9),  # decision spot 20 % under the landing price: > 1.15 x
+        "c2_exit_has_fewer_tokens": (250_000_000, Qe, Be, spot, 37.5e9, 1e6),
+        "c2_exit_q_below_v_lo_region": (250_000_000, Qe, Be, spot, float("nan"), 1e9),
+        "c8_k_fell": (250_000_000, Qe, Be, spot, 30e9, 1.1e9),
+        "auto_strand_proceeds_below_send": (1_000_000, Qe, Be, spot, 37.5e9, 3e9),
+        "filled": (250_000_000, Qe, Be, spot, 39e9, 0.97e9),
+    }
+    seen = set()
+    for name, (stake, qe, be, sp, qx, bx) in cases.items():
+        pn, fi, st = F.round_trip(stake, qe, be, sp, qx, bx, return_stranded=True)
+        rt = R.cpmm_round_trip(stake, qe, be, sp, qx, bx, 0.003)
+        assert bool(fi) == rt["filled"] and bool(st) == rt["stranded"], name
+        assert abs(float(pn) - rt["pnl"]) < 1e-3, name
+        seen.add((rt["filled"], rt["stranded"]))
+    assert seen == {(False, False), (True, True), (True, False)}  # guarded, stranded, normal fill all exercised
+
+
+def test_guarded_decision_blocks_the_pool_until_its_exit_decision_plus_cooldown(tmp_path):
+    """Q8 (QP): the code keeps the pool blocked after a guarded buy; a guarded decision still holds the pool."""
+    def build(second_dt):
+        f = Fx("GB")
+        f.trigger_prelude(30 * H)
+        f.drain(30 * H)
+        f.swap(30 * H + 0.4, "buy", 1_400_000_000)  # lifts the price inside the latency: guard (> 1.15), E1 still clear for a later drain
+        T = 30 * H + 86400 + 1.9
+        f.swap(T - 3 * H, "buy", 1_000)
+        f.swap(second_dt + 30 * H + 86400, "sell", int(0.125 * f.r))
+        return f
+
+    blocked = cell(priced(tmp_path / "a", [build(30)]))
+    free = cell(priced(tmp_path / "b", [build(62)]))
+    assert blocked["rows_closed"] == 1 and blocked["unfilled_guarded"] == 1 and blocked["flat"]["trades"] == 0
+    assert free["rows_closed"] == 2 and free["unfilled_guarded"] >= 1
+
+
+def test_tp_decided_in_landing_slot_is_counted_report_only(tmp_path):
+    f = triggered_fixture(tail=False)
+    f.swap(31 * H, "buy", 5_000_000_000)
+    f.swap(31 * H + 5, "buy", 1_000)
+    c = cell(priced(tmp_path, [f]))
+    assert c["tp_decided_in_landing_slot_report_only"] == 0 and c["exit_reasons"]["tp_1.5x"] == 1
