@@ -5,23 +5,25 @@ Implements docs/research/floor-cpmm/DECLARE.md (frozen at main 9f784ac7, blob c4
 It reads ONE window-mode fetch dir written by `tools/launchlab_cpmm_fetch.py window` (`pools/pool-<pool>.jsonl[.zst]`, `window-checkpoint.json`) plus the same migrations
 list the fetch was run with, and prints the DECLARE s7 outputs for 4 cells (stakes 0.10 / 0.25 SOL x latencies 1.9 / 4.085 s) under both fail legs and the s9 kill line.
 
-    python scripts/research/floor_cpmm_replay.py --fetch-dir DIR --migrations LIST.json --run-end 2026-11-21T20:00:00Z [--out result.json]
+    python scripts/research/floor_cpmm_replay.py --fetch-dir DIR --migrations LIST.json --meta META.json --run-end 2026-11-21T20:00:00Z [--out result.json]
 
 Exit 0 = priced (the verdict word may still be KILLED or NOT_DECIDABLE); exit 2 = refused (DECLARE s8: a missing or truncated pool, a checkpoint that shows a cap stop,
 a fetch dir under a WINDOW_FORBIDDEN_OUT root, or a bad argument). The result text says: in-sample, not blind, not a gate item, never "makes money".
 
-pool_meta contract (the keys the migrations list must carry through into the pool_meta row; a missing key excludes the pool, counted as `meta_missing:<key>`):
-  token_mint (or mint0 + mint1 with WSOL on one side), supply (token supply S in raw units, `token_supply` accepted), mint_authority, freeze_authority (key present, null = none),
-  transfer_fee (bool: Token-2022 transfer-fee extension present), lp_locked_frac (0..1), amm_config, trade_fee_rate, creator_fee_rate (ppm of 1e6; 0 when not charged).
+Universe fields come ONLY from --meta (scripts/research/floor_cpmm_meta.py, v2): token_mint, supply, mint_authority, freeze_authority, transfer_fee, lp_locked_frac, amm_config, trade_fee_rate,
+creator_fee_rate (ppm of 1e6) or `unreadable`. v1 names (S, tokmint, mint_auth_null) are mapped explicitly; the step-1b current-state q / qfloor / excess are never read. The meta file's sha256 is
+in the result; its pool set must equal the fetch dir's pools and the migrations list. A missing key excludes the pool (`meta_missing:<key>`).
 Reused from tools/arena_stack.py (not re-implemented): constants, k_slots, fail_legs, press_intercept, boot_lo. Replaced by CPMM forms, as DECLARE s4 names them: fee_ppm (the pool's own
 rate), the V_LO checks (Q > 0, B > 0), the exit lag (max(2, ceil(...)), no assert), `round_trip` (cpmm_round_trip below; parity-tested against arena_stack.round_trip).
 """
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import math
 import os
+import re
 import sys
 from bisect import bisect_left, bisect_right
 from datetime import datetime, timezone
@@ -60,9 +62,12 @@ LATENCIES = (1.9, 4.085)
 KILL_CELL = (0.25, 4.085)
 K2_MIN_PER_DAY = 0.3
 K3_MIN_FILLED = 20
-FEE_TOL = 1  # lamports per swap in the fee cross-check (ceil rounding)
+FEE_TOL = 2  # lamports per swap in the fee cross-check (QP ruling Q4: rounding alone never excludes)
 STAT_NOTE = ("IN-SAMPLE screen, not blind; survivorship and look-ahead in the universe vetoes; both fail models are PumpSwap-calibrated; cannot clear any promotion-gate item; "
-             "a pass of K1-K4 is not a promotion and does not say the book makes money (DECLARE preamble, s9).")
+             "a pass of K1-K4 is not a promotion and does not say the book makes money (DECLARE preamble, s9). "
+             "Universe fields (S, mint and freeze authority, LP lock) are CURRENT-STATE reads, look-ahead in the direction that makes entry easier to pass: S can only fall after entry with a null "
+             "mint authority (k / S overstated, E1 and E2 easier); a null authority today may have been set at entry; the token program and transfer-fee extension cannot change. "
+             "The raw-vault reserve variant of DECLARE s2 is NOT computed (declared deviation: SwapEvent vaults exclude accrued fees; PoolState accruals are not fetched).")
 
 
 class Refused(Exception):
@@ -117,7 +122,7 @@ def check_fetch_dir(fd: Path) -> dict[str, Any]:
     return cp
 
 
-def load_fetch(fd: Path, migs: list[dict[str, Any]]) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+def load_fetch(fd: Path, migs: list[dict[str, Any]], run_end: int) -> tuple[list[dict[str, Any]], dict[str, Any]]:
     """Every listed pool must be present, complete and untruncated, else NOT_DECIDABLE (DECLARE s8). Returns ([{meta, rows}], checkpoint)."""
     cp = check_fetch_dir(fd)
     done = cp.get("window") or {}
@@ -140,38 +145,68 @@ def load_fetch(fd: Path, migs: list[dict[str, Any]]) -> tuple[list[dict[str, Any
             raise Refused(f"NOT_DECIDABLE: pool {pool} has no pool_meta head")
         if rows[0].get("truncated"):
             raise Refused(f"NOT_DECIDABLE: pool {pool} head says truncated")
-        pools.append({"meta": rows[0], "rows": rows[1:], "pool": pool})
+        head = rows[0]
+        want = min(int(head["block_time"]) + C.WIN_HIST_S, run_end)
+        w = head.get("window")
+        if not (isinstance(w, list) and len(w) == 2 and int(w[1]) == want):
+            raise Refused(f"cut_mismatch: pool {pool} window {w} but min(M + 225 h, run_end) = {want} (the fetch and --run-end must share one cut)")
+        pools.append({"meta": head, "rows": rows[1:], "pool": pool})
+    on_disk = {re.sub(r"^pool-|\.jsonl(\.zst)?$", "", p.name) for p in (fd / "pools").glob("pool-*.jsonl*") if not p.name.endswith(".part")}
+    if on_disk != {m["pool"] for m in migs}:
+        raise Refused("fetch_dir_pool_set_differs_from_migrations_list")
     return pools, cp
 
 
+# ------------------------------------------------------------------------------------------------------------------------ v2 metadata (--meta)
+META_KEEP = ("token_mint", "token_program", "supply", "mint_authority", "freeze_authority", "transfer_fee", "lp_locked_frac", "amm_config", "trade_fee_rate", "creator_fee_rate")
+
+
+def normalize_meta(rec: dict[str, Any]) -> dict[str, Any]:
+    """Whitelist of universe fields from one metadata record, with the explicit v1 (step-1b list) name mapping: S -> supply, tokmint -> token_mint, mint_auth_null (True = null) ->
+    mint_authority (None or "set"). Anything else of v1 (q, qfloor, excess, top_share, ...) is never copied: the pricer never uses the step-1b current-state quantities."""
+    out = {k: rec[k] for k in META_KEEP if k in rec}
+    for old, new in (("S", "supply"), ("tokmint", "token_mint")):
+        if new not in out and old in rec:
+            out[new] = rec[old]
+    if "mint_authority" not in out and "mint_auth_null" in rec:
+        out["mint_authority"] = None if rec["mint_auth_null"] else "set"
+    if "unreadable" in rec:
+        out["unreadable"] = rec["unreadable"]
+    return out
+
+
+def load_meta(path: str, pool_ids: set[str]) -> tuple[dict[str, dict[str, Any]], str]:
+    """The v2 metadata file (scripts/research/floor_cpmm_meta.py). Returns ({pool: normalized}, sha256 of the file bytes). Refuses unless its pool set equals the fetch dir's pools."""
+    raw = Path(path).read_bytes()
+    doc = json.loads(raw)
+    recs = doc.get("pools", doc) if isinstance(doc, dict) else doc
+    if isinstance(recs, list):
+        recs = {r.get("pool") or r.get("cpmm_pool"): r for r in recs}
+    if set(recs) != pool_ids:
+        raise Refused(f"meta_pool_set_differs: {len(set(recs) ^ pool_ids)} pools differ between --meta and the fetch dir")
+    return {p: normalize_meta(r) for p, r in recs.items()}, hashlib.sha256(raw).hexdigest()
+
+
 # ------------------------------------------------------------------------------------------------------------------------ pool model
-_REQUIRED = ("supply", "mint_authority", "freeze_authority", "transfer_fee", "lp_locked_frac", "amm_config", "trade_fee_rate", "creator_fee_rate")
-
-
-def meta_get(meta: dict[str, Any], key: str):
-    if key == "supply" and "supply" not in meta and "token_supply" in meta:
-        return meta["token_supply"]
-    return meta[key]
+_REQUIRED = ("token_mint", "supply", "mint_authority", "freeze_authority", "transfer_fee", "lp_locked_frac", "amm_config", "trade_fee_rate", "creator_fee_rate")
 
 
 def universe_reason(meta: dict[str, Any]) -> str | None:
-    """DECLARE s2 vetoes on the pool_meta (current-state reads). None = in the universe."""
+    """DECLARE s2 vetoes on the v2 metadata (current-state reads). None = in the universe."""
+    if "unreadable" in meta:
+        return f"meta_unreadable:{meta['unreadable']}"
     for key in _REQUIRED:
-        if key not in meta and not (key == "supply" and "token_supply" in meta):
+        if key not in meta:
             return f"meta_missing:{key}"
-    m0, m1 = meta.get("mint0"), meta.get("mint1")
-    tok = meta.get("token_mint") or (m1 if m0 == WSOL else m0)
-    if not tok or (m0 is not None and WSOL not in (m0, m1)) or meta.get("wsol_in_pool") is False:
-        return "non_wsol_quote"
-    if meta_get(meta, "lp_locked_frac") is None or meta_get(meta, "lp_locked_frac") < LP_MIN:
+    if meta["lp_locked_frac"] is None or meta["lp_locked_frac"] < LP_MIN:
         return "lp_not_locked"
-    if meta_get(meta, "mint_authority") is not None:
+    if meta["mint_authority"] is not None:
         return "mint_authority"
-    if meta_get(meta, "freeze_authority") is not None:
+    if meta["freeze_authority"] is not None:
         return "freeze_authority"
-    if meta_get(meta, "transfer_fee"):
+    if meta["transfer_fee"]:
         return "transfer_fee"
-    s = meta_get(meta, "supply")
+    s = meta["supply"]
     if not isinstance(s, (int, float)) or isinstance(s, bool) or s <= 0:
         return "bad_supply"
     return None
@@ -180,13 +215,13 @@ def universe_reason(meta: dict[str, Any]) -> str | None:
 class Pool:
     """One pool's swaps with the reserves after each swap. Arrays are in (slot, signature, event_index) order."""
 
-    def __init__(self, rec: dict[str, Any]) -> None:
-        meta = rec["meta"]
+    def __init__(self, rec: dict[str, Any], umeta: dict[str, Any]) -> None:
+        """rec: fetch head + rows (the head supplies only the migration time M); umeta: the normalized --meta record (the ONLY source of universe fields)."""
+        meta = umeta
         self.id = rec["pool"]
         self.meta = meta
-        self.M = int(meta["block_time"])
-        m0, m1 = meta.get("mint0"), meta.get("mint1")
-        self.token = meta.get("token_mint") or (m1 if m0 == WSOL else m0)
+        self.M = int(rec["meta"]["block_time"])
+        self.token = meta.get("token_mint")
         self.reason = universe_reason(meta)
         self.fee_rate = 0
         self.amm_config = meta.get("amm_config")
@@ -209,11 +244,12 @@ class Pool:
         self.hidx = [b // 3600 for b in self.bts]
         self.fee_checked = 0
         self.fee_bad = 0
+        self.fee_max_dev = 0.0
         if self.reason is None:
             self.reason = self._build(sw, ixk, key)
         if self.reason is None:
-            self.fee_rate = int(meta_get(meta, "trade_fee_rate")) + int(meta_get(meta, "creator_fee_rate"))
-            self.supply = float(meta_get(meta, "supply"))
+            self.fee_rate = int(meta["trade_fee_rate"]) + int(meta["creator_fee_rate"])
+            self.supply = float(meta["supply"])
 
     def _build(self, sw: list[dict[str, Any]], ixk: list[tuple], key) -> str | None:
         tok = self.token
@@ -232,25 +268,28 @@ class Pool:
         n = len(sw)
         for i, r in enumerate(sw):
             nxt = before[i + 1] if i + 1 < n else None
-            between = bool(nxt) and any(key(r) < k < key(sw[i + 1]) for k in ixk)
-            if nxt is not None and not between:
-                qa, ra = nxt  # state after swap i = state before swap i+1 (no non-swap instruction between)
+            # same-slot order is not known (no tx index): vault_before of swap i+1 is swap i's post-state only when i+1 is in a LATER slot (then it is the exact slot-end state) and no
+            # non-swap instruction sits in [slot_i, slot_i+1]; otherwise swap i's own post-state is derived from its own vault_before and amounts (QP ruling Q3)
+            between = nxt is not None and any(self.slots[i] <= k[0] <= self.slots[i + 1] for k in ixk)
+            if nxt is not None and self.slots[i + 1] > self.slots[i] and not between:
+                qa, ra = nxt
             else:
                 qa, ra = self._derive(r, before[i], self.buy[i])
             self.q.append(qa)
             self.r.append(ra)
             self.spot.append(qa / ra if ra > 0 else float("nan"))
-        cfg_rate = int(meta_get(self.meta, "trade_fee_rate"))
-        cr_rate = int(meta_get(self.meta, "creator_fee_rate"))
-        for r in sw:  # DECLARE s5 cross-check, per swap, +-FEE_TOL lamports (ceil rounding)
+        cfg_rate = int(self.meta["trade_fee_rate"])
+        cr_rate = int(self.meta["creator_fee_rate"])
+        for r in sw:  # DECLARE s5: summed input-side fee (trade_fee + creator_fee when charged on input) over input_amount vs the config rate, +-FEE_TOL lamports per swap
             if "trade_fee" not in r:
                 continue
             ia = int(r["input_amount"])
-            ok = abs(int(r["trade_fee"]) - math.ceil(ia * cfg_rate / 1e6)) <= FEE_TOL
-            if r.get("creator_fee_on_input") and cr_rate:
-                ok = ok and abs(int(r["creator_fee"]) - math.ceil(ia * cr_rate / 1e6)) <= FEE_TOL
+            on_in = bool(r.get("creator_fee_on_input"))
+            got = int(r["trade_fee"]) + (int(r.get("creator_fee") or 0) if on_in else 0)
+            dev = abs(got - ia * (cfg_rate + (cr_rate if on_in else 0)) / 1e6)
+            self.fee_max_dev = max(self.fee_max_dev, dev)
             self.fee_checked += 1
-            self.fee_bad += 0 if ok else 1
+            self.fee_bad += dev > FEE_TOL
         if self.fee_checked == 0:
             return "fee_unverified"
         if self.fee_bad:
@@ -411,7 +450,8 @@ def simulate_pool(P: Pool, clock: Clock, stake_sol: float, lat_s: float, cut: in
             jx = P.state_at_slot(dslot + exit_lag(clock.slot_s(dtime)))
         rt = cpmm_round_trip(stake, Qe, Be, spot, float(P.q[jx]), float(P.r[jx]), fee)
         rows.append({"pool": P.id, "mig_day": day_of(P.M), "entry_bt": bt, "day": day_of(bt), "pnl": rt["pnl"], "filled": rt["filled"], "stranded": rt["stranded"], "guarded": rt["guarded"],
-                     "ssb": float(ssb), "nearby": nearby, "reason": reason, "exit_time": dtime, "open_end": open_end, "entry_slot": P.slots[i], "landing_slot": x})
+                     "ssb": float(ssb), "nearby": nearby, "reason": reason, "exit_time": dtime, "open_end": open_end, "entry_slot": P.slots[i], "landing_slot": x,
+                     "tp_in_landing_slot": reason == "tp_1.5x" and dslot == x})
         blocked_until = dtime + COOLDOWN_S
     return {"rows": rows, "unfilled_after_cut": unfilled_after_cut}
 
@@ -465,7 +505,8 @@ def price_cell(pools: list[Pool], clock: Clock, stake: float, lat: float, cut: i
     nb = np.array([r["nearby"] for r in closed], float)
     out: dict[str, Any] = {"stake_sol": stake, "lat_s": lat, "rows_closed": len(closed), "open_at_run_end": open_n, "unfilled_guarded": int((~filled).sum()) if len(closed) else 0,
                            "unfilled_after_cut": unf, "pools_triggered": triggered, "stranded": sum(1 for r in closed if r["stranded"]),
-                           "exit_reasons": {k: sum(1 for r in closed if r["reason"] == k) for k in ("tp_1.5x", "time_24h")}}
+                           "exit_reasons": {k: sum(1 for r in closed if r["reason"] == k) for k in ("tp_1.5x", "time_24h")},
+                           "tp_decided_in_landing_slot_report_only": sum(1 for r in rows if r["tp_in_landing_slot"])}
     if not len(closed):
         out.update({"flat": leg_stats([], np.array([]), D), "press": leg_stats([], np.array([]), D), "press_intercept": None, "filled_no_fail_mean_sol": None})
         out["fifo_k4_report_only"] = fifo_cap([])
@@ -491,11 +532,12 @@ def kill_line(cell: dict[str, Any]) -> dict[str, Any]:
 
 
 # ------------------------------------------------------------------------------------------------------------------------ driver
-def run(fd: Path, migs: list[dict[str, Any]], run_end: int) -> dict[str, Any]:
+def run(fd: Path, migs: list[dict[str, Any]], run_end: int, meta_path: str) -> dict[str, Any]:
     if run_end <= WIN_START:
         raise Refused("run_end_not_after_window_start")
-    recs, cp = load_fetch(fd, migs)
-    pools = [Pool(r) for r in recs]
+    recs, cp = load_fetch(fd, migs, run_end)
+    meta, meta_sha = load_meta(meta_path, {r["pool"] for r in recs})
+    pools = [Pool(r, meta[r["pool"]]) for r in recs]
     allsw = [(b, s) for P in pools for b, s in zip(P.bts, P.slots)]
     clock = Clock(pools, allsw)
     uni = [P for P in pools if P.reason is None]
@@ -510,15 +552,18 @@ def run(fd: Path, migs: list[dict[str, Any]], run_end: int) -> dict[str, Any]:
             cells[f"{st:.2f}@{lat}"] = price_cell(uni, clock, st, lat, run_end, D)
     audit: dict[str, dict[str, Any]] = {}
     for P in pools:
-        a = audit.setdefault(str(P.amm_config), {"pools": 0, "excluded_fee": 0, "fee_rate_ppm": None})
+        a = audit.setdefault(str(P.amm_config), {"pools": 0, "excluded_fee": 0, "fee_rate_ppm": None, "fee_checked": 0, "fee_bad": 0, "max_dev_lamports": 0.0})
         a["pools"] += 1
         a["excluded_fee"] += P.reason in ("fee_mismatch", "fee_unverified")
+        a["fee_checked"] += P.fee_checked
+        a["fee_bad"] += P.fee_bad
+        a["max_dev_lamports"] = max(a["max_dev_lamports"], P.fee_max_dev)
         if P.reason is None:
             a["fee_rate_ppm"] = P.fee_rate
     kc = cells[f"{KILL_CELL[0]:.2f}@{KILL_CELL[1]}"]
-    return {"statement": STAT_NOTE, "declare": "docs/research/floor-cpmm/DECLARE.md @9f784ac7 (blob c4719da6)", "window": {"start": WIN_START, "cut": run_end, "D_days": D},
+    return {"statement": STAT_NOTE, "declare": "docs/research/floor-cpmm/DECLARE.md @9f784ac7 (blob c4719da6)", "window": {"start": WIN_START, "cut": run_end, "D_days": D}, "meta_sha256": meta_sha,
             "pools_fetched": len(pools), "universe": len(uni), "exclusions": excl, "non_swap_ix_rows": sum(P.n_ix for P in pools),
-            "rows_dropped_before_window": sum(P.dropped_before_window for P in pools), "reserve_variants": {"event_vault_before": "used", "raw_vault": "not_computed: SwapEvent vaults exclude accrued fees; PoolState not fetched"},
+            "rows_dropped_before_window": sum(P.dropped_before_window for P in pools), "reserve_variants": {"event_vault_before": "used", "raw_vault": "not_computed (declared deviation from DECLARE s2): SwapEvent vaults exclude accrued fees; PoolState accruals are not fetched"},
             "cells": cells, "kill_line": kill_line(kc), "fee_audit_by_amm_config": audit, "credits_used": cp.get("credits_used")}
 
 
@@ -537,12 +582,13 @@ def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--fetch-dir", required=True)
     ap.add_argument("--migrations", required=True, help="the JSON list the fetch ran with ({pool, bt, ...})")
-    ap.add_argument("--run-end", required=True, help="the cut, ISO UTC; must equal the fetch's --run-end")
+    ap.add_argument("--meta", required=True, help="the v2 universe metadata (scripts/research/floor_cpmm_meta.py); its pool set must equal the fetch dir's")
+    ap.add_argument("--run-end", required=True, help="the cut, ISO UTC; every pool head's window[1] must equal min(M + 225 h, run_end)")
     ap.add_argument("--out", help="write the JSON result here")
     a = ap.parse_args(argv)
     try:
         migs = C.load_window_migrations(a.migrations)
-        res = run(Path(a.fetch_dir), migs, iso_ts(a.run_end))
+        res = run(Path(a.fetch_dir), migs, iso_ts(a.run_end), a.meta)
     except (Refused, L.Refused) as exc:
         print(f"refused: {exc}", file=sys.stderr)
         return 2
