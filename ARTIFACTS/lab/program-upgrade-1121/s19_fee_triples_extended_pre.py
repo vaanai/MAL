@@ -1,4 +1,5 @@
-"""POST-HOC addition (declared here, after s17 found 5 post fee triples absent from the declared pre control P + M_pre; see review section 6c): the same triple count over the
+"""EXTENDED PRE SET for the 2026-11-20 triple redeploy (declared in the review section 3, before any sample fetch: R = P + M_pre, plus every triple in the cached blocks of the 1114 and 1115 reviews, plus 20,0,5). The roots are the 1114 blocks (PumpSwap e3d3be22) and the 1115 blocks (PumpSwap e3d3be22 for raw_pre, 78046072 for raw/raw_a2), all before 2026-11-20T19:27:54Z; read-only.
+Original 1115 text follows. POST-HOC addition (declared here, after s17 found 5 post fee triples absent from the declared pre control P + M_pre; see review section 6c): the same triple count over the
 cached blocks of the 2026-11-14 review (chain blocks 469058660..469263564 and 469015660..469055069 and 468975660..469014669: PumpSwap at the pinned e3d3be22 binary the whole time,
 all before this redeploy; the earlier sample files are read-only here). Report-only: it does not replace the declared bar. Structure only."""
 import collections, gzip, json, sys, os
@@ -12,11 +13,13 @@ def txs_dir(root):
         blk = json.loads(gzip.open(p).read())["r"]
         for tx in (blk or {}).get("transactions", []):
             if tx["transaction"]["signatures"][0] in idx: yield tx
-B14 = Path("/data2/mal/scratch/a3-repin-1114")
+B14 = Path("/data2/mal/scratch/a3-repin-1114"); B15 = Path("/data2/mal/scratch/a3-repin-1115")
+ROOTS = {f"1114/{r}": B14 / r for r in ("raw", "raw_pre", "raw_pre2")}
+ROOTS.update({f"1115/{r}": B15 / r for r in ("raw", "raw_a2", "raw_pre")})
 trip = collections.Counter(); n_tx = 0; ntrig_by_root = {}
-for r in ("raw", "raw_pre", "raw_pre2"):
+for r, root in ROOTS.items():
     t0 = sum(trip.values())
-    for tx in txs_dir(B14 / r):
+    for tx in txs_dir(root):
         meta = tx.get("meta") or {}
         if meta.get("err") is not None: continue
         n_tx += 1; qm = quote_mints(tx)
