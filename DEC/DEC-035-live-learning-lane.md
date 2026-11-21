@@ -1658,8 +1658,20 @@ The manager reads this in four parts.
    - `LANE_BUDGET_MAX_LAMPORTS = 4_000_000_000` (:58): to 5,000,000,000;
    - `FLOOR_LANE_DAILY_MAX_LAMPORTS = 500_000_000` (:61): to 800,000,000.
 
-   Nothing else in the executor's code changes.
-5. **Executor tree.** It is pinned to the merge commit of PR #1476: `<AT-ASK: new tree sha (full 40 hex), the blob shas of each changed executor file, and git diff --numstat 5fc473b5..<new tree> over the Am.12 item 2 executor file list, which must show the ceiling change only>`. A tree at any other commit is a new ask (Am.10 (g) pattern).
+   PR #1476 itself changes nothing else (+5/-5 on `tools/floor_lane_executor.py`, ceilings only). **The tree move brings more code than the ceilings** (reviewer B2 at 60b0664c). Main since `5fc473b5` already carries the l1-floor-v3 rule plumbing, and the install moves the executor onto it:
+   - 63c8b270 "floor_lane_host: l1-floor-v3 rule pin plumbing (config rule_id + q_star_lamports); tests";
+   - fab48eaf "floor host v3: record q_star in entry meta + start-row binding, refuse resume at another q_star; lazy v3 import; v2 null-key refusal; cooldown fixture pin";
+   - 08854792 "floor arena executor: rule_id config (l1-floor-v2 default, l1-floor-v3 pinned q_star); v2 unchanged";
+   - e44a6047 "floor lane executor: pass rule_id arm and expected q_star through; v2 lane start row unchanged".
+
+   `git diff --numstat 5fc473b5 095d82b5` over the Am.12 item 2 executor file list shows `tools/floor_arena_executor.py` +55/-9 (`rule_id` config, `RULE_V3`, `Q_STAR_ALLOWED`, `expected_q_star`, a `q_star_pin` refusal and a `q_star_mismatch` latch) and `tools/floor_lane_executor.py` +4/-4 (`expected_q_star` passthrough, start row `book=cfg.bot_id`). With #1476 (head 452f296c) the same list shows `tools/floor_arena_executor.py` +55/-9 and `tools/floor_lane_executor.py` +9/-9 (ceilings +5/-5 plus the v3 passthrough +4/-4). `tools/floor_lane_host.py` also changed (+61/-11); it is the decision host, which this install does not restart.
+
+   **No Am.14 config carries a `rule_id` or an `expected_q_star_lamports` key.** That holds for s040-b500, R1, R2 and S10, as it does for the running s025-b400. So the arm is the default `l1-floor-v2`, the v3 paths stay inactive, and v2 refuses a stray `expected_q_star_lamports` key at load (`tools/floor_arena_executor.py:92-95` at 095d82b5). The code's own word that v2 is unchanged is a comment, not a proof. The proof that v2 decisions are unchanged across both deltas is the md5 replay of precondition 1.
+5. **Executor tree.** It is pinned to the merge commit of PR #1476: `<AT-ASK: new tree sha (full 40 hex), and the blob shas of each changed executor file>`. The check at the ask passes only on both of these:
+   - the precondition 1 md5 replay equal at #1476's **final** merge head;
+   - `git diff --numstat 5fc473b5..<new tree>` over the Am.12 item 2 executor file list showing exactly the changes of the four commits named in item 4 plus #1476, and nothing else. The expected figures are those above, `tools/floor_arena_executor.py` +55/-9 and `tools/floor_lane_executor.py` +9/-9: `<AT-ASK: numstat at the merge commit>`.
+
+   A tree at any other commit is a new ask (Am.10 (g) pattern). This is new live code under Am.10 (g) and item 6 (d), so the owner's Helm-chat install word (precondition 3) covers it.
 6. **Config.** The new config is the running Am.12 config `/etc/mal-floor-lane/live-5fc473b5256cdd1d0612fec6d460cb4a19d5bf1a-s025-b400.json` (sha256 `ff21f89286eb10af3a899a902c09b918516e76128968b214cb5809db1194bb97`, HELM-REPLY-1118-1) with exactly three values changed and no `presend_batch` key:
    - `stake_lamports` 400000000;
    - `budget_lamports` 5000000000;
@@ -1759,7 +1771,9 @@ Open 0.25 positions keep their 0.25 stakes and their exits.
 1. **Merges, replay and tests.**
    - This amendment has QP OK and REVIEWER APPROVE at its exact head and is merged.
    - The ceiling PR #1476 is merged with its own exact-head QP OK and REVIEWER APPROVE.
-   - **md5 decision-equivalence replay** (CLAUDE.md runner rule): `tools/floor_exec_equiv.py` in its per-row form, as in Am.12 precondition 2. It replays the recorded host decision rows through tree `5fc473b5` and through the new tree, both with the running s025-b400 config. Every run has equal md5, rc 0 and matching row kinds, with no dropped keys (unless the ceiling PR names a new row key, which the record then lists). It includes one run where the wallet floor binds. The result is notebooked: `<AT-ASK: job number, run count, all-equal yes/no, notebook id>`.
+   - **md5 decision-equivalence replay** (CLAUDE.md runner rule): `tools/floor_exec_equiv.py` in its per-row form, as in Am.12 precondition 2. It replays the recorded host decision rows through tree `5fc473b5` and through the new tree, both with the running s025-b400 config. Every run has equal md5, rc 0 and matching row kinds, with no dropped keys (unless the ceiling PR names a new row key, which the record then lists). It includes one run where the wallet floor binds. This replay is **the proof that decisions at the running rule (`l1-floor-v2`, no `rule_id` key) are unchanged** across both deltas of item 4: the ceilings and the l1-floor-v3 plumbing.
+     - **Earlier run, not the proof at the final head.** Job #3194 ran tree A `5fc473b5` against tree B `452f296c` (main 095d82b5 plus #1476 at that head, which contains the four commits of item 4) on the real host rows. The manager's record of the result is: per-row rc=0, the wallet-floor run 34/34, readers all_ok (notebook n_0yqDeoRm0496ug). This draft did not re-read it.
+     - **The proof must be re-run at #1476's final merge head.** The result is notebooked: `<AT-ASK: rerun job number, tree B head (the #1476 merge commit), run count, all-equal yes/no, notebook id>`.
    - Executor tests at the new tree (`tools/test_floor_lane_executor.py` with the new pinned ceilings) pass in a manager job: `<AT-ASK: job number, pass count>`.
    - Optional (QP M3): a dry config-load of s040-b500 on the new tree, so a bound or validation refusal shows before the restart.
 2. **OPEN: the Am.14 ask record, and in it the owner's word on the recomputed risk table** (QP C1; ruling 1121 §1.2 items 1 and 7).
@@ -1825,7 +1839,7 @@ The rulings give the reason. After an executor restart the marks are empty, so t
   - Budget 5.00 and daily stop 0.50, on the new tree. Path `/etc/mal-floor-lane/live-<new tree>-s010-b500.json`.
   - It is the one 0.10 target in every case after the Am.14 install (item 12 (b) and (d); "Disclosures" (iii)).
 - **The budget stays 5.00 after any rollback.** It is never lowered by a config swap in this amendment. Going back to budget 4.00 needs its own T1 record, with QP, a rollback-time ledger-cash check (cash > -4.00 + 0.10 SOL with marks empty) and the owner's word.
-- **Install-failure exception.** Suppose the Am.14 install fails its start-line check and the lane ledger shows **no** `send_intent` at 400000000 since the start line. Then the target may be the old s025-b400 on `5fc473b5`: remove the new drop-in, daemon-reload, executor-only restart, and the start line ends `stake=250000000 rpc_rps=4.0 presend_batch=false`. Once any 0.40 intent exists, only R1 is used. An owner stop is handled the same way: s025-b400 if no 0.40 intent exists, R1 otherwise.
+- **Install-failure exception.** Suppose the Am.14 install fails its start-line check and the lane ledger shows **no** `send_intent` at 400000000 since the start line. Then the target may be the old s025-b400 on `5fc473b5`: remove the new drop-in, daemon-reload, executor-only restart, and the start line ends `stake=250000000 rpc_rps=4.0 presend_batch=false`. Once any 0.40 intent exists, only R1 is used. An owner stop (the owner's word, quoted in a record, to undo the step) is handled the same way: s025-b400 if no 0.40 intent exists, R1 otherwise. QP accepted this as "safe by the 1121a §1 invariant (with no 0.40 intent, every open position passed `committed_loss_stop` at budget 4.00)" (QP re-review, issuecomment-7058139447, N1). The same no-0.40-intent check from the ledger is recorded before that ask.
 - **Post-rollback check.**
   - R1's start line cannot be told apart from the old s025-b400 by the start line alone. So Helm's reply gives the active drop-in (`systemctl cat` or equivalent) and **the sha256 of the config file loaded**.
   - These must equal R1's (or R2's, or S10's) recorded sha256, or s025-b400's under the install-failure exception.
