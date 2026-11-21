@@ -9,6 +9,10 @@ Steps per migration (a LaunchLab `ix` row naming a Migrate instruction, from the
 then getTransactionsForAddress(pool_state) from the migration block time for 24 h (cut at the exploration end), succeeded transactions only, rows in the venue_tape schema
 (venue `raydium_cpmm`, type `swap` from the program's `SwapEvent`, `ix` for CPMM instructions without a decodable event, `pool_meta` once per pool).
 
+WINDOW MODE (`window`, FLOOR-CPMM step 2): migrations come from a JSON list ([{pool, bt, ...}]), not from the tape; each pool's history is fetched from bt to min(bt + 21 d, run end), window
+[2026-10-24T01:00:00Z, run end) only: a migration with bt before WIN_START is refused (this also excludes the LaunchLab holdout [10-17T00, 10-24T00)), and any row with block_time before WIN_START is
+dropped and counted. No getTransaction call: pool, mints and vaults come from the list. The old `probe` / `run` modes are unchanged.
+
 HOLDOUT: a migration with block_time outside [2026-09-24T00, 2026-10-17T00) is refused, and the history window is cut at 2026-10-17T00 (rows at or after it are dropped and counted).
 Credits: a hard cap stops the run before any call that would pass it. Assumed cost per call: gTFA 50 (measured by P10 for the backfill), getTransaction 10 (an upper bound; standard
 RPC is lower). The key is read from the env file and never printed. One Helius flock slot per batch, rps <= 8.
@@ -46,6 +50,8 @@ INIT_DISCS = {hashlib.sha256(b"global:initialize").digest()[:8], hashlib.sha256(
 SWAP_DISC = hashlib.sha256(b"event:SwapEvent").digest()[:8]
 VENUE = "raydium_cpmm"
 HIST_S = 24 * 3600
+WIN_START = int(datetime(2026, 10, 24, 1, tzinfo=timezone.utc).timestamp())  # window mode: nothing before this instant (the LaunchLab holdout ends 10-24T00)
+WIN_HIST_S = 21 * 24 * 3600
 COST_GTFA, COST_GETTX = 50, 10
 DEFAULT_OUT = "/data2/mal/venue-tape-backfill/launchlab_cpmm"
 EXIT_CAP = vb.EXIT_CAP
@@ -199,13 +205,15 @@ def rows_for_cpmm_tx(tx: dict[str, Any], pool: str) -> list[dict[str, Any]]:
 
 
 # ------------------------------------------------------------------------------------------------------------------------ fetch
-def fetch_pool(call: Callable[[str, list[Any]], Any], credits: vb.Credits, pool: str, t0: int, t1: int, limit: int = 100, max_pages: int = 10**9) -> tuple[list[dict[str, Any]], dict[str, int]]:
-    """All succeeded transactions touching `pool` with blockTime in [t0, t1). Returns (rows, stats). Rows at/after the exploration end are dropped and counted."""
-    end = int(L.EXPLORE_END.timestamp())
+def fetch_pool(call: Callable[[str, list[Any]], Any], credits: vb.Credits, pool: str, t0: int, t1: int, limit: int = 100, max_pages: int = 10**9,
+               end_ts: int | None = None, min_bt: int | None = None) -> tuple[list[dict[str, Any]], dict[str, int]]:
+    """All succeeded transactions touching `pool` with blockTime in [t0, t1). Returns (rows, stats). Rows at/after the exploration end are dropped and counted.
+    Window mode passes end_ts (the run end, replacing the exploration end) and min_bt (rows before it are dropped and counted in `dropped_before_window`)."""
+    end = int(L.EXPLORE_END.timestamp()) if end_ts is None else int(end_ts)
     t1 = min(t1, end)
     rows: list[dict[str, Any]] = []
     token = None
-    pages = txs = dropped = 0
+    pages = txs = dropped = dropped_before = 0
     truncated = False
     seen: set[str] = set()
     while True:
@@ -226,6 +234,9 @@ def fetch_pool(call: Callable[[str, list[Any]], Any], credits: vb.Credits, pool:
             if sig in seen:
                 continue
             seen.add(sig)
+            if min_bt is not None and bt is not None and int(bt) < min_bt:
+                dropped_before += 1
+                continue
             if bt is None or int(bt) >= end or int(bt) < t0:
                 dropped += 1
                 continue
@@ -236,7 +247,10 @@ def fetch_pool(call: Callable[[str, list[Any]], Any], credits: vb.Credits, pool:
             break
     rows.sort(key=lambda r: (r["slot"], r["signature"] or "", r.get("event_index") or 0))
     last_bt = max((r["block_time"] for r in rows), default=None)
-    return rows, {"pages": pages, "txs": txs, "dropped_outside": dropped, "rows": len(rows), "truncated": truncated, "covered_to_bt": last_bt if truncated else t1}
+    st = {"pages": pages, "txs": txs, "dropped_outside": dropped, "rows": len(rows), "truncated": truncated, "covered_to_bt": last_bt if truncated else t1}
+    if min_bt is not None:
+        st["dropped_before_window"] = dropped_before
+    return rows, st
 
 
 def resolve_migration(call: Callable[[str, list[Any]], Any], credits: vb.Credits, m: dict[str, Any]) -> dict[str, Any] | None:
@@ -284,6 +298,68 @@ def process_migration(out: Path, call, credits: vb.Credits, m: dict[str, Any], m
     return {"signature": m["signature"], "status": "ok", "cpmm_pool": meta["cpmm_pool"], "block_time": t0, "credits": credits.used - before, **st}
 
 
+# ------------------------------------------------------------------------------------------------------------------------ window mode (FLOOR-CPMM step 2)
+def load_window_migrations(path: str) -> list[dict[str, Any]]:
+    """JSON list of {pool, bt, [mint0, mint1, vault0, vault1, ...]}; `block_time` is accepted for `bt`. Returns records sorted by (bt, pool), duplicate pools dropped."""
+    data = json.loads(Path(path).read_text())
+    if isinstance(data, dict):
+        data = data.get("migrations") or data.get("pools") or []
+    out, seen = [], set()
+    for r in data:
+        pool = r.get("pool") or r.get("cpmm_pool")
+        bt = r.get("bt", r.get("block_time"))
+        if not pool or isinstance(bt, bool) or not isinstance(bt, (int, float)):
+            raise L.Refused(f"bad_migration_record: {json.dumps(r)[:80]}")
+        if pool in seen:
+            continue
+        seen.add(pool)
+        out.append({**r, "pool": pool, "bt": int(bt)})
+    return sorted(out, key=lambda r: (r["bt"], r["pool"]))
+
+
+def check_window_migration(m: dict[str, Any], run_end: int) -> None:
+    """Refuse a migration before WIN_START (covers the LaunchLab holdout [10-17T00, 10-24T00) and the hour after it) or at/after the run end."""
+    if m["bt"] < WIN_START:
+        raise L.Refused(f"migration_before_window: {m['pool']} bt={m['bt']} < {WIN_START}")
+    if m["bt"] >= run_end:
+        raise L.Refused(f"migration_after_run_end: {m['pool']} bt={m['bt']}")
+
+
+def process_window_migration(out: Path, call, credits: vb.Credits, m: dict[str, Any], run_end: int, max_pages: int = 10**9) -> dict[str, Any]:
+    check_window_migration(m, run_end)
+    before = credits.used
+    pool, t0 = m["pool"], m["bt"]
+    t1 = min(t0 + WIN_HIST_S, run_end)
+    rows, st = fetch_pool(call, credits, pool, t0, t1, max_pages=max_pages, end_ts=run_end, min_bt=WIN_START)
+    meta = {k: v for k, v in m.items() if k not in ("bt", "pool", "cpmm_pool")}
+    head = {"v": vt.SCHEMA_V, "venue": VENUE, "type": "pool_meta", "src": "backfill", "slot": int(m.get("slot") or 0), "t_recv_ms": t0 * 1000, "block_time": t0,
+            "signature": m.get("signature"), "event_index": 0, "cpmm_pool": pool, **meta, "window": [t0, t1], "window_mode": True, **st}
+    write_pool_file(out, pool, [head, *rows])
+    return {"pool": pool, "status": "ok", "block_time": t0, "credits": credits.used - before, **st}
+
+
+def run_window(out: Path, call, credits: vb.Credits, migs: list[dict[str, Any]], run_end: int, cp: dict[str, Any], save: Callable[[], None] | None = None, max_pages: int = 10**9) -> int:
+    """Check every migration BEFORE any call, then process those not yet in cp['window']. Returns 0, or EXIT_CAP when the credit cap stops the run."""
+    for m in migs:
+        check_window_migration(m, run_end)
+    done = cp.setdefault("window", {})
+    for m in migs:
+        if m["pool"] in done:
+            continue
+        try:
+            r = process_window_migration(out, call, credits, m, run_end, max_pages)
+        except vb.CapReached:
+            cp["credits_used"] = credits.used
+            if save:
+                save()
+            return EXIT_CAP
+        done[m["pool"]] = r
+        cp["credits_used"] = credits.used
+        if save:
+            save()
+    return 0
+
+
 # ------------------------------------------------------------------------------------------------------------------------ main
 def acquire_slot(lockdir: str):
     Path(lockdir).mkdir(parents=True, exist_ok=True)
@@ -301,7 +377,7 @@ def acquire_slot(lockdir: str):
 
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser()
-    ap.add_argument("mode", choices=["probe", "run"])
+    ap.add_argument("mode", choices=["probe", "run", "window"])
     ap.add_argument("--out-dir", default=DEFAULT_OUT)
     ap.add_argument("--env-file", default=vb.HELIUS_ENV)
     ap.add_argument("--lockdir", default=vb.LOCKDIR)
@@ -312,7 +388,16 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--probe-from", default="2026-10-10T00", help="probe: take migrations at or after this hour")
     ap.add_argument("--wait-backfill", action="store_true", help="run: keep re-scanning until all 552 exploration hours exist (max --wait-h hours)")
     ap.add_argument("--wait-h", type=float, default=8.0)
+    ap.add_argument("--migrations", help="window: JSON list of {pool, bt, ...}")
+    ap.add_argument("--run-end", help="window: run end, ISO UTC (e.g. 2026-11-21T20:00:00Z); default now")
     a = ap.parse_args(argv)
+    if a.mode == "window":
+        if not a.migrations:
+            print("refused: window needs --migrations", file=sys.stderr)
+            return 2
+        if a.rps > 8:
+            print("refused: rps > 8", file=sys.stderr)
+            return 2
     try:
         url = vb.make_url(vb.read_key(a.env_file))
     except ValueError as exc:
@@ -364,6 +449,20 @@ def main(argv: list[str] | None = None) -> int:
             progress(f"{len(cp['migrations'])} migrations done, credits={credits.used}, last {r['status']} txs={r.get('txs')} pages={r.get('pages')}")
         return 0
 
+    if a.mode == "window":
+        run_end = int(datetime.fromisoformat(a.run_end.replace("Z", "+00:00")).timestamp()) if a.run_end else int(time.time())
+        if run_end <= WIN_START:
+            raise L.Refused("run_end_not_after_window_start")
+        migs = load_window_migrations(a.migrations)
+        for m in migs:
+            check_window_migration(m, run_end)
+        progress(f"window: {len(migs)} migrations, run_end={run_end}, cap={a.credit_cap}")
+        slot = acquire_slot(a.lockdir)
+        call = vb.http_rpc(url, vb.Pacer(a.rps))
+        rc = run_window(out, call, credits, migs, run_end, cp, lambda: vb.save_cp(cpf, cp), a.max_pages)
+        slot.close()
+        progress(f"window done rc={rc} credits_used={credits.used}")
+        return rc
     if a.mode == "probe":
         start = datetime.strptime(a.probe_from, "%Y-%m-%dT%H").replace(tzinfo=timezone.utc)
         hrs = [h for h in L.exploration_hours() if h >= start][:48]
