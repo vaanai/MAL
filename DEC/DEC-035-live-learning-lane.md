@@ -1613,101 +1613,284 @@ Paper only. Nothing here says osb-oq-v1 makes money. No book has cleared the pro
 
 ## Amendment 14 (2026-11-21): floor-lane-1 stake step 0.25 to 0.40 SOL, budget 4.00 to 5.00 SOL, daily stop 0.50 to 0.80 SOL (owner override; DRAFT)
 
-**Status: DRAFT until merge. NOT installed. It authorises nothing until QP OK and REVIEWER APPROVE at the exact head, the merge, the ceiling code PR #1476 merged, every precondition below met and recorded, the owner's word on this amendment's risk table and the owner's own install word in the Helm chat (both still OPEN, preconditions 2 and 3), and a Helm install.** Drafted 2026-11-21 (`date -u` about 05:3xZ) by a records worker for manager24, at main 095d82b5 (DEC-035 file sha256 before this amendment `cf5cc9a5ad21d7be448759f6c7a8e771dc7d735635b33183e3a22bc3bc926702`). Records only: no code, config, host, unit or live file is touched. **floor-lane-1 has not cleared the promotion gate, and nothing here says FLOOR makes money.** No gate threshold, seal or clock changes.
+**Status: DRAFT until merge. NOT installed. It authorises nothing until all of these hold: QP OK and REVIEWER APPROVE at the exact head; the merge; the ceiling code PR #1476 merged; the Am.14 ask record (precondition 2) merged; every precondition below met and recorded; the owner's word on the risk table as recomputed at the ask (precondition 2) and the owner's own install word in the Helm chat (precondition 3), both still OPEN; and a Helm install.** Drafted 2026-11-21 (`date -u` about 05:3xZ; revised about 05:4xZ for QP-RULING-1121a and the QP and reviewer findings at f3253640; the commit times are the record) by a records worker for manager24, at main 095d82b5 (DEC-035 file sha256 before this amendment `cf5cc9a5ad21d7be448759f6c7a8e771dc7d735635b33183e3a22bc3bc926702`). Records only: no code, config, host, unit or live file is touched. **floor-lane-1 has not cleared the promotion gate, and nothing here says FLOOR makes money.** No gate threshold, seal or clock changes.
 
-**Source.** `/data/mal/hunt-1008/ops/QP-RULING-1121-floor-stake-step.md` (sha256 `3e51d68e8c48754dbbb1816e99f939a8a22d0ae7d4da270e4297d5a0a8c56c67`; written by quant-proof, `date -u` 2026-11-21T05:19:44Z, at origin/main 095d82b5), §1.2 items 1 to 14, §2 (impact), §3 (model value), §4 (sequencing) and §5 (rollback). This amendment restates them; on any conflict the ruling text controls. Ruling §1.1: "A PASS at 0.25 is necessary" (QP-RULING-1120 §1.2 item 11) is a condition of the gate route, not DEC-035 text; an owner override in the Am.4/6/11/12 pattern needs no PASS, only a new amendment with the stake, a price-impact estimate at that stake and the owner's word (DEC-035 Am.6 "A stake above 0.25 SOL ... requires the owner's word in a new amendment", Am.11 "Unchanged", Am.12 "Scaling past this step").
+**Sources.**
+- `/data/mal/hunt-1008/ops/QP-RULING-1121-floor-stake-step.md` (sha256 `3e51d68e8c48754dbbb1816e99f939a8a22d0ae7d4da270e4297d5a0a8c56c67`; quant-proof, `date -u` 2026-11-21T05:19:44Z, at origin/main 095d82b5): §1.2 items 1 to 14, §2 (impact), §3 (model value), §4 (sequencing) and §5 (rollback triggers).
+- `/data/mal/hunt-1008/ops/QP-RULING-1121a-am14-rollback-target.md` (sha256 `1a0e648fbf9fb91dd78d108f438a2a43fa4aa47353b713669eabcf1e895beeed`; quant-proof, `date -u` 2026-11-21T05:38:52Z, addendum): it **supersedes** the parent ruling's §1.2 item 11, the rollback target named in its §5, and the 0.10-rung part of its item 12 (b) and (d). It also corrects the parent's no-top-up wallet-floor count (§6 erratum).
+- QP's conditions C1 to C3 on this PR at f3253640 (comment issuecomment-7058043896; report `/data/mal/hunt-1008/ops/reports/2026-11-21/qp-pr1477-am14-floor-stake-040.md`), and the reviewer's findings at the same head (issuecomment-7058033021).
+
+This amendment restates the two rulings. On any conflict the ruling text controls, with 1121a ahead of 1121 where it supersedes it.
+
+Ruling 1121 §1.1: "A PASS at 0.25 is necessary" (QP-RULING-1120 §1.2 item 11) is a condition of the gate route, not DEC-035 text. An owner override in the Am.4/6/11/12 pattern needs no PASS. It needs a new amendment with the stake, a price-impact estimate at that stake and the owner's word (DEC-035 Am.6 "A stake above 0.25 SOL ... requires the owner's word in a new amendment", Am.11 "Unchanged", Am.12 "Scaling past this step").
 
 **Decider.** Vaan (owner).
 
-**The owner's word on the step (MiScusi session chat, 2026-11-21 about 05:3xZ).** The manager's update before it showed the modelled SOL/day table (stakes 0.25, 0.40 and 0.50 under the LIVE-FIT, NOV-CENTRAL and NOV-LOW scenarios of ruling §3) and the step-back rule (ruling §5). The owner answered, verbatim:
+**The owner's word on the step (MiScusi session chat, at or before 2026-11-21T05:28:36Z, the stamp on the manager's state-file line that records it verbatim).** The manager's update before it showed:
+- the modelled SOL/day table, at stakes 0.25, 0.40 and 0.50 under the LIVE-FIT, NOV-CENTRAL and NOV-LOW scenarios of ruling 1121 §3;
+- the step-back rule (ruling 1121 §5).
 
-> "I think it's a good idea, if we can get 5 more dollars per day that seems worth it. I'm trying to get the 2 sol tomorrow, it's just taking a while, so that's on me and I'll get it asap, we just have to do with what we have for another day or two."
+The owner answered, verbatim:
 
-The manager reads this as the owner's word **on the step** to 0.40 SOL (the "5 more dollars per day" is the ruling's LIVE-FIT upside of about +0.07 SOL/day at 0.40 and budget 5.00, ruling §3.4: a model on 4 days of the running book picked after a good run, not evidence and not a forecast), and as notice that the owner's 2.0 SOL top-up has **not** landed and is expected in a day or two. It is **not** yet the owner's word on this amendment's own risk table (item 7 below), which ruling §1.2 item 1 requires ("Quote the owner's word verbatim, given on this amendment's risk table"), and it is not the install word in the Helm chat (Am.10 item 6 (d)). Both are open preconditions (2 and 3 below).
+> "I think it's a good idea, if we can get 5 more dollars per day that seems worth it. I'm trying to get the 2 sol tomorrow, it's just taking a while, so that's on me and I'll get it asap, we just have to do with what we have for another day or two. And after this bump, the next 10-12 bucks we should be working towards as much as possible."
 
-**Scope of the override.** It overrides §6 ("only through the promotion gate") for this step and for floor-lane-1 only, as Amendments 4 to 6, 11 and 12 did. It does not lower the promotion gate (CLAUDE.md): **floor-lane-1 has not cleared the gate**, and nothing in this amendment says it makes money. An override step is not a promotion (ruling §1.1).
+The manager reads this in four parts.
+- **The step.** It is the owner's word on the step to 0.40 SOL. The "5 more dollars per day" is the LIVE-FIT upside in ruling 1121 §3.4, about +0.07 SOL/day at 0.40 and budget 5.00. That figure is a model fitted to 4 days of the running book, picked after a good run. It is not evidence and not a forecast.
+- **The top-up.** The owner's 2.0 SOL top-up has **not** landed. The owner is "trying to get the 2 sol tomorrow" and says the lane will "do with what we have for another day or two".
+- **The last sentence.** "the next 10-12 bucks we should be working towards" is a direction on later targets. It is not a word for any step above 0.40. Item 14 still applies, and ruling 1121 §3.4 says 0.50 is not worth it before 12-07.
+- **What it does not cover.** It is **not** yet the owner's word on this amendment's risk table as recomputed at the ask (ruling 1121 §1.2 item 1; QP C1). It is not the install word in the Helm chat either (Am.10 item 6 (d)). Both are open preconditions (2 and 3 below).
 
-**What this amendment changes, and only this (ruling §1.2 items 2 to 6).**
+**Scope of the override.** It overrides §6 ("only through the promotion gate") for this step and for floor-lane-1 only, as Amendments 4 to 6, 11 and 12 did. It does not lower the promotion gate (CLAUDE.md): **floor-lane-1 has not cleared the gate**, and nothing in this amendment says it makes money. An override step is not a promotion (ruling 1121 §1.1).
+
+**What this amendment changes, and only this (ruling 1121 §1.2 items 2 to 6).**
 1. **Stake.** `stake_lamports` 250,000,000 to **400000000** (one value).
-2. **Budget.** `budget_lamports` (Am.3 full-wipe bound and `committed_loss_stop`) 4,000,000,000 to **5,000,000,000** (5.00 SOL). At 0.40 the 4.00 budget admits floor(4.00 / 0.40386) = 9 opens against 15 at 0.25, which turns a signal-limited book into a capital-refused one (ruling §1.2 item 4, §3.3); at 5.00 it admits floor(5.00 / 0.40386) = 12 (lifetime realized >= 0, no 0.25 position open). The step is not installed at budget 4.00 (ruling: "Do not install a step at budget 4.00").
-3. **Daily stop.** `daily_loss_lamports` 500,000,000 to **800,000,000** (0.80 SOL = 0.50 x 0.40 / 0.25, ruling §1.2 item 5, scaled). It stays marked P&L, checked before an entry only. With 12 open at 0.40 (4.84632 SOL of stake plus reserve out), 0.80 SOL is a marked fall of about 16.5%; the drop at the fill (cost stack plus the 2.22% model fill premium, item 8) uses part of that room on every new entry. Kept at 0.50 it would have been about 10.3% and would trip more often and cut trades (ruling item 5).
-4. **Code ceilings: separate T1 code PR #1476 (`claude/floor-ceiling-040`), merged before the install** (ruling §1.2 item 3). At tree `5fc473b5`: `FLOOR_LANE_STAKE_BOUNDS_LAMPORTS = (20_000_000, 250_000_000)` (`tools/floor_lane_executor.py:50`) upper bound to 400,000,000, with the test that pins it; `LANE_BUDGET_MAX_LAMPORTS = 4_000_000_000` (:58) to 5,000,000,000; `FLOOR_LANE_DAILY_MAX_LAMPORTS = 500_000_000` (:61) to 800,000,000. Nothing else in the executor's code.
-5. **Executor tree** pinned to the merge commit of PR #1476, `<AT-ASK: new tree sha (full 40 hex), the blob shas of each changed executor file, and git diff --numstat 5fc473b5..<new tree> over the Am.12 item 2 executor file list, which must show the ceiling change only>`. A tree at any other commit is a new ask (Am.10 (g) pattern).
-6. **Config.** The running Am.12 config `/etc/mal-floor-lane/live-5fc473b5256cdd1d0612fec6d460cb4a19d5bf1a-s025-b400.json` (sha256 `ff21f89286eb10af3a899a902c09b918516e76128968b214cb5809db1194bb97`, HELM-REPLY-1118-1) with exactly three values changed (`stake_lamports` 400000000, `budget_lamports` 5000000000, `daily_loss_lamports` 800000000) and no `presend_batch` key, at a new path `/etc/mal-floor-lane/live-<new tree>-s040-b500.json`, sha256 `<AT-ASK: sha256 of the new config, and Helm's diff against the s025-b400 config showing those three lines only>`, by a new drop-in `<AT-ASK: drop-in name, sorting after every drop-in present, e.g. zzzzzzzzz-s040-b500.conf>`.
+2. **Budget.** `budget_lamports` 4,000,000,000 to **5,000,000,000** (5.00 SOL). It is the Am.3 full-wipe bound and the `committed_loss_stop` budget.
+   - At 0.40 the 4.00 budget admits floor(4.00 / 0.40386) = 9 opens, against 15 at 0.25. That turns a signal-limited book into a capital-refused one (ruling 1121 §1.2 item 4, §3.3).
+   - At 5.00 it admits floor(5.00 / 0.40386) = 12, with lifetime realized >= 0 and no 0.25 position open.
+   - The step is not installed at budget 4.00 (ruling 1121: "Do not install a step at budget 4.00").
+   - **The budget is never lowered back to 4.00 by a config swap in this amendment** (ruling 1121a §2; rollback below).
+3. **Daily stop.** `daily_loss_lamports` 500,000,000 to **800,000,000** (0.80 SOL = 0.50 x 0.40 / 0.25; ruling 1121 §1.2 item 5, scaled). It stays marked P&L, checked before an entry only.
+   - With 12 open at 0.40 (4.84632 SOL of stake plus reserve out), 0.80 SOL is a marked fall of about 16.5%.
+   - The drop at the fill uses part of that room on every new entry. That drop is the cost stack plus the 2.22% model fill premium (price impact below).
+   - Kept at 0.50, it would have been about 10.3%, and the stop would trip more often and cut trades (ruling 1121 item 5).
+4. **Code ceilings: separate T1 code PR #1476 (`claude/floor-ceiling-040`), merged before the install** (ruling 1121 §1.2 item 3). At tree `5fc473b5`, in `tools/floor_lane_executor.py`:
+   - `FLOOR_LANE_STAKE_BOUNDS_LAMPORTS = (20_000_000, 250_000_000)` (:50): upper bound to 400,000,000, with the test that pins it;
+   - `LANE_BUDGET_MAX_LAMPORTS = 4_000_000_000` (:58): to 5,000,000,000;
+   - `FLOOR_LANE_DAILY_MAX_LAMPORTS = 500_000_000` (:61): to 800,000,000.
 
-**Unchanged.** `max_open` 16 (it does not bind below 12 slots); the 0.75 SOL wallet floor, held once; reserve 3,860,000 lamports per position; `rpc_rps` 4.0; `presend_batch` absent; rule `l1-floor-v2`; the decision host (never restarted); the A3 pauses; every recon band; Am.13's monitor and constants (N, X1, X2, Y1, Y2) except the rung named in item 12 (b); §2 limits other than the three values above; the seals, clocks and promotion gate. Open 0.25 positions keep their 0.25 stakes and their exits.
+   Nothing else in the executor's code changes.
+5. **Executor tree.** It is pinned to the merge commit of PR #1476: `<AT-ASK: new tree sha (full 40 hex), the blob shas of each changed executor file, and git diff --numstat 5fc473b5..<new tree> over the Am.12 item 2 executor file list, which must show the ceiling change only>`. A tree at any other commit is a new ask (Am.10 (g) pattern).
+6. **Config.** The new config is the running Am.12 config `/etc/mal-floor-lane/live-5fc473b5256cdd1d0612fec6d460cb4a19d5bf1a-s025-b400.json` (sha256 `ff21f89286eb10af3a899a902c09b918516e76128968b214cb5809db1194bb97`, HELM-REPLY-1118-1) with exactly three values changed and no `presend_batch` key:
+   - `stake_lamports` 400000000;
+   - `budget_lamports` 5000000000;
+   - `daily_loss_lamports` 800000000.
 
-**Wallet floor and slots (ruling §1.2 item 6; computed at the ask with the code's formula, `tools/floor_arena_executor.py:184-193` at `5fc473b5`).**
-- need = unlanded held stakes + 400,000,000 + 160,000 + 2,100,000 + (n + 1) x 1,600,000 + 750,000,000, against the free balance by `getBalance` before each send;
-- `committed_loss_stop` refuses when max(0, -realized) + Σ (worst case of each open order **at its own stake**: 253,860,000 for a 0.25 order, 403,860,000 for a 0.40 order) + 403,860,000 > 5,000,000,000;
-- the Am.3 full-wipe pre-send arm is computed the same way at the ask;
-- open 0.25 positions keep their 0.25 stakes in both sums until they close, so for about 24 h after the install the slot count is mixed: with k open at 0.25, budget slots for new 0.40 opens = floor((5,000,000,000 - max(0, -realized) - k x 253,860,000) / 403,860,000).
-- **Drafting estimate (QP arithmetic on the brief's figures: wallet at cost about free 1.46 + 10 x 0.25226 = 3.98 SOL, an assumption about n; not recomputed here):** wallet-floor slots at 0.40 are **8** with no top-up, **10** with +1.0 SOL and **12** with +2.0 SOL. Budget slots at 5.00: 12 (all 0.40, realized >= 0).
-- At the ask: n open = `<AT-ASK: n>` (of which 0.25 = `<AT-ASK: k>`), free balance = `<AT-ASK: lamports>`, lifetime realized = `<AT-ASK: SOL, from the lane report lifetime_realized_sol>`, top-up landed = `<AT-ASK: yes/no and amount>`, wallet-floor slot table = `<AT-ASK: slots at +0 / +1.0 / +2.0 SOL from the free balance and n by the need formula above, each further open checked at its own n>`, budget slots = `<AT-ASK: by the mixed formula above>`. **The ask states the lower of the budget count and the wallet-floor count.**
-- **Top-up.** The owner's top-up should land **before** the install, or the step thins the trade rate (ruling item 6; §3.3: 0.40 at budget 5.00 with +1 SOL keeps about 0.89-0.93 of today's throughput, model). The owner said the 2 SOL comes in "another day or two". The manager installs after it lands; an earlier install needs the ask to state the no-top-up slot count (drafting estimate 8, against 12 now at 0.25, ruling §3.3 row 1) and the owner's Helm-chat word to name that count. A top-up that lands after the install takes effect with no restart (Am.12 item 4); the manager then records the balance, n and the recomputed count the same hour.
+   It is called **s040-b500** below. Path: `/etc/mal-floor-lane/live-<new tree>-s040-b500.json`. sha256: `<AT-ASK: sha256 of the new config, and Helm's diff against the s025-b400 config showing those three lines only>`. Drop-in: `<AT-ASK: drop-in name, sorting after every drop-in present, e.g. zzzzzzzzz-s040-b500.conf>`.
 
-**Price impact (§6; ruling §2 option (A), the required minimum; model, not fills).** Flat-pool constant product, V = 18 SOL (Am.6 "Price impact"):
+**Unchanged.**
+- `max_open` 16 (it does not bind below 12 slots).
+- The 0.75 SOL wallet floor, held once.
+- Reserve 3,860,000 lamports per position.
+- `rpc_rps` 4.0, with `presend_batch` absent.
+- Rule `l1-floor-v2`.
+- The decision host (never restarted).
+- The A3 pauses and every recon band.
+- Am.13's monitor and its constants (N, X1, X2, Y1, Y2). Only the rungs named in item 12 (b) change.
+- §2 limits other than the three values above.
+- The seals, the clocks and the promotion gate.
+
+Open 0.25 positions keep their 0.25 stakes and their exits.
+
+**Wallet floor and slots (ruling 1121 §1.2 item 6; computed at the ask with the code's formula, `tools/floor_arena_executor.py:184-193` at `5fc473b5`).**
+- need = unlanded held stakes + 400,000,000 + 160,000 + 2,100,000 + (n + 1) x 1,600,000 + 750,000,000, checked against the free balance (`getBalance`) before each send.
+- `committed_loss_stop` refuses when max(0, -realized) + Σ (worst case of each open order at its own stake) + 403,860,000 > 5,000,000,000. The worst case is 253,860,000 for a 0.25 order and 403,860,000 for a 0.40 order.
+- The Am.3 full-wipe pre-send arm is computed the same way at the ask.
+- Open 0.25 positions keep their 0.25 stakes in both sums until they close, so for about 24 h after the install the slot count is mixed. With k open at 0.25, budget slots for new 0.40 opens = floor((5,000,000,000 - max(0, -realized) - k x 253,860,000) / 403,860,000).
+- **Drafting estimate.** QP arithmetic on the brief's figures, not recomputed here. Wallet at cost is about free 1.46 + 10 x 0.25226 = 3.98 SOL, an assumption about n. Wallet-floor slots at 0.40:
+  - **7** with no top-up (QP-RULING-1121a §6 erratum, correcting the parent ruling's 8: each open takes about 0.40220 SOL, and the 8th open falls short by about 0.0005 SOL before priority fees and tips);
+  - **10** with +1.0 SOL;
+  - **12** with +2.0 SOL.
+
+  Budget slots at 5.00: 12 (all at 0.40, realized >= 0).
+- At the ask:
+  - n open = `<AT-ASK: n>`, of which at 0.25 = `<AT-ASK: k>`;
+  - free balance = `<AT-ASK: lamports>`;
+  - lifetime realized = `<AT-ASK: SOL, from the lane report lifetime_realized_sol>`;
+  - top-up landed = `<AT-ASK: yes/no and amount>`;
+  - wallet-floor slot table = `<AT-ASK: slots at +0 / +1.0 / +2.0 SOL from the free balance and n by the need formula above, each further open checked at its own n>`;
+  - budget slots = `<AT-ASK: by the mixed formula above>`.
+
+  **The ask states the lower of the budget count and the wallet-floor count.**
+- **Top-up.** The owner's top-up should land **before** the install, or the step thins the trade rate. Ruling 1121 item 6 says so, and §3.3 models 0.40 at budget 5.00 with +1 SOL at about 0.89 to 0.93 of today's throughput.
+  - The owner is "trying to get the 2 sol tomorrow". The manager installs after it lands.
+  - An earlier install needs the ask to state the no-top-up slot count (drafting estimate 7, against 12 now at 0.25, ruling 1121 §3.3 row 1). The owner's Helm-chat word must then name that count.
+  - A top-up that lands after the install takes effect with no restart (Am.12 item 4). The manager then records the balance, n and the recomputed count the same hour.
+
+**Price impact (§6; ruling 1121 §2 option (A), the required minimum; model, not fills).** Flat-pool constant product, V = 18 SOL (Am.6 "Price impact"):
 
 | Stake | Post-buy price / floor ((18+q)/18)² | Average fill premium q/18 | Round-trip impact 2q²/(18+q) | As % of stake |
 | --- | --- | --- | --- | --- |
 | 0.25 | 1.02797 | 1.389% | 0.006849 SOL | 2.74% |
 | 0.40 | 1.04494 | 2.222% | **0.017391 SOL** | 4.35% |
 
-Impact per trade grows with the stake squared, the assumed gross edge linearly. The formula does not capture pools shallower than 18, sandwich or MEV at size, or sells where our size is a large share of the market's flow; the sign of that error is toward optimism (ruling §2). Option (B), live-quote depth from `tools/floor_fills_vs_model.py` (aggregates only, as ruling §2 (B) lists them), is a recommended supplement: `<AT-ASK (optional, if the (B) job has run): n_closed, n_matched, n with derived Qe, median / p10 / p90 Qe, median_entry_slip_pp, mean_entry_slip_pp, verdict; and impact(0.40) = 2 x 0.16 / (Qe + 0.40) at the median and p10 Qe, labelled model, not fills>`. The real measurement is the B1 fills check at the 10th closed 0.40 trade (rollback below), which prices the entry model at the live stake.
+- Impact per trade grows with the stake squared. The assumed gross edge grows only linearly.
+- The formula does not capture pools shallower than 18, sandwich or MEV at size, or sells where our size is a large share of the market's flow. The sign of that error is toward optimism (ruling 1121 §2).
+- Option (B), live-quote depth from `tools/floor_fills_vs_model.py`, is a recommended supplement. Only the aggregates that ruling 1121 §2 (B) lists may be read: `<AT-ASK (optional, if the (B) job has run): n_closed, n_matched, n with derived Qe, median / p10 / p90 Qe, median_entry_slip_pp, mean_entry_slip_pp, verdict; and impact(0.40) = 2 x 0.16 / (Qe + 0.40) at the median and p10 Qe, labelled model, not fills>`.
+- The real measurement is the B1 fills check at the 10th closed 0.40 trade (rollback triggers below). That tool prices the entry model at the live stake.
 
-**Model value (ruling §3; MODEL ONLY: no fills, no read, no forecast).** net(x) = g·x - 2x²/(18 + x) - 0.00032, g assumed constant in stake. Per day at 8 trades/day, throughput unconstrained (ruling §3.2): LIVE-FIT (4 days of the running book, picked after a good run, not out-of-sample) 0.205 SOL/day at 0.25 against 0.278 at 0.40; NOV-CENTRAL (in-sample) 0.056 against 0.039; NOV-LOW (stress, ex-top-3) -0.053 against -0.135. With slots (ruling §3.3, Erlang-B, offered load an assumption): 0.40 at budget 5.00 with +2 SOL keeps today's throughput (LIVE-FIT 0.278 SOL/day); with +1 SOL 0.248-0.258. **Break-even (model):** the step beats 0.25 only if the true net per trade at 0.25 is above +0.0104 SOL; equivalently the realized mean per trade at 0.40 must exceed **+0.0104 SOL**. Ruling §3.4: upside about +0.07 SOL/day (about +$5/day) if the live edge is real; downside about -0.017 SOL/day (NOV-CENTRAL) or about -0.08 SOL/day (NOV-LOW) against staying at 0.25, capped by the rollback to roughly one probation (about 30 trades; under NOV-LOW about 0.30 SOL of extra loss). The owner's $30/day (about 0.44 SOL/day) is not reachable through FLOOR's stake (model optimum about 0.32 SOL/day); the gap has to come from more signals or stacked books.
+**Model value (ruling 1121 §3; MODEL ONLY: no fills, no read, no forecast).** net(x) = g·x - 2x²/(18 + x) - 0.00032, with g assumed constant in stake.
+- **Per day at 8 trades/day, throughput unconstrained (ruling 1121 §3.2):**
+  - LIVE-FIT: 0.205 SOL/day at 0.25, against 0.278 at 0.40. It rests on 4 days of the running book, picked after a good run; it is not out-of-sample.
+  - NOV-CENTRAL (in-sample): 0.056 against 0.039.
+  - NOV-LOW (stress, ex-top-3): -0.053 against -0.135.
+- **With slots (ruling 1121 §3.3; Erlang-B, offered load an assumption):** 0.40 at budget 5.00 with +2 SOL keeps today's throughput (LIVE-FIT 0.278 SOL/day). With +1 SOL it is 0.248 to 0.258.
+- **Break-even (model):** the step beats 0.25 only if the true net per trade at 0.25 is above +0.0104 SOL. Equivalently, the realized mean per trade at 0.40 must exceed **+0.0104 SOL**.
+- **Ruling 1121 §3.4:**
+  - upside about +0.07 SOL/day (about +$5/day) if the live edge is real;
+  - downside, against staying at 0.25, about -0.017 SOL/day if NOV-CENTRAL is the truth, or about -0.08 SOL/day if NOV-LOW is;
+  - the rollback caps the downside to roughly one probation, about 30 trades (under NOV-LOW, about 0.30 SOL of extra loss).
+- The owner's $30/day (about 0.44 SOL/day) is not reachable through FLOOR's stake; the model optimum is about 0.32 SOL/day. The gap has to come from more signals or stacked books.
 
-**Risk in plain words (ruling §1.2 item 7; the owner's word must be given on these figures; recomputed at the ask).** Drafting figures use the ruling's brief (lifetime realized about +0.834 SOL; wallet at cost about 3.98 SOL with n assumed 10):
+**Risk in plain words (ruling 1121 §1.2 item 7).** The owner's word must be given on these figures as recomputed at the ask (precondition 2). Drafting figures use the parent ruling's brief: lifetime realized about +0.834 SOL, and wallet at cost about 3.98 SOL with n assumed 10.
 
 | | 0.40, budget 5.00, daily 0.80 (this amendment) | 0.25, budget 4.00, daily 0.50 (running, Am.12) |
 | --- | --- | --- |
-| Most the lane can still lose (budget + lifetime realized) | about **5.83 SOL** (5.00 + 0.834); at the ask `<AT-ASK: 5.00 + lifetime realized>` | about 4.83 SOL |
-| Most at stake at once | 12 x 0.40386 = **4.85 SOL** (with +2.0 SOL; 8 x 0.40386 = 3.23 SOL with no top-up); at the ask `<AT-ASK: slots stated x 0.40386, plus k x 0.25386 for open 0.25 positions while they last>` | 15 x 0.25386 = 3.81 SOL (budget), lower where the wallet floor binds |
-| What one UTC day can lose | min(remaining room, 0.80 + 12 x 0.40386 = **5.65 SOL**): nearly all of it, since the daily stop is checked before an entry only; at the ask `<AT-ASK: min(remaining room, 0.80 + slots stated x 0.40386)>` | min(remaining room, 0.50 + 15 x 0.2539 = 4.31) |
-| Share of the wallet that can be lost | with +2.0 SOL: wallet at cost about 5.98 SOL, lifetime bound 5.83 (about 97%), and with the 0.75 SOL floor held about 5.23 SOL (about 87%) can actually be lost; with no top-up about 3.23 of 3.98 SOL (about 81%); at the ask `<AT-ASK: (wallet at cost - 0.75) / wallet at cost, and lifetime bound / wallet at cost, with wallet at cost = free balance + open basis (+ top-up if landed)>` | about 78% at the Am.12 ask |
+| Most the lane can still lose (budget + lifetime realized) | about **5.83 SOL** (5.00 + 0.834). At the ask: `<AT-ASK: 5.00 + lifetime realized>`. It stays 5.00 + realized after any rollback (R1, R2, S10 below). | about 4.83 SOL |
+| Most at stake at once | 12 x 0.40386 = **4.85 SOL** with +2.0 SOL; 7 x 0.40386 = **2.83 SOL** with no top-up (QP-RULING-1121a §6). At the ask: `<AT-ASK: slots stated x 0.40386, plus k x 0.25386 for open 0.25 positions while they last>` | 15 x 0.25386 = 3.81 SOL (budget), lower where the wallet floor binds |
+| What one UTC day can lose | min(remaining room, 0.80 + 12 x 0.40386 = **5.65 SOL**): nearly all of it, since the daily stop is checked before an entry only. At the ask: `<AT-ASK: min(remaining room, 0.80 + slots stated x 0.40386)>` | min(remaining room, 0.50 + 15 x 0.2539 = 4.31) |
+| Share of the wallet that can be lost | With +2.0 SOL: wallet at cost about 5.98 SOL and lifetime bound 5.834, so **97.6%**; with the 0.75 SOL floor held, about 5.23 SOL (87.5%) can actually be lost. With no top-up: about 3.23 of 3.98 SOL (81.2%, floor-held). At the ask: `<AT-ASK: lifetime bound / wallet at cost, and (wallet at cost - 0.75) / wallet at cost, with wallet at cost = free balance + open basis (+ top-up if landed)>` | about 78% at the Am.12 ask |
 | One trade's full loss | 0.404 SOL | 0.254 SOL |
 | Daily P&L swings | about 1.6x larger at the same trade mix | 1x |
 | Am.13 Y2 (lifetime drawdown 1.50 SOL, unchanged) | about 3.7 full-loss positions (1.50 / 0.40386), so a STOP is more likely | about 5.9 (1.50 / 0.25386) |
 
-Positions are in distinct pools, but they are not independent: a program redeploy, an A3 burst or a market-wide dip can hit all open positions at once. Evidence is thin: the LIVE-FIT edge is 4 days chosen after a good run, the November in-sample all-entries ex-top-3 is negative at every cap tested (Am.6 Errata 2 and 3), and no live fill exists at 0.40.
+- The positions are in distinct pools, but they are not independent. A program redeploy, an A3 burst or a market-wide dip can hit all open positions at once.
+- After a step-back the risk stays inside this table (ruling 1121a §2 and §4; rollback below):
+  - **R1:** at most 16 x 0.25386 = 4.06 SOL at stake; one-day bound min(room, 0.80 + 4.06 = 4.86).
+  - **R2:** one-day bound min(room, 0.50 + 4.06 = 4.56).
+  - **S10:** at most 16 x 0.10386 = 1.66 SOL at stake; one-day bound min(room, 0.50 + 1.66 = 2.16).
+  - The lifetime bound stays **5.00 + realized** at R1, R2 and S10. A step-back slows losses; it does not lower the cap (Am.13 (h) wording).
+- Evidence is thin:
+  - the LIVE-FIT edge is 4 days chosen after a good run;
+  - the November in-sample all-entries ex-top-3 is negative at every cap tested (Am.6 Errata 2 and 3);
+  - no live fill exists at 0.40.
 
-**Install preconditions (all recorded in the state file before the HELM-ASK; ruling §1.2 item 9, Am.12 pattern).**
-1. QP OK and REVIEWER APPROVE at the exact head of this amendment's PR, merged. The ceiling PR #1476 merged at its own exact-head QP OK and REVIEWER APPROVE. **md5 decision-equivalence replay** (CLAUDE.md runner rule; `tools/floor_exec_equiv.py`, per-row form as in Am.12 precondition 2) of the recorded host decision rows through tree `5fc473b5` and the new tree, both with the running s025-b400 config: every run equal md5, rc 0, matching row kinds, dropped keys none (unless the ceiling PR names a new row key, which the record then lists), plus one run where the wallet floor binds; result notebooked: `<AT-ASK: job number, run count, all-equal yes/no, notebook id>`. Executor tests at the new tree (`tools/test_floor_lane_executor.py` with the new pinned ceilings) pass in a manager job: `<AT-ASK: job number, pass count>`.
-2. **OPEN: the owner's word on this amendment's risk table** (ruling §1.2 items 1 and 7). The quote above is the owner's word on the step and the SOL/day table, not on the table under "Risk in plain words". The manager shows the owner that table (lifetime bound about 5.83 SOL, most at stake about 4.85 SOL, one-day bound about 5.65 SOL, share of wallet, 0.404 SOL per trade, 1.6x swings, Y2 at 3.7 positions) and quotes the answer verbatim in a T1 erratum to this amendment or in the install record before the install.
-3. **OPEN: the owner's own install word in the Helm chat** (Am.10 item 6 (d); Am.12 precondition 8): the install moves the executor tree, so it is new code, outside the owner's 2026-11-13 restart pre-approval. As in Am.12 QP condition C1, that word names the 0.40 stake, the 5.00 budget, the 0.80 daily stop, the lifetime bound and the one-day bound as stated in the ask, **and names the rollbacks below** (to the s025-b400 config on `5fc473b5`), so that Helm can run them with no further owner word (Am.10 (h) / Am.12 pattern; Am.13 item 1 (d): a stake change is a config change and the 11-13 pre-approval does not cover it). It is quoted in the install record.
-4. The top-up landed, or the slot table computed without it and stated in the ask (wallet floor and slots above).
-5. Lane STOP file, wallet-wide STOP and HALT absent; the A3 guard not pausing FLOOR; no install within 15 minutes before a time stop.
-6. Open positions, lane cash, free balance, n and lifetime realized recorded at the ask (an executor restart empties the marks, Am.4 item 6), with the risk and slot tables recomputed from them.
-7. **Am.10 item 5 window.** The Am.12 start line opened window 3; this install is a code and config change and ends any open window, and "no second install is made inside a window" before its 10th buy. State at the ask: `<AT-ASK: window 3 (and any later window) state: 10th live buy reached and read (item 5 (a), (c)) and notebooked, or the reason it is not>`. A (c) trigger (more than 1 counted row) stops this amendment and leads to the Am.10 rollback first. Before the install the manager updates `am10-measure.sh` to open the next window at the new start line (matching the `rpc_rps=4.0` field), and a manager job confirms the script catches it.
-8. **The 14-day `CANARY_MAX_MS` window** (`CANARY_MAX_MS = 14 * 86_400_000`, `tools/floor_arena_executor.py:66` at `5fc473b5`; QP-RULING-1120 §1.2 item 7). The ruling's "expiry about 2026-11-30T17Z" predates the manager's record of the 11-21 check: the state file line stamped 2026-11-21T00:05:14Z records the window-reset check job #2353 as "RESET-DONE at 00:05:00Z (first_send_ms 1794876902824 ...)", and the line stamped 00:05:17Z gives first send 2026-11-17T00:55:02.824Z and window end 2026-12-01T00:55:02Z. Not re-read from a host here. The ask states `<AT-ASK: window start (first_send_ms and its UTC instant) and expiry, from the reset record and floor-state at the ask>` and either bundles a recorded reset (`first_send_ms` to null, Helm, as the 2026-11-16 reset record) with this restart, or says when it will be reset. A lapse inside the probation would read as a step failure. A reset bundled now starts a window ending about 14 days after the first 0.40 send, which falls inside [S', R') (item 13), so the S' registration must still pre-commit a reset or the limit's removal (QP-RULING-1120 §1.2 item 7).
-9. **Pre-staged configs** (Am.13 item 1 (b), ruling §1.2 items 11 and 12 (d)): the rollback target, the running s025-b400 config on `5fc473b5` and its drop-ins, stays on disk unchanged (sha256 `ff21f89286eb10af3a899a902c09b918516e76128968b214cb5809db1194bb97` re-confirmed at the ask); and the 0.10 step-down config re-derived on the new tree and config, `/etc/mal-floor-lane/live-<new tree>-s010-b500.json` = the new config with only `stake_lamports` 100000000, sha256 `<AT-ASK: sha256 of the re-derived s010 config and Helm's one-line diff against the new config>`.
-10. **Install by Helm, one HELM-ASK**, executor-only restart (never the host). The ask quotes the owner's words (the step word above and the words of preconditions 2 and 3), lists each precondition 1 to 9 as met or not met, and states the recon state as it stands (Am.11 install record lesson). It names the new tree with its blob shas, the new config path and sha256 with its three-line diff, the new drop-in, both pre-staged configs, and the rollbacks below. It confirms that `funded_lamports` and `wallet_floor_lamports` are unchanged (floor 750,000,000 lamports).
+**Install preconditions (Am.12 pattern; ruling 1121 §1.2 item 9).** All are recorded in the state file before the HELM-ASK. **No install happens while any `<AT-ASK: …>` value in this amendment, other than the optional §2 (B) figures, is unfilled** (reviewer m1). Every filled value is recorded in the Am.14 ask record (precondition 2) and quoted in the HELM-ASK and the install record.
 
-**Post-install check (ruling §1.2 item 10).** The executor start line must end exactly `stake=400000000 rpc_rps=4.0 presend_batch=false`. Any other tail is a failed install, and the rollback runs at once. The 0.40 start-line instant is recorded; it starts the 0.40 population for Am.13 and for B1-B5. The restart is recorded in LAB_STATE (CLAUDE.md mid-week restart rule) with the start line as printed.
+1. **Merges, replay and tests.**
+   - This amendment has QP OK and REVIEWER APPROVE at its exact head and is merged.
+   - The ceiling PR #1476 is merged with its own exact-head QP OK and REVIEWER APPROVE.
+   - **md5 decision-equivalence replay** (CLAUDE.md runner rule): `tools/floor_exec_equiv.py` in its per-row form, as in Am.12 precondition 2. It replays the recorded host decision rows through tree `5fc473b5` and through the new tree, both with the running s025-b400 config. Every run has equal md5, rc 0 and matching row kinds, with no dropped keys (unless the ceiling PR names a new row key, which the record then lists). It includes one run where the wallet floor binds. The result is notebooked: `<AT-ASK: job number, run count, all-equal yes/no, notebook id>`.
+   - Executor tests at the new tree (`tools/test_floor_lane_executor.py` with the new pinned ceilings) pass in a manager job: `<AT-ASK: job number, pass count>`.
+   - Optional (QP M3): a dry config-load of s040-b500 on the new tree, so a bound or validation refusal shows before the restart.
+2. **OPEN: the Am.14 ask record, and in it the owner's word on the recomputed risk table** (QP C1; ruling 1121 §1.2 items 1 and 7).
+   - There is ONE Am.14 ask record, a T1 records PR (an erratum or ask record to this amendment). It has QP OK and REVIEWER APPROVE at its exact head and is **merged before the HELM-ASK**.
+   - It fills every `<AT-ASK: …>` token. Any token left unfilled means "precondition not met".
+   - It shows the risk and slot tables recomputed at the ask's n, k, free balance, lifetime realized and top-up state.
+   - It gives R1, R2 and S10 with their paths, sha256 and one-key diffs (precondition 9).
+   - It states the C3 disclosures (rollback below, "Disclosures").
+   - It quotes verbatim the owner's word **on those recomputed figures**.
+   - The quote above is the owner's word on the step and on the SOL/day table, not on the risk table. The install record is **not** a route for this word, because an install record is written after the install.
+3. **OPEN: the owner's own install word in the Helm chat** (Am.10 item 6 (d); Am.12 precondition 8). The install moves the executor tree, so it is new code and falls outside the owner's 2026-11-13 restart pre-approval.
+   - As in Am.12 QP condition C1, that word names: the 0.40 stake, the 5.00 budget, the 0.80 daily stop, and the lifetime and one-day bounds as recomputed in the ask record.
+   - It **names the rollbacks R1 and R2 and the 0.10 rung S10** (rollback below), so that Helm can run them with no further owner word (Am.10 (h) / Am.12 pattern; ruling 1121a §3).
+   - Without that word, each of them needs the owner's word at the time. Am.13 item 1 (d) applies: a stake change is a config change, and the 11-13 pre-approval does not cover it.
+   - The word is quoted in the install record.
+4. **Top-up.** The top-up has landed, or the slot table is computed without it and stated in the ask (wallet floor and slots above).
+5. **Lane state.** The lane STOP file, wallet-wide STOP and HALT are absent. The A3 guard is not pausing FLOOR. No install within 15 minutes before a time stop.
+6. **Recorded at the ask.** Open positions, lane cash, free balance, n and lifetime realized are recorded (an executor restart empties the marks, Am.4 item 6). The risk and slot tables are recomputed from them.
+7. **Am.10 item 5 window.**
+   - The Am.12 start line opened window 3. This install is a code and config change, so it ends any open window. "No second install is made inside a window" before its 10th buy.
+   - State at the ask: `<AT-ASK: window 3 (and any later window) state: 10th live buy reached and read (item 5 (a), (c)) and notebooked, or the reason it is not>`.
+   - A (c) trigger (more than 1 counted row) stops this amendment, and the Am.10 rollback runs first.
+   - Before the install the manager updates `am10-measure.sh` to open the next window at the new start line (matching the `rpc_rps=4.0` field). A manager job confirms the script catches it.
+8. **The 14-day `CANARY_MAX_MS` window.** The code is `CANARY_MAX_MS = 14 * 86_400_000`, `tools/floor_arena_executor.py:66` at `5fc473b5` (QP-RULING-1120 §1.2 item 7).
+   - The ruling's "expiry about 2026-11-30T17Z" predates the manager's record of the 11-21 check. The state-file line stamped 2026-11-21T00:05:14Z records window-reset check job #2353 as "RESET-DONE at 00:05:00Z (first_send_ms 1794876902824 ...)". The line stamped 00:05:17Z gives first send 2026-11-17T00:55:02.824Z and window end 2026-12-01T00:55:02Z. Neither was re-read from a host here.
+   - The ask states `<AT-ASK: window start (first_send_ms and its UTC instant) and expiry, from the reset record and floor-state at the ask>`.
+   - The ask either bundles a recorded reset with this restart (`first_send_ms` to null, by Helm, as in the 2026-11-16 reset record) or says when the reset will happen. A lapse inside the probation would read as a step failure.
+   - A reset bundled now starts a window that ends about 14 days after the first 0.40 send. That end falls inside [S', R') (item 13), so the S' registration must still pre-commit a reset or the limit's removal (QP-RULING-1120 §1.2 item 7).
+9. **Pre-staged configs** (ruling 1121a §2 to §4, replacing the earlier definition here). Helm writes R1, R2 and S10 **before** the install HELM-ASK, as files only: nothing is enabled or restarted.
+   - Each is defined in the rollback section below, on the new tree.
+   - For each file the ask record gives its path, its sha256 and Helm's diff showing **exactly one key**:
+     - R1 differs from s040-b500 in `stake_lamports`;
+     - R2 differs from R1 in `daily_loss_lamports`;
+     - S10 differs from R2 in `stake_lamports`.
+   - The ask record also gives each drop-in's name and confirms the sort order: s040-b500, then R1, then R2. S10's drop-in is `<AT-ASK: S10 drop-in name and its sort position>`.
+   - Values to fill: `<AT-ASK: R1 path, sha256, one-key diff>`, `<AT-ASK: R2 path, sha256, one-key diff>`, `<AT-ASK: S10 path, sha256, one-key diff>`, `<AT-ASK: drop-in names and sort order>`.
+   - The old s025-b400 config on `5fc473b5` (sha256 `ff21f89286eb10af3a899a902c09b918516e76128968b214cb5809db1194bb97`) and its drop-ins stay on disk unchanged. They are re-confirmed at the ask, for the install-failure exception only.
+10. **Install by Helm, one HELM-ASK**, executor-only restart (never the host).
+    - The ask quotes the owner's words: the step word above and the words of preconditions 2 and 3.
+    - It lists each precondition 1 to 9 as met or not met, and states the recon state as it stands (Am.11 install record lesson).
+    - It names the new tree with its blob shas, the s040-b500 path and sha256 with its three-line diff, the new drop-in, R1, R2 and S10 with their sha256, and the rollbacks below.
+    - It confirms that `funded_lamports` and `wallet_floor_lamports` are unchanged (floor 750,000,000 lamports).
 
-**Rollback (ruling §1.2 item 11; one pre-staged target).** Remove the new drop-in, daemon-reload, executor-only restart. That returns to the running Am.12 config (`live-5fc473b5256cdd1d0612fec6d460cb4a19d5bf1a-s025-b400.json`, sha256 `ff21f89286eb10af3a899a902c09b918516e76128968b214cb5809db1194bb97`) on tree `5fc473b5`; the start line must end `stake=250000000 rpc_rps=4.0 presend_batch=false`. Install failures (a failed start line, or an owner stop) run it at once.
+**Post-install check (ruling 1121 §1.2 item 10).**
+- The executor start line must end exactly `stake=400000000 rpc_rps=4.0 presend_batch=false`.
+- Any other tail is a failed install, and the install-failure rollback below runs at once.
+- The 0.40 start-line instant is recorded. It starts the 0.40 population for Am.13 and for B1 to B5.
+- The restart is recorded in LAB_STATE (CLAUDE.md mid-week restart rule) with the start line as printed.
 
-**Rollback triggers (ruling §5, restated; the ruling text controls).** The hourly job evaluates these from the lane daily report keys of ruling §2 (D) only, the decay monitor's population lines and the fills tool's `verdict`. All are counted on the 0.40 population only: closed trades since the 0.40 start line, realized SOL after all fees, nothing dropped (EXP-029 §2 trade definition).
-- **B1, fills: one check.** At the first hourly at or after the 10th closed 0.40 trade, run `tools.floor_fills_vs_model --since <0.40 start-line instant>`. If it prints `FILLS_MATCH_MODEL no`, step back to 0.25.
-- **B2, early loss: every hourly.** If the 0.40 population realized is <= **-0.80 SOL** (-2 s), step back to 0.25. This fires before Am.13's X2 (-3 s = 1.20 SOL drawdown).
-- **B3, impact break-even: one decision.** At the first hourly at or after the **30th** closed 0.40 trade, if the population realized sum is < **+0.312 SOL** (mean < +0.0104 SOL/trade, the ruling §3.2 break-even), step back to 0.25. This is a sizing rule, not a test. With an assumed σ of 0.061 SOL/trade at 0.40 (QP-RULING-1120 Q4 σ about 0.038 at 0.25, scaled x1.6): if the true mean is the LIVE-FIT +0.0348, the chance of a needless step-back is about 1.4% (about 7% if σ is 0.09); at the break-even it is 50%; if the truth is NOV-CENTRAL +0.0049, the chance that the step wrongly survives is about 31%. If 30 closes have not happened by S' - 24 h, S' moves later. B3 is never skipped.
-- **B4, Am.13 flags: every hourly (per-close once the monitor code PR is merged).** X1 or X2 in the 0.40 population means step back to 0.25 (this amendment replaces Am.13's 0.10 rung for this population only). Y1 or Y2 means the lane STOP file, exactly as Am.13 item 2.
-- **B5, capacity: every hourly in the first 48 h.** If `committed_loss_stop` or `wallet_floor` refusals appear in >= 3 hourly prints in any 24 h while the open count is below the slot count stated in the ask, the slot arithmetic was wrong. The manager records it and asks QP. It is not a step-back by itself.
+**Rollback targets (QP-RULING-1121a §2 to §4; they replace ruling 1121 §1.2 item 11 and its §5 target).**
 
-Every step-back is one HELM-ASK covered by the owner's install word (precondition 3); starts a new 0.25 population; is recorded the same hour (state line, notebook kind decision, LAB_STATE restart row); and is told to the owner in the next update, with the realized figure as it is. After S', B1-B3 are spent, and only B4 applies, as a FAIL end of the read.
+The rulings give the reason. After an executor restart the marks are empty, so the lane counts every open position at 0. A budget lowered to 4.00 while 0.40 positions are open can then trip `lane_budget_stop`, which writes the lane STOP file (`floor_lane_executor.py:215-216, 522-523` at `5fc473b5`). Even when it does not, `committed_loss_stop` and the full-wipe pre-send refuse every new entry. At the same budget the invariant holds: every entry passed `committed_loss_stop`, so ledger cash > -budget at any later restart (ruling 1121a §1).
+- **R1 = s040-b500 with exactly one value changed: `stake_lamports` 400000000 to 250000000.**
+  - Budget stays 5,000,000,000, daily stop stays 800,000,000, and every other key is unchanged.
+  - Tree: the #1476 merge commit, the Am.14 tree. It is the tree whose decisions the precondition 1 md5 replay shows equal to `5fc473b5` with the s025 config. No other tree may be used.
+  - Path `/etc/mal-floor-lane/live-<new tree>-s025-b500.json`, with its own drop-in sorting after the s040-b500 drop-in.
+  - A step-back is one HELM-ASK: R1's drop-in is enabled, then daemon-reload and an executor-only restart. R1's start line ends `stake=250000000 rpc_rps=4.0 presend_batch=false`.
+- **R2 = R1 with exactly one value changed: `daily_loss_lamports` 800,000,000 to 500,000,000.**
+  - Path `/etc/mal-floor-lane/live-<new tree>-s025-b500-d050.json`, with a drop-in sorting after R1's.
+  - The manager files the R2 HELM-ASK in the first hourly after a rollback to R1 at which no 0.40 position is open (every 0.40 intent closed or written off in the lane ledger). Never within 15 minutes before a time stop. Executor-only restart.
+  - 0.80 is kept while 0.40 positions are open because they carry 0.40-sized marked swings; 0.50 is the owner's daily stop at 0.25 (Am.12). A daily-stop trip only refuses entries and never writes the STOP file.
+- **S10 = R2 with exactly one value changed: `stake_lamports` to 100000000.**
+  - Budget 5.00 and daily stop 0.50, on the new tree. Path `/etc/mal-floor-lane/live-<new tree>-s010-b500.json`.
+  - It is the one 0.10 target in every case after the Am.14 install (item 12 (b) and (d); "Disclosures" (iii)).
+- **The budget stays 5.00 after any rollback.** It is never lowered by a config swap in this amendment. Going back to budget 4.00 needs its own T1 record, with QP, a rollback-time ledger-cash check (cash > -4.00 + 0.10 SOL with marks empty) and the owner's word.
+- **Install-failure exception.** Suppose the Am.14 install fails its start-line check and the lane ledger shows **no** `send_intent` at 400000000 since the start line. Then the target may be the old s025-b400 on `5fc473b5`: remove the new drop-in, daemon-reload, executor-only restart, and the start line ends `stake=250000000 rpc_rps=4.0 presend_batch=false`. Once any 0.40 intent exists, only R1 is used. An owner stop is handled the same way: s025-b400 if no 0.40 intent exists, R1 otherwise.
+- **Post-rollback check.**
+  - R1's start line cannot be told apart from the old s025-b400 by the start line alone. So Helm's reply gives the active drop-in (`systemctl cat` or equivalent) and **the sha256 of the config file loaded**.
+  - These must equal R1's (or R2's, or S10's) recorded sha256, or s025-b400's under the install-failure exception.
+  - Any mismatch, or any other start-line tail, is a failed rollback. The manager writes the lane STOP file at once (Am.13 item 1 (a) pattern; the item 2 command) and files one HELM-ASK to fix it.
+- **Rollback-time check** (ruling 1121a §3, a guard, not the target). Before every rollback ask, the manager records the empty-mark lane P&L = lifetime realized - Σ cost of open positions, from the lane report or ledger aggregates. If it is <= -4.99 SOL, the manager writes the lane STOP file first, rolls back anyway (exits keep running) and asks QP. That can happen only by fee drift on failed sells.
 
-**Amendment 13 (decay monitor) interaction (ruling §1.2 item 12).**
+**Disclosures (QP C3; also stated in the ask record).**
+- (i) **After any step-back, the lifetime bound stays 5.00 + realized**, not 4.00 + realized, until this amendment's budget is changed by its own T1 record. While 0.40 positions are open, new 0.25 entries are refused by `committed_loss_stop` or the full-wipe pre-send until enough of them close: at k = 12 with r >= 0, 4.846 + 0.254 = 5.10 > 5.00. These are refusals, not a STOP. They can last up to the open 0.40 positions' time stops, about 24 h.
+- (ii) **A step-back (or R2 or S10) whose start line has any other tail, or whose loaded-config sha256 does not match, means the lane STOP file at once**, then one HELM-ASK to fix it.
+- (iii) **When S10 is used.** S10 is used for:
+  - the Am.13 item 2 resumption at 0.10 after a Y STOP, whether in the 0.40 population or in a 0.25 population on R1/R2;
+  - Am.13 exit 10 in a 0.25 population on R1/R2.
+
+  It runs at budget 5.00, so its lifetime bound is 5.00 + realized, not 4.00. Am.13's `s010-b400` on `5fc473b5` is never used after the Am.14 install (ruling 1121a §4). This supersedes QP C3 (iii)'s narrower "Y STOP in the 0.40 population only".
+
+**Rollback triggers (ruling 1121 §5, restated, with R1 as the target per ruling 1121a §5 and the counting sources per QP C2; the ruling text controls).** The hourly job evaluates them from three sources only: the lane daily report keys of ruling 1121 §2 (D), the decay monitor's population lines, and the fills tool's `verdict`. All are counted on the 0.40 population only (EXP-029 §2 trade definition): realized SOL after all fees, nothing dropped.
+
+**B2 and B3 count the monitor's 0.40 population only** (QP C2). They use `n_closed_population` and `realized_population_lamports`, from a run whose `stake_basis` is the latest ledger start row and whose stake is 400000000. A 0.25 intent that closes after the 0.40 start line counts toward Y2 and lifetime only, never toward B2 or B3. If the monitor prints any other stake basis, that is the Am.13 item 3 alert, and B2 and B3 are computed by hand on the same definition.
+
+- **B1, fills: one check.** At the first hourly at or after the 10th closed 0.40 trade, run `tools.floor_fills_vs_model --config /etc/mal-floor-lane/live-<new tree>-s040-b500.json --since <0.40 start-line instant>`. The config is read for paths only, and `--since` filters by send_intent instant, so 0.25 intents are excluded. If it prints `FILLS_MATCH_MODEL no`, step back to R1.
+- **B2, early loss: every hourly.** If the 0.40 population realized is <= **-0.80 SOL** (-2 s), step back to R1. This fires before Am.13's X2 (-3 s = 1.20 SOL drawdown). At R1 the restart cannot trip `lane_budget_stop` (ruling 1121a §5).
+- **B3, impact break-even: one decision.** At the first hourly at or after the **30th** closed 0.40 trade, step back to R1 if the population realized sum is < **+0.312 SOL**. That is a mean below +0.0104 SOL/trade, the ruling 1121 §3.2 break-even.
+  - This is a sizing rule, not a test. It assumes σ of 0.061 SOL/trade at 0.40 (QP-RULING-1120 Q4 σ about 0.038 at 0.25, scaled x1.6).
+  - If the true mean is the LIVE-FIT +0.0348, the chance of a needless step-back is about 1.4% (about 7% if σ is 0.09).
+  - At the break-even the chance is 50%.
+  - If the truth is NOV-CENTRAL +0.0049, the chance that the step wrongly survives is about 31%.
+  - If 30 closes have not happened by S' - 24 h, S' moves later. B3 is never skipped.
+- **B4, Am.13 flags: every hourly (per-close once the monitor code PR is merged).** X1 or X2 in the 0.40 population means step back to R1. This amendment replaces Am.13's 0.10 rung for this population only. Y1 or Y2 means the lane STOP file, exactly as Am.13 item 2; resumption is at S10 only.
+- **B5, capacity: every hourly in the first 48 h.** Suppose `committed_loss_stop` or `wallet_floor` refusals appear in >= 3 hourly prints in any 24 h while the open count is below the slot count stated in the ask. Then the slot arithmetic was wrong: the manager records it and asks QP. It is not a step-back by itself.
+
+Every step-back:
+- is one HELM-ASK covered by the owner's install word (precondition 3);
+- goes to R1, then to R2 by the R2 rule above;
+- starts a new 0.25 population;
+- is recorded the same hour (state line, notebook kind decision, LAB_STATE restart row);
+- is told to the owner in the next update, with the realized figure as it is.
+
+After S', B1 to B3 are spent, and only B4 applies, as a FAIL end of the read.
+
+**Amendment 13 (decay monitor) interaction (ruling 1121 §1.2 item 12, with ruling 1121a §4).**
 - (a) The monitor's population restarts at the 0.40 start row (Am.13: "a stake change starts a new population"). At s = 0.40: X1 **-0.020 SOL/trade**, X2 **1.20 SOL**, Y1 **-0.060 SOL/trade**. Below 20 closed trades only X2 and Y2 apply.
-- (b) **Exit 10 in the 0.40 population steps to 0.25 (the rollback above), not to 0.10.** Am.13 item 1 names 0.10 for the 0.25 population. This amendment's 0.25 target replaces that rung for the 0.40 population only. Back at 0.25, Am.13 applies as written, including its 0.10 rung (the s010-b400 config on `5fc473b5`, which then again follows the running config).
-- (c) Y2 stays **1.50 SOL absolute** (lifetime drawdown). That is about 3.7 full-loss positions at 0.40 against about 5.9 at 0.25, so a STOP is more likely. It is disclosed here and not widened: it is the owner's lifetime brake.
-- (d) Am.13 item 1 (b): the pre-staged 0.10 step-down config is re-derived on the new tree and config ("the step-down target follows the running config, never an older tree"), with its sha256 in the ask (precondition 9).
-- (e) Back up from 0.25 to 0.40 after any rollback is never automatic. It uses the Am.13 item 4 pattern: >= 20 closed at 0.25 since the rollback, realized >= 0 over them, last-20 mean >= +0.05 s, no flag, a T1 step record with QP OK at its exact head, and the owner's word quoted in that record.
+- (b) **Exit 10 in the 0.40 population steps to 0.25 (R1, then R2), not to 0.10.** Am.13 item 1 names 0.10 for the 0.25 population. This amendment's 0.25 target replaces that rung for the 0.40 population only. **Back at 0.25 (R1/R2), Am.13 applies as written, with S10 as its 0.10 rung** (ruling 1121a §4).
+- (c) Y2 stays **1.50 SOL absolute** (lifetime drawdown). That is about 3.7 full-loss positions at 0.40, against about 5.9 at 0.25, so a STOP is more likely. It is disclosed here and not widened, because it is the owner's lifetime brake. The reviewer of PR #1476 made the same point; Y2 is not changed.
+- (d) Am.13 item 1 (b): "the step-down target follows the running config, never an older tree". After the Am.14 install, the 0.10 step-down target is **S10** (R2 with `stake_lamports` 100000000: budget 5.00, daily 0.50, new tree), not a copy of s040-b500 and not Am.13's `s010-b400` on `5fc473b5`. Its sha256 is in the ask record (precondition 9). At S10, `max_open` 16 binds: at most 1.66 SOL at stake, a one-day bound of min(room, 2.16) and a lifetime bound of 5.00 + realized. The Am.13 (h) risk line is restated with these figures in the ask record.
+- (e) **Re-arm.** Back up from 0.25 to 0.40 after any rollback is never automatic, and it goes to s040-b500. It uses the Am.13 item 4 pattern: >= 20 closed at 0.25 since the rollback, realized >= 0 over them, last-20 mean >= +0.05 s, no flag, a T1 step record with QP OK at its exact head, and the owner's word quoted in that record. Re-arm from 0.10 to 0.25 (Am.13 item 4) goes to R2, with the same conditions.
 
-**Interaction with the gate read (ruling §1.2 item 13 and §4).** No floor-lane-1 registration is open, and none is opened or changed here. The step and its probation (B1-B3) finish **before** S'. Sequencing (targets; each depends on the gate before it): owner word on the risk table and the top-up 11-21 to 11-22; this amendment and PR #1476 merged, md5 replay equal, tests pass, configs pre-staged, the 14-day window reset bundled or scheduled, and the HELM-ASK 11-22 to 11-23; **install target 2026-11-23**, outside the 15 minutes before any time stop; B1 fills check at the 10th closed 0.40 trade (about 11-24/25); B3 at the 30th (about 11-26/27 at 8/day). A CE1 switch goes under its own bot_id (QP-RULING-1120 Q5) and starts at whatever stake FLOOR holds after the probation.
-- **S' registration.** Merged with S' still in the future: **S' = 2026-11-28T00:00:00Z at the earliest**, or the first 00:00Z after the probation decision and any CE1 install, whichever is later. Its one deciding stake is the stake that survived the probation: **400000000**, or 250000000 if a rollback ran. At 8 trades/day C' is about 2026-12-11T00:00Z and R' about 2026-12-12T01:00Z (at 6/day R' about 12-16). The read lands after 12-07 on either path; what 12-07 gets is the live P&L at the larger stake, not a gate result.
-- **No stake step, budget-down or rule change inside [S', R').** Each one is a FAIL end (QP-RULING-1120 §1.2 item 6, Q5). The registration pre-declares the Am.13 step-down and STOP as FAIL ends. The owner is told **before** S' that any further step (for example to 0.50) during the read ends it FAIL.
+**Interaction with the gate read (ruling 1121 §1.2 item 13 and §4).** No floor-lane-1 registration is open, and none is opened or changed here. The step and its probation (B1 to B3) finish **before** S'.
+
+Sequencing targets (each depends on the gate before it):
+1. 11-21 to 11-22: the owner's word on the risk table, and the top-up.
+2. 11-22 to 11-23: this amendment and PR #1476 merged; the md5 replay equal; the tests pass; R1, R2 and S10 pre-staged; the 14-day window reset bundled or scheduled; the ask record merged; the HELM-ASK.
+3. **Install target 2026-11-23**, outside the 15 minutes before any time stop.
+4. B1 fills check at the 10th closed 0.40 trade (about 11-24/25).
+5. B3 at the 30th (about 11-26/27 at 8/day).
+
+A CE1 switch goes under its own bot_id (QP-RULING-1120 Q5). It starts at whatever stake FLOOR holds after the probation.
+
+- **S' registration.** It is merged with S' still in the future.
+  - **S' = 2026-11-28T00:00:00Z at the earliest**, or the first 00:00Z after the probation decision and any CE1 install, whichever is later.
+  - Its one deciding stake is the stake that survived the probation: **400000000**, or 250000000 (R1/R2 at budget 5.00) if a rollback ran. The registration states its budget and daily stop as they are at S'.
+  - At 8 trades/day, C' is about 2026-12-11T00:00Z and R' about 2026-12-12T01:00Z. At 6/day, R' is about 12-16.
+  - The read lands after 12-07 on either path. What 12-07 gets is the live P&L at the larger stake, not a gate result.
+- **No stake step, budget-down or rule change inside [S', R').** Each one is a FAIL end (QP-RULING-1120 §1.2 item 6, Q5). The registration pre-declares the Am.13 step-down and STOP as FAIL ends. The owner is told **before** S' that any further step during the read (for example to 0.50) ends it FAIL.
 - The F set of EXP-029 Erratum 1g rule 3 keeps every trade since S = 2026-11-09T06:00:00Z in raw SOL: mixed stakes, no normalisation (QP-RULING-1120 Q2).
 
-**Scaling past this step (ruling §1.2 item 14).** A stake above 0.40 SOL or a budget above 5.00 SOL needs a new amendment with the owner's word and a price-impact estimate (§6), plus a code-ceiling PR for anything above the new ceilings. Ruling §3.4: 0.50 is not worth it before 12-07.
+**Scaling past this step (ruling 1121 §1.2 item 14).** A stake above 0.40 SOL or a budget above 5.00 SOL needs a new amendment with the owner's word and a price-impact estimate (§6). Anything above the new ceilings also needs a code-ceiling PR. The owner's "next 10-12 bucks" is a direction, not such a word. Ruling 1121 §3.4: 0.50 is not worth it before 12-07.
 
 No book has cleared the promotion gate. floor-lane-1 has not cleared the promotion gate. Nothing here says FLOOR makes money.
