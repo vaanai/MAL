@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from pathlib import Path
 from datetime import datetime, timezone
 
 import pytest
@@ -21,7 +22,7 @@ RUN_END = ts("2026-11-21T20:00:00Z")
 
 
 def test_win_start_constant():
-    assert C.WIN_START == WIN and C.WIN_HIST_S == 21 * 86400
+    assert C.WIN_START == WIN and C.WIN_HIST_S == 225 * 3600
 
 
 @pytest.mark.parametrize("bt", [ts("2026-10-23T23:59:59Z"), ts("2026-10-24T00:59:59Z"), ts("2026-10-17T00:00:00Z"), ts("2026-10-10T00:00:00Z")])
@@ -67,7 +68,7 @@ def test_row_drops_counted_before_window_and_after_run_end():
     assert calls[0] == {"gte": t0, "lt": min(t0 + C.WIN_HIST_S, RUN_END)}
 
 
-def test_history_is_21_days_or_run_end():
+def test_history_is_225_hours_or_run_end():
     seen = []
 
     def call(method, params):
@@ -80,7 +81,7 @@ def test_history_is_21_days_or_run_end():
     with tempfile.TemporaryDirectory() as d:
         C.process_window_migration(Path(d), call, Credits(10**6), {"pool": "P1", "bt": WIN}, RUN_END)
         C.process_window_migration(Path(d), call, Credits(10**6), {"pool": "P2", "bt": RUN_END - 3600}, RUN_END)
-    assert seen == [WIN + 21 * 86400, RUN_END]
+    assert seen == [WIN + 225 * 3600, RUN_END]
 
 
 def test_run_window_refuses_whole_list_before_any_call(tmp_path):
@@ -133,9 +134,42 @@ def test_load_migrations_plain_list_and_step1b_shape(tmp_path):
         C.load_window_migrations(str(f))
 
 
-def test_main_window_refuses_rps_over_8_and_missing_list(capsys):
-    assert C.main(["window", "--rps", "9", "--migrations", "x"]) == 2
-    assert C.main(["window"]) == 2
+def test_main_window_refuses_rps_over_8_and_missing_list(capsys, tmp_path):
+    base = ["window", "--run-end", "2026-11-21T20:00:00Z", "--out-dir", str(tmp_path / "o")]
+    assert C.main(base + ["--rps", "9", "--migrations", "x"]) == 2
+    assert C.main(base) == 2
+
+
+def test_main_window_requires_run_end(tmp_path, capsys):
+    assert C.main(["window", "--migrations", "x", "--out-dir", str(tmp_path / "o")]) == 2
+    assert "--run-end" in capsys.readouterr().err
+
+
+def test_main_window_requires_out_dir(capsys):
+    assert C.main(["window", "--migrations", "x", "--run-end", "2026-11-21T20:00:00Z"]) == 2
+    assert "--out-dir" in capsys.readouterr().err
+
+
+@pytest.mark.parametrize("d", ["/data2/mal/venue-tape-backfill/launchlab_cpmm", "/data2/mal/venue-tape-backfill/launchlab_cpmm/pools", "/data2/mal/venue-tape-backfill",
+                               "/data2/mal/venue-tape-backfill/launchlab", "/data2/mal/venue-tape-backfill/x/../launchlab_cpmm", "/data/mal/arena/tape", "/data/mal/blocks/forward-1016",
+                               "/var/lib/mal/sealed/fast-trades-tip"])
+def test_window_out_dir_under_sealed_root_refused(d):
+    with pytest.raises(L.Refused):
+        C.check_window_out_dir(Path(d))
+    with pytest.raises(L.Refused):  # main refuses before the key is read or any call is made
+        C.main(["window", "--migrations", "x", "--run-end", "2026-11-21T20:00:00Z", "--out-dir", d])
+
+
+def test_window_out_dir_fresh_ok_and_other_checkpoint_refused(tmp_path):
+    C.check_window_out_dir(tmp_path / "fresh")
+    (tmp_path / "old").mkdir()
+    (tmp_path / "old" / "checkpoint.json").write_text("{}")
+    with pytest.raises(L.Refused):
+        C.check_window_out_dir(tmp_path / "old")
+
+
+def test_window_uses_its_own_checkpoint_name():
+    assert C.WINDOW_CP != "checkpoint.json"
 
 
 def test_old_mode_unchanged_defaults():
