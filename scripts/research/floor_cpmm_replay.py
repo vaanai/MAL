@@ -231,7 +231,9 @@ class Pool:
         self.dropped_before_window = sum(1 for r in sw if int(r["block_time"]) < WIN_START)
         sw = [r for r in sw if int(r["block_time"]) >= WIN_START]
         key = lambda r: (r["slot"], r.get("signature") or "", r.get("event_index") or 0)  # noqa: E731
-        sw.sort(key=key)
+        # execution order inside a slot (no tx index in the rows): k = vault_before WSOL x token rises strictly with every swap because the LP share of each fee stays in the pool, so
+        # ascending k recovers it (ties by signature). A non-swap instruction in the slot span is handled below by deriving the state from the swap's own amounts.
+        sw.sort(key=lambda r: (r["slot"], int(r.get("input_vault_before") or 0) * int(r.get("output_vault_before") or 0), r.get("signature") or "", r.get("event_index") or 0))
         ixk = sorted(key(r) for r in rec["rows"] if r.get("type") == "ix")
         self.sw = sw
         self.slots = [int(r["slot"]) for r in sw]
@@ -245,10 +247,13 @@ class Pool:
         self.fee_checked = 0
         self.fee_bad = 0
         self.fee_max_dev = 0.0
+        self.creator_charged = False
+        self.eff_creator = 0
+        self.creator_cfg_rate = 0
         if self.reason is None:
             self.reason = self._build(sw, ixk, key)
         if self.reason is None:
-            self.fee_rate = int(meta["trade_fee_rate"]) + int(meta["creator_fee_rate"])
+            self.fee_rate = int(meta["trade_fee_rate"]) + self.eff_creator
             self.supply = float(meta["supply"])
 
     def _build(self, sw: list[dict[str, Any]], ixk: list[tuple], key) -> str | None:
@@ -268,25 +273,38 @@ class Pool:
         n = len(sw)
         for i, r in enumerate(sw):
             nxt = before[i + 1] if i + 1 < n else None
-            # same-slot order is not known (no tx index): vault_before of swap i+1 is swap i's post-state only when i+1 is in a LATER slot (then it is the exact slot-end state) and no
-            # non-swap instruction sits in [slot_i, slot_i+1]; otherwise swap i's own post-state is derived from its own vault_before and amounts (QP ruling Q3)
+            # with the swaps in execution order (k ascending), vault_before of swap i+1 IS swap i's post-state, within a slot too; when a non-swap instruction sits in
+            # [slot_i, slot_i+1] (liquidity may have changed) or swap i is last, swap i's own post-state is derived from its own vault_before and amounts
             between = nxt is not None and any(self.slots[i] <= k[0] <= self.slots[i + 1] for k in ixk)
-            if nxt is not None and self.slots[i + 1] > self.slots[i] and not between:
+            if nxt is not None and not between:
                 qa, ra = nxt
             else:
                 qa, ra = self._derive(r, before[i], self.buy[i])
             self.q.append(qa)
             self.r.append(ra)
             self.spot.append(qa / ra if ra > 0 else float("nan"))
+        # DECLARE s5 cross-check on the pool's own SwapEvents, +-FEE_TOL lamports per swap, exact integer numerators. Whether a creator fee is charged is read from the events (any swap with
+        # creator_fee > 0), never from the AmmConfig offset alone: a pool that charges it needs a config rate > 0 that matches every swap (input side: trade_fee + creator_fee over input_amount;
+        # output side: creator_fee over the gross output output_amount + creator_fee); a charged pool whose decoded rate is 0 is fee_mismatch (never under-charged); a pool whose events never
+        # charge it prices with creator rate 0 whatever the config says.
         cfg_rate = int(self.meta["trade_fee_rate"])
-        cr_rate = int(self.meta["creator_fee_rate"])
-        for r in sw:  # DECLARE s5: summed input-side fee (trade_fee + creator_fee when charged on input) over input_amount vs the config rate, +-FEE_TOL lamports per swap
+        cfg_cr = int(self.meta["creator_fee_rate"])
+        have_field = any("creator_fee" in r for r in sw)
+        self.creator_charged = any(int(r.get("creator_fee") or 0) > 0 for r in sw)
+        if cfg_cr > 0 and not have_field:
+            return "creator_fee_unobservable"
+        eff_cr = cfg_cr if self.creator_charged else 0
+        self.eff_creator = eff_cr
+        self.creator_cfg_rate = cfg_cr
+        for r in sw:
             if "trade_fee" not in r:
                 continue
-            ia = int(r["input_amount"])
+            ia, oa = int(r["input_amount"]), int(r["output_amount"])
+            cf = int(r.get("creator_fee") or 0)
             on_in = bool(r.get("creator_fee_on_input"))
-            got = int(r["trade_fee"]) + (int(r.get("creator_fee") or 0) if on_in else 0)
-            dev = abs(got * 1_000_000 - ia * (cfg_rate + (cr_rate if on_in else 0))) / 1_000_000  # exact integer numerator
+            dev = abs((int(r["trade_fee"]) + (cf if on_in else 0)) * 1_000_000 - ia * (cfg_rate + (eff_cr if on_in else 0))) / 1_000_000
+            if self.creator_charged and not on_in:
+                dev = max(dev, abs(cf * 1_000_000 - (oa + cf) * eff_cr) / 1_000_000)
             self.fee_max_dev = max(self.fee_max_dev, dev)
             self.fee_checked += 1
             self.fee_bad += dev > FEE_TOL
@@ -552,9 +570,12 @@ def run(fd: Path, migs: list[dict[str, Any]], run_end: int, meta_path: str) -> d
             cells[f"{st:.2f}@{lat}"] = price_cell(uni, clock, st, lat, run_end, D)
     audit: dict[str, dict[str, Any]] = {}
     for P in pools:
-        a = audit.setdefault(str(P.amm_config), {"pools": 0, "excluded_fee": 0, "fee_rate_ppm": None, "fee_checked": 0, "fee_bad": 0, "max_dev_lamports": 0.0})
+        a = audit.setdefault(str(P.amm_config), {"pools": 0, "excluded_fee": 0, "fee_rate_ppm": None, "fee_checked": 0, "fee_bad": 0, "max_dev_lamports": 0.0,
+                                                                       "creator_charged_pools": 0, "creator_cfg_nonzero_not_charged": 0})
         a["pools"] += 1
         a["excluded_fee"] += P.reason in ("fee_mismatch", "fee_unverified")
+        a["creator_charged_pools"] += P.creator_charged
+        a["creator_cfg_nonzero_not_charged"] += (P.creator_cfg_rate > 0 and not P.creator_charged)
         a["fee_checked"] += P.fee_checked
         a["fee_bad"] += P.fee_bad
         a["max_dev_lamports"] = max(a["max_dev_lamports"], P.fee_max_dev)
