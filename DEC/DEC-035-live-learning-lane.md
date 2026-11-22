@@ -2004,7 +2004,7 @@ One-key diffs (Helm, each against its stated parent):
 ```
 
 - R2 equals the running s025-b400 except `budget_lamports` 5000000000 (Helm's note; the budget stays 5.00 in every config, QP-RULING-1121a §2).
-- **UNFILLED: drop-in names for R1, R2 and S10, and the sort order of all four.** Helm's reply proposes one drop-in name only (s040-b500, above). It names no drop-in for R1, R2 or S10 and states no sort position for them. Am.14 item 9 needs the S10 drop-in name and its sort position, and the order s040-b500, then R1, then R2. Those two tokens stay open until Helm supplies them. This record does not invent them.
+- **Drop-in names for R1, R2 and S10, and the sort order of all four: PENDING Helm (HELM-ASK-1122-2 §1).** Helm's first reply names none. The manager's suggestions in HELM-ASK-1122-2 §1 are suggestions only, not values: `zzzzzzzzz-r1-s025-b500.conf` (9 z), `zzzzzzzzzz-r2-s025-b500-d050.conf` (10 z), `zzzzzzzzzzz-s10-s010-b500.conf` (11 z). They are meant to sort after `zzzzzzzz-s040-b500.conf` and every drop-in present, in the order s040-b500, R1, R2, S10. The tokens for the S10 drop-in name and the sort order stay open until Helm replies.
 - The old s025-b400 config and its drop-ins are unchanged on disk (Helm: aggregate sha256 of the drop-in sha256sums `fd2e552c…e198b` before and after).
 
 #### Wallet floor and slots at the ask
@@ -2045,7 +2045,7 @@ Values at the ask (hourly #3263, 2026-11-22T20:36Z, and the wallet `getBalance` 
 | --- | --- | --- | --- |
 | Wallet-floor slots, immediately (6 open at 0.25) | 4 | 7 | 9 |
 | Budget slots, immediately (k = 6) | 8 | 8 | 8 |
-| **Slots stated, immediately** | **4** | **7** | **8** (budget binds) |
+| **Slots stated, immediately** | **4** | **7** | **8** (budget 8 < wallet 9, so the budget binds) |
 | Wallet-floor slots, steady state (from W) | 8 | 11 | 13 |
 | Budget slots, steady state | 12 | 12 | 12 |
 | **Slots stated, steady state** | **8** | **11** | **12** (budget cap) |
@@ -2084,11 +2084,9 @@ Until that line is replaced by the owner's verbatim words on the table above, pr
 
 #### Precondition 1: md5 replay and executor tests
 
-- **md5 decision-equivalence replay at #1476's final merge head.** Job **#3199**: **PASS**. Tree A `5fc473b5`, tree B `e85447f865a13bcaf2531224f0438b2b2d23adf8` (the #1476 merge commit, matching the tree above). Per-row rc 0, readers rc 0, cleaned yes. Script `equiv-run-1121c.sh`, sha fd8e9429.
-  - **Run count and notebook id are not in the state file.** The only two lines that mention #3199 are quoted below, and neither gives a run count or a notebook id. They are marked "per state file line 2026-11-21T06:31:40Z". The manager must supply both before the install.
-  - State file, 2026-11-21T06:19:32Z: "PR #1476 MERGED (QP OK + REVIEWER APPROVE at 31132166; proof #3198 per-row rc=0 readers rc=0 posted) -> main e85447f8 = Am.14 install tree candidate. Final-head proof #3199 (equiv-run-1121c.sh sha fd8e9429, A 5fc473b5 vs B e85447f8) running."
-  - State file, 2026-11-21T06:31:40Z: "#3199 final-head proof PASS: A 5fc473b5 vs B e85447f8 per-row rc=0 readers rc=0 cleaned yes (Am.14 item 5 md5 AT-ASK value; notebook)."
-  - Neither line states whether the replay included the wallet-floor-binding run that precondition 1 requires.
+- **md5 decision-equivalence replay at #1476's final merge head.** One final-head run, job **#3199** (the job record has since been pruned from the MiScusi job list; the PASS is recorded in the manager state file line stamped 2026-11-21T06:31:40Z and in the MiScusi notebook entry "Am.14 install tree e85447f8: md5 decision-equivalence proof PASS vs installed 5fc473b5 (job #3199)", 2026-11-21). **PASS.** Tree A `5fc473b5`, tree B `e85447f865a13bcaf2531224f0438b2b2d23adf8` (the #1476 merge commit, matching the tree above). Per-row rc 0, readers rc 0, cleaned yes. Script `equiv-run-1121c.sh`, sha fd8e9429.
+  - State file `state-manager24.md` line 497, verbatim: "- 2026-11-21T06:31:40Z #3199 final-head proof PASS: A 5fc473b5 vs B e85447f8 per-row rc=0 readers rc=0 cleaned yes (Am.14 item 5 md5 AT-ASK value; notebook)."
+  - That line does not state whether the replay included the wallet-floor-binding run that precondition 1 requires.
 - **Executor tests at the new tree.**
   - Job **#3264 did NOT run the tests**: the lane venv has no pytest (disclosed in the state file, 2026-11-22T20:37:22Z).
   - Job **#3265** ran a clean clone at `e85447f865a13bcaf2531224f0438b2b2d23adf8` with `/home/claude/mal-venvs/r4b/bin/python -m pytest -q tools/test_floor_lane_executor.py tools/test_forge_dsl_lane_executor.py`: **186 passed**, pytest_rc 0, head verified.
@@ -2104,7 +2102,8 @@ Install step, **not done**: the manager edits `am10-measure.sh` to open the next
 
 - Window start `first_send_ms` 1794876902824 = **2026-11-17T00:55:02.824Z**. Expiry **2026-12-01T00:55:02Z** (+14 days, `CANARY_MAX_MS = 14 * 86_400_000`). Cited as in Am.14 item 8 (state-file lines stamped 2026-11-21T00:05:14Z and 00:05:17Z); not re-read from a host here.
 - `CANARY_MAX_MS` is at `tools/floor_arena_executor.py:74` at e85447f8 (it was `:66` at 5fc473b5; checked with `git show`).
-- **UNFILLED: bundle or schedule.** The inputs do not say whether a reset (Helm sets `first_send_ms` to null) is bundled with the restart, or when it will happen.
+- **Bundle or schedule.** The manager bundles a recorded reset (`first_send_ms` to null, by Helm) with the install restart; the new window starts at the first 0.40 send. Helm's confirmation of the step is asked in HELM-ASK-1122-2 (`/data/mal/hunt-1008/push-1016/hunt29/p1/HELM-ASK-1122-2.md`); reply **PENDING**.
+- A reset bundled now starts a window that ends about 14 days after the first 0.40 send. That end falls inside [S', R') (Am.14 item 13), so the S' registration must still pre-commit a reset or the limit's removal (QP-RULING-1120 §1.2 item 7).
 
 #### Optional
 
@@ -2114,9 +2113,9 @@ The fills-tool aggregates of QP-RULING-1121 §2 (B) were not run and are not giv
 
 1. The owner's word on the recomputed risk table (placeholder above).
 2. The QP answer on +10/-10.
-3. The #3199 run count, the notebook id, and whether it included a wallet-floor-binding run.
-4. Drop-in names and sort order for R1, R2 and S10.
-5. The reset bundle-or-schedule statement.
+3. Whether #3199 included a wallet-floor-binding run (not stated in the state line).
+4. Drop-in names and sort order for R1, R2 and S10: PENDING Helm (HELM-ASK-1122-2 §1).
+5. Helm's confirmation of the CANARY reset step: PENDING (HELM-ASK-1122-2 §2).
 6. The `am10-measure.sh` edit, an install-time manager job.
 7. The figures must be re-read at the ask instant if the top-up lands or n changes before the HELM-ASK, because an executor restart empties the marks (Am.4 item 6).
 
