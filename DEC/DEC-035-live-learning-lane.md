@@ -2004,7 +2004,23 @@ One-key diffs (Helm, each against its stated parent):
 ```
 
 - R2 equals the running s025-b400 except `budget_lamports` 5000000000 (Helm's note; the budget stays 5.00 in every config, QP-RULING-1121a §2).
-- **Drop-in names for R1, R2 and S10, and the sort order of all four: PENDING Helm (HELM-ASK-1122-2 §1).** Helm's first reply names none. The manager's suggestions in HELM-ASK-1122-2 §1 are suggestions only, not values: `zzzzzzzzz-r1-s025-b500.conf` (9 z), `zzzzzzzzzz-r2-s025-b500-d050.conf` (10 z), `zzzzzzzzzzz-s10-s010-b500.conf` (11 z). They are meant to sort after `zzzzzzzz-s040-b500.conf` and every drop-in present, in the order s040-b500, R1, R2, S10. The tokens for the S10 drop-in name and the sort order stay open until Helm replies.
+- **Drop-in names and sort order** (HELM-REPLY-1122-2-prepare §1, verbatim; nothing created). Helm accepts the suggested names. A byte-order (LC_ALL=C) check confirms the order, since '-' (0x2d) sorts before 'z'.
+  - s040 step: `zzzzzzzz-s040-b500.conf` (8 z)
+  - R1: `zzzzzzzzz-r1-s025-b500.conf` (9 z)
+  - R2: `zzzzzzzzzz-r2-s025-b500-d050.conf` (10 z)
+  - S10: `zzzzzzzzzzz-s10-s010-b500.conf` (11 z)
+  - Current directory, `/etc/systemd/system/mal-floor-lane.service.d/`: live.conf, runtime.conf, zz-pin-e879.conf, zz-pin-f68c.conf, zz-pin-fc6a.conf, zzz-pin-320c.conf, zzzz-pin-9c52.conf, zzzzz-pin-e5fd.conf, zzzzzz-s025.conf, zzzzzzz-b400.conf
+  - The list after each add is the current list plus these entries, in order:
+    - After the s040 step: … zzzzzzz-b400.conf, zzzzzzzz-s040-b500.conf
+    - After R1: … zzzzzzzz-s040-b500.conf, zzzzzzzzz-r1-s025-b500.conf
+    - After R2: … zzzzzzzzz-r1-s025-b500.conf, zzzzzzzzzz-r2-s025-b500-d050.conf
+    - After S10: … zzzzzzzzzz-r2-s025-b500-d050.conf, zzzzzzzzzzz-s10-s010-b500.conf
+  - Each drop-in has the same shape as the existing pins. The [Service] section sets WorkingDirectory=/usr/local/lib/mal-floor-lane-executor/e85447f865a13bcaf2531224f0438b2b2d23adf8, then an empty `ExecStart=`, then the line below (text only):
+    - s040: `ExecStart=/usr/local/lib/mal-floor-lane/venv/bin/python -E -s -B -u -m tools.floor_lane_executor run --config /etc/mal-floor-lane/live-e85447f865a13bcaf2531224f0438b2b2d23adf8-s040-b500.json --live`
+    - R1: `ExecStart=/usr/local/lib/mal-floor-lane/venv/bin/python -E -s -B -u -m tools.floor_lane_executor run --config /etc/mal-floor-lane/live-e85447f865a13bcaf2531224f0438b2b2d23adf8-s025-b500.json --live`
+    - R2: `ExecStart=/usr/local/lib/mal-floor-lane/venv/bin/python -E -s -B -u -m tools.floor_lane_executor run --config /etc/mal-floor-lane/live-e85447f865a13bcaf2531224f0438b2b2d23adf8-s025-b500-d050.json --live`
+    - S10: `ExecStart=/usr/local/lib/mal-floor-lane/venv/bin/python -E -s -B -u -m tools.floor_lane_executor run --config /etc/mal-floor-lane/live-e85447f865a13bcaf2531224f0438b2b2d23adf8-s010-b500.json --live`
+  - Rollback, Helm: "A rollback is a single step: add the next drop-in, run daemon-reload, then restart mal-floor-lane. Back up the unit first. The host is never touched."
 - The old s025-b400 config and its drop-ins are unchanged on disk (Helm: aggregate sha256 of the drop-in sha256sums `fd2e552c…e198b` before and after).
 
 #### Wallet floor and slots at the ask
@@ -2080,6 +2096,8 @@ Convention as Am.14 and the worksheet: 0.40386 per 0.40 position, 0.25386 per 0.
 
 **OWNER WORD ON THE RECOMPUTED RISK TABLE: PENDING (to be quoted verbatim by the manager)**
 
+Precondition 3 (the owner's own install word in the Helm chat) must name: the 0.40 stake, the 5.00 budget, the 0.80 daily stop, the no-top-up slot count of 8, and, for the bundled reset, the CANARY reset. Helm resets `first_send_ms` only on that explicit yes (see precondition 8 below).
+
 Until that line is replaced by the owner's verbatim words on the table above, precondition 2 is not met. The step word quoted in Am.14 covers the step and the SOL/day table, not this table.
 
 #### Precondition 1: md5 replay and executor tests
@@ -2102,7 +2120,15 @@ Install step, **not done**: the manager edits `am10-measure.sh` to open the next
 
 - Window start `first_send_ms` 1794876902824 = **2026-11-17T00:55:02.824Z**. Expiry **2026-12-01T00:55:02Z** (+14 days, `CANARY_MAX_MS = 14 * 86_400_000`). Cited as in Am.14 item 8 (state-file lines stamped 2026-11-21T00:05:14Z and 00:05:17Z); not re-read from a host here.
 - `CANARY_MAX_MS` is at `tools/floor_arena_executor.py:74` at e85447f8 (it was `:66` at 5fc473b5; checked with `git show`).
-- **Bundle or schedule.** The manager bundles a recorded reset (`first_send_ms` to null, by Helm) with the install restart; the new window starts at the first 0.40 send. Helm's confirmation of the step is asked in HELM-ASK-1122-2 (`/data/mal/hunt-1008/push-1016/hunt29/p1/HELM-ASK-1122-2.md`); reply **PENDING**.
+- **Bundle or schedule.** The manager bundles a recorded reset (`first_send_ms` to null, by Helm) with the install restart; the new window starts at the first 0.40 send.
+- **Helm's condition** (HELM-REPLY-1122-2-prepare §2, verbatim): "I will do it only with Vaan's own explicit yes, in his words in Helm's chat, that names this reset. My standing rule is that I never reset or extend the 14-day clock without that. A manager or agent saying he agreed does not count, and neither does an approval of the stake step alone. Without that yes, I install the stake step and leave first_send_ms as it is." In that case the window still ends 2026-12-01T00:55:02Z.
+- **Helm's step list** (§2, text only, done while the executor is stopped and the host keeps running; nothing done yet; the 2026-11-16 reset record is `/var/lib/mal-live/floor-lane/reset-1108-1-20261116T170625Z/`):
+  1. `systemctl stop mal-floor-lane` (executor only), then confirm it is inactive.
+  2. `D=/var/lib/mal-live/floor-lane/reset-1122-2-<UTC stamp>`. Run mkdir and chmod 700 on $D. Run sha256sum on state/floor-state-live.json and state/bridge-state-live.json into $D/sha-before.txt, then copy both files to $D/*.bak with cp -p.
+  3. Make a one-field edit as mal-live, written to a temp file and renamed into place with mode 600 and owner mal-live: `python3 -c 'import json,os;p="/var/lib/mal-live/floor-lane/state/floor-state-live.json";d=json.load(open(p));assert d["schema"]=="floor_executor_state_v1";d["first_send_ms"]=None;t=p+".tmp";json.dump(d,open(t,"w"));os.replace(t,p)'`. This changes only first_send_ms; gaps, exits, starts_seen and gap_hold stay as they are. Then save a sha256sum to $D/sha-after.txt and diff the old and new keys to show that only that field changed.
+  4. Add the s040 drop-in, run daemon-reload, then `systemctl start mal-floor-lane`. Check the new PID, the WorkingDirectory pin, and the config sha e60c267b….
+  5. Watch until the first 0.40 send. first_send_ms then gets set to that send's ms, so the new cutoff is that time plus 14 days.
+- **Helm's end_ms note** (§2, verbatim): "end_ms stays at 1796688000000 (Mon 2026-12-07 4:00 PM PST) in the s040 config and all three rollback configs. A reset therefore gives a full 14 days only if the first 0.40 send happens by about Nov 23 4:00 PM PST. After that, the window is cut short at Dec 7 4:00 PM PST. If the manager wants a full 14 days, end_ms needs its own reviewed config change and Vaan's yes. I won't change it as part of this." end_ms 1796688000000 = 2026-12-08T00:00:00Z. Changing end_ms is its own reviewed config change plus the owner's yes, and is not part of Am.14.
 - A reset bundled now starts a window that ends about 14 days after the first 0.40 send. That end falls inside [S', R') (Am.14 item 13), so the S' registration must still pre-commit a reset or the limit's removal (QP-RULING-1120 §1.2 item 7).
 
 #### Optional
@@ -2114,9 +2140,8 @@ The fills-tool aggregates of QP-RULING-1121 §2 (B) were not run and are not giv
 1. The owner's word on the recomputed risk table (placeholder above).
 2. The QP answer on +10/-10.
 3. Whether #3199 included a wallet-floor-binding run (not stated in the state line).
-4. Drop-in names and sort order for R1, R2 and S10: PENDING Helm (HELM-ASK-1122-2 §1).
-5. Helm's confirmation of the CANARY reset step: PENDING (HELM-ASK-1122-2 §2).
-6. The `am10-measure.sh` edit, an install-time manager job.
-7. The figures must be re-read at the ask instant if the top-up lands or n changes before the HELM-ASK, because an executor restart empties the marks (Am.4 item 6).
+4. The owner's own Helm-chat word (precondition 3), naming the 0.40 stake, the 5.00 budget, the 0.80 daily stop, the no-top-up slot count 8 and the CANARY reset.
+5. The `am10-measure.sh` edit, an install-time manager job.
+6. The figures must be re-read at the ask instant if the top-up lands or n changes before the HELM-ASK, because an executor restart empties the marks (Am.4 item 6).
 
 No book has cleared the promotion gate. floor-lane-1 has not cleared the promotion gate. Nothing here says FLOOR makes money.
