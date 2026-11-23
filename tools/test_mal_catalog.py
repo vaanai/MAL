@@ -36,7 +36,8 @@ def _check(blocks: list[Block], role: str, host: str, start: str, end: str, exp_
 
 def test_parse_real_ledger_has_expected_rows(blocks: list[Block]) -> None:
     by_name = {b.name: b for b in blocks}
-    assert len(blocks) == 18
+    assert len(blocks) == 19
+    assert by_name["FLOOR-CPMM forward pool-state"].owner == "reserved"
     assert by_name["Fast EXP-009 block"].owner == "EXP-009"
     assert by_name["Fast EXP-009 exclusion"].explicit_hours == ("2026-09-18T23", "2026-09-19T00")
     assert by_name["Forward paper, kill review"].host == "oracle-forward"
@@ -289,7 +290,7 @@ def test_build_catalog_validates_and_is_deterministic() -> None:
     assert doc1["schema_version"] == "catalog.v1"
     assert doc1["ledger_sha256"] == doc2["ledger_sha256"]
     assert len(doc1["ledger_sha256"]) == 64
-    assert len(doc1["blocks"]) == 18
+    assert len(doc1["blocks"]) == 19
     assert doc1["walkers"] == []
 
     def _stable(d: dict) -> dict:
