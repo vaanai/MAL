@@ -2096,7 +2096,15 @@ Convention as Am.14 and the worksheet: 0.40386 per 0.40 position, 0.25386 per 0.
 
 **OWNER WORD ON THE RECOMPUTED RISK TABLE: PENDING (to be quoted verbatim by the manager)**
 
-Precondition 3 (the owner's own install word in the Helm chat) must name: the 0.40 stake, the 5.00 budget, the 0.80 daily stop, the no-top-up slot count of 8, and, for the bundled reset, the CANARY reset. Helm resets `first_send_ms` only on that explicit yes (see precondition 8 below).
+**Precondition 3: the owner's own install word in the Helm chat: MET for what it names, per the quote below.** Source: `/data/mal/hunt-1008/push-1016/hunt29/p1/HELM-REPLY-1122-owner-yes.md`, sha256 `9d385a6a5c3caab3642a83061819796cf7d61f9c4b2f00b02a3839110c24c825` (reply to HELM-ASK-1122-1 and 1122-2). Helm: "On 2026-11-22 at 2:56 PM PST [= 22:56Z], Vaan's own words in Helm's chat were:"
+
+> "Yes: switch FLOOR to 0.40 SOL stake, 5.00 SOL budget, 0.80 SOL daily stop, about 8 slots with no top-up, and reset the 14-day clock at the switch."
+
+Helm's scope note, verbatim: "This covers the Am.14 install (config s040-b500, e60c267b…, drop-in zzzzzzzz-s040-b500.conf) and the bundled first_send_ms reset, done exactly as written in HELM-REPLY-1122-2-prepare.md. It does NOT cover any end_ms change; end_ms stays at Dec 7 4 PM PST." Helm adds: "Nothing has been installed yet. I will act only once HELM-ASK-1122-1-GO.md appears with the Am.14 record merged, QP OK and reviewer approval."
+
+- **CANARY reset condition (precondition 8): MET per this quote.** It is the owner's explicit yes naming the reset that Helm's condition requires.
+- The quote names the stake, budget, daily stop, the no-top-up slot count and the reset. It does not name the lifetime and one-day bounds as recomputed, or R1, R2 and S10, which Am.14 precondition 3 also lists. This record does not decide whether that is enough; it is for QP and the manager.
+- The quote is **not** the owner's word on the recomputed risk table (precondition 2). That word stays PENDING above; the manager is getting it separately. The at-ask figures above are unchanged and are still those of the job #3263 ask instant, 2026-11-22T20:36Z.
 
 Until that line is replaced by the owner's verbatim words on the table above, precondition 2 is not met. The step word quoted in Am.14 covers the step and the SOL/day table, not this table.
 
@@ -2140,7 +2148,7 @@ The fills-tool aggregates of QP-RULING-1121 §2 (B) were not run and are not giv
 1. The owner's word on the recomputed risk table (placeholder above).
 2. The QP answer on +10/-10.
 3. Whether #3199 included a wallet-floor-binding run (not stated in the state line).
-4. The owner's own Helm-chat word (precondition 3), naming the 0.40 stake, the 5.00 budget, the 0.80 daily stop, the no-top-up slot count 8 and the CANARY reset.
+4. (Precondition 3 and the CANARY reset condition are met per the owner's Helm-chat quote above. Whether it suffices without naming the bounds and R1/R2/S10 is for QP and the manager.)
 5. The `am10-measure.sh` edit, an install-time manager job.
 6. The figures must be re-read at the ask instant if the top-up lands or n changes before the HELM-ASK, because an executor restart empties the marks (Am.4 item 6).
 
