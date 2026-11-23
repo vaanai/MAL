@@ -79,6 +79,10 @@ class RpcError(RuntimeError):
     pass
 
 
+class Deferred(RpcError):
+    """A backoff would pass the caller's time budget: the call is given up for now, without sleeping, to be retried on a later pass."""
+
+
 def check_rpc_url(url: str) -> str:
     """Public endpoints only: refuse a paid-provider host or any API key in the URL."""
     u = url.lower()
@@ -129,6 +133,13 @@ def http_call(bucket: TokenBucket, ctr: Counters, url: str = RPC_URL, timeout: f
 
     check_rpc_url(url)
     opener = opener or urllib.request.urlopen
+    ctl: dict[str, Any] = {"until": None, "now": time.time}  # run() sets a time budget here for the discovery step
+
+    def backoff(wait: float) -> None:
+        if ctl["until"] is not None and ctl["now"]() + wait > ctl["until"]:
+            ctr.bump("rpc_deferred")
+            raise Deferred(f"backoff {wait:.0f}s passes the budget")
+        sleep(wait)
 
     def call(method: str, params: list[Any]) -> Any:
         body = json.dumps({"jsonrpc": "2.0", "id": 1, "method": method, "params": params}).encode()
@@ -144,17 +155,17 @@ def http_call(bucket: TokenBucket, ctr: Counters, url: str = RPC_URL, timeout: f
                 last = f"http {exc.code}"
                 if exc.code == 429:
                     ctr.bump("rpc_429")
-                    sleep(back)
+                    backoff(back)
                     back = min(60.0, back * 2)
                     continue
                 ctr.bump(f"rpc_err_http_{exc.code}")
-                sleep(min(30.0, back))
+                backoff(min(30.0, back))
                 back *= 2
                 continue
             except (TimeoutError, urllib.error.URLError, ConnectionError, json.JSONDecodeError, OSError) as exc:
                 last = type(exc).__name__
                 ctr.bump(f"rpc_err_{last}")
-                sleep(min(30.0, back))
+                backoff(min(30.0, back))
                 back *= 2
                 continue
             if payload.get("error"):
@@ -162,17 +173,18 @@ def http_call(bucket: TokenBucket, ctr: Counters, url: str = RPC_URL, timeout: f
                 last = f"rpc {e.get('code')}"
                 if e.get("code") == 429:
                     ctr.bump("rpc_429")
-                    sleep(back)
+                    backoff(back)
                     back = min(60.0, back * 2)
                     continue
                 ctr.bump(f"rpc_err_{e.get('code')}")
-                sleep(min(30.0, back))
+                backoff(min(30.0, back))
                 back *= 2
                 continue
             return payload.get("result")
         ctr.bump("rpc_gave_up")
         raise RpcError(f"{method} gave up ({last})")
 
+    call.ctl = ctl  # type: ignore[attr-defined]
     return call
 
 
@@ -446,6 +458,9 @@ def discover_new(call: Callable, ctr: Counters, state: dict[str, Any], start_s: 
                 break
         else:
             ctr.bump("disc_gap")
+    except Deferred:
+        ctr.bump("sig_deferred")
+        listed = False
     except Exception:  # noqa: BLE001
         ctr.bump("sig_errors")
         listed = False
@@ -459,7 +474,10 @@ def discover_new(call: Callable, ctr: Counters, state: dict[str, Any], start_s: 
         done += 1
         ctr.bump("tx_calls")
         try:
-            tx = call("getTransaction", [sig, {"encoding": "json", "maxSupportedTransactionVersion": 0, "commitment": "confirmed"}])
+            tx = call("getTransaction", [sig, {"encoding": "json", "maxSupportedTransactionVersion": 1, "commitment": "confirmed"}])
+        except Deferred:
+            ctr.bump("tx_deferred")
+            break
         except Exception:  # noqa: BLE001
             ctr.bump("tx_errors")
             tx = None
@@ -489,10 +507,10 @@ def load_json(path: Path, default: Any) -> Any:
 
 def run(out: Path, call: Callable, ctr: Counters, pools_list: list[dict[str, Any]], *, interval_s: float = 60.0, max_hours: float = 336.0, discover_s: float = 300.0,
         discovery_address: str = DISCOVERY_ADDRESS, now: Callable[[], float] = time.time, sleep: Callable[[float], None] = time.sleep, max_polls: int | None = None,
-        max_pools: int = 100, max_tx: int = 50, max_lock: int = 25, max_failed_polls: int = 60, max_discover_tries: int = 20,
+        max_pools: int = 100, max_tx: int = 50, max_lock: int = 25, max_failed_polls: int = 60, max_discover_tries: int = 20, discover_budget_s: float = 20.0,
         progress: Callable[[str], None] | None = None) -> int:
     """Passes of: bounded discovery of new migrations, ONE batch of <= max_pools waiting pools resolved, <= max_lock LP-lock reads, one poll, save, one progress line. The deadline is
-    checked before every RPC-issuing step and exits cleanly with a final save. A step that raises is counted (step_errors, step_errors_<step>) and skipped. A poll that raises or returns
+    checked before every RPC-issuing step and exits cleanly with a final save. Discovery gets `discover_budget_s` per pass and defers (no sleeping) a backoff that would pass it. A step that raises is counted (step_errors, step_errors_<step>) and skipped. A poll that raises or returns
     no rows is a failed poll; `max_failed_polls` of them in a row end the run (return 2, final save). A successful poll after more than two intervals of silence records a gap."""
     out.mkdir(parents=True, exist_ok=True)
     sp, pp = out / "status.json", out / "pools.json"
@@ -565,7 +583,17 @@ def run(out: Path, call: Callable, ctr: Counters, pools_list: list[dict[str, Any
             t0 = now()
             if last_disc is None or t0 - last_disc >= discover_s:
                 last_disc = t0
-                for rec in step("discover_new", lambda: discover_new(call, ctr, state["disc"], start_ms // 1000, discovery_address, max_tx=max_tx, stop=stop)) or []:
+                until = now() + discover_budget_s  # discovery has a time budget; what it cannot resolve stays pending for the next pass
+                ctl = getattr(call, "ctl", None)
+                if ctl is not None:
+                    ctl["until"], ctl["now"] = until, now
+                try:
+                    recs_new = step("discover_new", lambda: discover_new(call, ctr, state["disc"], start_ms // 1000, discovery_address, max_tx=max_tx,
+                                                                         stop=lambda: stop() or now() >= until)) or []
+                finally:
+                    if ctl is not None:
+                        ctl["until"] = None
+                for rec in recs_new:
                     if rec["pool"] not in state["pools"]:
                         state["waiting"].setdefault(rec["pool"], rec)
                 save()
@@ -611,6 +639,7 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--discover-s", type=float, default=300.0)
     ap.add_argument("--max-pools", type=int, default=100, help="pools resolved per pass")
     ap.add_argument("--max-tx", type=int, default=50, help="getTransaction resolutions per pass")
+    ap.add_argument("--discover-budget-s", type=float, default=20.0, help="time budget of the discovery step per pass")
     ap.add_argument("--max-lock", type=int, default=25, help="LP-lock reads per pass")
     ap.add_argument("--max-failed-polls", type=int, default=60, help="consecutive failed polls that end the run")
     ap.add_argument("--max-discover-tries", type=int, default=20)
@@ -627,7 +656,7 @@ def main(argv: list[str] | None = None) -> int:
     ctr = Counters()
     call = http_call(TokenBucket(a.rps), ctr, url=a.rpc_url)
     return run(out, call, ctr, load_list(a.list, a.list_sha256_prefix), interval_s=a.interval_s, max_hours=a.max_hours, discover_s=a.discover_s, discovery_address=a.discovery_address,
-               max_pools=a.max_pools, max_tx=a.max_tx, max_lock=a.max_lock, max_failed_polls=a.max_failed_polls, max_discover_tries=a.max_discover_tries)
+               max_pools=a.max_pools, max_tx=a.max_tx, max_lock=a.max_lock, max_failed_polls=a.max_failed_polls, max_discover_tries=a.max_discover_tries, discover_budget_s=a.discover_budget_s)
 
 
 if __name__ == "__main__":

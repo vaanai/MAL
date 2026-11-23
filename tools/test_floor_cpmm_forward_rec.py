@@ -632,3 +632,99 @@ def test_paid_endpoint_guard(url, ok):
             R.http_call(R.TokenBucket(1.0), R.Counters(), url=url)
         with pytest.raises(R.Refused):
             R.main(["--out-dir", "/nonexistent-x", "--rpc-url", url])
+
+
+# ---------------------------------------------------------------------------------------------- smoke 3 (#3312): v1 transactions, discovery time budget
+def test_gettransaction_asks_for_version_1():
+    f = Fake({}, sigs=[{"signature": "s", "blockTime": 2000, "err": None}])
+    R.discover_new(f, R.Counters(), {"cursor": None, "pending": {}}, 1000)
+    (cfg,) = [c[1][1] for c in f.calls if c[0] == "getTransaction"]
+    assert cfg["maxSupportedTransactionVersion"] == 1
+
+
+def test_pool_from_migration_tx_version_1_message():
+    tx = migration_tx(addr(60), 2000)
+    tx["version"] = 1
+    tx["transaction"]["message"].update({"header": {"numRequiredSignatures": 1}, "transactionConfig": {"computeUnitLimit": 200000, "priorityFeeLamports": 5}, "lifetimeSpecifier": "x"})
+    assert "addressTableLookups" not in tx["transaction"]["message"]
+    info = C.pool_from_migration_tx(tx)
+    assert (info["cpmm_pool"], info["token_mint"], info["wsol_in_pool"], info["vault0"], info["vault1"]) == (addr(60), TOK, True, V0, V1) and info["ll_accounts"]
+    f = Fake({}, sigs=[{"signature": "s", "blockTime": 2000, "err": None}], txs={"s": tx})
+    (rec,) = R.discover_new(f, R.Counters(), {"cursor": None, "pending": {}}, 1000)
+    assert rec["pool"] == addr(60) and rec["src"] == "forward"
+
+
+def test_pool_from_migration_tx_v0_with_address_table_lookups():
+    tx = migration_tx(addr(61), 2000)
+    msg = tx["transaction"]["message"]
+    keys = msg["accountKeys"]
+    # some accounts stay static, the rest come from lookup tables (writable then readonly), as in a v0 message
+    static, writable, readonly = keys[:4], keys[4:13], keys[13:]
+    assert static + writable + readonly == keys
+    msg["accountKeys"] = static
+    msg["addressTableLookups"] = [{"accountKey": addr(70), "writableIndexes": [0], "readonlyIndexes": [0]}]
+    tx["version"] = 0
+    tx["meta"] = {"loadedAddresses": {"writable": writable, "readonly": readonly}}
+    info = C.pool_from_migration_tx(tx)
+    assert (info["cpmm_pool"], info["vault0"], info["vault1"], info["wsol_in_pool"]) == (addr(61), V0, V1, True) and info["ll_accounts"]
+
+
+class Resp32015:
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *a):
+        return False
+
+    def read(self):
+        return json.dumps({"error": {"code": -32015, "message": "version"}}).encode()
+
+
+def test_stalled_gettransaction_does_not_create_a_poll_gap(tmp_path):
+    """getTransaction answers -32015 every time through the real client (backoff 1, 2, 4, 8, 16 s on the fake clock). With a 20 s discovery budget the next backoff is deferred, not
+    slept, so polls stay one interval apart even with discovery on every pass."""
+    recs, accs = many_pools(4)
+    clk = Clock()
+    fake = Fake(accs, sigs=[{"signature": "s1", "blockTime": 1_795_000_100, "err": None}])
+    ctr = R.Counters()
+    real = R.http_call(R.TokenBucket(1000.0), ctr, sleep=clk.sleep, opener=lambda req, timeout: Resp32015())
+
+    class Mixed:
+        ctl = real.ctl
+
+        def __call__(self, method, params):
+            return real(method, params) if method == "getTransaction" else fake(method, params)
+
+    R.run(tmp_path, Mixed(), ctr, recs, interval_s=60, max_hours=10, discover_s=0, now=clk.now, sleep=clk.sleep, max_polls=6, discover_budget_s=20.0, progress=lambda s: None)
+    rows = [json.loads(x) for p in sorted(tmp_path.glob("*.jsonl")) for x in p.read_text().splitlines()]
+    ms = sorted({r["ms"] for r in rows})
+    assert len(ms) == 6
+    assert max(b - a for a, b in zip(ms, ms[1:])) <= (60 + 15) * 1000
+    st = json.loads((tmp_path / "status.json").read_text())
+    assert st["gaps"] == [] and st["counters"]["rpc_deferred"] >= 6 and st["counters"]["tx_deferred"] >= 6
+    assert json.loads((tmp_path / "pools.json").read_text())["disc"]["pending"]["s1"][1] == 0  # a deferral is not a try
+    assert "step_errors" not in st["counters"]
+
+
+def test_backoff_within_budget_still_sleeps():
+    clk = Clock()
+    n = [0]
+
+    class Resp:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+        def read(self):
+            n[0] += 1
+            return json.dumps({"error": {"code": -32015, "message": "x"}} if n[0] < 3 else {"result": 1}).encode()
+
+    call = R.http_call(R.TokenBucket(1000.0), R.Counters(), sleep=clk.sleep, opener=lambda req, timeout: Resp())
+    call.ctl["until"], call.ctl["now"] = clk.t + 20, clk.now
+    assert call("getTransaction", []) == 1 and clk.t == pytest.approx(1_795_000_000.0 + 3.0)
+    call.ctl["until"] = clk.t + 0.5
+    n[0] = 0
+    with pytest.raises(R.Deferred):
+        call("getTransaction", [])
