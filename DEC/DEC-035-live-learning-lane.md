@@ -1933,3 +1933,313 @@ A CE1 switch goes under its own bot_id (QP-RULING-1120 Q5). It starts at whateve
 **Scaling past this step (ruling 1121 §1.2 item 14).** A stake above 0.40 SOL or a budget above 5.00 SOL needs a new amendment with the owner's word and a price-impact estimate (§6). Anything above the new ceilings also needs a code-ceiling PR. The owner's "next 10-12 bucks" is a direction, not such a word. Ruling 1121 §3.4: 0.50 is not worth it before 12-07.
 
 No book has cleared the promotion gate. floor-lane-1 has not cleared the promotion gate. Nothing here says FLOOR makes money.
+
+### Amendment 14 ask record, 2026-11-22 (precondition 2; DRAFT until merge; owner words given for the no-top-up case and for growth to the 12-slot cap)
+
+**Status.** This is the ONE Am.14 ask record that precondition 2 requires. It is a T1 records PR. It fills the `<AT-ASK: …>` tokens of Amendment 14 above and changes nothing else in Amendment 14. **It authorises nothing.** It changes nothing in Amendment 14's text. It carried one addition of its own, the lane-STOP top-up rule (b) below, which is now marked moot and not adopted. Every token is filled or is listed under Open items; the only token without a value is the optional (B) fills-tool figure (not run). **The owner's words in it:** the risk-table word (precondition 2) and the Helm-chat words (precondition 3, 22:56Z and 5:07 PM PST) name the no-top-up figures; the owner's word of 2026-11-23T17:13:31Z covers growth of the slot count with the wallet, from profit or a top-up, up to the 12-position budget cap (see "Scope of the owner's words" below). **The author of this record measured nothing**: every value was given by the manager's brief from the sources named beside it, or recomputed here by arithmetic from those values. No host, wallet, ledger, tape or job status was read. Nothing in it says FLOOR makes money. floor-lane-1 has not cleared the promotion gate.
+
+**Sources.**
+- Manager hourly job #3263 at 2026-11-22T20:36Z and the wallet `getBalance` in the same run (state file `state-manager24.md`, line stamped 2026-11-22T20:3xZ).
+- HELM-ASK-1122-1 (sha256 `be5eace5e9d7ae9581ec9491ea870460b30a79ae05082b161dea5801b7cce5e5`) and HELM-ASK-1122-2 (sha256 `4ef0efc28458604c9862ecbb26a127b8bf5cdc51f1e32b010444d836bee6e04b`), both in `/data/mal/hunt-1008/push-1016/hunt29/p1/`.
+- HELM-REPLY-1122-1-prepare (Helm, 2026-11-22 20:18Z, sha256 `84d0eb4ca9263c294c99a89896bdfb8a08380262faf454122400e564f7f9ba8d`): PREPARE ONLY, status HOLD, nothing installed.
+- HELM-REPLY-1122-2-prepare (sha256 `b41971fae6d4e3866cafb9c2a08af71246121ae3e6f603e40b943813d98bb93f`), HELM-REPLY-1122-owner-yes (sha256 `9d385a6a5c3caab3642a83061819796cf7d61f9c4b2f00b02a3839110c24c825`) and HELM-REPLY-1122-owner-yes-2 (sha256 `5febc598a5a1543bd81e11f37ca526b0b09ca903773cebbc693bf749055a04e6`), same directory.
+- State file line 602 (the owner's risk-table word) and line 497 (job #3199).
+- MiScusi notebook n_kpwedi_8iu9MSA (proof job #3275) and n_IG7OMwmvyJ_W7w (window 3 index entry).
+- QP's ruling on PR #1482 (issuecomment-7088972801 and addendum issuecomment-7088981692) for the numstat.
+- State file lines stamped 2026-11-21T06:31:40Z and 2026-11-22T20:37:22Z (jobs #3199, #3264, #3265).
+- Git at origin/main (`git rev-parse`, `git diff --numstat`, static).
+- `AM14-ASK-WORKSHEET.md` (manager24, 2026-11-21) for formulas only. Its T5 to T11 and T16 numbers are stale and are not used.
+
+#### Item 5: executor tree
+
+- **Tree:** `e85447f865a13bcaf2531224f0438b2b2d23adf8`, the merge commit of PR #1476 (`claude/floor-ceiling-040`), parents `1b85132e64a96fc4252a036319408216968f4873` and `311321660e271f8be65416c731d422f4a5d4ac2d` (31132166, "PR #1476 QP fixes").
+- **Changed executor files, blob at e85447f8 (blob at 5fc473b5):**
+  - `tools/floor_lane_executor.py` `e8d5ac064ac81181399a389550260ad3f1003458` (`b33822173e5d65c9627624e3b9f2b3ca14870040`);
+  - `tools/floor_arena_executor.py` `e1980dc9f19eab4142053f03521310e4f30b36f2` (`0052d1dba0e1362c88a205f78aee38f071583dd3`).
+  - The other 10 files of the Am.12 item 2 list have no diff (`git diff --numstat` prints no row for them). Helm's tree check agrees on both blobs and gives `tools/arena_live_bridge.py` `d01e93a85a86d79952072d95f48d2b5e91e197f7` (same blob as 5fc473b5).
+- **Numstat at the merge commit, `git diff --numstat 5fc473b5 e85447f8` over the Am.12 item 2 list:**
+  - `tools/floor_arena_executor.py` **+55/-9** (as Am.14 item 5 expects);
+  - `tools/floor_lane_executor.py` **+10/-10** (Am.14 item 5 expects **+9/-9**).
+- **The difference.** Am.14 item 5 was drafted against #1476 head 452f296c. The PR's final head is 31132166, the QP-fix commit that follows it. `git diff --numstat 452f296c 31132166 -- tools/floor_lane_executor.py` is +4/-4. By the worksheet's reading (not re-read line by line here), that commit touched comment and docstring lines on this file as well as the constants. The code content is the one Am.14 item 4 lists: the three ceilings, the v3 passthrough and `book=cfg.bot_id` in the start row.
+- **QP ruling on the numstat (QP VERDICT 754e25e4957488ec6b793d7a3eac7b4fbc8b9e1d, issuecomment-7088972801, ruling 3): the tree check is MET at +10/-10, and no erratum is needed.** QP's reasons: item 5's controlling clause is "exactly the changes of the four commits named in item 4 plus #1476, and nothing else", and +9/-9 is labelled "expected", drafted at 452f296c. `git log 5fc473b5..e85447f8` over the 12-file list shows exactly 08854792, e44a6047, 452f296c and 31132166 (63c8b270 and fab48eaf touch only `floor_lane_host.py`, not on the list). `git diff --numstat 31132166 e85447f8` over the list is empty. The extra +1/-1 is the LIMITS "1 BUDGET" docstring line; the AST with docstrings stripped is equal. This record cites that ruling and does not decide it itself.
+- A new commit to either file is a new tree and a new ask.
+
+#### Item 6: config and drop-in
+
+Source: HELM-REPLY-1122-1-prepare §2 and §3. Files written create-exclusive, root:root, mode 644, 874 bytes. No `presend_batch`, `rule_id` or `expected_q_star_lamports` key in any file (Helm's grep count 0). The running parent `/etc/mal-floor-lane/live-5fc473b5256cdd1d0612fec6d460cb4a19d5bf1a-s025-b400.json` is unchanged on disk (sha256 `ff21f89286eb10af3a899a902c09b918516e76128968b214cb5809db1194bb97`).
+
+- **s040-b500 path:** `/etc/mal-floor-lane/live-e85447f865a13bcaf2531224f0438b2b2d23adf8-s040-b500.json`
+- **sha256:** `e60c267b89d139f8b2aaa604aade36348b381bdabd55b0a289f68dc6d8c92ddc`
+- **Helm's diff against s025-b400** (three keys, nothing else):
+
+```
+-    "stake_lamports": 250000000,
++    "stake_lamports": 400000000,
+-    "budget_lamports": 4000000000,
+-    "daily_loss_lamports": 500000000,
++    "budget_lamports": 5000000000,
++    "daily_loss_lamports": 800000000,
+```
+
+- **Drop-in:** Helm proposes `/etc/systemd/system/mal-floor-lane.service.d/zzzzzzzz-s040-b500.conf` (8 z's). **Not created.** It sorts after the last drop-in present, `zzzzzzz-b400.conf`. Present now and unchanged: `live.conf`, `runtime.conf`, `zz-pin-e879.conf`, `zz-pin-f68c.conf`, `zz-pin-fc6a.conf`, `zzz-pin-320c.conf`, `zzzz-pin-9c52.conf`, `zzzzz-pin-e5fd.conf`, `zzzzzz-s025.conf`, `zzzzzzz-b400.conf`.
+- Helm's read of the code ceilings in the tree: `FLOOR_LANE_STAKE_BOUNDS_LAMPORTS = (20_000_000, 400_000_000)`, `LANE_BUDGET_MAX_LAMPORTS = 5_000_000_000`, `FLOOR_LANE_DAILY_MAX_LAMPORTS = 800_000_000`, `LANE_MAX_OPEN = 16`.
+
+#### Item 9: R1, R2, S10
+
+Source: HELM-REPLY-1122-1-prepare §2 (files only; nothing enabled or restarted).
+
+| Name | Path | sha256 | stake / budget / daily / max_open |
+| --- | --- | --- | --- |
+| R1 | `/etc/mal-floor-lane/live-e85447f865a13bcaf2531224f0438b2b2d23adf8-s025-b500.json` | `235bf1e91b0e93c9706492b4c1669f4584ad162d99ec03240283d50a5b15bc77` | 250000000 / 5000000000 / 800000000 / 16 |
+| R2 | `/etc/mal-floor-lane/live-e85447f865a13bcaf2531224f0438b2b2d23adf8-s025-b500-d050.json` | `41a168a7c4a5d6974e371e353b5a6c77664c6a57ec5e6e13fdcd6abfcdf465d2` | 250000000 / 5000000000 / 500000000 / 16 |
+| S10 | `/etc/mal-floor-lane/live-e85447f865a13bcaf2531224f0438b2b2d23adf8-s010-b500.json` | `1b52ffdfb09dfab8fec7895ef7acb8e04740a106978a4b7463698bfc4f434f3b` | 100000000 / 5000000000 / 500000000 / 16 |
+
+One-key diffs (Helm, each against its stated parent):
+
+```
+== R1 (s025-b500) vs s040-b500
+-    "stake_lamports": 400000000,
++    "stake_lamports": 250000000,
+== R2 (s025-b500-d050) vs R1
+-    "daily_loss_lamports": 800000000,
++    "daily_loss_lamports": 500000000,
+== S10 (s010-b500) vs R2
+-    "stake_lamports": 250000000,
++    "stake_lamports": 100000000,
+```
+
+- R2 equals the running s025-b400 except `budget_lamports` 5000000000 (Helm's note; the budget stays 5.00 in every config, QP-RULING-1121a §2).
+- **Drop-in names and sort order** (HELM-REPLY-1122-2-prepare §1, verbatim; nothing created). Helm: "I accept the suggested names. A byte-order (LC_ALL=C) check confirms the order, since '-' (0x2d) sorts before 'z'."
+  - s040 step: `zzzzzzzz-s040-b500.conf` (8 z)
+  - R1: `zzzzzzzzz-r1-s025-b500.conf` (9 z)
+  - R2: `zzzzzzzzzz-r2-s025-b500-d050.conf` (10 z)
+  - S10: `zzzzzzzzzzz-s10-s010-b500.conf` (11 z)
+  - Current directory, `/etc/systemd/system/mal-floor-lane.service.d/`: live.conf, runtime.conf, zz-pin-e879.conf, zz-pin-f68c.conf, zz-pin-fc6a.conf, zzz-pin-320c.conf, zzzz-pin-9c52.conf, zzzzz-pin-e5fd.conf, zzzzzz-s025.conf, zzzzzzz-b400.conf
+  - The list after each add is the current list plus these entries, in order:
+    - After the s040 step: … zzzzzzz-b400.conf, zzzzzzzz-s040-b500.conf
+    - After R1: … zzzzzzzz-s040-b500.conf, zzzzzzzzz-r1-s025-b500.conf
+    - After R2: … zzzzzzzzz-r1-s025-b500.conf, zzzzzzzzzz-r2-s025-b500-d050.conf
+    - After S10: … zzzzzzzzzz-r2-s025-b500-d050.conf, zzzzzzzzzzz-s10-s010-b500.conf
+  - Each drop-in has the same shape as the existing pins. The [Service] section sets WorkingDirectory=/usr/local/lib/mal-floor-lane-executor/e85447f865a13bcaf2531224f0438b2b2d23adf8, then an empty `ExecStart=`, then the line below (text only):
+    - s040: `ExecStart=/usr/local/lib/mal-floor-lane/venv/bin/python -E -s -B -u -m tools.floor_lane_executor run --config /etc/mal-floor-lane/live-e85447f865a13bcaf2531224f0438b2b2d23adf8-s040-b500.json --live`
+    - R1: `ExecStart=/usr/local/lib/mal-floor-lane/venv/bin/python -E -s -B -u -m tools.floor_lane_executor run --config /etc/mal-floor-lane/live-e85447f865a13bcaf2531224f0438b2b2d23adf8-s025-b500.json --live`
+    - R2: `ExecStart=/usr/local/lib/mal-floor-lane/venv/bin/python -E -s -B -u -m tools.floor_lane_executor run --config /etc/mal-floor-lane/live-e85447f865a13bcaf2531224f0438b2b2d23adf8-s025-b500-d050.json --live`
+    - S10: `ExecStart=/usr/local/lib/mal-floor-lane/venv/bin/python -E -s -B -u -m tools.floor_lane_executor run --config /etc/mal-floor-lane/live-e85447f865a13bcaf2531224f0438b2b2d23adf8-s010-b500.json --live`
+  - Rollback, Helm: "A rollback is a single step: add the next drop-in, run daemon-reload, then restart mal-floor-lane. Back up the unit first. The host is never touched."
+- The old s025-b400 config and its drop-ins are unchanged on disk (Helm: aggregate sha256 of the drop-in sha256sums `fd2e552c…e198b` before and after).
+
+#### Wallet floor and slots at the ask
+
+Values at the ask (hourly #3263, 2026-11-22T20:36Z, and the wallet `getBalance` in the same run):
+
+| Token | Value |
+| --- | --- |
+| n open | **6** |
+| k (of those, opened at 0.25) | **6** (all opened at 0.25) |
+| free balance | **2,700,871,569** lamports |
+| open cost basis | 1.510043040 SOL |
+| lifetime realized | **+1.065493048 SOL** (high-water mark 1.070206933, source: the decay-monitor line of the manager hourly job #3263 (2026-11-22T20:36Z), "realized lifetime 1.065493048 SOL, HWM 1.070206933", also in #3269 at 00:5xZ; not in state line 587) |
+| top-up landed | **NO.** The owner's 2.0 SOL is still pending. |
+| budget headroom | 3.555450008 of 4.00 (running Am.12 budget); as given, it equals 4.00 - (open basis 1.510043040 - realized 1.065493048). The code's `committed_loss_stop` gives no credit for positive realized; the budget slots below use that code formula. |
+| lane 11-22 | sends 4, landed 4, failed 0; exits 6; realized +0.092009711 |
+| wallet at cost W | 2.700871569 + 1.510043040 = **4.210914609 SOL** |
+
+**Wallet-floor slots.** The manager computed them with the code's need formula, `tools/floor_arena_executor.py:184-193` at 5fc473b5. This record recomputed them from the formula and the inputs above, with the same result. Each further open is checked at its own n: `need(n) = 400,000,000 + 160,000 + 2,100,000 + (n+1) x 1,600,000 + 750,000,000` (no unlanded held stakes assumed), refused when the balance is below it. Each open takes 402,260,000 from the balance (stake + send fee + rent).
+
+- Immediately (6 open at 0.25):
+  - +0 SOL: balance 2,700,871,569. After 4 opens (n = 10) the balance is 1,091,831,569, below need(10) = 1,169,860,000, so the 5th is refused. **4.**
+  - +1.0 SOL: after 7 opens (n = 13) the balance is 885,051,569, below need(13) = 1,174,660,000. **7.**
+  - +2.0 SOL: after 9 opens (n = 15) the balance is 1,080,531,569, below need(15) = 1,177,860,000. **9.**
+- Steady state (the 0.25 positions closed; start from W = 4,210,914,609 with n = 0):
+  - +0 SOL: after 8 opens the balance is 992,834,609, below need(8) = 1,166,660,000. **8.**
+  - +1.0 SOL: after 11 opens 786,054,609, below need(11) = 1,171,460,000. **11.**
+  - +2.0 SOL: after 13 opens 981,534,609, below need(13) = 1,174,660,000. **13.**
+  - Helm cross-checked 8 / ~11 / ~13, capped at 12 by the 5.00 budget, with floor = max(0.05, funded 1.00 - 0.25, configured 0.25) = 0.75 SOL (HELM-REPLY-1122-1-prepare §5).
+
+**Budget slots, mixed formula** `floor((5,000,000,000 - max(0, -realized) - k x 253,860,000) / 403,860,000)`:
+- Immediately: realized is positive, so that term is 0. (5,000,000,000 - 6 x 253,860,000) / 403,860,000 = 3,476,840,000 / 403,860,000 = 8.609, so **8** at k = 6.
+- Steady state, no 0.25 position open: 5,000,000,000 / 403,860,000 = 12.38, so **12**.
+
+**The ask states the lower of the two counts** (Am.14 "Wallet floor and slots"):
+
+| | +0 SOL | +1.0 SOL | +2.0 SOL |
+| --- | --- | --- | --- |
+| Wallet-floor slots, immediately (6 open at 0.25) | 4 | 7 | 9 |
+| Budget slots, immediately (k = 6) | 8 | 8 | 8 |
+| **Slots stated, immediately** | **4** | **7** | **8** (budget 8 < wallet 9, so the budget binds) |
+| Wallet-floor slots, steady state (from W) | 8 | 11 | 13 |
+| Budget slots, steady state | 12 | 12 | 12 |
+| **Slots stated, steady state** | **8** | **11** | **12** (budget cap) |
+
+Am.14's drafting estimate was 7 / 10 / 12 at W about 3.98. At this ask's W = 4.210914609 the no-top-up steady count is 8. The no-top-up immediate count (4) is the one that applies if the install is made before the top-up lands.
+
+#### Risk in plain words, recomputed at the ask (owner's words given below: no-top-up columns, and the 12-slot cap; the +1.0 column is WORKSHEET arithmetic inside that cap)
+
+Convention as Am.14 and the worksheet: 0.40386 per 0.40 position, 0.25386 per 0.25 position. L = +1.065493048. W = 4.210914609 (free balance + open basis) before any top-up; a top-up is added to W in the +1.0 and +2.0 columns. Lifetime bound = 5.00 + L = **6.065493048 SOL**. "Remaining room" here means that lifetime bound; it is not reduced by the open worst case already used. One-day bound = min(room, 0.80 + stake at once).
+
+| | No top-up, immediate | +1.0, immediate | +2.0, immediate | No top-up, steady | +1.0, steady | +2.0, steady |
+| --- | --- | --- | --- | --- | --- | --- |
+| Slots stated (table above) | 4 | 7 | 8 | 8 | 11 | 12 |
+| 0.25 positions open (k) | 6 | 6 | 6 | 0 | 0 | 0 |
+| Most at stake at once = k x 0.25386 + slots x 0.40386 | 1.52316 + 1.61544 = **3.13860** | 1.52316 + 2.82702 = **4.35018** | 1.52316 + 3.23088 = **4.75404** | **3.23088** | **4.44246** | **4.84632** |
+| One UTC day can lose = min(6.065493, 0.80 + stake) | **3.93860** | **5.15018** | **5.55404** | **4.03088** | **5.24246** | **5.64632** |
+| Most the lane can still lose = 5.00 + L | 6.065493 | 6.065493 | 6.065493 | 6.065493 | 6.065493 | 6.065493 |
+| Wallet at cost (W + top-up) | 4.210915 | 5.210915 | 6.210915 | 4.210915 | 5.210915 | 6.210915 |
+| Lifetime bound / wallet at cost | 144.0% | 116.4% | 97.7% | 144.0% | 116.4% | 97.7% |
+| (Wallet at cost - 0.75) / wallet at cost | 82.2% | 85.6% | 87.9% | 82.2% | 85.6% | 87.9% |
+
+- A ratio above 100% means the budget exceeds the wallet, so the 0.75 SOL wallet floor binds first.
+- From unrounded W and L: 6.065493048 / 4.210914609 = 1.4404 and (4.210914609 - 0.75) / 4.210914609 = 0.8219 with no top-up; 1.1640 and 0.8561 with +1.0; 0.9766 and 0.8792 with +2.0.
+- One trade's full loss: 0.404 SOL. Am.13 Y2 1.50 SOL in full-loss positions: 1.50 / 0.40386 = 3.71 (at 0.25: 1.50 / 0.25386 = 5.91).
+- **Rollback rows** (Am.14 arithmetic, the same in every column): R1 at most 16 x 0.25386 = **4.06176** at stake, one-day bound min(6.065493, 0.80 + 4.06176) = **4.86176**. R2 one-day bound min(6.065493, 0.50 + 4.06176) = **4.56176**. S10 at most 16 x 0.10386 = **1.66176** at stake, one-day bound min(6.065493, 0.50 + 1.66176) = **2.16176**. The lifetime bound is **5.00 + realized = 6.065493048** at R1, R2 and S10.
+- Evidence is thin, as Am.14 says: the LIVE-FIT edge is 4 days chosen after a good run, the November in-sample ex-top-3 is negative at every cap tested, and no live fill exists at 0.40.
+
+**C3 disclosures (restated; Am.14 "Disclosures" controls).**
+- (i) After any step-back the lifetime bound stays 5.00 + realized, not 4.00 + realized, until the budget is changed by its own T1 record. While 0.40 positions are open, new 0.25 entries are refused by `committed_loss_stop` or the full-wipe pre-send until enough of them close, for up to about 24 h. These are refusals, not a STOP.
+- (ii) A step-back whose start line has any other tail, or whose loaded-config sha256 does not match, means the lane STOP file at once and one HELM-ASK to fix it.
+- (iii) S10 is the one 0.10 target after the Am.14 install (Am.13 item 2 resumption after a Y STOP, and Am.13 exit 10 in a 0.25 population on R1/R2). It runs at budget 5.00, so its lifetime bound is 5.00 + realized.
+
+**OWNER WORD ON THE RECOMPUTED RISK TABLE: GIVEN.** Source: the MiScusi session chat, received at or before 2026-11-23T01:06:58Z, the stamp on the manager's state-file line 602 (`state-manager24.md`), which records it verbatim. Before it, the manager's update showed the owner the recomputed table (most at stake 3.14 now / 3.23 steady; one-day 3.94 / 4.03; lifetime 6.07; the 0.75 SOL wallet floor caps the wallet loss at about 3.46 of 4.21) and the model upside of about +0.07 SOL/day, "a model, not a promise". The owner answered, verbatim:
+
+> "Yes to the Am.14 risk table as recomputed: up to 3.23 SOL staked at once, up to 4.03 SOL lost in one day, 6.07 SOL lifetime limit, with the 0.75 SOL wallet floor."
+
+The owner's 2-dp figures are rounded; **the exact figures govern**: 3.23088 at stake, 4.03088 in one day, 6.065493048 lifetime (the owner's 3.23 and 4.03 are 0.00088 SOL below them). The at-ask figures are unchanged (job #3263, 2026-11-22T20:36Z).
+
+**Scope of the owner's words.** The owner's risk-table word and the owner-yes-2 Helm word (below) cover **the no-top-up columns only**. The word names the steady-state no-top-up column (3.23088 / 4.03088), the highest no-top-up exposure at the 8-slot count. The immediate no-top-up column (3.13860 / 3.93860) lies under it. They do **not** by themselves cover the +1.0 or +2.0 columns (at stake 4.44246 or 4.84632, one-day 5.24246 or 5.64632); the owner's own 2.0 SOL top-up would reach those columns with no restart (Am.14: a top-up that lands after the install takes effect with no restart, Am.12 item 4). The owner's later word below covers them. Superseded for the top-up columns by the owner's 12-slot cap word (2026-11-23T17:13:31Z, quoted below), which covers growth from profit or top-up up to the 5.00 budget cap of 12 positions.
+
+**OWNER WORD ON THE TOP-UP COLUMNS: GIVEN. MET for the full scope: slot growth from profit or a top-up, up to the 12-slot budget cap.** Source: the owner's chat to manager24, recorded verbatim in `state-manager24.md` line 642, stamp 2026-11-23T17:13:31Z. The owner's words, verbatim:
+
+> "Yes to FLOOR at 0.40 growing with the wallet (from profit or my top-up) up to the 5.00 budget cap of 12 positions: up to 4.85 SOL staked at once and 5.65 SOL lost in one day; 6.07 SOL lifetime limit and the 0.75 SOL wallet floor unchanged."
+
+- The four numbers match this record's own risk-table row for the 12-slot, budget-capped case (+2.0 steady): 4.84632 at stake (4.85), 5.64632 in one day (5.65), lifetime bound 6.065493048 (6.07), wallet floor 0.75 SOL. The exact figures govern. **Note: 4.84632 / 5.64632 is the steady-state 12-slot figure, not the maximum exposure. The maximum during the switch-over is 4.95018 / 5.75018 (below).**
+- The word covers the +1.0 column (4.44246 / 5.24246) as well, since it lies inside the 12-slot cap.
+
+**Switch-over (mixed 0.25 + 0.40) exposure.** During the switch, k old 0.25 positions can stay open while new 0.40 positions open up to the budget. `max_open` is 16 at 0.25, so the table runs k = 0 to 16. Recomputed by this record (arithmetic only, no host read):
+- slots = max(0, min(12, floor((5,000,000,000 - k x 253,860,000) / 403,860,000)));
+- at once = k x 0.25386 + slots x 0.40386;
+- one-day = min(6.065493048, 0.80 + at once);
+- free wallet needed = 0.75 + slots x 0.40226 (SOL; the 0.75 floor plus about 0.40226 per open, from the need formula's per-open spend 402,260,000, rounded to 3 dp).
+
+| k | slots | at once | one-day | free wallet needed |
+| --- | --- | --- | --- | --- |
+| 16 | 2 | 4.86948 | 5.66948 | 1.555 |
+| 15 | 2 | 4.61562 | 5.41562 | 1.555 |
+| 14 | 3 | 4.76562 | 5.56562 | 1.957 |
+| 13 | 4 | 4.91562 | 5.71562 | 2.359 |
+| 12 | 4 | 4.66176 | 5.46176 | 2.359 |
+| 11 | 5 | 4.81176 | 5.61176 | 2.761 |
+| 10 | 6 | **4.96176** | **5.76176** | 3.164 |
+| 9 | 6 | 4.70790 | 5.50790 | 3.164 |
+| 8 | 7 | 4.85790 | 5.65790 | 3.566 |
+| 7 | 7 | 4.60404 | 5.40404 | 3.566 |
+| 6 | 8 | 4.75404 | 5.55404 | 3.968 |
+| 5 | 9 | 4.90404 | 5.70404 | 4.370 |
+| 4 | 9 | 4.65018 | 5.45018 | 4.370 |
+| 3 | 10 | 4.80018 | 5.60018 | 4.773 |
+| 2 | 11 | **4.95018** | **5.75018** | 5.175 |
+| 1 | 11 | 4.69632 | 5.49632 | 5.175 |
+| 0 | 12 | 4.84632 | 5.64632 | 5.577 |
+
+- **The maximum over k <= 9 is k = 2: 4.95018 at once, 5.75018 in one day**, lifetime 6.065493048. It is reachable only when the free wallet is at least 0.75 + slots x 0.40226 (5.175 SOL at k = 2), which is possible after the owner's 2.0 SOL top-up. **The maximum over k <= 16 is k = 10: 4.96176 at once, 5.76176 in one day**, which is above the owner's 4.96 / 5.76 (see the install gate). The steady-state 12-slot figure 4.84632 / 5.64632 is not the maximum.
+- The recomputation matched the manager's figures on every row given (slots, at once, one-day; k = 8 to 12 and the earlier rows). Rows k = 13 to 16 and the "free wallet needed" column were filled by this record from the formulas above.
+
+**OWNER WORD ON THE SWITCH-OVER MAXIMUM: GIVEN.** Source: the owner's chat to manager24, in reply to the manager's switch-over ask, recorded verbatim in `state-manager24.md` line 649, stamp 2026-11-23T18:14:56Z. The owner's words, verbatim:
+
+> "up to 4.96 SOL staked at once and 5.76 SOL lost in one day; 6.07 SOL lifetime limit and the 0.75 SOL wallet floor unchanged"
+
+- It covers the switch-over maximum **for k <= 9**: the owner's 4.96 and 5.76 are at or above the exact 4.95018 and 5.75018. They are below the k = 10 row (4.96176 / 5.76176), so k >= 10 is not covered. The exact figures govern.
+
+~~**Rule (b), until that word is quoted. This is an ADDITION made by this ask record. It is not Am.14 text.**~~ **MOOT: superseded by the owner's 12-slot cap word (2026-11-23T17:13:31Z); NOT ADOPTED.** Slot growth to 12 is within the owner's word (4.85 at stake, 5.65 in one day, 6.07 lifetime, 0.75 floor). The struck text is kept visible for the record.
+- ~~Before the top-up is sent to the lane wallet, the owner is shown the +1.0 and +2.0 figures above and his word is quoted in a record.~~
+- ~~**Trigger (checkable).** The manager's hourly job reads the wallet `getBalance`. If free balance + open cost basis exceeds (the at-ask wallet at cost 4.210914609 SOL + realized since the ask + 0.50 SOL), the top-up counts as landed. The trigger fires if that happens while "OWNER WORD ON THE TOP-UP COLUMNS" is still PENDING.~~
+- ~~**Action.** At once, the manager creates the lane STOP file with the HANDOFF section 1 job, records the balance, n, k and the recomputed figures in a state line and a notebook entry, and asks the owner. The STOP file is removed only after the owner's verbatim word on the top-up figures is quoted, through the same path as any lane STOP removal.~~
+- ~~**What is NOT bounded.** Between the top-up landing and the next hourly check (up to about 1 hour), the executor can open entries up to the top-up slot count. The worst case is the shown +2.0 column: 4.84632 at stake and 5.64632 in one day. The owner was shown these figures but has not given a word on them yet.~~
+- ~~**Precedence.** If the owner's top-up word is quoted before the top-up lands, this rule never fires.~~
+- **The GO re-reads n, k, free balance and L.** If any stated count or bound is then above the owner's named figures (stake at once above 4.95018, one-day bound above 5.75018, or lifetime bound above 6.065493048 (the owner's 12-slot cap word, 2026-11-23T17:13:31Z, and the owner's switch-over word, 2026-11-23T18:14:56Z)), a new owner word is needed before the GO.
+- **INSTALL GATE (k <= 9), a GO step for Helm; an ADDITION of this ask record, not Am.14 text.**
+  - After `systemctl stop mal-floor-lane` (executor only), the 0.25 position count k is frozen, because no 0.25 opens after the switch.
+  - Helm reads the open position count from the lane state. That is a count only, Helm's own read; no Claude session reads the host.
+  - Helm proceeds with the reset, the drop-in and the start **only if k <= 9**.
+  - If k >= 10: no reset, no drop-in. Helm runs `systemctl start mal-floor-lane` on the unchanged config and reports k. The manager re-issues the GO later, when k <= 9.
+  - This keeps the lane's exposure within the owner's words: 4.95018 <= 4.96 and 5.75018 <= 5.76 (the maximum over k <= 9, at k = 2).
+  - The GO re-read thresholds above (4.95018 / 5.75018 / 6.065493048) hold given this k <= 9 gate.
+
+**Precondition 3: the owner's own install word in the Helm chat: MET for the no-top-up scope.** Two Helm-chat words, both quoted by Helm. Neither covers any `end_ms` change, and neither covers the top-up columns.
+
+(1) `/data/mal/hunt-1008/push-1016/hunt29/p1/HELM-REPLY-1122-owner-yes.md`, sha256 `9d385a6a5c3caab3642a83061819796cf7d61f9c4b2f00b02a3839110c24c825`. Helm: "On 2026-11-22 at 2:56 PM PST [= 22:56Z, editorial insertion], Vaan's own words in Helm's chat were:"
+
+> "Yes: switch FLOOR to 0.40 SOL stake, 5.00 SOL budget, 0.80 SOL daily stop, about 8 slots with no top-up, and reset the 14-day clock at the switch."
+
+Helm's scope note, verbatim: "This covers the Am.14 install (config s040-b500, e60c267b…, drop-in zzzzzzzz-s040-b500.conf) and the bundled first_send_ms reset, done exactly as written in HELM-REPLY-1122-2-prepare.md. It does NOT cover any end_ms change; end_ms stays at Dec 7 4 PM PST." Helm adds: "Nothing has been installed yet. I will act only once HELM-ASK-1122-1-GO.md appears with the Am.14 record merged, QP OK and reviewer approval."
+
+(2) `/data/mal/hunt-1008/push-1016/hunt29/p1/HELM-REPLY-1122-owner-yes-2.md`, sha256 `5febc598a5a1543bd81e11f37ca526b0b09ca903773cebbc693bf749055a04e6`. Helm: "On 2026-11-22 at 5:07 PM PST [= 2026-11-23T01:07Z, editorial insertion], Vaan's own words in Helm's chat were:"
+
+> "Yes to DEC-035 Am.14: FLOOR stake 0.40 SOL, budget 5.00 SOL, daily stop 0.80 SOL, about 8 slots with no top-up; lifetime bound 6.07 SOL, one-day bound 4.03 SOL; Helm may step back without asking me to R1 (0.25 stake), R2 (0.25 stake + 0.50 daily stop) or S10 (0.10 stake); reset the 14-day clock at the switch."
+
+Helm's scope note, verbatim: "This covers: the install (s040-b500); the bundled first_send_ms reset; Helm's step-backs to R1, R2 or S10 without asking first, using the drop-in names in HELM-REPLY-1122-2-prepare.md. It does not cover any change to end_ms, which stays at Dec 7 4 PM PST." Helm adds: "Nothing is installed yet. I'm still waiting for HELM-ASK-1122-1-GO.md, which needs Am.14 merged, QP OK and the reviewer's approval."
+
+- The second word names the 0.40 stake, the 5.00 budget, the 0.80 daily stop, the lifetime and one-day bounds, R1, R2 and S10 without asking, and the reset. It meets Am.14 precondition 3 for the no-top-up case. It supplies the bounds and R1/R2/S10 that the 22:56Z word lacked, so that open item is closed.
+- **"About 8 slots" is the steady no-top-up count.** The immediate count at the ask is 4 (see the slot table).
+- **CANARY reset condition (precondition 8): MET** (both words name the reset).
+- Both Helm-chat words give the no-top-up scope. The owner's later word of 2026-11-23T17:13:31Z (above) covers slot growth up to the 12-slot cap. Rule (b) is moot.
+
+Precondition 2's owner word is given (above), for the no-top-up columns. Precondition 2 also needs this record merged with QP OK and REVIEWER APPROVE at its exact head.
+
+#### Precondition 1: md5 replay and executor tests
+
+- **md5 decision-equivalence replay at #1476's final merge head: job #3275, MiScusi notebook n_kpwedi_8iu9MSA. PASS.** Fields quoted from the job's logged output:
+  - script `equiv-run-1121c.sh` sha256 `fd8e9429144ad75e3a15e0a963ee6a59f0cf01e9a86ffbd6e37ebc4fe823d4ae`, script rc 0; start 2026-11-23T01:19:09Z, end 01:21:06Z;
+  - tool `tools/floor_exec_equiv.py` (`per-row`) blob `32c84d2e62f027854cb2b295e5952016afa596eb`, tool tree `2c18b7ee`;
+  - tree A `5fc473b5` (blobs `b3382217` / `d01e93a8`), tree B `e85447f8` (blobs `e8d5ac06` / `d01e93a8`), the #1476 merge commit `e85447f865a13bcaf2531224f0438b2b2d23adf8`;
+  - executor python `/usr/local/lib/mal-floor-lane/venv/bin/python`;
+  - root copy files 16, entry rows 115;
+  - per-row rc=0, all_ok true; runs 116 (= N + 1); equal true 116, false 0; rc_a 0 in 116; rc_b 0 in 116; dropped_keys [] in 116;
+  - `all_rows_floor` (the wallet-floor-binding run): wallet_floor_refusals_a 34, wallet_floor_refusals_b 34, equal row kinds;
+  - readers rc=0, all_ok true (new_keys exec_stage_ms, presend_batch, stage_ms, stage_note);
+  - cleaned yes;
+  - log `~/mal-data/am14-proof/equiv-20261123T011909Z.log` on fast-0, 2884 lines, sha256 `8b9076e3f71c962ce8c53c363b46c7a7ff5e28721fd95c678dc156fe4c2063cc` (computed by manager job #3276 on mal-fast-0).
+  - **The job prints no config sha and no `presend_batch` value for the per-row runs.** This record does not claim either; the running s025-b400 config with `presend_batch` absent is the Am.14 precondition 1 design, not something the job output shows.
+  - **Answer to the open wallet-floor-run question: yes, the wallet-floor-binding run is in the proof, 34 refusals in both trees (34/34).**
+  - Job #3270 ran the same script and also PASSED, but its MiScusi log kept only the tail; #3275 is the proof with the full output.
+  - Job #3199 was an earlier run of the same script, recorded only in state-file line 497 (verbatim: "- 2026-11-21T06:31:40Z #3199 final-head proof PASS: A 5fc473b5 vs B e85447f8 per-row rc=0 readers rc=0 cleaned yes (Am.14 item 5 md5 AT-ASK value; notebook)."). It is superseded by #3275 as the proof. It is **not** cited as notebooked.
+- **Executor tests at the new tree.**
+  - Job **#3264 did NOT run the tests**: the lane venv has no pytest (disclosed in the state file, 2026-11-22T20:37:22Z).
+  - Job **#3265** ran a clean clone at `e85447f865a13bcaf2531224f0438b2b2d23adf8` with `/home/claude/mal-venvs/r4b/bin/python -m pytest -q tools/test_floor_lane_executor.py tools/test_forge_dsl_lane_executor.py`: **186 passed**, pytest_rc 0, head verified.
+  - The tests ran in the r4b venv, not the lane venv, because the lane venv has no pytest. The two venvs' Python versions were not compared.
+
+#### Precondition 7: Am.10 item 5 window state
+
+- The quoted line below is the `am10-measure.sh` output in the manager's hourly job #3263 (2026-11-22T20:36Z). It is not in state-file line 587.
+- Notebook: n_IG7OMwmvyJ_W7w, an index entry pointing to the 2026-11-19 [result] "FLOOR: Am.10 item 5 window 3 (Am.12) closed at its 10th buy". So window 3 is read and notebooked.
+- "ITEM 5 WINDOW 3 (Am.12 start line 2026-11-18T05:55:08Z): live buys 35 read n 10 median 1085.5 range 1052 1197 -> WORKED (<= 1300) | (c) counted 0 -> ok".
+- The `am10-measure.sh` window-4 edit (open the next window at the new start line, the `rpc_rps=4.0` field) is **DONE as a prepared script edit** (2026-11-23, backup `.bak-1123-am14`). The confirmation that the script does not misfire is **DONE**: the manager's hourly job #3300 at 2026-11-23T16:45Z (head f3708ed5) printed, verbatim, "ITEM 5 WINDOW 4: not opened (no Am.14 start line in the journal)". The state line for it (`state-manager24.md` line 640, stamp 2026-11-23T16:45:47Z, "HOURLY #3300") records "WINDOW 4 not opened"; the same line also printed in #3283 to #3299. After the restart, a manager job also confirms that window 4 opens at the new start line (Am.14 precondition 7); that can only be done after the restart.
+
+#### Precondition 8: the 14-day CANARY window
+
+- Window start `first_send_ms` 1794876902824 = **2026-11-17T00:55:02.824Z**. Expiry **2026-12-01T00:55:02Z** (+14 days, `CANARY_MAX_MS = 14 * 86_400_000`). Cited as in Am.14 item 8 (state-file lines stamped 2026-11-21T00:05:14Z and 00:05:17Z). At the ask, Helm's HELM-REPLY-1122-2-prepare (line 3) reports `floor-state-live.json` unchanged with first_send_ms 1794876902824 (about 2026-11-22T21:21Z). Not re-read from a host by this record.
+- `CANARY_MAX_MS` is at `tools/floor_arena_executor.py:74` at e85447f8 (it was `:66` at 5fc473b5; checked with `git show`).
+- **Bundle or schedule.** The manager bundles a recorded reset (`first_send_ms` to null, by Helm) with the install restart; the new window starts at the first 0.40 send.
+- **Helm's condition** (HELM-REPLY-1122-2-prepare §2, verbatim): "I will do it only with Vaan's own explicit yes, in his words in Helm's chat, that names this reset. My standing rule is that I never reset or extend the 14-day clock without that. A manager or agent saying he agreed does not count, and neither does an approval of the stake step alone. Without that yes, I install the stake step and leave first_send_ms as it is." In that case the window still ends 2026-12-01T00:55:02Z.
+- **Helm's step list** (§2, text only, done while the executor is stopped and the host keeps running; nothing done yet; the 2026-11-16 reset record is `/var/lib/mal-live/floor-lane/reset-1108-1-20261116T170625Z/`):
+  1. `systemctl stop mal-floor-lane` (executor only), then confirm it is inactive.
+  2. `D=/var/lib/mal-live/floor-lane/reset-1122-2-<UTC stamp>`. Run mkdir and chmod 700 on $D. Run sha256sum on state/floor-state-live.json and state/bridge-state-live.json into $D/sha-before.txt, then copy both files to $D/*.bak with cp -p.
+  3. Make a one-field edit as mal-live, written to a temp file and renamed into place with mode 600 and owner mal-live: `python3 -c 'import json,os;p="/var/lib/mal-live/floor-lane/state/floor-state-live.json";d=json.load(open(p));assert d["schema"]=="floor_executor_state_v1";d["first_send_ms"]=None;t=p+".tmp";json.dump(d,open(t,"w"));os.replace(t,p)'`. This changes only first_send_ms; gaps, exits, starts_seen and gap_hold stay as they are. Then save a sha256sum to $D/sha-after.txt and diff the old and new keys to show that only that field changed.
+  4. Add the s040 drop-in, run daemon-reload, then `systemctl start mal-floor-lane`. Check the new PID, the WorkingDirectory pin, and the config sha e60c267b….
+  5. Watch until the first 0.40 send. first_send_ms then gets set to that send's ms, so the new cutoff is that time plus 14 days.
+- **Helm's end_ms note** (§2, verbatim): "end_ms stays at 1796688000000 (Mon 2026-12-07 4:00 PM PST) in the s040 config and all three rollback configs. A reset therefore gives a full 14 days only if the first 0.40 send happens by about Nov 23 4:00 PM PST. After that, the window is cut short at Dec 7 4:00 PM PST. If the manager wants a full 14 days, end_ms needs its own reviewed config change and Vaan's yes. I won't change it as part of this." end_ms 1796688000000 = 2026-12-08T00:00:00Z. Changing end_ms is its own reviewed config change plus the owner's yes, and is not part of Am.14.
+- The effective window end is min(first 0.40 send + 14 days, `end_ms` 2026-12-08T00:00:00Z). A first 0.40 send after about 2026-11-24T00:00Z therefore gets less than 14 days. `end_ms` also falls inside [S', R') (Am.14 item 13), so the S' registration must deal with `end_ms` as well as the CANARY window (QP-RULING-1120 §1.2 item 7). Changing `end_ms` is outside this record. This sentence is this record's reading; it does not edit Am.14's own text, which says the window "ends about 14 days after the first 0.40 send".
+
+#### Optional
+
+The fills-tool aggregates of QP-RULING-1121 §2 (B) were not run and are not given. Am.14 makes them optional.
+
+#### Open items
+
+1. None of the owner's words is open. The owner's top-up word is quoted (2026-11-23T17:13:31Z); rule (b) is moot.
+2. The GO re-reads n, k, free balance and L; any count or bound above the owner's named figures, given the k <= 9 install gate (stake at once above 4.95018, one-day bound above 5.75018, or lifetime bound above 6.065493048 (the owner's 12-slot cap word, 2026-11-23T17:13:31Z, and the owner's switch-over word, 2026-11-23T18:14:56Z)) needs a new owner word first.
+3. Install step, for Helm at the GO: the k <= 9 install gate (after stopping the executor, read k; proceed with reset, drop-in and start only if k <= 9; if k >= 10 start on the unchanged config, report k, and the manager re-issues the GO later).
+4. The (B) fills-tool figures are optional and were not run.
+5. This record needs QP OK and REVIEWER APPROVE at its exact head before merge. HELM-ASK-1122-1-GO follows the merge.
+6. The figures must be re-read at the ask instant if the top-up lands or n changes before the GO, because an executor restart empties the marks (Am.4 item 6).
+
+No book has cleared the promotion gate. floor-lane-1 has not cleared the promotion gate. Nothing here says FLOOR makes money.
