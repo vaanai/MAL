@@ -2285,7 +2285,12 @@ The executor tree is the one at `38d38ae9` (PR #1484 merge 3b686513). With the k
 
 1. **Load check of all four configs before the GO.** Each of the four restaged configs (step, R1, R2, S10) is loaded at tree 38d38ae9 through `X.make_config` (the executor's config loader, no send). Each must end with rc 0 and print its parsed `canary_max_ms`. Any refusal, rc other than 0 or a parsed value other than the one staged blocks the GO. If the executor has no validate mode, the manager runs the load as a job against the staged files.
 2. **Arithmetic at the GO.** `first_send_ms + canary_max_ms >= end_ms` for every config. The manager reads `first_send_ms` from the figure Helm reports and checks it at the GO. With E = 1798675200000 and 40 d (3456000000 ms), the sum reaches E only if `first_send_ms` >= 1795219200000 (2026-11-21T00:00Z). The Am.14 reset at the switch sets `first_send_ms` to the first 0.40 send, which is after 2026-11-23, so this is expected to hold. If it does not, the GO is not given until it does. The value chosen is the smallest that covers E, not 60 d by default (QP on #1484). Once `end_ms` is reached it binds anyway, so a larger `canary_max_ms` matters only if someone later moves `end_ms`.
-3. **119 entry rows and 120 `equal` lines in #3302/#3303.** **Not sourced in the PR #1484 body or comments.** QP's comment on #1484 names the question and offers a presumption only: "presumably 119 per-row + 1 whole run". This record does not adopt that as fact. The manager states the reason in the install record, or in a PR comment before the merge, from the job output. The proof's other facts stand as QP gave them: rc_a/rc_b non-zero 0 of 120, dropped non-empty 0, `all_ok` true on both jobs. The replay clock sits at the newest row + 1 s, so the proof does not reach the expiry boundary. The unit tests of #1484 (default, refusals, 60 d ceiling, 30 d expiry at day 15 and day 30) and the arithmetic in item 2 carry the new boundary. No second replay is required for a config that sets the key (QP on #1484).
+3. **119 entry rows and 120 `equal` lines in #3302/#3303.** **Source: the code, `tools/floor_exec_equiv.py` `cmd_per_row` at main (blob 32c84d2e62f0; manager, 2026-11-23).**
+- For each of the N entry rows, the tool makes one run, `row0000`..`row{N-1}`, over a root truncated at that row's seq. Entry rows are those with kind "entry" and a str order_id. Each run's clock is that row's ms + 1,000. That gives 119 lines.
+- It then makes exactly one more run, `all_rows_floor`: the whole root, clock = first entry ms + 1,000, at the wallet-floor balance. It must show at least one `wallet_floor` refusal in both trees. That gives 1 line.
+- So 119 + 1 = 120. QP's presumption on #1484 is therefore correct.
+
+The proof's other facts stand as QP gave them: rc_a/rc_b non-zero 0 of 120, dropped non-empty 0, `all_ok` true on both jobs. Every run's clock sits 1 s after an entry row, so the proof does not reach the expiry boundary. The unit tests of #1484 (default, refusals, 60 d ceiling, 30 d expiry at day 15 and day 30) and the arithmetic in item 2 carry the new boundary. No second replay is required for a config that sets the key (QP on #1484).
 4. **Probe clock.** The probe `first_attempt_ms` is the lane's first send, 2026-11-08T14:30Z. Plus 60 d (`LANE_PROBE_MAX_DAYS`) that is about 2027-01-07T14:30Z, which is after E. Helm reports the field value (HELM-ASK-1123-1 item 2), and the manager re-checks `first_attempt_ms` + 60 d >= E at the GO. T4 needs no change for an end of 12-31.
 5. **No live config carries `canary_max_ms` above 14 d until Am.15 is merged.** The code does not enforce this (reviewer on #1484, non-blocking item 7). A staged file may carry the key; a file loaded by a running unit may not. Helm installs only after this PR merges.
 
@@ -2337,7 +2342,7 @@ The live host `end_ms` may be as early as 2026-12-16T00:00Z, so the host restart
 ### 7. Not measured
 
 - Nothing was read from a host here. The live `end_ms`, `first_send_ms`, `first_attempt_ms`, drop-in list and file hashes come from Helm's prepare reply and are checked at the GO.
-- The reason for 120 `equal` lines on 119 entry rows is not sourced (section 2, item 3).
+- (Closed by the manager: section 2, item 3 now sources the 120 = 119 + 1 count from `cmd_per_row`.)
 - The replay does not exercise the expiry boundary.
 - No fill, P&L or edge is measured or claimed. A later end date is not evidence about FLOOR.
 
