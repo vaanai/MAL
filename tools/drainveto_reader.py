@@ -1,6 +1,6 @@
 """DRAIN-VETO step 0: the pinned reader (QP-RULING-1120b Q1).
 
-What it reads: pumpfun curve rows and PumpSwap rows of each trigger pool's mint, ONLY inside the trigger's own exploration block, from the pool's create hour to the FLOOR
+What it reads: curve rows (venue label pump_bonding; pumpfun also accepted) and PumpSwap rows of each trigger pool's mint, ONLY inside the trigger's own exploration block, from the pool's create hour to the FLOOR
 decision instant. Fields kept per row: trader (crc32), side, token amount, slot, event_index, block time, venue/prog, mint. Nothing else is ever kept (no SOL or quote amount,
 reserve, price, fee, creator, name). No hour before the block's first hour, none after the decision hour, none at or after 2026-10-01T00Z, none in the D2/D3 hours.
 The decision cut is (slot, tx_index, event_index) up to AND INCLUDING the trigger print (the kit's print order, 1120b "up to and including"); only rows with a greater key are dropped
@@ -8,6 +8,8 @@ before they are counted. The trigger print is a sell, so counting it removes the
 
 What it writes: counts and per-pool flags. No pool or mint or trader id, no price, no P&L, no exit outcome. The per-pool file is keyed by the ordinal of the trigger in the input
 file only.
+
+Usage: run as a script path from the repo root with PYTHONPATH=. (it imports tools.arena_screen).
 
 Modes:
   --schema-count  counts rows by venue and key name per block (names and counts only; runs first, per the ruling);
@@ -20,7 +22,7 @@ differs. Decision state comes from the builder's drainveto_dstate.jsonl via --ds
 Q, B, V are the TRIGGER PRINT's own post-trade state from the pinned builder (not grid Qe/Be): Q = the rule's qpost, real quote reserve in lamports, V excluded; B = base reserve after the
 sell in token_raw; V = VMap V in lamports. Dr = k/V - B with k = (Q+V)*B, i.e. Dr = Q*B/V in token_raw: the token amount a holder must add to drive the real quote reserve to 0.
 Ranges (never clipped; outside -> censored dstate_invalid): V in [17.5e9, 17.7e9], Q in [0, 0.5e9], B > 0. The reader never opens grid.pkl and does not derive triggers from tape. The dstate file is written by the same pinned builder.
-Measurability: a block is measurable only if >= 99% of its pumpfun rows AND of its pumpswap rows carry mint, trader, token_raw, slot, tx_index and event_index (MIN_FIELD_SHARE, fixed
+Measurability: a block is measurable only if >= 99% of its curve rows AND of its pumpswap rows carry mint, trader, token_raw, slot, tx_index and event_index (MIN_FIELD_SHARE, fixed
 before any schema output). The reader proper takes the filed --schema-count output via --schema-json, or else re-runs the licensed schema pass itself.
 Field allowlist: rows are JSON-parsed and projected to the allowlist as the first operation (QP-accepted at 0d0e3a5a while projection stays first).
 
@@ -51,7 +53,8 @@ LOCATOR_KEYS = ("ordinal", "block", "blk", "pool", "pool_crc32", "mint", "hour",
 DSTATE_KEYS = ("ordinal", "Q", "B", "V", "split")  # decision-time state from the licensed grid fields (Qe, Be, VMap V); its own pinned step, not built here
 SPLITS = ("D", "C1", "C2")
 HARD_END = datetime(2026, 10, 1, tzinfo=timezone.utc)  # no hour at or after this instant, ever
-VENUES = ("pumpfun", "pumpswap")
+CURVE_VENUES = ("pump_bonding", "pumpfun")  # the real tape labels curve rows "pump_bonding"; "pumpfun" kept for fixtures
+VENUES = CURVE_VENUES + ("pumpswap",)
 REASONS = ("locator_incomplete", "dstate_invalid", "block_not_measurable", "oracle_live_proxy", "no_create_in_block", "create_after_decision", "no_usable_rows_before_cut", "bad_trigger_row")
 # no_create_in_block merges "created before the block start" with "no create row found" (the creates dir is the block's own; the two cannot be told apart).
 SIX = ("mint", "trader", "token_raw", "slot", "tx_index", "event_index")
@@ -143,6 +146,15 @@ def venue_of(r: dict) -> str | None:
     return r.get("venue") or r.get("prog")
 
 
+def venue_class(label: str | None) -> str | None:
+    """Normalise a raw venue label to "curve", "pumpswap" or None (other)."""
+    if label in CURVE_VENUES:
+        return "curve"
+    if label == "pumpswap":
+        return "pumpswap"
+    return None
+
+
 def row_time(r: dict):
     return r.get("block_time") or r.get("event_ts")
 
@@ -186,12 +198,14 @@ def schema_count(blk: str) -> dict:
 
 
 def measurable(sc: dict) -> bool:
-    """>= MIN_FIELD_SHARE of pumpfun rows AND of pumpswap rows carry all six fields (a venue with no rows fails)."""
-    for ven in VENUES:
-        v = sc["venues"].get(ven)
-        if not v or v["rows"] == 0 or v["all_six"] / v["rows"] < MIN_FIELD_SHARE:
-            return False
-    return True
+    """>= MIN_FIELD_SHARE of curve rows (all curve labels present, pooled) AND of pumpswap rows carry all six fields (a class with no rows fails)."""
+    tot = {"curve": [0, 0], "pumpswap": [0, 0]}
+    for lab, v in sc["venues"].items():
+        c = venue_class(lab)
+        if c is not None and v:
+            tot[c][0] += v["rows"]
+            tot[c][1] += v["all_six"]
+    return all(rows > 0 and ok / rows >= MIN_FIELD_SHARE for rows, ok in tot.values())
 
 
 # ----------------------------------------------------------------------------------------------------------------------------------------------- triggers
@@ -379,7 +393,7 @@ def read_block(blk: str, trig: list[tuple[int, dict]], block_measurable: bool) -
                         state[i]["seen"] = True
                 s = state[i]
                 s["bal"][tid] += amt
-                s["n_curve" if v == "pumpfun" else "n_ps"] += 1
+                s["n_curve" if venue_class(v) == "curve" else "n_ps"] += 1
     for lst in act.values():
         for i, t, _, _ in lst:
             s = state[i]
