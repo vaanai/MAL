@@ -2243,3 +2243,102 @@ The fills-tool aggregates of QP-RULING-1121 §2 (B) were not run and are not giv
 6. The figures must be re-read at the ask instant if the top-up lands or n changes before the GO, because an executor restart empties the marks (Am.4 item 6).
 
 No book has cleared the promotion gate. floor-lane-1 has not cleared the promotion gate. Nothing here says FLOOR makes money.
+
+## Amendment 15 (2026-11-23): floor-lane-1 lane continuation to 2026-12-31T00:00Z (clocks only; DRAFT)
+
+**Status: DRAFT until merge. NOT installed. It authorises nothing until all of these hold: QP OK and REVIEWER APPROVE at the exact head; the merge; the Helm prepare reply (HELM-ASK-1123-1) read and checked as below; and a Helm install (the GO).** Helm installs only after this PR merges. Records only: no code, config, host, unit or live file is touched here. **floor-lane-1 has not cleared the promotion gate, and nothing here says FLOOR makes money.** No gate threshold, seal or registered clock changes. Only the lane clocks named below move.
+
+**What it changes, and only this.** Am.15 moves clocks. **No stake, budget, daily-stop, wallet-floor, lifetime-bound or gate value changes.** Stake 0.40, budget 5.00, daily stop 0.80, the 0.75 SOL wallet floor, `max_open`, STOP/HALT, the A3 pause, the Am.13 decay monitor and the Am.14 rollbacks (B1 to B4, Y2 1.50, R1, R2, S10) are unchanged.
+
+**Sources.**
+- `/data/mal/hunt-1008/ops/manager24/PROPOSAL-am15-lane-continuation.md` (design; Option B is adopted).
+- `/data/mal/hunt-1008/push-1016/hunt29/p1/HELM-ASK-1123-1-am15-prepare.md` (the prepare-only ask already sent to Helm).
+- PR #1484 (merge 3b686513): the optional `canary_max_ms` lane config key. QP OK and REVIEWER APPROVE at head 38d38ae9. md5 decision-equivalence replay jobs #3302/#3303: `equal` true on 120 of 120 lines, false 0 (facts as the manager gave them to QP; not re-read here).
+- Amendment 14 item 8 (the 14-day `CANARY_MAX_MS` window and the S' reset duty), item 13 (S') and its rollback section (R1, R2, S10).
+
+**Decider.** Vaan (owner).
+
+**The owner's words (MiScusi chat to the manager, 2026-11-23T20:28Z), verbatim.**
+
+(a) > "Yes to FLOOR 0.40 / 5.00 budget / 0.80 daily stop: up to 4.96 SOL staked at once, 5.76 SOL lost in one day, lifetime limit 5.00 SOL plus FLOOR's realized profit at the switch (about 6.12 SOL now), 0.75 SOL wallet floor unchanged; reset the 14-day clock at the switch."
+
+(b) > "I'm not gonna keep saying yes, just get it done. No more of this, just do it. We need to keep things pushing without my constant confirmations. Start pushing the other lanes harder as well, we need to increase revenue per day."
+
+**Reading.** (a) is the Am.14 word. It is quoted here for its bounds, which Am.15 leaves as they are. **(b) is the owner's standing word for this continuation.** The manager reads (b) as the owner's yes to keeping FLOOR trading to the end named in the title, with the executor and host restarts that needs, and no further per-step confirmation. It does not raise any bound in (a), and it is not a word for any stake, budget or daily-stop step. The lifetime bound is 5.00 SOL plus FLOOR's realized profit at the switch, as (a) says; Am.15 does not recompute it. Helm's install record quotes (a) and (b).
+
+### 1. The four clocks and the target
+
+One end E that all four clocks reach: **E = 2026-12-31T00:00Z = 1798675200000 ms.**
+
+| Clock | Now | Am.15 | How |
+| --- | --- | --- | --- |
+| T1: executor `end_ms` (no new entries after it; sells and the 24 h clock exits continue) | 1796688000000 = 2026-12-08T00:00Z, in s040-b500, R1, R2 and S10 | **1798675200000 = E** | config, plus an executor restart |
+| T2: host `end_ms` in `/etc/mal-floor-lane/host.json` (the host stops deciding after it) | Helm confirms the live value; HELM-ASK-1107-2.v7 gave 1797379200000 = 2026-12-16T00:00Z | **1798848000000 = 2027-01-02T00:00Z (E + 2 d)** | config, plus one host restart (section 4) |
+| T3: `CANARY_MAX_MS` window, counted from `first_send_ms` | 14 d (code constant) | `canary_max_ms` **3456000000 (40 d)** in each of the four configs; the final value is fixed at the GO | the PR #1484 key; code ceiling 60 d |
+| T4: probe `LANE_PROBE_MAX_DAYS` = 60, counted from the probe `first_attempt_ms` | trips about 2027-01-07 | unchanged | none (section 2, item 4) |
+
+The executor tree is the one at `38d38ae9` (PR #1484 merge 3b686513). With the key absent, decisions are byte-identical to the previous tree (the replay above and the QP and reviewer findings on #1484).
+
+**The four restaged configs** are copies of the live configs with only `end_ms`, `canary_max_ms` and the tree path changed: step (s040-b500), R1 (r1-s025-b500), R2 (r2-s025-b500-d050) and S10 (s10-s010-b500). Their drop-ins are `zzzzzzzzzzzz-am15-s040-b500.conf` (12 z), `zzzzzzzzzzzzz-am15-r1-s025-b500.conf` (13 z), `zzzzzzzzzzzzzz-am15-r2-s025-b500-d050.conf` (14 z) and `zzzzzzzzzzzzzzz-am15-s10-s010-b500.conf` (15 z). Helm stages them and does not install them (HELM-ASK-1123-1).
+
+### 2. Items QP owed on PR #1484, and the checks at the GO
+
+1. **Load check of all four configs before the GO.** Each of the four restaged configs (step, R1, R2, S10) is loaded at tree 38d38ae9 through `X.make_config` (the executor's config loader, no send). Each must end with rc 0 and print its parsed `canary_max_ms`. Any refusal, rc other than 0 or a parsed value other than the one staged blocks the GO. If the executor has no validate mode, the manager runs the load as a job against the staged files.
+2. **Arithmetic at the GO.** `first_send_ms + canary_max_ms >= end_ms` for every config. The manager reads `first_send_ms` from the figure Helm reports and checks it at the GO. With E = 1798675200000 and 40 d (3456000000 ms), the sum reaches E only if `first_send_ms` >= 1795219200000 (2026-11-21T00:00Z). The Am.14 reset at the switch sets `first_send_ms` to the first 0.40 send, which is after 2026-11-23, so this is expected to hold. If it does not, the GO is not given until it does. The value chosen is the smallest that covers E, not 60 d by default (QP on #1484). Once `end_ms` is reached it binds anyway, so a larger `canary_max_ms` matters only if someone later moves `end_ms`.
+3. **119 entry rows and 120 `equal` lines in #3302/#3303.** **Not sourced in the PR #1484 body or comments.** QP's comment on #1484 names the question and offers a presumption only: "presumably 119 per-row + 1 whole run". This record does not adopt that as fact. The manager states the reason in the install record, or in a PR comment before the merge, from the job output. The proof's other facts stand as QP gave them: rc_a/rc_b non-zero 0 of 120, dropped non-empty 0, `all_ok` true on both jobs. The replay clock sits at the newest row + 1 s, so the proof does not reach the expiry boundary. The unit tests of #1484 (default, refusals, 60 d ceiling, 30 d expiry at day 15 and day 30) and the arithmetic in item 2 carry the new boundary. No second replay is required for a config that sets the key (QP on #1484).
+4. **Probe clock.** The probe `first_attempt_ms` is the lane's first send, 2026-11-08T14:30Z. Plus 60 d (`LANE_PROBE_MAX_DAYS`) that is about 2027-01-07T14:30Z, which is after E. Helm reports the field value (HELM-ASK-1123-1 item 2), and the manager re-checks `first_attempt_ms` + 60 d >= E at the GO. T4 needs no change for an end of 12-31.
+5. **No live config carries `canary_max_ms` above 14 d until Am.15 is merged.** The code does not enforce this (reviewer on #1484, non-blocking item 7). A staged file may carry the key; a file loaded by a running unit may not. Helm installs only after this PR merges.
+
+### 3. What carries over, and what is new
+
+**Unchanged.** Section 2 limits (the budget 5.00 never resets), stake 0.40, daily stop 0.80, `max_open`, STOP/HALT, keys, the wallet floor, the A3 pause; Am.13 decay monitor and its constants; Am.14 rollback B1 to B4, Y2 1.50 and the R1/R2/S10 pre-approval; the seals and the promotion gate. The Am.10 item 5 window rule applies: the restart ends any open window.
+
+**New (proposal section 3).**
+- **(a) At the ask.** The manager gives the owner the lifetime P&L and the lifetime and one-day bounds, recomputed from the figures at the GO. The bounds do not change; the owner sees them again.
+- **(b) Owner reviews.** The manager sends the owner a review on 2026-12-15 and at E - 3 d (2026-12-28). A review is a report, not a request for a yes, and the lane does not wait on it. It cannot change a bound.
+- **(c) S' registration.** The S' read window [S', R') is about 2026-12-12 to 12-16 (Am.14 item 13) and contains 2026-12-08, the old executor end. Am.15 is merged before the S' registration. **The S' registration pre-declares the Am.15 restarts (the executor restart and the host restart) and the move of the clocks as non-FAIL events**, so the continuation does not end the read as a "stake step, budget-down or rule change inside [S', R')". A change of any stake, budget, daily stop or rule is still a FAIL end under Am.14 item 13.
+- **Am.14 item 8.** It required the S' registration to pre-commit a reset or the removal of the limit. Am.15 supplies the mechanism for the 14-day window (the `canary_max_ms` key and E), and the S' registration cites Am.15 for it.
+
+### 4. The host restart, under the Am.7 rule
+
+T2 needs one restart of `mal-floor-lane-host.service`, through Helm. The Am.7 standing rule says "A restart that changes code or config needs its own amendment or erratum". **This amendment is that record for the host config change, which is `end_ms` only.** The host code and every other key of `host.json` stay the blobs and sha256 that Am.7 and Am.8 installed. Helm's reply reports the sha256 of the staged `host.json` and a diff showing `end_ms` as the only change.
+
+Conditions:
+- no kill-line check of an earlier restart is pending (Am.7 standing rule);
+- the restart is made at a quiet moment, with the open positions counted at the stop, because they lose the host take-profit while the host is down (they keep the executor's 24 h clock exit);
+- the standing-rule record is made: the stop and start instants, how the previous process ended (systemd `code=` and status), the `lane_start` `prev_end`, the `lane_restart_shadow` `fallback`, `shadow_complete`, `n_shadow_buys`, `n_blocked_pools` and `blocked_by_why`, and the number of open positions at the stop. It is logged in LAB_STATE, the manager state file and the MiScusi notebook;
+- **the kill-line check runs** after the restart, as in Am.7 Post-install check. Any entry on a pool the reference holds, in the window after a restart whose `lane_restart_shadow` shows `shadow_complete: true`, or any `HostFatal` or `HostError` on the new paths, is the kill line. The rollback is both flags false and a restart on the old host config through Helm. A `lane_restart_shadow_failed` row is fail-closed and is not a kill; it stops further host restarts until QP has read it;
+- no restart is made inside the 15 minutes before a time stop of an open position.
+
+The live host `end_ms` may be as early as 2026-12-16T00:00Z, so the host restart is done before then. The target is the same Helm visit as the executor install.
+
+### 5. The GO, ordering and the rollback drop-in trap
+
+**The GO (a later HELM-ASK, after the merge and a read of the prepare reply):**
+1. Stop the executor. Record n and the open positions.
+2. No `first_send_ms` reset is needed under Option B if the arithmetic of section 2 item 2 holds (the Am.14 switch already reset it). If it does not hold, the manager names the reset, a one-field edit by Helm with the sha256 before and after saved, as in the Am.14 reset record.
+3. Add the four Am.15 drop-ins, run `daemon-reload`, start the executor, and check the new PID, the WorkingDirectory pin, the config sha256 and the start line.
+4. Restart the host at a quiet moment (section 4), then run the kill-line check.
+5. Log both restarts.
+
+**Rollback drop-in ordering trap.** R1, R2 and S10 are staged today with the old `end_ms`, and their Am.14 drop-ins (9 to 11 `z` characters) sort before any Am.15 drop-in. A rollback that fell back to an old config would restore `end_ms` 2026-12-08 and the lane would stop taking entries then. **All four configs are restaged with the new `end_ms`.** The new names carry 12, 13, 14 and 15 `z` characters, so the sort order is step < R1 < R2 < S10, and every Am.15 drop-in sorts after every Am.14 drop-in. Helm reports the sorted drop-in list in the prepare reply (item 3), and the manager checks that order before the GO. A different order blocks the GO.
+
+### 6. Timing and the fallback
+
+- **Deadline.** The earlier of 2026-12-08T00:00Z (the old executor `end_ms`) and the end of the 14-day window set at the Am.14 switch. The host may stop earlier, on 2026-12-16T00:00Z.
+- **Plan.** Am.15 and the prepare reply by about 2026-12-02; the GO at a Helm visit 2026-12-03 to 12-05.
+- **Fallback.** If Option B cannot be installed by about **2026-12-07T18:00Z**, the manager falls back to **Option A steps 1 to 3** of the proposal, which need no code:
+  1. Executor `end_ms` to 1798675200000 in s040-b500, R1, R2 and S10 (restaged), with no `canary_max_ms` key.
+  2. Host `end_ms` to 1798848000000, one host restart (section 4).
+  3. `first_send_ms` reset at the install restart.
+
+  Under Option A the 14-day window still binds, so a second named reset is needed about 2026-12-19 (a state edit by Helm, under the owner's standing word (b)). The manager records it as a dated duty if the fallback is taken. The fallback changes the mechanism for T3 only; the values and clocks are the same, and it needs no new amendment.
+
+### 7. Not measured
+
+- Nothing was read from a host here. The live `end_ms`, `first_send_ms`, `first_attempt_ms`, drop-in list and file hashes come from Helm's prepare reply and are checked at the GO.
+- The reason for 120 `equal` lines on 119 entry rows is not sourced (section 2, item 3).
+- The replay does not exercise the expiry boundary.
+- No fill, P&L or edge is measured or claimed. A later end date is not evidence about FLOOR.
+
+No book has cleared the promotion gate. floor-lane-1 has not cleared the promotion gate. Nothing here says FLOOR makes money.
