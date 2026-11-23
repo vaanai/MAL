@@ -411,3 +411,29 @@ def test_schema_file_sha_required(view, tmp_path):
         with pytest.raises(R.ReaderRefused, match="schema_file_sha256_mismatch"):
             R.run(lp, str(tmp_path / "o"), str(sj), triggers_sha256=sha, dstate_path=sp, dstate_sha256=ssha, schema_sha256=bad)
     R.run(lp, str(tmp_path / "o"), str(sj), triggers_sha256=sha, dstate_path=sp, dstate_sha256=ssha, schema_sha256=R.sha256_file(str(sj)))
+
+
+def test_measurable_on_real_label_schema_dict():
+    def sd(share, curve="pump_bonding"):
+        return {"venues": {curve: {"rows": 100, "all_six": share}, "pumpswap": {"rows": 100, "all_six": 100}}}
+    assert R.measurable(sd(99)) and R.measurable(sd(100)) and not R.measurable(sd(98))
+    assert R.measurable(sd(99, "pumpfun"))
+    assert not R.measurable({"venues": {"pumpswap": {"rows": 100, "all_six": 100}}})  # no curve rows fails
+    assert not R.measurable({"venues": {"pump_bonding": {"rows": 100, "all_six": 100}}})  # no pumpswap rows fails
+    assert not R.measurable({"venues": {"pump_bonding": {"rows": 100, "all_six": 100}, "pumpswap": {"rows": 0, "all_six": 0}}})
+    assert not R.measurable({"venues": {"other": {"rows": 100, "all_six": 100}, "pumpswap": {"rows": 100, "all_six": 100}}})
+
+
+def test_pump_bonding_rows_counted_as_curve_in_reader_proper(view, tmp_path):
+    rows0 = [trade("M1", "a", "buy", 500, 10, 0, T0 + 5, "pump_bonding"), trade("M1", "b", "buy", 30, 11, 0, T0 + 6, "pump_bonding"),
+             trade("PAD", "p", "buy", 1, 1, 0, T0 + 1, "pump_bonding"), trade("PAD", "p", "buy", 1, 1, 0, T0 + 1, "pumpswap")]
+    rows1 = [trade("M1", "a", "sell", 50, 100, 0, T0 + 3600 + 50, "pumpswap")]
+    build(view, {T0: rows0, T0 + 3600: rows1}, {T0: [{"mint": "M1", "block_time": T0 + 1}]}, pad=False)
+    sc = R.schema_count(BLK)
+    assert set(sc["venues"]) == {"pump_bonding", "pumpswap"} and R.measurable(sc)
+    tp = tmp_path / "t.jsonl"
+    tp.write_text(json.dumps(trig(split="D")) + "\n")
+    out = tmp_path / "out"
+    run_merged(str(tp), str(out))
+    rec = json.loads((out / "per_pool.jsonl").read_text().splitlines()[0])
+    assert rec["status"] == "measured" and rec["n_curve_rows"] == 2 and rec["n_pumpswap_rows"] == 1
