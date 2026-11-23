@@ -191,6 +191,16 @@ def test_bounds_are_inclusive(tmp_path, stake):
     assert X.make_config(raw)[0].stake_lamports == stake
 
 
+def test_canary_max_ms_passes_through_lane_config(tmp_path):
+    raw = lane_raw(tmp_path)
+    assert X.make_config(raw)[0].canary_max_ms == 14 * 86_400_000
+    raw["canary_max_ms"] = 30 * 86_400_000
+    assert X.make_config(raw)[0].canary_max_ms == 30 * 86_400_000
+    raw["canary_max_ms"] = 61 * 86_400_000
+    with pytest.raises(ValueError, match="canary_max_ms"):
+        X.make_config(raw)
+
+
 def test_bounds_come_from_one_constant(tmp_path, monkeypatch):
     monkeypatch.setattr(X, "FLOOR_LANE_STAKE_BOUNDS_LAMPORTS", (20_000_000, 130_000_000))
     raw = lane_raw(tmp_path)

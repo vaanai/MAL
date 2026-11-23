@@ -405,6 +405,43 @@ def test_total_loss_cap_and_canary_expiry(tmp_path):
     assert br.state.counts.get("refused_canary_expired") == 1 and [w["order_id"] for w in port.would_send] == ["o1"]
 
 
+def test_canary_max_ms_default_is_14_days(tmp_path):
+    assert F.make_config(cfg_dict(tmp_path)).canary_max_ms == 14 * 86_400_000 == F.CANARY_MAX_MS
+
+
+@pytest.mark.parametrize("bad", [0, -1, True, 1.5, "2592000000", None, 60 * 86_400_000 + 1])
+def test_canary_max_ms_refusals(tmp_path, bad):
+    with pytest.raises(ValueError, match="canary_max_ms"):
+        F.make_config(cfg_dict(tmp_path, canary_max_ms=bad))
+
+
+def test_canary_max_ms_ceiling_ok(tmp_path):
+    assert F.make_config(cfg_dict(tmp_path, canary_max_ms=60 * 86_400_000)).canary_max_ms == 60 * 86_400_000
+
+
+def test_canary_max_ms_30d_expiry(tmp_path):
+    clk = Clock()
+    lg = Log(tmp_path)
+    lg.start(H0)
+    lg.entry(H0 + 1000, "o1")
+    lg.exit(H0 + 2000, "o1")
+    br, port = bridge(tmp_path, clk, canary_max_ms=30 * 86_400_000, end_ms=H0 + 90 * 86_400_000)
+    feed(br, clk)
+    first = br.fs["first_send_ms"]
+    assert first is not None
+    lg.entry(H0 + 15 * 86_400_000, "o2", pool="Q")
+    clk.t = H0 + 15 * 86_400_000 + 50
+    for r in br.read_new_rows():
+        br.handle_row(r)
+    assert br.state.counts.get("refused_canary_expired") is None and {w["order_id"] for w in port.would_send} == {"o1", "o2"}
+    lg.exit(H0 + 15 * 86_400_000 + 100, "o2", pool="Q")
+    lg.entry(first + 30 * 86_400_000 + 5000, "o3", pool="R")
+    clk.t = first + 30 * 86_400_000 + 5050
+    for r in br.read_new_rows():
+        br.handle_row(r)
+    assert br.state.counts.get("refused_canary_expired") == 1
+
+
 def test_halt_file_freezes_reads(tmp_path):
     clk = Clock()
     halt = tmp_path / "HALT"

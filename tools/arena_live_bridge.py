@@ -126,6 +126,7 @@ class Config:
     a3_record_file: str = ""  # hv4_c0 only: the A3 daily record (newest line). A halt flag latches a3_pins_changed (new buys stop; exits run). A live start needs it
     reads_dir: str = ""  # hv4_c0 only: the directory that holds the bot's recorded read (`<bot_id>.json`); no decision row is read without a recorded PASS there
     wallet_floor_count_held_once: bool = False  # FLOOR only (tools/floor_arena_executor.py): True drops the `held` term of its floor_problem; every other executor leaves it False and never reads it
+    canary_max_ms: int = 14 * 86_400_000  # FLOOR only (tools/floor_arena_executor.py): the canary window from the first buy attempt; every other executor leaves it at the default and never reads it
 
     @classmethod
     def from_dict(cls, d: Mapping[str, Any], tier: str = "T0") -> "Config":
