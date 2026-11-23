@@ -1934,9 +1934,9 @@ A CE1 switch goes under its own bot_id (QP-RULING-1120 Q5). It starts at whateve
 
 No book has cleared the promotion gate. floor-lane-1 has not cleared the promotion gate. Nothing here says FLOOR makes money.
 
-### Amendment 14 ask record, 2026-11-22 (precondition 2; DRAFT until merge; owner words given for the no-top-up case only)
+### Amendment 14 ask record, 2026-11-22 (precondition 2; DRAFT until merge; owner words given for the no-top-up case and for growth to the 12-slot cap)
 
-**Status.** This is the ONE Am.14 ask record that precondition 2 requires. It is a T1 records PR. It fills the `<AT-ASK: …>` tokens of Amendment 14 above and changes nothing else in Amendment 14. **It authorises nothing.** It changes nothing in Amendment 14's text and adds one thing of its own: the lane-STOP top-up rule (b) below, which is marked as an addition. Every token is filled or is listed under Open items; the only token without a value is the optional (B) fills-tool figure (not run). **The owner's words in it cover the no-top-up case only** (see "Scope of the owner's words" below): the owner's word on the risk table (precondition 2) and the owner's Helm-chat words (precondition 3, 22:56Z and 5:07 PM PST) all name the no-top-up figures. The +1.0 and +2.0 columns are WORKSHEET arithmetic and are **not owner-approved**; a top-up rule is set below. **The author of this record measured nothing**: every value was given by the manager's brief from the sources named beside it, or recomputed here by arithmetic from those values. No host, wallet, ledger, tape or job status was read. Nothing in it says FLOOR makes money. floor-lane-1 has not cleared the promotion gate.
+**Status.** This is the ONE Am.14 ask record that precondition 2 requires. It is a T1 records PR. It fills the `<AT-ASK: …>` tokens of Amendment 14 above and changes nothing else in Amendment 14. **It authorises nothing.** It changes nothing in Amendment 14's text. It carried one addition of its own, the lane-STOP top-up rule (b) below, which is now marked moot and not adopted. Every token is filled or is listed under Open items; the only token without a value is the optional (B) fills-tool figure (not run). **The owner's words in it:** the risk-table word (precondition 2) and the Helm-chat words (precondition 3, 22:56Z and 5:07 PM PST) name the no-top-up figures; the owner's word of 2026-11-23T17:13:31Z covers growth of the slot count with the wallet, from profit or a top-up, up to the 12-position budget cap (see "Scope of the owner's words" below). **The author of this record measured nothing**: every value was given by the manager's brief from the sources named beside it, or recomputed here by arithmetic from those values. No host, wallet, ledger, tape or job status was read. Nothing in it says FLOOR makes money. floor-lane-1 has not cleared the promotion gate.
 
 **Sources.**
 - Manager hourly job #3263 at 2026-11-22T20:36Z and the wallet `getBalance` in the same run (state file `state-manager24.md`, line stamped 2026-11-22T20:3xZ).
@@ -2073,7 +2073,7 @@ Values at the ask (hourly #3263, 2026-11-22T20:36Z, and the wallet `getBalance` 
 
 Am.14's drafting estimate was 7 / 10 / 12 at W about 3.98. At this ask's W = 4.210914609 the no-top-up steady count is 8. The no-top-up immediate count (4) is the one that applies if the install is made before the top-up lands.
 
-#### Risk in plain words, recomputed at the ask (no-top-up columns: owner's word given below; +1.0 and +2.0 columns: WORKSHEET, not owner-approved)
+#### Risk in plain words, recomputed at the ask (owner's words given below: no-top-up columns, and the 12-slot cap; the +1.0 column is WORKSHEET arithmetic inside that cap)
 
 Convention as Am.14 and the worksheet: 0.40386 per 0.40 position, 0.25386 per 0.25 position. L = +1.065493048. W = 4.210914609 (free balance + open basis) before any top-up; a top-up is added to W in the +1.0 and +2.0 columns. Lifetime bound = 5.00 + L = **6.065493048 SOL**. "Remaining room" here means that lifetime bound; it is not reduced by the open worst case already used. One-day bound = min(room, 0.80 + stake at once).
 
@@ -2105,16 +2105,21 @@ Convention as Am.14 and the worksheet: 0.40386 per 0.40 position, 0.25386 per 0.
 
 The owner's 2-dp figures are rounded; **the exact figures govern**: 3.23088 at stake, 4.03088 in one day, 6.065493048 lifetime (the owner's 3.23 and 4.03 are 0.00088 SOL below them). The at-ask figures are unchanged (job #3263, 2026-11-22T20:36Z).
 
-**Scope of the owner's words.** The owner's risk-table word and the owner-yes-2 Helm word (below) cover **the no-top-up columns only**. The word names the steady-state no-top-up column (3.23088 / 4.03088), the highest no-top-up exposure at the 8-slot count. The immediate no-top-up column (3.13860 / 3.93860) lies under it. They do **not** cover the +1.0 or +2.0 columns (at stake 4.44246 or 4.84632, one-day 5.24246 or 5.64632), and the owner's own pending 2.0 SOL top-up would reach those columns with no restart (Am.14: a top-up that lands after the install takes effect with no restart, Am.12 item 4).
+**Scope of the owner's words.** The owner's risk-table word and the owner-yes-2 Helm word (below) cover **the no-top-up columns only**. The word names the steady-state no-top-up column (3.23088 / 4.03088), the highest no-top-up exposure at the 8-slot count. The immediate no-top-up column (3.13860 / 3.93860) lies under it. They do **not** by themselves cover the +1.0 or +2.0 columns (at stake 4.44246 or 4.84632, one-day 5.24246 or 5.64632); the owner's own 2.0 SOL top-up would reach those columns with no restart (Am.14: a top-up that lands after the install takes effect with no restart, Am.12 item 4). The owner's later word below covers them.
 
-**OWNER WORD ON THE TOP-UP COLUMNS: PENDING (to be quoted verbatim by the manager).** The manager has asked the owner for a verbatim word on the +1.0 and +2.0 columns (option (a)). Figures to be shown to him: at stake 4.44246 / 4.84632, one-day 5.24246 / 5.64632, lifetime 6.065493048; with the 0.75 SOL floor held the loss is about 4.46 of 5.21 (+1.0) and 5.46 of 6.21 (+2.0).
+**OWNER WORD ON THE TOP-UP COLUMNS: GIVEN. MET for the full scope: slot growth from profit or a top-up, up to the 12-slot budget cap.** Source: the owner's chat to manager24, recorded verbatim in `state-manager24.md` line 642, stamp 2026-11-23T17:13:31Z. The owner's words, verbatim:
 
-**Rule (b), until that word is quoted. This is an ADDITION made by this ask record. It is not Am.14 text.** It uses only the existing DEC-035 §2 item 6 lane STOP file, which stops new entries only (open positions keep their exits) and which any session may create. It does not use a rollback or S10.
-- Before the top-up is sent to the lane wallet, the owner is shown the +1.0 and +2.0 figures above and his word is quoted in a record.
-- **Trigger (checkable).** The manager's hourly job reads the wallet `getBalance`. If free balance + open cost basis exceeds (the at-ask wallet at cost 4.210914609 SOL + realized since the ask + 0.50 SOL), the top-up counts as landed. The trigger fires if that happens while "OWNER WORD ON THE TOP-UP COLUMNS" is still PENDING.
-- **Action.** At once, the manager creates the lane STOP file with the HANDOFF section 1 job, records the balance, n, k and the recomputed figures in a state line and a notebook entry, and asks the owner. The STOP file is removed only after the owner's verbatim word on the top-up figures is quoted, through the same path as any lane STOP removal.
-- **What is NOT bounded.** Between the top-up landing and the next hourly check (up to about 1 hour), the executor can open entries up to the top-up slot count. The worst case is the shown +2.0 column: 4.84632 at stake and 5.64632 in one day. The owner was shown these figures but has not given a word on them yet.
-- **Precedence.** If the owner's top-up word is quoted before the top-up lands, this rule never fires.
+> "Yes to FLOOR at 0.40 growing with the wallet (from profit or my top-up) up to the 5.00 budget cap of 12 positions: up to 4.85 SOL staked at once and 5.65 SOL lost in one day; 6.07 SOL lifetime limit and the 0.75 SOL wallet floor unchanged."
+
+- The four numbers match this record's own risk-table row for the 12-slot, budget-capped case (+2.0 steady): 4.84632 at stake (4.85), 5.64632 in one day (5.65), lifetime bound 6.065493048 (6.07), wallet floor 0.75 SOL. The exact figures govern.
+- The word covers the +1.0 column (4.44246 / 5.24246) as well, since it lies inside the 12-slot cap.
+
+~~**Rule (b), until that word is quoted. This is an ADDITION made by this ask record. It is not Am.14 text.**~~ **MOOT: superseded by the owner's 12-slot cap word (2026-11-23T17:13:31Z); NOT ADOPTED.** Slot growth to 12 is within the owner's word (4.85 at stake, 5.65 in one day, 6.07 lifetime, 0.75 floor). The struck text is kept visible for the record.
+- ~~Before the top-up is sent to the lane wallet, the owner is shown the +1.0 and +2.0 figures above and his word is quoted in a record.~~
+- ~~**Trigger (checkable).** The manager's hourly job reads the wallet `getBalance`. If free balance + open cost basis exceeds (the at-ask wallet at cost 4.210914609 SOL + realized since the ask + 0.50 SOL), the top-up counts as landed. The trigger fires if that happens while "OWNER WORD ON THE TOP-UP COLUMNS" is still PENDING.~~
+- ~~**Action.** At once, the manager creates the lane STOP file with the HANDOFF section 1 job, records the balance, n, k and the recomputed figures in a state line and a notebook entry, and asks the owner. The STOP file is removed only after the owner's verbatim word on the top-up figures is quoted, through the same path as any lane STOP removal.~~
+- ~~**What is NOT bounded.** Between the top-up landing and the next hourly check (up to about 1 hour), the executor can open entries up to the top-up slot count. The worst case is the shown +2.0 column: 4.84632 at stake and 5.64632 in one day. The owner was shown these figures but has not given a word on them yet.~~
+- ~~**Precedence.** If the owner's top-up word is quoted before the top-up lands, this rule never fires.~~
 - **The GO re-reads n, k, free balance and L.** If any stated count or bound is then above the owner's named figures (stake at once above 3.23088 or one-day bound above 4.03088), a new owner word is needed before the GO.
 
 **Precondition 3: the owner's own install word in the Helm chat: MET for the no-top-up scope.** Two Helm-chat words, both quoted by Helm. Neither covers any `end_ms` change, and neither covers the top-up columns.
@@ -2134,7 +2139,7 @@ Helm's scope note, verbatim: "This covers: the install (s040-b500); the bundled 
 - The second word names the 0.40 stake, the 5.00 budget, the 0.80 daily stop, the lifetime and one-day bounds, R1, R2 and S10 without asking, and the reset. It meets Am.14 precondition 3 for the no-top-up case. It supplies the bounds and R1/R2/S10 that the 22:56Z word lacked, so that open item is closed.
 - **"About 8 slots" is the steady no-top-up count.** The immediate count at the ask is 4 (see the slot table).
 - **CANARY reset condition (precondition 8): MET** (both words name the reset).
-- Both words give the no-top-up scope only. See "Scope of the owner's words" and rule (b) above.
+- Both Helm-chat words give the no-top-up scope. The owner's later word of 2026-11-23T17:13:31Z (above) covers slot growth up to the 12-slot cap. Rule (b) is moot.
 
 Precondition 2's owner word is given (above), for the no-top-up columns. Precondition 2 also needs this record merged with QP OK and REVIEWER APPROVE at its exact head.
 
@@ -2188,7 +2193,7 @@ The fills-tool aggregates of QP-RULING-1121 §2 (B) were not run and are not giv
 
 #### Open items
 
-1. **OWNER WORD ON THE TOP-UP COLUMNS: PENDING (to be quoted verbatim by the manager)**, or rule (b) above applies. Until then the owner's words cover the no-top-up columns only.
+1. None of the owner's words is open. The owner's top-up word is quoted (2026-11-23T17:13:31Z); rule (b) is moot.
 2. The GO re-reads n, k, free balance and L; any count or bound above 3.23088 at stake or 4.03088 one-day needs a new owner word first.
 3. The manager's confirmation job that `am10-measure.sh` prints "WINDOW 4: not opened", before the GO (the edit itself is done).
 4. The (B) fills-tool figures are optional and were not run.
