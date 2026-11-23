@@ -2038,7 +2038,7 @@ Values at the ask (hourly #3263, 2026-11-22T20:36Z, and the wallet `getBalance` 
 | k (of those, opened at 0.25) | **6** (all opened at 0.25) |
 | free balance | **2,700,871,569** lamports |
 | open cost basis | 1.510043040 SOL |
-| lifetime realized | **+1.065493048 SOL** (high-water mark 1.070206933, as given in the manager's brief; not in state line 587) |
+| lifetime realized | **+1.065493048 SOL** (high-water mark 1.070206933, source: the decay-monitor line of the manager hourly job #3263 (2026-11-22T20:36Z), "realized lifetime 1.065493048 SOL, HWM 1.070206933", also in #3269 at 00:5xZ; not in state line 587) |
 | top-up landed | **NO.** The owner's 2.0 SOL is still pending. |
 | budget headroom | 3.555450008 of 4.00 (running Am.12 budget); as given, it equals 4.00 - (open basis 1.510043040 - realized 1.065493048). The code's `committed_loss_stop` gives no credit for positive realized; the budget slots below use that code formula. |
 | lane 11-22 | sends 4, landed 4, failed 0; exits 6; realized +0.092009711 |
@@ -2138,7 +2138,7 @@ Precondition 2's owner word is given (above), for the no-top-up columns. Precond
 #### Precondition 1: md5 replay and executor tests
 
 - **md5 decision-equivalence replay at #1476's final merge head: job #3275, MiScusi notebook n_kpwedi_8iu9MSA. PASS.** Fields quoted from the job's logged output:
-  - script `equiv-run-1121c.sh` sha256 `fd8e9429144ad75e…`, script rc 0; start 2026-11-23T01:19:09Z, end 01:21:06Z;
+  - script `equiv-run-1121c.sh` sha256 `fd8e9429144ad75e3a15e0a963ee6a59f0cf01e9a86ffbd6e37ebc4fe823d4ae`, script rc 0; start 2026-11-23T01:19:09Z, end 01:21:06Z;
   - tool `tools/floor_exec_equiv.py` (`per-row`) blob `32c84d2e62f027854cb2b295e5952016afa596eb`, tool tree `2c18b7ee`;
   - tree A `5fc473b5` (blobs `b3382217` / `d01e93a8`), tree B `e85447f8` (blobs `e8d5ac06` / `d01e93a8`), the #1476 merge commit `e85447f865a13bcaf2531224f0438b2b2d23adf8`;
   - executor python `/usr/local/lib/mal-floor-lane/venv/bin/python`;
@@ -2147,7 +2147,7 @@ Precondition 2's owner word is given (above), for the no-top-up columns. Precond
   - `all_rows_floor` (the wallet-floor-binding run): wallet_floor_refusals_a 34, wallet_floor_refusals_b 34, equal row kinds;
   - readers rc=0, all_ok true (new_keys exec_stage_ms, presend_batch, stage_ms, stage_note);
   - cleaned yes;
-  - log `~/mal-data/am14-proof/equiv-20261123T011909Z.log` on fast-0, 2884 lines, sha256 `8b9076e3f71c962c…`.
+  - log `~/mal-data/am14-proof/equiv-20261123T011909Z.log` on fast-0, 2884 lines, sha256 `8b9076e3f71c962ce8c53c363b46c7a7ff5e28721fd95c678dc156fe4c2063cc` (computed by manager job #3276 on mal-fast-0).
   - **The job prints no config sha and no `presend_batch` value for the per-row runs.** This record does not claim either; the running s025-b400 config with `presend_batch` absent is the Am.14 precondition 1 design, not something the job output shows.
   - **Answer to the open wallet-floor-run question: yes, the wallet-floor-binding run is in the proof, 34 refusals in both trees (34/34).**
   - Job #3270 ran the same script and also PASSED, but its MiScusi log kept only the tail; #3275 is the proof with the full output.
