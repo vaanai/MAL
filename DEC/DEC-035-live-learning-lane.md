@@ -2111,8 +2111,35 @@ The owner's 2-dp figures are rounded; **the exact figures govern**: 3.23088 at s
 
 > "Yes to FLOOR at 0.40 growing with the wallet (from profit or my top-up) up to the 5.00 budget cap of 12 positions: up to 4.85 SOL staked at once and 5.65 SOL lost in one day; 6.07 SOL lifetime limit and the 0.75 SOL wallet floor unchanged."
 
-- The four numbers match this record's own risk-table row for the 12-slot, budget-capped case (+2.0 steady): 4.84632 at stake (4.85), 5.64632 in one day (5.65), lifetime bound 6.065493048 (6.07), wallet floor 0.75 SOL. The exact figures govern.
+- The four numbers match this record's own risk-table row for the 12-slot, budget-capped case (+2.0 steady): 4.84632 at stake (4.85), 5.64632 in one day (5.65), lifetime bound 6.065493048 (6.07), wallet floor 0.75 SOL. The exact figures govern. **Note: 4.84632 / 5.64632 is the steady-state 12-slot figure, not the maximum exposure. The maximum during the switch-over is 4.95018 / 5.75018 (below).**
 - The word covers the +1.0 column (4.44246 / 5.24246) as well, since it lies inside the 12-slot cap.
+
+**Switch-over (mixed 0.25 + 0.40) exposure.** During the switch, k old 0.25 positions can stay open while new 0.40 positions open up to the budget. Recomputed by this record (arithmetic only, no host read):
+- slots = min(12, floor((5,000,000,000 - k x 253,860,000) / 403,860,000));
+- at once = k x 0.25386 + slots x 0.40386;
+- one-day = min(6.065493048, 0.80 + at once);
+- free wallet needed = 0.75 + slots x 0.40226 (SOL; the 0.75 floor plus about 0.40226 per open, from the need formula's per-open spend 402,260,000, rounded to 3 dp).
+
+| k | slots | at once | one-day | free wallet needed |
+| --- | --- | --- | --- | --- |
+| 8 | 7 | 4.85790 | 5.65790 | 3.566 |
+| 7 | 7 | 4.60404 | 5.40404 | 3.566 |
+| 6 | 8 | 4.75404 | 5.55404 | 3.968 |
+| 5 | 9 | 4.90404 | 5.70404 | 4.370 |
+| 4 | 9 | 4.65018 | 5.45018 | 4.370 |
+| 3 | 10 | 4.80018 | 5.60018 | 4.773 |
+| 2 | 11 | **4.95018** | **5.75018** | 5.175 |
+| 1 | 11 | 4.69632 | 5.49632 | 5.175 |
+| 0 | 12 | 4.84632 | 5.64632 | 5.577 |
+
+- The maximum is k = 2: **4.95018 at once, 5.75018 in one day**, lifetime 6.065493048. It is reachable only when the free wallet is at least 0.75 + slots x 0.40226 (5.175 SOL at k = 2), which is possible after the owner's 2.0 SOL top-up.
+- The recomputation matched the manager's figures on every row (slots, at once, one-day). The "free wallet needed" column was filled by this record from the formula above; the manager gave only the k = 8 and k = 2 values (3.566, 5.175), which it matches.
+
+**OWNER WORD ON THE SWITCH-OVER MAXIMUM: GIVEN.** Source: the owner's chat to manager24, in reply to the manager's switch-over ask, recorded verbatim in `state-manager24.md` line 649, stamp 2026-11-23T18:14:56Z. The owner's words, verbatim:
+
+> "up to 4.96 SOL staked at once and 5.76 SOL lost in one day; 6.07 SOL lifetime limit and the 0.75 SOL wallet floor unchanged"
+
+- It covers the switch-over maximum: the owner's 4.96 and 5.76 are at or above the exact 4.95018 and 5.75018. The exact figures govern.
 
 ~~**Rule (b), until that word is quoted. This is an ADDITION made by this ask record. It is not Am.14 text.**~~ **MOOT: superseded by the owner's 12-slot cap word (2026-11-23T17:13:31Z); NOT ADOPTED.** Slot growth to 12 is within the owner's word (4.85 at stake, 5.65 in one day, 6.07 lifetime, 0.75 floor). The struck text is kept visible for the record.
 - ~~Before the top-up is sent to the lane wallet, the owner is shown the +1.0 and +2.0 figures above and his word is quoted in a record.~~
@@ -2120,7 +2147,7 @@ The owner's 2-dp figures are rounded; **the exact figures govern**: 3.23088 at s
 - ~~**Action.** At once, the manager creates the lane STOP file with the HANDOFF section 1 job, records the balance, n, k and the recomputed figures in a state line and a notebook entry, and asks the owner. The STOP file is removed only after the owner's verbatim word on the top-up figures is quoted, through the same path as any lane STOP removal.~~
 - ~~**What is NOT bounded.** Between the top-up landing and the next hourly check (up to about 1 hour), the executor can open entries up to the top-up slot count. The worst case is the shown +2.0 column: 4.84632 at stake and 5.64632 in one day. The owner was shown these figures but has not given a word on them yet.~~
 - ~~**Precedence.** If the owner's top-up word is quoted before the top-up lands, this rule never fires.~~
-- **The GO re-reads n, k, free balance and L.** If any stated count or bound is then above the owner's named figures (stake at once above 4.84632, one-day bound above 5.64632, or lifetime bound above 6.065493048 (the owner's 12-slot cap word, 2026-11-23T17:13:31Z)), a new owner word is needed before the GO.
+- **The GO re-reads n, k, free balance and L.** If any stated count or bound is then above the owner's named figures (stake at once above 4.95018, one-day bound above 5.75018, or lifetime bound above 6.065493048 (the owner's 12-slot cap word, 2026-11-23T17:13:31Z, and the owner's switch-over word, 2026-11-23T18:14:56Z)), a new owner word is needed before the GO.
 
 **Precondition 3: the owner's own install word in the Helm chat: MET for the no-top-up scope.** Two Helm-chat words, both quoted by Helm. Neither covers any `end_ms` change, and neither covers the top-up columns.
 
@@ -2194,7 +2221,7 @@ The fills-tool aggregates of QP-RULING-1121 §2 (B) were not run and are not giv
 #### Open items
 
 1. None of the owner's words is open. The owner's top-up word is quoted (2026-11-23T17:13:31Z); rule (b) is moot.
-2. The GO re-reads n, k, free balance and L; any count or bound above the owner's named figures (stake at once above 4.84632, one-day bound above 5.64632, or lifetime bound above 6.065493048 (the owner's 12-slot cap word, 2026-11-23T17:13:31Z)) needs a new owner word first.
+2. The GO re-reads n, k, free balance and L; any count or bound above the owner's named figures (stake at once above 4.95018, one-day bound above 5.75018, or lifetime bound above 6.065493048 (the owner's 12-slot cap word, 2026-11-23T17:13:31Z, and the owner's switch-over word, 2026-11-23T18:14:56Z)) needs a new owner word first.
 3. The (B) fills-tool figures are optional and were not run.
 4. This record needs QP OK and REVIEWER APPROVE at its exact head before merge. HELM-ASK-1122-1-GO follows the merge.
 5. The figures must be re-read at the ask instant if the top-up lands or n changes before the GO, because an executor restart empties the marks (Am.4 item 6).
