@@ -185,34 +185,50 @@ def load_list(path: str, sha_prefix: str = LIST_SHA_PREFIX) -> list[dict[str, An
     return out
 
 
+def discover_batch(call: Callable, ctr: Counters, recs: list[dict[str, Any]]) -> list[dict[str, Any] | None]:
+    """Fill pool records in batches, never per pool: one getMultipleAccounts pass over the PoolStates, then one over the distinct LP mints, token mints and AmmConfigs. Each result is the
+    filled record (vaults, mints, LP mint, AmmConfig fee rate, LP supply, token-mint authority-set flag) or None when the PoolState is not readable (retry later)."""
+    pss, _ = gma(call, ctr, [r["pool"] for r in recs])
+    parts: list[tuple[dict[str, Any], dict[str, Any], bool, str] | None] = []
+    for rec, ps in zip(recs, pss):
+        d = None
+        if ps is not None and ps[1] == C.CPMM:
+            try:
+                d = decode_pool(ps[0])
+            except M.Unreadable:
+                d = None
+        if d is None or C.WSOL not in (d["mint0"], d["mint1"]):
+            parts.append(None)
+            continue
+        wsol0 = d["mint0"] == C.WSOL
+        tok = d["mint1"] if wsol0 else d["mint0"]
+        parts.append(None if rec.get("token_mint") and rec["token_mint"] != tok else (rec, d, wsol0, tok))
+    addrs = sorted({a for p in parts if p for a in (p[1]["lp_mint"], p[3], p[1]["amm_config"])})
+    got = dict(zip(addrs, gma(call, ctr, addrs)[0])) if addrs else {}
+    res: list[dict[str, Any] | None] = []
+    for p in parts:
+        if p is None:
+            res.append(None)
+            continue
+        rec, d, wsol0, tok = p
+        out = {**rec, "token_mint": tok, "lp_mint": d["lp_mint"], "amm_config": d["amm_config"], "vault0": d["vault0"], "vault1": d["vault1"], "wsol_is_token0": wsol0,
+               "lp_supply_at_discovery": None, "mint_authority_set": None, "trade_fee_rate": None, "supply_ms": 0, "token_supply": None}
+        lp, tk, cfg = got.get(d["lp_mint"]), got.get(tok), got.get(d["amm_config"])
+        try:
+            if lp is not None:
+                out["lp_supply_at_discovery"] = M.decode_mint(lp[0], lp[1])["supply"]
+            if tk is not None:
+                out["mint_authority_set"] = M.decode_mint(tk[0], tk[1])["mint_authority"] is not None
+            if cfg is not None:
+                out["trade_fee_rate"] = M.decode_amm_config(cfg[0])["trade_fee_rate"]
+        except M.Unreadable:
+            pass
+        res.append(out)
+    return res
+
+
 def discover_pool(call: Callable, ctr: Counters, rec: dict[str, Any]) -> dict[str, Any] | None:
-    """Fill a pool record: vaults, mints, LP mint, AmmConfig fee rate, LP supply and token-mint authority-set flag. None when the PoolState is not readable (retry later)."""
-    (ps,), _ = gma(call, ctr, [rec["pool"]])
-    if ps is None or ps[1] != C.CPMM:
-        return None
-    try:
-        d = decode_pool(ps[0])
-    except M.Unreadable:
-        return None
-    if C.WSOL not in (d["mint0"], d["mint1"]):
-        return None
-    wsol0 = d["mint0"] == C.WSOL
-    tok = d["mint1"] if wsol0 else d["mint0"]
-    if rec.get("token_mint") and rec["token_mint"] != tok:
-        return None
-    (lp, tk, cfg), _ = gma(call, ctr, [d["lp_mint"], tok, d["amm_config"]])
-    out = {**rec, "token_mint": tok, "lp_mint": d["lp_mint"], "amm_config": d["amm_config"], "vault0": d["vault0"], "vault1": d["vault1"], "wsol_is_token0": wsol0,
-           "lp_supply_at_discovery": None, "mint_authority_set": None, "trade_fee_rate": None, "supply_ms": 0, "token_supply": None}
-    try:
-        if lp is not None:
-            out["lp_supply_at_discovery"] = M.decode_mint(lp[0], lp[1])["supply"]
-        if tk is not None:
-            out["mint_authority_set"] = M.decode_mint(tk[0], tk[1])["mint_authority"] is not None
-        if cfg is not None:
-            out["trade_fee_rate"] = M.decode_amm_config(cfg[0])["trade_fee_rate"]
-    except M.Unreadable:
-        pass
-    return out
+    return discover_batch(call, ctr, [rec])[0]
 
 
 def token_supply(call: Callable, ctr: Counters, mint: str) -> int | None:
@@ -306,11 +322,15 @@ def atomic_write(path: Path, obj: Any) -> None:
 
 
 # ------------------------------------------------------------------------------------------------------------------------ discovery of new migrations
-def discover_new(call: Callable, ctr: Counters, state: dict[str, Any], start_s: int, address: str = DISCOVERY_ADDRESS, max_pages: int = 5) -> list[dict[str, Any]]:
-    """Poll getSignaturesForAddress (newest first, `until` = the cursor), queue unseen successful signatures at or after start_s, then resolve queued ones with getTransaction.
-    Returns new pool records {pool, token_mint, bt, sig, src}. state: {cursor, pending: {sig: [bt, tries]}}."""
+def discover_new(call: Callable, ctr: Counters, state: dict[str, Any], start_s: int, address: str = DISCOVERY_ADDRESS, max_pages: int = 5, max_tx: int = 50,
+                 stop: Callable[[], bool] = lambda: False) -> list[dict[str, Any]]:
+    """Poll getSignaturesForAddress (newest first, `until` = the cursor), queue unseen successful signatures at or after start_s, then resolve at most `max_tx` queued ones with
+    getTransaction (the rest stay pending for the next pass). `stop()` is checked before every call. Returns new pool records {pool, token_mint, bt, sig, src}.
+    state: {cursor, pending: {sig: [bt, tries]}}."""
     before, newest = None, None
     for _ in range(max_pages):
+        if stop():
+            break
         opts: dict[str, Any] = {"limit": 100, "commitment": "confirmed"}
         if state.get("cursor"):
             opts["until"] = state["cursor"]
@@ -333,7 +353,11 @@ def discover_new(call: Callable, ctr: Counters, state: dict[str, Any], start_s: 
     if newest:
         state["cursor"] = newest
     found = []
+    done = 0
     for sig in sorted(state["pending"], key=lambda k: (state["pending"][k][0] or 0, k)):
+        if done >= max_tx or stop():
+            break
+        done += 1
         ctr.bump("tx_calls")
         tx = call("getTransaction", [sig, {"encoding": "json", "maxSupportedTransactionVersion": 0, "commitment": "confirmed"}])
         if not tx:
@@ -361,7 +385,10 @@ def load_json(path: Path, default: Any) -> Any:
 
 
 def run(out: Path, call: Callable, ctr: Counters, pools_list: list[dict[str, Any]], *, interval_s: float = 60.0, max_hours: float = 336.0, discover_s: float = 300.0,
-        discovery_address: str = DISCOVERY_ADDRESS, now: Callable[[], float] = time.time, sleep: Callable[[float], None] = time.sleep, max_polls: int | None = None) -> int:
+        discovery_address: str = DISCOVERY_ADDRESS, now: Callable[[], float] = time.time, sleep: Callable[[float], None] = time.sleep, max_polls: int | None = None,
+        max_pools: int = 100, max_tx: int = 50, max_supply: int = 50, progress: Callable[[str], None] | None = None) -> int:
+    """Passes of: bounded discovery of new migrations, ONE batch of <= max_pools waiting pools resolved, <= max_supply token-supply calls, one poll, save, one progress line.
+    The deadline is checked before every RPC-issuing step; reaching it exits cleanly with a final save."""
     out.mkdir(parents=True, exist_ok=True)
     sp, pp = out / "status.json", out / "pools.json"
     status = load_json(sp, {})
@@ -374,7 +401,13 @@ def run(out: Path, call: Callable, ctr: Counters, pools_list: list[dict[str, Any
             state["waiting"][r["pool"]] = r
     writer = HourlyWriter(out, ctr)
     deadline_ms = start_ms + int(max_hours * 3600_000)
-    last_disc = 0.0
+    last_disc = None
+    if progress is None:
+        def progress(line: str) -> None:
+            print(line, file=sys.stderr, flush=True)
+
+    def stop() -> bool:
+        return int(now() * 1000) >= deadline_ms
 
     def save(final: bool = False) -> None:
         atomic_write(pp, state)
@@ -383,38 +416,48 @@ def run(out: Path, call: Callable, ctr: Counters, pools_list: list[dict[str, Any
 
     polls = 0
     try:
-        while int(now() * 1000) < deadline_ms and (max_polls is None or polls < max_polls):
+        while not stop() and (max_polls is None or polls < max_polls):
             t0 = now()
-            if t0 - last_disc >= discover_s or last_disc == 0.0:
+            if last_disc is None or t0 - last_disc >= discover_s:
                 last_disc = t0
-                for rec in discover_new(call, ctr, state["disc"], start_ms // 1000, discovery_address):
+                for rec in discover_new(call, ctr, state["disc"], start_ms // 1000, discovery_address, max_tx=max_tx, stop=stop):
                     if rec["pool"] not in state["pools"]:
                         state["waiting"].setdefault(rec["pool"], rec)
-                for pool, rec in list(state["waiting"].items()):  # discovery in batches would be cheaper; waiting is normally empty after the first pass
-                    full = discover_pool(call, ctr, rec)
+                save()
+            if state["waiting"] and not stop():
+                batch = list(state["waiting"].items())[:max_pools]
+                for (pool, rec), full in zip(batch, discover_batch(call, ctr, [r for _, r in batch])):
+                    del state["waiting"][pool]
                     if full is not None:
                         state["pools"][pool] = full
-                        del state["waiting"][pool]
                         ctr.bump("pools_discovered")
                     else:
+                        state["waiting"][pool] = rec  # unreadable now: back of the queue, retried on a later pass
                         ctr.bump("discover_retry")
+                save()
             ms = int(now() * 1000)
-            for p in state["pools"].values():  # token supply once per pool per hour
+            nsup = 0
+            for p in state["pools"].values():  # token supply once per pool per hour, at most max_supply calls per pass
+                if nsup >= max_supply or stop():
+                    break
                 if ms - p["supply_ms"] >= SUPPLY_EVERY_S * 1000:
+                    nsup += 1
                     s = token_supply(call, ctr, p["token_mint"])
                     if s is not None:
                         p["token_supply"], p["supply_ms"] = s, ms
-            if state["pools"]:
+            if state["pools"] and not stop():
                 ms = int(now() * 1000)
                 rows = poll_rows(call, ctr, list(state["pools"].values()), ms)
                 writer.write(ms, rows)
                 ctr.bump("polls")
             polls += 1
             save()
-            sleep(max(0.0, interval_s - (now() - t0)))
+            progress(f"pass {polls} pools={len(state['pools'])} waiting={len(state['waiting'])} polls={ctr.get('polls', 0)} rpc_calls={ctr.get('rpc_calls', 0)} "
+                     f"rpc_429={ctr.get('rpc_429', 0)} secs={now() - t0:.1f}")
+            sleep(max(0.0, min(interval_s - (now() - t0), deadline_ms / 1000 - now())))
     finally:
         writer.close()
-        save(final=int(now() * 1000) >= deadline_ms)
+        save(final=stop())
     return 0
 
 
@@ -425,6 +468,9 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--rps", type=float, default=2.0)
     ap.add_argument("--max-hours", type=float, default=336.0)
     ap.add_argument("--discover-s", type=float, default=300.0)
+    ap.add_argument("--max-pools", type=int, default=100, help="pools resolved per pass")
+    ap.add_argument("--max-tx", type=int, default=50, help="getTransaction resolutions per pass")
+    ap.add_argument("--max-supply", type=int, default=50, help="getTokenSupply calls per pass")
     ap.add_argument("--list", default=LIST_PATH)
     ap.add_argument("--list-sha256-prefix", default=LIST_SHA_PREFIX)
     ap.add_argument("--discovery-address", default=DISCOVERY_ADDRESS)
@@ -436,7 +482,8 @@ def main(argv: list[str] | None = None) -> int:
     C.check_window_out_dir(out)
     ctr = Counters()
     call = http_call(TokenBucket(a.rps), ctr, url=a.rpc_url)
-    return run(out, call, ctr, load_list(a.list, a.list_sha256_prefix), interval_s=a.interval_s, max_hours=a.max_hours, discover_s=a.discover_s, discovery_address=a.discovery_address)
+    return run(out, call, ctr, load_list(a.list, a.list_sha256_prefix), interval_s=a.interval_s, max_hours=a.max_hours, discover_s=a.discover_s, discovery_address=a.discovery_address,
+               max_pools=a.max_pools, max_tx=a.max_tx, max_supply=a.max_supply)
 
 
 if __name__ == "__main__":

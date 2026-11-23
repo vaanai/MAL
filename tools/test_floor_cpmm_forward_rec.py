@@ -276,3 +276,131 @@ def test_run_resume_and_exit(tmp_path):
     rows = [json.loads(x) for p in sorted(tmp_path.glob("*.jsonl")) for x in p.read_text().splitlines()]
     assert len(rows) == st2["counters"]["rows"] and all(r["pool"] == POOL for r in rows)
     assert st2["counters"]["supply_calls"] == 1  # once at the first poll; the hour is up only at the deadline, and a resume does not refetch
+
+
+# ---------------------------------------------------------------------------------------------- bounded passes (smoke #3306 fix)
+def many_pools(n: int):
+    """n distinct pools sharing one token mint / LP mint / config. Returns (list records, accounts)."""
+    recs, accs = [], {}
+    accs[LPM] = acc(mint_bytes(1, True), TOKEN_PROG)
+    accs[TOK] = acc(mint_bytes(10, False), TOKEN_PROG)
+    accs[CFG] = acc(cfg_bytes(2500), C.CPMM)
+    accs[V0] = acc(token_acc(5_000), TOKEN_PROG)
+    accs[V1] = acc(token_acc(9_000), TOKEN_PROG)
+    for i in range(n):
+        pool = b58enc(bytes([100 + i // 256, i % 256]) + bytes(30))
+        accs[pool] = acc(pool_bytes(WSOL_B, C.b58decode(TOK)), C.CPMM)
+        recs.append({"pool": pool, "token_mint": TOK, "bt": 1, "src": "list"})
+    return recs, accs
+
+
+class Clock:
+    def __init__(self, t=1_795_000_000.0):
+        self.t = t
+
+    def now(self):
+        return self.t
+
+    def sleep(self, s):
+        self.t += s
+
+
+class SlowFake(Fake):
+    """Every RPC call costs `cost` seconds on the fake clock."""
+
+    def __init__(self, clk, cost, *a, **k):
+        super().__init__(*a, **k)
+        self.clk, self.cost = clk, cost
+
+    def __call__(self, method, params):
+        self.clk.t += self.cost
+        return super().__call__(method, params)
+
+
+def test_batch_discovery_242_pools_few_gma_calls():
+    recs, accs = many_pools(242)
+    f = Fake(accs)
+    out = R.discover_batch(f, R.Counters(), recs)
+    assert len(out) == 242 and all(o and o["vault0"] == V0 and o["trade_fee_rate"] == 2500 for o in out)
+    assert all(c[0] == "getMultipleAccounts" for c in f.calls) and len(f.calls) <= 10
+    assert all(len(c[1][0]) <= 100 for c in f.calls)
+
+
+def test_batch_discovery_returns_none_for_unreadable():
+    recs, accs = many_pools(3)
+    accs.pop(recs[1]["pool"])
+    out = R.discover_batch(Fake(accs), R.Counters(), recs)
+    assert [o is None for o in out] == [False, True, False]
+
+
+def test_first_pass_is_bounded_and_polls_resolved_pools_at_once(tmp_path):
+    recs, accs = many_pools(242)
+    clk, lines = Clock(), []
+    f = Fake(accs)
+    R.run(tmp_path, f, R.Counters(), recs, interval_s=60, max_hours=10, discover_s=10**9, now=clk.now, sleep=clk.sleep, max_polls=1, max_pools=100, progress=lines.append)
+    st = json.loads((tmp_path / "status.json").read_text())
+    assert st["pools"] == 100 and st["waiting"] == 142 and st["counters"]["polls"] == 1
+    rows = [json.loads(x) for p in tmp_path.glob("*.jsonl") for x in p.read_text().splitlines()]
+    assert len(rows) == 100 and all(r["err"] is None for r in rows)
+    # later passes drain the queue
+    R.run(tmp_path, f, R.Counters(), recs, interval_s=60, max_hours=10, discover_s=10**9, now=clk.now, sleep=clk.sleep, max_polls=2, max_pools=100, progress=lines.append)
+    st = json.loads((tmp_path / "status.json").read_text())
+    assert st["pools"] == 242 and st["waiting"] == 0
+
+
+def test_save_after_every_discovery_batch_and_poll(tmp_path, monkeypatch):
+    recs, accs = many_pools(150)
+    saves = []
+    real = R.atomic_write
+    monkeypatch.setattr(R, "atomic_write", lambda path, obj: (saves.append(path.name), real(path, obj)))
+    clk = Clock()
+    R.run(tmp_path, Fake(accs), R.Counters(), recs, interval_s=60, max_hours=10, discover_s=10**9, now=clk.now, sleep=clk.sleep, max_polls=1, max_pools=100,
+          progress=lambda s: None)
+    # one pass: discovery save, batch save, end-of-pass save, final save; each writes pools.json and status.json
+    assert saves.count("status.json") >= 4 and saves.count("pools.json") == saves.count("status.json")
+
+
+def test_progress_line_fields(tmp_path):
+    recs, accs = many_pools(5)
+    clk, lines = Clock(), []
+    R.run(tmp_path, Fake(accs), R.Counters(), recs, interval_s=60, max_hours=10, discover_s=10**9, now=clk.now, sleep=clk.sleep, max_polls=2, progress=lines.append)
+    assert len(lines) == 2
+    for k in ("pools=5", "waiting=0", "polls=", "rpc_calls=", "rpc_429=", "secs="):
+        assert k in lines[0]
+
+
+def test_deadline_honoured_inside_a_pass(tmp_path):
+    """Each call costs 30 s on the fake clock and the deadline is 100 s out: the pass stops mid-discovery, exits cleanly, final status written."""
+    recs, accs = many_pools(242)
+    clk = Clock()
+    f = SlowFake(clk, 30.0, accs, sigs=[{"signature": f"s{i}", "blockTime": 1_795_000_001, "err": None} for i in range(60)])
+    assert R.run(tmp_path, f, R.Counters(), recs, interval_s=60, max_hours=100 / 3600, discover_s=10**9, now=clk.now, sleep=clk.sleep, progress=lambda s: None) == 0
+    st = json.loads((tmp_path / "status.json").read_text())
+    assert st["done"] is True
+    assert len(f.calls) == 4  # calls start at 0, 30, 60, 90 s; none after the 100 s deadline
+
+
+def test_discover_stop_checked_before_each_call():
+    n = [0]
+
+    def stop():
+        n[0] += 1
+        return n[0] > 3
+
+    f = Fake({}, sigs=[{"signature": f"s{i}", "blockTime": 2000 + i, "err": None} for i in range(10)])
+    st = {"cursor": None, "pending": {}}
+    R.discover_new(f, R.Counters(), st, 1000, stop=stop)
+    assert len([c for c in f.calls if c[0] == "getTransaction"]) <= 2
+
+
+def test_pending_tx_cap_per_pass():
+    sigs = [{"signature": f"s{i:03d}", "blockTime": 2000 + i, "err": None} for i in range(80)]
+    f = Fake({}, sigs=sigs)
+    st = {"cursor": None, "pending": {}}
+    ctr = R.Counters()
+    R.discover_new(f, ctr, st, 1000, max_tx=50)
+    assert ctr["tx_calls"] == 50 and len(st["pending"]) == 80  # txs unavailable: all stay pending, only 50 tried
+    f2 = Fake({}, sigs=sigs, txs={s["signature"]: migration_tx(addr(50), s["blockTime"], with_ll=False) for s in sigs})
+    st2, ctr2 = {"cursor": None, "pending": {}}, R.Counters()
+    R.discover_new(f2, ctr2, st2, 1000, max_tx=50)
+    assert ctr2["tx_calls"] == 50 and len(st2["pending"]) == 30
