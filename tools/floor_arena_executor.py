@@ -72,6 +72,7 @@ FUNDED_MIN_LAMPORTS, FUNDED_MAX_LAMPORTS = 350_000_000, 1_000_000_000
 FLOOR_BELOW_FUNDED_LAMPORTS = 250_000_000
 MIN_WALLET_FLOOR_LAMPORTS = 50_000_000
 CANARY_MAX_MS = 14 * 86_400_000
+CANARY_MAX_MS_CEILING = 60 * 86_400_000  # code ceiling for the optional config key canary_max_ms (DEC-035 Am.15)
 GAP_HOLD_MS = 600_000  # DEC-032 s5 item 2: buys restart only after 10 gap-free minutes
 EXIT_LATE_MS = 600_000  # a clock exit sent this long after its deadline is `late` (DEC-032 s5 item 4: stuck position = exit instant + 600 s)
 
@@ -124,6 +125,11 @@ def make_config(d: Mapping[str, Any]) -> B.Config:
     if not _num(end) or end <= 0:
         raise ValueError("config end_ms is required (explicit, positive)")
     kw: dict[str, Any] = {}
+    if "canary_max_ms" in d:
+        cm = d["canary_max_ms"]
+        if isinstance(cm, bool) or not isinstance(cm, int) or not 0 < cm <= CANARY_MAX_MS_CEILING:
+            raise ValueError(f"config canary_max_ms must be an int in (0, {CANARY_MAX_MS_CEILING}] milliseconds")
+        kw["canary_max_ms"] = cm
     for k, cap in C0.items():
         v = d.get(k, cap)
         if not _num(v) or v <= 0:
@@ -243,7 +249,7 @@ class FloorBridge(B.Bridge):
         if now < int(self.fs["gap_hold_until_ms"]):
             return "gap_hold"
         first = self.fs["first_send_ms"]
-        if first is not None and now > int(first) + CANARY_MAX_MS:
+        if first is not None and now > int(first) + int(getattr(self.cfg, "canary_max_ms", CANARY_MAX_MS)):
             return "canary_expired"
         return None
 
