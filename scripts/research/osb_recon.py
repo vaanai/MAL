@@ -616,31 +616,49 @@ def pair_metrics(o, e, sim, spans, win_to, nr_spans=()):
 MISSED_RUNG = 0.25  # the sim rung the missed (sim-only) trades are valued at
 
 
-def price_missed(rows, sim):
-    """Fill net_sim_sol / net_sim_pp / net_sim_press_sol on sim_only rows whose book-A trade is closed and filled at the 0.25 rung: the same test and the same board net (`<rung>:flat`) as a matched row.
-    Rows that cannot be priced keep None. Adds only these three keys to sim_only rows; touches nothing else. Returns the per-reason summary (paper model; the pressure leg is the board's `<rung>:press`)."""
+def price_missed(rows, sim, skip_tids=()):
+    """Fill net_sim_sol / net_sim_pp / net_sim_press_sol on sim_only rows, valued like the board's own totals (osb_board.book_trades): EVERY closed 0.25 book-A trade counts at its `<rung>:flat` / `<rung>:press`
+    net, guarded and stranded legs (losses) included, whether or not the sim leg filled. A trade whose close is at or after the tape end, or still open, is left None (open); an engine-excluded trade is left None
+    (gap-excluded); a row with no tid or no 0.25 rung is left None (other). Each tid is valued once: a repeated tid, or a tid already matched (skip_tids), is left None (duplicate).
+    Adds only these three keys to sim_only rows; touches nothing else. Rows are valued at the 0.25 sim rung whatever the live stake. Returns the per-reason summary (paper model, not live fills)."""
     rung = rung_of(MISSED_RUNG, sim["stakes"])
     sk = str(float(rung)) if rung is not None else None
     pid_of = {t: p for p, t in sim["tids"].items()}
+    seen = set(skip_tids)
     summ = {}
     for r in rows:
         if r["class"] != "sim_only":
             continue
         r["net_sim_sol"] = r["net_sim_pp"] = r["net_sim_press_sol"] = None
-        pos = sim["positions"].get(pid_of.get(r.get("tid")))
-        if pos and sk and pos["status"].get(sk) == "closed" and (pos.get("leg_state") or {}).get(sk) == "filled" and (sk + ":flat") in pos.get("net", {}):
+        tid = r.get("tid")
+        d = summ.setdefault(r["reason"], {"n": 0, "n_valued": 0, "n_open": 0, "n_gap_excluded": 0, "n_not_filled": 0, "n_press": 0, "n_duplicate": 0, "n_other": 0,
+                                          "sum_net_sim_sol": 0.0, "sum_net_sim_press_sol": 0.0})
+        d["n"] += 1
+        pos = sim["positions"].get(pid_of.get(tid)) if tid is not None else None
+        if tid is not None and tid in seen:
+            d["n_duplicate"] += 1
+            continue
+        if tid is not None:
+            seen.add(tid)
+        st = pos["status"].get(sk) if pos and sk else None
+        if st == "closed" and pos.get("t1") is not None and pos["t1"] < sim["end_ms"] and (sk + ":flat") in pos.get("net", {}):
             n = pos["net"][sk + ":flat"]
             r["net_sim_sol"], r["net_sim_pp"] = n / 1e9, n / (rung * 1e9) * 100.0
+            d["n_valued"] += 1
+            d["sum_net_sim_sol"] += r["net_sim_sol"]
+            if (pos.get("leg_state") or {}).get(sk) != "filled":
+                d["n_not_filled"] += 1  # still valued: a guarded or stranded leg is a loss the board counts
             if (sk + ":press") in pos["net"]:
                 r["net_sim_press_sol"] = pos["net"][sk + ":press"] / 1e9
-        d = summ.setdefault(r["reason"], {"n": 0, "n_priced": 0, "sum_net_sim_sol": 0.0, "sum_net_sim_press_sol": 0.0})
-        d["n"] += 1
-        if r["net_sim_sol"] is not None:
-            d["n_priced"] += 1
-            d["sum_net_sim_sol"] += r["net_sim_sol"]
-            if r["net_sim_press_sol"] is not None:
+                d["n_press"] += 1
                 d["sum_net_sim_press_sol"] += r["net_sim_press_sol"]
-    return {"rung_sol": MISSED_RUNG, "model": "paper (board flat 15% fail leg; press = pressure-fail leg); not live fills", "by_reason": dict(sorted(summ.items()))}
+        elif st in ("closed", "open_at_tape_end"):
+            d["n_open"] += 1
+        elif st == "engine_excluded":
+            d["n_gap_excluded"] += 1
+        else:
+            d["n_other"] += 1
+    return {"rung_sol": MISSED_RUNG, "model": "paper (board flat 15% fail leg; press = pressure-fail leg); every closed 0.25 trade valued, incl. guarded and stranded; not live fills", "by_reason": dict(sorted(summ.items()))}
 
 
 def band(status, **kw):
@@ -750,7 +768,7 @@ def reconcile(ex_rows, ex_meta, sim, now_ms, win_clip=None, s4_twin=False, s_sta
         reasons[k] = reasons.get(k, 0) + 1
     nsp = {w: sum(1 for m in metrics if m.get("no_sim_price") == w) for w in NO_SIM_WORDS}
     leg = {"sim_leg_failed_live_filled": sum(1 for m in metrics if m["_sim_leg_state"] not in (None, "filled")), "no_rung": sum(1 for m in metrics if m["no_rung"])}
-    missed = price_missed(rows, sim)
+    missed = None if s4_twin else price_missed(rows, sim, {m["tid"] for m in metrics})  # latency-twin mode: left out (the twin positions over its own S window would sit beside book A counts)
     out_rows = rows + [{k: v for k, v in m.items() if not k.startswith("_")} for m in metrics]
     out_rows.sort(key=lambda r: (r["entry_utc"], str(r.get("order_id") or ""), str(r.get("tid") or "")))
     buy = wilson_block(sum(1 for _, f in live_sent if not f), len(live_sent))
@@ -765,7 +783,7 @@ def reconcile(ex_rows, ex_meta, sim, now_ms, win_clip=None, s4_twin=False, s_sta
             "live_failure": {"n_sent": buy["n"], "n_not_filled": buy["n_failed"], "rate": buy["rate"], "wilson95_lo": buy["wilson95_lo"], "wilson95_hi": buy["wilson95_hi"], "flat_fail_assumed": FLAT_FAIL_ASSUMED,
                              "sells": {"n_sent": sell["n"], "n_failed": sell["n_failed"], "rate": sell["rate"], "wilson95_lo": sell["wilson95_lo"], "wilson95_hi": sell["wilson95_hi"]},
                              "note": "live only; not combined with sim figures"},
-            "missed": missed, "rows": out_rows}
+            **({} if missed is None else {"missed": missed}), "rows": out_rows}
     if s4_twin:
         res["excluded_reason_counts"] = dict(sorted(collections.Counter(m["_no_sim_reason"] for m in metrics if m.get("_no_sim_reason")).items()))
     return res
@@ -829,14 +847,21 @@ def f2(x):
     return "n/a" if x is None else "%.2f" % x
 
 
+def f4(x):
+    return "n/a" if x is None else "%.4f" % x
+
+
 def recon_md(res):
     md = ["# Open sim recon: book %s against the live FLOOR bot (paper)" % res["book_id"], "", "> " + res["banner"], "",
           "- Status: **%s**. Window %s to %s; extract as of %s (%s). Generated %s." % (res["status"], res["window"]["from_utc"], res["window"]["to_utc"], res["extract_as_of_utc"], res["extract_sha256_12"], res["generated_utc"]),
           "- Counts: matched %d, live-only %d, sim-only %d. By reason: %s." % (res["counts"]["matched"], res["counts"]["live_only"], res["counts"]["sim_only"], json.dumps(res["counts_by_reason"], sort_keys=True))
           + " Bridge-only orders dropped from the extract (not ours): %d. Gap-in-hold trades in the twin set: %d. No sim figure (no_sim, outside S1/S2): gap at entry %d, gap at exit %d, missing V %d, other %d. Take-profits in a sim-side hole (tp_in_sim_gap): %d. Strict can overstate: in Nov 2-12 the trades it left out for a feed gap were net negative (DEC-035 Am.6 Erratum 3). Twin: %s." % (
               res["dropped_bridge_only"], res["gap_in_hold_n"], *(res["no_sim_price_counts"][w] for w in NO_SIM_WORDS), res["h3"].get("n_tp_in_sim_gap", 0), res["twin_book_id"] or "none"),
-          "- Missed (sim-only, valued at %g, paper model): %s." % (res["missed"]["rung_sol"], "; ".join("%s n %d, valued %d, sum %s SOL (press %s)" % (
-              k, v["n"], v["n_priced"], f2(v["sum_net_sim_sol"]), f2(v["sum_net_sim_press_sol"])) for k, v in res["missed"]["by_reason"].items()) or "none") if res.get("missed") else "- Missed (sim-only, valued at 0.25, paper model): n/a.",
+          ("- Missed (sim-only, valued at %g, paper model, not live fills; every closed 0.25 trade, guarded and stranded included): %s." % (res["missed"]["rung_sol"], "; ".join(
+              "%s n %d, valued %d (not filled %d), open %d, gap-excluded %d, duplicate %d, other %d, sum %s SOL, press-covered %d sum %s SOL" % (
+                  k, v["n"], v["n_valued"], v["n_not_filled"], v["n_open"], v["n_gap_excluded"], v["n_duplicate"], v["n_other"], f4(v["sum_net_sim_sol"]), v["n_press"], f4(v["sum_net_sim_press_sol"]))
+              for k, v in res["missed"]["by_reason"].items()) or "none")) if "missed" in res
+          else "- Missed (sim-only): not computed in latency-twin mode (the twin's positions over its own S window would sit beside book A's counts); see the base recon.",
           "- Live non-rule exits (coded live_nonrule_exit, set after the first run: post hoc; excluded from S2, kept in S1, S3, S4; cap %s): %d%s." % (
               res["h3"]["nonrule_cap"], res["h3"]["n_live_nonrule_exit"],
               "".join("; order %s live net %s SOL" % (r["order_id"], f2(r.get("net_live_sol"))) for r in res["rows"] if r.get("reason") == CODED_NONRULE)),
@@ -851,7 +876,7 @@ def recon_md(res):
         md.append("| %s | %s | %s | %s | %s | %s | %s | %s | %s | %s | %s | %s | %s | %s | %s | %s | %s | %s |" % (
             r.get("order_id") or "-", r.get("tid") or "-", r["class"] + (" no_rung" if r.get("no_rung") else ""), r["reason"] or "-", r["entry_utc"], "n/a" if r.get("stake_sol") is None else "%.2f" % r["stake_sol"],
             f2(r.get("entry_slip_pp")), r.get("landing_ms", "-"), r.get("landing_k", "-"), r.get("exit_reason_live") or "-", r.get("exit_reason_host") or "-", r.get("exit_reason_sim") or "-", r.get("exit_dt_ms", "-"),
-            f2(r.get("net_live_sol")), f2(r.get("net_sim_sol")), "yes" if r.get("gap_in_hold") else "-", f2(r.get("blind_s")) if r.get("blind_s") is not None else "-", r.get("no_sim_price") or "-"))
+            f2(r.get("net_live_sol")), (f4 if r["class"] == "sim_only" else f2)(r.get("net_sim_sol")), "yes" if r.get("gap_in_hold") else "-", f2(r.get("blind_s")) if r.get("blind_s") is not None else "-", r.get("no_sim_price") or "-"))
     return "\n".join(md) + "\n"
 
 
