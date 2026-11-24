@@ -40,6 +40,7 @@ Start instant: set by the manager, **not before 2026-11-24T04** (seed 2026-11-03
 
 ## 4. Believe-the-sim criteria for this book
 - Deciding latency cell: osb-a's (entry lands 4.085 s after the decision).
+  - **Erratum 1 (2026-11-24, before any osb-old figure was read; DEC-035 "Amendment 9 book-list record osb-old, Erratum 1" controls):** osb-old is a strict book and `osb_follow_old.py` refuses `pricing_lat_entry_s`, so the 4.085 s cell cannot be produced. The deciding cell is stake 0.10 on the strict `1p9` leg (entry about 3.44 s after the decision, derived, about 0.65 s earlier than live: entries are flattered by that gap), under both fail legs; the matched control is osb-a's strict row, never osb-a-lt-b. Reader pin: the open-sim board at main ff00e565 (`osb_board.py` + `floor_nov_pnl.py`).
 - Criteria (declared before any output): at least 2 distinct entries per UTC day on full-coverage days (hours >= 2026-11-24T03) as the capacity bar; the book needs at least 14 full-coverage days and at least 30 closed positions before a belief record is considered; shrunk mean per trade under flat 15%, pressure and mu0 at 0.10 all > 0; ex-top-3 > 0; the matched FLOOR control (osb-a) on the same days is shown beside it. Below 30 closed positions at day 14, the book is not decidable (not a pass).
 - Why: a rare-event book, so days and positions both bind.
 
