@@ -256,6 +256,15 @@ def test_twin_outputs_carry_no_forbidden_word(tmp_path, capsys):
     assert rc == 0 and not any(w in text.lower() for w in B.FORBIDDEN)
 
 
+def test_missed_block_is_left_out_in_twin_mode(tmp_path):
+    mp, tm, _, live = lt_world(tmp_path)
+    _, rc, out = run_both(tmp_path, mp, tm, live)
+    res = load_lt(out)
+    assert rc == 0 and "missed" not in res
+    assert not any(k in r for r in res["rows"] if r["class"] == "sim_only" for k in ("net_sim_sol", "net_sim_pp", "net_sim_press_sol"))
+    assert "Missed (sim-only): not computed in latency-twin mode" in (out / "recon-lt-a.md").read_text()
+
+
 def test_board_quotes_the_twin_recon_status_in_one_line_and_changes_nothing_else(tmp_path, monkeypatch):
     root = tmp_path / "reconroot"
     root.mkdir()
