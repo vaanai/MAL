@@ -35,10 +35,10 @@ As of 2026-10-20T08:26:00Z. One row per idea in [`ideas.jsonl`](ideas.jsonl). Th
 | `untested` | 46 | 28 | 0 |
 | `desk-read` | 4 | 52 | 0 |
 | `explored-no-survivor` | 56 | 18 | 2 |
-| `dead-as-frozen` | 77 | 9 | 0 |
-| **all** | 213 | 112 | 2 |
+| `dead-as-frozen` | 80 | 9 | 0 |
+| **all** | 216 | 112 | 2 |
 
-The file holds 577 rows: the 327 above and 55 rows kept only as duplicates of another row (listed at the end).
+The file holds 580 rows: the 330 above and 55 rows kept only as duplicates of another row (listed at the end).
 
 ## Live and in forward test
 
@@ -644,6 +644,9 @@ Rows written by research agents on 2026-10-13. A judge read each web agent's who
 | `p37-damm-lp` | Passive LP on DBC-migrated Meteora DAMM v2 pools (fee capture, hours hold) | `explored-no-survivor` | KILL (final), by K0 and by the declared K-BE. Counts only, no P&L, on 3 exploration days of DAMM v2 histories of DBC migrations 2026-10-14..16 (first migration 2026-10-14T00:00:45Z, last row 2026-10-16T23:59:46Z; no DBC hour file read). Desk check passed: create_position and add_liquidity are permissionless (only gate pool_status == Enable); EvtSwap2 carries claiming_fee … |
 | `p37-stall-to-complete` | Stalled near-complete pump curve held into graduation, exit after BOOST | `explored-no-survivor` | KILL (K0 and K0c fail; K0b passes); counts only, no price. Pooled over 3 exploration blocks (explore-0814, fresh-0903, exp011-0909), 26 days: 57 triggers; median triggers per full UTC day 2.0 over 24 days (K0 needs at least 8); P(complete <= 6 h \| trigger) 27/55 = 0.4909090909090909 (K0c needs at least 0.5; break-even about 0.65); race share 0/27 at 4.4 s and at 1.9 s … |
 | `p37-curve-floor` | Pump curve start-price floor: buy curves back at <= 1% progress after a >= 30% peak, hold … | `explored-no-survivor` | KILL on K1 (time-cap share); counts only on pump bonding minute bars of explore-0814, fresh-0903 and exp011-0909. No price, P&L or fail model computed. K0 (median triggers per full UTC day over 24 days, kill below 20): 164.0 (min 48, max 473), does not fire. K1 (time-cap share of valid, uncensored triggers, kill at or above 95%): 0.9945664478152593 (4,393 of 4,417), fires; 24 … |
+| `n1120-floor-drain-veto` | DRAIN-VETO: drain-flag veto on FLOOR entries | `dead-as-frozen` | KILLED at step 0, 2026-11-23: the flagged share (1.00 at top-1 and top-3) is outside the declared 5-40% band, so it was killed before pricing. Step 1 was not run. |
+| `n1120-floor-spike-tp` | SPIKE-TP: take-profit on short TP spikes for FLOOR positions | `dead-as-frozen` | KILLED at step 0, 2026-11-23, by both declared clauses (8 of 9 runs longer than 5 s; 0 runs in 0.5-5 s). |
+| `n1120-floor-rotate` | FLOOR-ROTATE: rotation variants (6 h, 12 h) against flat first-come | `dead-as-frozen` | KILLED at step 1, 2026-11-20: the worse variant fails items 1-3 in all 16 combos. No re-tune. |
 
 ## Duplicate rows
 
