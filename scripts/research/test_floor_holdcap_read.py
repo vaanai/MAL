@@ -23,10 +23,10 @@ def tr(entry_h, hold_h, flat=0, press=None, day=None, seq=None):
 
 
 def test_window_constants():
-    assert (H.END_MS - H.COUNT_FROM) // HR == H.MAX_HOURS == 194
-    assert H.START_HOUR == "2026-11-10T10" and H.SEED_HOUR == "2026-11-02T01"
-    assert H.COMPLETE_DAYS[0] == "2026-11-11" and H.COMPLETE_DAYS[-1] == "2026-11-16" and len(H.COMPLETE_DAYS) == 6
-    assert (H.COUNT_FROM - H._ms("2026-11-02T01:00:00Z")) // HR >= 201
+    assert (H.END_MS - H.COUNT_FROM) // HR == H.MAX_HOURS == 168
+    assert H.START_HOUR == "2026-11-11T12" and H.SEED_HOUR == "2026-11-03T03"
+    assert H.COMPLETE_DAYS[0] == "2026-11-12" and H.COMPLETE_DAYS[-1] == "2026-11-16" and len(H.COMPLETE_DAYS) == 5 == H.MIN_DAYS
+    assert (H.COUNT_FROM - H._ms("2026-11-03T03:00:00Z")) // HR >= 201
 
 
 def test_counted_window_boundaries():
@@ -130,7 +130,7 @@ def test_kill_adopt_all_three_hold():
     var = _st(2.0, {d: 1.0 for d in CD})
     ctl = _st(1.0, {d: 0.5 for d in CD})
     r = H.cell_pass(_sim(1.3), _sim(1.0), var, ctl)
-    assert r["i"] and r["ii"] and r["iii"] and r["all"] and r["days"] == 6
+    assert r["i"] and r["ii"] and r["iii"] and r["all"] and r["days"] == 5
     assert H.verdict({"flat": r, "press": r}) == "WINS CLEARLY"
 
 
@@ -140,13 +140,13 @@ def test_kill_adopt_each_failure():
     assert not H.cell_pass(_sim(1.29), _sim(1.0), var, ctl)["i"]
     assert not H.cell_pass(_sim(2.0), _sim(1.0), _st(1.0, var["per_day"]), ctl)["ii"]  # equal ex-top-3 is not above
     assert not H.cell_pass(_sim(2.0), _sim(1.0), _st(None, var["per_day"]), ctl)["ii"]
-    worse = {d: (1.0 if i < 3 else 0.0) for i, d in enumerate(CD)}  # 3 of 6 days at or above: not a majority
+    worse = {d: (1.0 if i < 2 else 0.0) for i, d in enumerate(CD)}  # 2 of 5 days at or above: not a majority
     assert not H.cell_pass(_sim(2.0), _sim(1.0), _st(2.0, worse), ctl)["iii"]
     tie = {d: 0.5 for d in CD}
     assert H.cell_pass(_sim(2.0), _sim(1.0), _st(2.0, tie), ctl)["iii"]  # ties count as at or above
     # only the fixed complete days count; a variant with no entry on a day books 0
-    part = _st(2.0, {"2026-11-10": 5.0, "2026-11-17": 5.0})
-    assert H.cell_pass(_sim(2.0), _sim(1.0), part, _st(1.0, {}))["days"] == 6
+    part = _st(2.0, {"2026-11-11": 5.0, "2026-11-17": 5.0})
+    assert H.cell_pass(_sim(2.0), _sim(1.0), part, _st(1.0, {}))["days"] == 5
 
 
 def test_kill_adopt_needs_both_legs_and_negative_control():
@@ -214,18 +214,18 @@ def _run_check(tmp_path, counts):
 
 
 def test_runner_incomplete_guard(tmp_path):
-    r = _run_check(tmp_path, {"holdcap-control24": 194, "holdcap-h12": 193, "holdcap-h6": 194})
+    r = _run_check(tmp_path, {"holdcap-control24": 168, "holdcap-h12": 167, "holdcap-h6": 168})
     assert r.returncode == 1
-    assert "hours_processed=194 of 194" in r.stdout and "INCOMPLETE book holdcap-h12 hours_processed=193 < 194" in r.stdout
+    assert "hours_processed=168 of 168" in r.stdout and "INCOMPLETE book holdcap-h12 hours_processed=167 < 168" in r.stdout
     assert "reader not run" in r.stdout and "INCOMPLETE book holdcap-h6" not in r.stdout
 
 
 def test_runner_complete_and_missing_log(tmp_path):
-    r = _run_check(tmp_path, {"holdcap-control24": 194, "holdcap-h12": 194, "holdcap-h6": 194})
+    r = _run_check(tmp_path, {"holdcap-control24": 168, "holdcap-h12": 168, "holdcap-h6": 168})
     assert r.returncode == 0 and "INCOMPLETE" not in r.stdout and "last_decision_md5=abc" in r.stdout
     t2 = tmp_path / "x"
     t2.mkdir()
-    r = _run_check(t2, {"holdcap-control24": 194, "holdcap-h12": 194})  # h6 has no log at all
+    r = _run_check(t2, {"holdcap-control24": 168, "holdcap-h12": 168})  # h6 has no log at all
     assert r.returncode == 1 and "INCOMPLETE book holdcap-h6 hours_processed=0" in r.stdout
 
 

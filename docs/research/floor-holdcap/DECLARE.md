@@ -77,3 +77,19 @@ Otherwise the verdict is "no clear win". The reader prints this verdict per vari
 ## 7. Run
 
 `scripts/research/floor_holdcap_run.sh` as a MiScusi job on mal-research-0, by the manager, after the SEALS-BRIEF line of section 1. Env: `BOARD_BEST_OF` (required), `START_WALLET_SOL` (default 3.96808), `SIM_REPO` (default `/data2/mal/wt/osb-457795f4`), `HOLDCAP_BASE` (default `/data2/mal/scratch/floor-open-sim/holdcap`). Stdout carries only manifest sha256, hours processed and the last decision md5 per book, INCOMPLETE lines and the reader's summary lines.
+
+## Erratum 1 (before any run)
+
+Dated 2026-11-24 (date -u at writing; no book has run and no output exists). QP rules on this erratum. It supersedes sections 1, 2 and 5 where they differ; the text above is kept as written.
+
+**Why.** Section 1 assumed keep/ holds hours from 2026-11-02T01Z. Before the job, the manager read `keep/.keeper-status.json` (QP condition C2): from_hour 2026-11-02T01, keep_earliest 2026-11-03T03, contiguous True, 26 hours not_in_src. So keep is NOT contiguous over [2026-11-02T01, 2026-11-18T12): the first 26 hours are missing. The start was chosen from a misreading of the keep start. This change is a pre-run change, decided before any output.
+
+**New window.**
+- `seed_from_hour` 2026-11-03T03 (osb-a's own seed) and `start_hour` 2026-11-11T12 (seed + 201 h, osb-a's own start). The end stays 2026-11-18T12:00Z, so `--max-hours` and MAX_HOURS = 168 (last processed hour 2026-11-18T11). The E2 window is still untouched.
+- Counted entries: [2026-11-11T12:00Z, 2026-11-17T12:00Z). Complete exit days: 2026-11-12 to 2026-11-16, which is 5.
+- **The sample is smaller: about 6 days** (counted-entry window 6.0 days; wallet-sim realized SOL/day is over that window).
+- The INCOMPLETE threshold is 168 hours per book.
+
+**NOT_DECIDABLE floor (section 5), changed.** Was: at least 40 counted trades and 5 of 6 complete days. Now: at least 40 counted trades at the 0.25 cell and a trade on ALL 5 complete exit days, for every compared book. The rest of section 5 is unchanged (tests i to iii, the control at or below 0 rule, both legs, the live-use path), with test (iii) over the five complete days (a majority is at least 3 of 5).
+
+**Unchanged.** Books, overrides, out roots, follower commit 457795f4, the wallet sim and its cited start wallet 3.96808 SOL, the disclosures of section 6 (now with a 6-day sample, still walk-2/E1 not blind: osb-a's own hours).
