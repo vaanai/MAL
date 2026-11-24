@@ -613,6 +613,36 @@ def pair_metrics(o, e, sim, spans, win_to, nr_spans=()):
     return m
 
 
+MISSED_RUNG = 0.25  # the sim rung the missed (sim-only) trades are valued at
+
+
+def price_missed(rows, sim):
+    """Fill net_sim_sol / net_sim_pp / net_sim_press_sol on sim_only rows whose book-A trade is closed and filled at the 0.25 rung: the same test and the same board net (`<rung>:flat`) as a matched row.
+    Rows that cannot be priced keep None. Adds only these three keys to sim_only rows; touches nothing else. Returns the per-reason summary (paper model; the pressure leg is the board's `<rung>:press`)."""
+    rung = rung_of(MISSED_RUNG, sim["stakes"])
+    sk = str(float(rung)) if rung is not None else None
+    pid_of = {t: p for p, t in sim["tids"].items()}
+    summ = {}
+    for r in rows:
+        if r["class"] != "sim_only":
+            continue
+        r["net_sim_sol"] = r["net_sim_pp"] = r["net_sim_press_sol"] = None
+        pos = sim["positions"].get(pid_of.get(r.get("tid")))
+        if pos and sk and pos["status"].get(sk) == "closed" and (pos.get("leg_state") or {}).get(sk) == "filled" and (sk + ":flat") in pos.get("net", {}):
+            n = pos["net"][sk + ":flat"]
+            r["net_sim_sol"], r["net_sim_pp"] = n / 1e9, n / (rung * 1e9) * 100.0
+            if (sk + ":press") in pos["net"]:
+                r["net_sim_press_sol"] = pos["net"][sk + ":press"] / 1e9
+        d = summ.setdefault(r["reason"], {"n": 0, "n_priced": 0, "sum_net_sim_sol": 0.0, "sum_net_sim_press_sol": 0.0})
+        d["n"] += 1
+        if r["net_sim_sol"] is not None:
+            d["n_priced"] += 1
+            d["sum_net_sim_sol"] += r["net_sim_sol"]
+            if r["net_sim_press_sol"] is not None:
+                d["sum_net_sim_press_sol"] += r["net_sim_press_sol"]
+    return {"rung_sol": MISSED_RUNG, "model": "paper (board flat 15% fail leg; press = pressure-fail leg); not live fills", "by_reason": dict(sorted(summ.items()))}
+
+
 def band(status, **kw):
     return dict(status=status, **kw)
 
@@ -720,6 +750,7 @@ def reconcile(ex_rows, ex_meta, sim, now_ms, win_clip=None, s4_twin=False, s_sta
         reasons[k] = reasons.get(k, 0) + 1
     nsp = {w: sum(1 for m in metrics if m.get("no_sim_price") == w) for w in NO_SIM_WORDS}
     leg = {"sim_leg_failed_live_filled": sum(1 for m in metrics if m["_sim_leg_state"] not in (None, "filled")), "no_rung": sum(1 for m in metrics if m["no_rung"])}
+    missed = price_missed(rows, sim)
     out_rows = rows + [{k: v for k, v in m.items() if not k.startswith("_")} for m in metrics]
     out_rows.sort(key=lambda r: (r["entry_utc"], str(r.get("order_id") or ""), str(r.get("tid") or "")))
     buy = wilson_block(sum(1 for _, f in live_sent if not f), len(live_sent))
@@ -734,7 +765,7 @@ def reconcile(ex_rows, ex_meta, sim, now_ms, win_clip=None, s4_twin=False, s_sta
             "live_failure": {"n_sent": buy["n"], "n_not_filled": buy["n_failed"], "rate": buy["rate"], "wilson95_lo": buy["wilson95_lo"], "wilson95_hi": buy["wilson95_hi"], "flat_fail_assumed": FLAT_FAIL_ASSUMED,
                              "sells": {"n_sent": sell["n"], "n_failed": sell["n_failed"], "rate": sell["rate"], "wilson95_lo": sell["wilson95_lo"], "wilson95_hi": sell["wilson95_hi"]},
                              "note": "live only; not combined with sim figures"},
-            "rows": out_rows}
+            "missed": missed, "rows": out_rows}
     if s4_twin:
         res["excluded_reason_counts"] = dict(sorted(collections.Counter(m["_no_sim_reason"] for m in metrics if m.get("_no_sim_reason")).items()))
     return res
@@ -804,6 +835,8 @@ def recon_md(res):
           "- Counts: matched %d, live-only %d, sim-only %d. By reason: %s." % (res["counts"]["matched"], res["counts"]["live_only"], res["counts"]["sim_only"], json.dumps(res["counts_by_reason"], sort_keys=True))
           + " Bridge-only orders dropped from the extract (not ours): %d. Gap-in-hold trades in the twin set: %d. No sim figure (no_sim, outside S1/S2): gap at entry %d, gap at exit %d, missing V %d, other %d. Take-profits in a sim-side hole (tp_in_sim_gap): %d. Strict can overstate: in Nov 2-12 the trades it left out for a feed gap were net negative (DEC-035 Am.6 Erratum 3). Twin: %s." % (
               res["dropped_bridge_only"], res["gap_in_hold_n"], *(res["no_sim_price_counts"][w] for w in NO_SIM_WORDS), res["h3"].get("n_tp_in_sim_gap", 0), res["twin_book_id"] or "none"),
+          "- Missed (sim-only, priced at %g, paper model): %s." % (res["missed"]["rung_sol"], "; ".join("%s n %d, priced %d, sum %s SOL (press %s)" % (
+              k, v["n"], v["n_priced"], f2(v["sum_net_sim_sol"]), f2(v["sum_net_sim_press_sol"])) for k, v in res["missed"]["by_reason"].items()) or "none") if res.get("missed") else "- Missed (sim-only, priced at 0.25, paper model): n/a.",
           "- Live non-rule exits (coded live_nonrule_exit, set after the first run: post hoc; excluded from S2, kept in S1, S3, S4; cap %s): %d%s." % (
               res["h3"]["nonrule_cap"], res["h3"]["n_live_nonrule_exit"],
               "".join("; order %s live net %s SOL" % (r["order_id"], f2(r.get("net_live_sol"))) for r in res["rows"] if r.get("reason") == CODED_NONRULE)),
