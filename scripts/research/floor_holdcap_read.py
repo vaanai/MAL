@@ -6,7 +6,7 @@ Usage: floor_holdcap_read.py CONTROL_ROOT H12_ROOT H6_ROOT --board-best-of N [--
 Pricing: floor_nov_pnl (rule total, latency 1p9) in-process on <root>/book/ledger exactly as osb_board.price_snapshot calls it; trades via osb_board.book_trades (flat = flat_1p9 leg,
 press = press_1p9 leg). No cost is re-implemented here. Counted trades: entry in [COUNT_FROM, COUNT_TO), so every trade can reach its 24 h exit before the pricing end (END_MS).
 The counted window is applied to the priced positions BEFORE book_trades, so the opens, unpriced and excluded counts are those of counted-window entries only.
-Booking day: the EXIT (close) UTC day, as the board. Complete days: the fixed list COMPLETE_DAYS, exit days 2026-11-11..2026-11-16 (a day with no trades counts as 0 for test iii). The sample is small: about 7 days.
+Booking day: the EXIT (close) UTC day, as the board. Complete days: the fixed list COMPLETE_DAYS, exit days 2026-11-12..2026-11-16 (a day with no trades counts as 0 for test iii). The sample is small: about 6 days.
 Wallet sim: limits are read from tools/floor_lane_executor (LANE_MIN_FEE_RESERVE = R, LANE_MAX_OPEN = 16, LANE_BUDGET_MAX_LAMPORTS, FLOOR_LANE_DAILY_MAX_LAMPORTS = 0.80 SOL daily stop);
 max open is --max-open (default 16, the live value: DEC-035 Am.14 "max_open 16 binds"); the wallet floor (0.75 SOL, DEC-035) is a parameter; the start wallet is a required, cited parameter
 (DEC-035 Am.14: free wallet = 0.75 + slots x 0.40226 SOL, 3.96808 at the 8 slots of the no-top-up case).
@@ -31,13 +31,14 @@ def _ms(s):
     return int(datetime.strptime(s, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=timezone.utc).timestamp() * 1000)
 
 
-SEED_HOUR, START_HOUR = "2026-11-02T01", "2026-11-10T10"  # keep/ holds hours from 2026-11-02T01Z; seed_from_hour must be >= 201 h before start_hour
-COUNT_FROM = _ms("2026-11-10T10:00:00Z")
+SEED_HOUR, START_HOUR = "2026-11-03T03", "2026-11-11T12"  # osb-a own seed and start (seed + 201 h); keep/ is contiguous only from 2026-11-03T03Z
+COUNT_FROM = _ms("2026-11-11T12:00:00Z")
 COUNT_TO = _ms("2026-11-17T12:00:00Z")
 END_MS = _ms("2026-11-18T12:00:00Z")  # the pricing end; the E2 held-out window starts here and is never read
-MAX_HOURS = 194  # START_HOUR to END_MS
-COMPLETE_DAYS = ["2026-11-%02d" % d for d in range(11, 17)]  # exit days 11-11..11-16
-MIN_DAYS, MIN_TRADES = 5, 40  # NOT_DECIDABLE floor, per book at the 0.25 cell
+MAX_HOURS = 168  # START_HOUR to END_MS
+COMPLETE_DAYS = ["2026-11-%02d" % d for d in range(12, 17)]  # exit days 11-12..11-16 (5)
+MIN_TRADES = 40  # NOT_DECIDABLE floor, per book at the 0.25 cell: at least this many counted trades and a trade on ALL complete days
+MIN_DAYS = len(COMPLETE_DAYS)
 LEGS = ("flat", "press")
 LEG_NAME = {"flat": "flat_1p9", "press": "press_1p9"}
 STAKES = (0.1, 0.25, 0.5, 1.0)
@@ -45,7 +46,7 @@ DECIDING_STAKE = 0.25
 RATIO = 1.3
 VARIANT_LABELS = ("control24", "h12", "h6")
 HEADER = (
-    "header: in-sample screen of FLOOR hold caps; the sample is small (about 7 days); not a gate read; no sentence here says a book makes money.",
+    "header: in-sample screen of FLOOR hold caps; the sample is small (about 6 days); not a gate read; no sentence here says a book makes money.",
     "header: NOT BLIND: hours before 2026-11-16T01Z are inside Forward walk 2 and were already shown through open simulation book osb-a (book A) and the D0/C0 replays; "
     "entries from 2026-11-14T07:17Z to 2026-11-18T12:00Z are brake-study E1 (not blind). The E2 window (from 2026-11-18T12:00Z) is untouched.",
     "header: best of 3 variants on top of the board's best-of-N = %s; treat as shrunk.",
@@ -157,7 +158,7 @@ def cell_pass(var_sim, ctl_sim, var_st, ctl_st):
 
 
 def decidable(*sts):
-    """NOT_DECIDABLE floor: every book (0.25 cell) has at least MIN_TRADES counted trades and at least MIN_DAYS complete exit days with a trade"""
+    """NOT_DECIDABLE floor: every book (0.25 cell) has at least MIN_TRADES counted trades and a trade on ALL complete exit days (MIN_DAYS = 5)"""
     return all(s["n"] >= MIN_TRADES and sum(1 for d in COMPLETE_DAYS if d in s["per_day"]) >= MIN_DAYS for s in sts)
 
 

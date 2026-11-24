@@ -3,11 +3,11 @@
 # Makes three manifests (0444) from the osb-a manifest A.json that differ only in book_id, title, out_root, seed_from_hour, start_hour and rule_overrides.HOLD_S (absent / 43200 / 21600),
 # makes three 0700 out roots under /data2/mal/scratch/floor-open-sim (osb_follow.guard_paths), runs osb_follow.py for each book in turn FROM A CLEAN DETACHED WORKTREE AT THE PASS COMMIT
 # 457795f4 (SEALS-BRIEF line (k); refused otherwise), each under systemd-run --user --scope -p MemoryMax=8G, then floor_holdcap_read.py (from THIS checkout, the PR's commit) with --wallet-sim.
-# Window: seed_from_hour 2026-11-02T01, start_hour 2026-11-10T10, --max-hours 194 = end 2026-11-18T12:00Z; the E2 held-out window starts there and is never read.
+# Window: seed_from_hour 2026-11-03T03, start_hour 2026-11-11T12, --max-hours 168 = end 2026-11-18T12:00Z; the E2 held-out window starts there and is never read.
 # Env: BOARD_BEST_OF (required; the board's best-of-N at the run instant), START_WALLET_SOL (default 3.96808 = DEC-035 Am.14: 0.75 + 8 slots x 0.40226), SIM_REPO, HOLDCAP_BASE, HOLDCAP_SRC_MANIFEST.
 # HOLDCAP_CHECK_ONLY=1: only the hour-count check of the existing out roots (used by the test); no manifest, no follower, no reader.
 # stdout: manifest sha256, the processed-hour count and the last decision md5 per book, INCOMPLETE lines, and the reader's summary lines. Book output (ledger, tape, status) is never printed;
-# osb_follow's own output goes to a log file. A book with fewer than 194 hours prints INCOMPLETE and the reader is not run (an unequal book is not compared).
+# osb_follow's own output goes to a log file. A book with fewer than 168 hours prints INCOMPLETE and the reader is not run (an unequal book is not compared).
 set -eu
 REPO="${REPO:-$(cd "$(dirname "$0")/../.." && pwd)}"
 PY="${PY:-/data/mal/venv/bin/python}"
@@ -16,9 +16,9 @@ SRC="${HOLDCAP_SRC_MANIFEST:-/data2/mal/scratch/floor-open-sim/manifests/A.json}
 SIM_REPO="${SIM_REPO:-/data2/mal/wt/osb-457795f4}"
 SIM_SHA=457795f4d0cb252656fd48f795d3abd617d5c380
 START_WALLET_SOL="${START_WALLET_SOL:-3.96808}"
-MAX_HOURS=194
-SEED_HOUR="2026-11-02T01"
-START_HOUR="2026-11-10T10"
+MAX_HOURS=168
+SEED_HOUR="2026-11-03T03"
+START_HOUR="2026-11-11T12"
 IDS="holdcap-control24 holdcap-h12 holdcap-h6"
 
 check_hours() { # id -> prints the book line; sets INCOMPLETE=1 when fewer than MAX_HOURS hours were processed
