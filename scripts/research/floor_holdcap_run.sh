@@ -43,12 +43,16 @@ make_manifest holdcap-control24 none
 make_manifest holdcap-h12 43200
 make_manifest holdcap-h6 21600
 
+INCOMPLETE=0
 for id in holdcap-control24 holdcap-h12 holdcap-h6; do
   systemd-run --user --scope -q -p MemoryMax=8G nice -n 19 ionice -c3 \
     "$PY" "$REPO/scripts/research/osb_follow.py" "$BASE/manifests/$id.json" --once --max-hours "$MAX_HOURS" > "$BASE/logs/$id.log" 2>&1 \
     || { echo "osb_follow $id exit=$?"; exit 1; }
   out="$BASE/out-$id"
-  echo "book $id hours_processed=$(wc -l < "$out/md5-by-hour.jsonl") decisions_md5=$(cut -d' ' -f1 "$out/decisions.md5" | head -c 32)"
+  hrs=$(wc -l < "$out/md5-by-hour.jsonl")
+  echo "book $id hours_processed=$hrs of $MAX_HOURS decisions_md5=$(cut -d' ' -f1 "$out/decisions.md5" | head -c 32)"
+  if [ "$hrs" -lt "$MAX_HOURS" ]; then INCOMPLETE=1; echo "INCOMPLETE book $id hours_processed=$hrs < $MAX_HOURS"; fi
 done
+if [ "$INCOMPLETE" -ne 0 ]; then echo "INCOMPLETE: a book with fewer hours than the others is not compared; reader not run"; exit 1; fi
 
 "$PY" "$REPO/scripts/research/floor_holdcap_read.py" "$BASE/out-holdcap-control24" "$BASE/out-holdcap-h12" "$BASE/out-holdcap-h6" --wallet-sim

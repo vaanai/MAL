@@ -83,7 +83,8 @@ def test_budget_full_wipe_formula():
 
 def test_limits_read_from_executor():
     lim = H.limits()
-    assert lim["R"] == 3_860_000 and lim["max_open"] >= 1 and lim["budget"] == 5_000_000_000
+    assert lim["R"] == 3_860_000 and lim["max_open"] == 16 and lim["budget"] == 5_000_000_000
+    assert H.limits(4)["max_open"] == 4
 
 
 def _sim(v):

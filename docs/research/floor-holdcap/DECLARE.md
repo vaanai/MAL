@@ -34,9 +34,9 @@ Per book x stake x leg the reader prints n, total net, mean per trade, ex-top-3,
 
 The counted trade list at the 0.25 cell, in entry-time order, at stake 0.40 with FLOOR's live limits. Net per trade is scaled linearly from the 0.25 cell to 0.40: linear scale; impact not modelled. An entry is taken only if capital allows; capital returns at exit (an exit at or before an entry's instant frees its capital first).
 
-- Budget, full wipe: realized - sum over open (stake + R) - (new stake + R) > -budget. R = `LANE_MIN_FEE_RESERVE` (3,860,000 lamports), budget = `LANE_BUDGET_MAX_LAMPORTS` (5.00 SOL), both read from `tools/floor_lane_executor.py`.
-- Wallet floor 0.75 SOL: start_free + realized - sum open (stake + R) - (new stake + R) >= floor, start_free default 2.00 SOL (parameter).
-- Max open: `LANE_MAX_OPEN_DEFAULT` (8) from the executor.
+- Budget, full wipe: realized - sum over open (stake + R) - (new stake + R) > -budget. R = `LANE_MIN_FEE_RESERVE` (3,860,000 lamports), budget = `LANE_BUDGET_MAX_LAMPORTS` (5.00 SOL, DEC-035 Am.14), both read from `tools/floor_lane_executor.py`.
+- Wallet floor 0.75 SOL (DEC-035 live value, a parameter `--wallet-floor-sol`): start_free + realized - sum open (stake + R) - (new stake + R) >= floor, start_free default 2.00 SOL (parameter).
+- Max open: 16, the live value (DEC-035 Am.14 records "max_open 16 binds"); parameter `--max-open`, default `LANE_MAX_OPEN` (16) from the executor.
 
 Output per variant and leg: realized SOL/day (over the counted window, 14.375 days), entries taken, entries skipped for capital (with the reason split), net per SOL-day.
 
@@ -47,6 +47,8 @@ A shorter cap "wins clearly" only if, at the deciding cell (stake 0.25, strict 1
 1. Capital-constrained realized SOL/day (section 4) is at least 1.3x the control's. If the control's figure is at or below 0, this reads: the variant is above 0 and at least control + 0.3 x |control|.
 2. It stays above the control after dropping each variant's top 3 trades (ex-top-3 total, 0.25 cell; an absent value, fewer than 4 trades, fails).
 3. A majority of complete days (section 2) are at or above the control's per-day total.
+
+The rule for a control at or below 0 and the complete-day definition are confirmed by the coordinator.
 
 Otherwise the verdict is "no clear win". The reader prints this verdict per variant; there is no other adopt path. Even a "wins clearly" is an in-sample screen result only; any live step needs its own registration.
 
@@ -62,4 +64,4 @@ Otherwise the verdict is "no clear win". The reader prints this verdict per vari
 
 ## 7. Run
 
-`scripts/research/floor_holdcap_run.sh` as a MiScusi job on mal-research-0, by the manager. Stdout carries only manifest sha256, hour counts, decision md5s and the reader's summary lines.
+`scripts/research/floor_holdcap_run.sh` as a MiScusi job on mal-research-0, by the manager. If any book processes fewer than 369 hours the runner prints `INCOMPLETE` with the count and does not run the reader: a book with fewer hours than the others is not compared. Stdout carries only manifest sha256, hour counts, decision md5s and the reader's summary lines.

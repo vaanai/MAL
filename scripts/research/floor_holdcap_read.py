@@ -7,7 +7,7 @@ Pricing: floor_nov_pnl (rule total, latency 1p9) in-process on <root>/book/ledge
 press = press_1p9 leg). No cost is re-implemented here. Counted trades: entry in [COUNT_FROM, COUNT_TO), so every trade can reach its 24 h exit before the pricing end (END_MS).
 Booking day: the EXIT (close) UTC day, as the board. Complete days: exit days from COMPLETE_FIRST_DAY to COMPLETE_LAST_DAY inclusive (entries are counted from 11-03T03, so 11-03 is partial;
 11-17 entries stop at 12:00, so 11-17 is partial on the entry side).
-Wallet sim: limits are read from tools/floor_lane_executor (LANE_MIN_FEE_RESERVE = R, LANE_MAX_OPEN_DEFAULT, LANE_BUDGET_MAX_LAMPORTS); the wallet floor and start wallet are parameters.
+Wallet sim: limits are read from tools/floor_lane_executor (LANE_MIN_FEE_RESERVE = R, LANE_MAX_OPEN = 16, LANE_BUDGET_MAX_LAMPORTS); max open is --max-open (default 16, the live value: DEC-035 Am.14 "max_open 16 binds"); the wallet floor (0.75 SOL, DEC-035) and start wallet are parameters.
 Net per trade is scaled linearly from the 0.25 cell to the sim stake: linear scale; impact not modelled.
 """
 import argparse, contextlib, io, json, os, sys, tempfile
@@ -38,10 +38,10 @@ RATIO = 1.3
 VARIANT_LABELS = ("control24", "h12", "h6")
 
 
-def limits():
+def limits(max_open=None):
     """the lane limits, read from the executor module (never copied here)"""
     import tools.floor_lane_executor as E
-    return {"R": E.LANE_MIN_FEE_RESERVE, "max_open": E.LANE_MAX_OPEN_DEFAULT, "budget": E.LANE_BUDGET_MAX_LAMPORTS}
+    return {"R": E.LANE_MIN_FEE_RESERVE, "max_open": E.LANE_MAX_OPEN if max_open is None else max_open, "budget": E.LANE_BUDGET_MAX_LAMPORTS}
 
 
 def counted(trades, lo=COUNT_FROM, hi=COUNT_TO):
@@ -189,11 +189,12 @@ def main(argv=None):
     ap.add_argument("--wallet-sim", action="store_true")
     ap.add_argument("--send-lamports", type=int, default=160000)
     ap.add_argument("--start-free-sol", type=float, default=2.0)
-    ap.add_argument("--wallet-floor-sol", type=float, default=0.75)
+    ap.add_argument("--wallet-floor-sol", type=float, default=0.75, help="wallet floor in SOL (DEC-035 live value)")
+    ap.add_argument("--max-open", type=int, default=None, help="max open positions; default 16, the live value (DEC-035 Am.14: max_open 16 binds)")
     ap.add_argument("--sim-stake", type=float, default=0.40)
     a = ap.parse_args(argv)
     books = [(lab, price_book(r, a.send_lamports)) for lab, r in zip(VARIANT_LABELS, a.roots)]
-    for line in report(books, a, limits()):
+    for line in report(books, a, limits(a.max_open)):
         print(line)
     return 0
 
