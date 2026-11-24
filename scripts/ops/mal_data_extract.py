@@ -37,7 +37,7 @@ LAG_MS = 24 * 3600 * 1000
 E2_START_MS = calendar.timegm((2026, 11, 18, 12, 0, 0)) * 1000
 E2_END_MS = calendar.timegm((2026, 11, 26, 0, 0, 0)) * 1000
 DEFAULT_BOT = "floor-lane-1"
-TRADE_FIELDS = ("entry_time", "exit_time", "stake_sol", "realized_sol")  # the whitelist: the only keys a trade row may carry
+TRADE_FIELDS = ("entry_time", "exit_time", "stake_sol", "realized_sol", "failed")  # the whitelist: the only keys a trade row may carry
 TRADES_NAME = "floor-closed-trades.jsonl"
 TRADES_NOTE = "Real-fill lane trades; not a gate read; floor-lane-1 has not cleared the promotion gate."
 BOARD_NOTE = "in-sample; open simulation; not a gate read"
@@ -102,15 +102,17 @@ def closed_trades(rows: Sequence[Any], bot_id: str) -> list[dict[str, int]]:
             continue  # no intent in this ledger: no stake to report, never guessed
         p["cash"] += net
         closed = False
+        failed = False
         if ev == "fill":
             if r.get("ok") is True:
                 p["filled"] = 1
             else:
-                closed = True
+                closed = failed = True  # buy landed with an error
         elif ev in ("exit", "writeoff"):
             closed = True
+            failed = ev == "writeoff" and not p["filled"]  # intent never filled (not sent / expired): failed send
         if closed:
-            out.append({"entry_ms": p["entry_ms"], "exit_ms": ts, "stake": p["stake"], "realized": p["cash"]})
+            out.append({"entry_ms": p["entry_ms"], "exit_ms": ts, "stake": p["stake"], "realized": p["cash"], "failed": int(failed)})
             del pos[key]
     return out
 
@@ -125,7 +127,7 @@ def trade_rows(trades: Sequence[dict[str, int]], now_ms: int, release_e2: bool) 
             continue
         keep.append(t)
     keep.sort(key=lambda t: (t["exit_ms"], t["entry_ms"]))
-    rows = [{"entry_time": iso_ms(t["entry_ms"]), "exit_time": iso_ms(t["exit_ms"]), "stake_sol": sol(t["stake"]), "realized_sol": sol(t["realized"])} for t in keep]
+    rows = [{"entry_time": iso_ms(t["entry_ms"]), "exit_time": iso_ms(t["exit_ms"]), "stake_sol": sol(t["stake"]), "realized_sol": sol(t["realized"]), "failed": bool(t["failed"])} for t in keep]
     for r in rows:
         assert tuple(r) == TRADE_FIELDS
     return rows

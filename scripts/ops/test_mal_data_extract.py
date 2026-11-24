@@ -40,7 +40,7 @@ class TradeTests(unittest.TestCase):
     def test_whitelist_and_no_exit_reason(self):
         out = self.rows(trade_rows(ms(2026, 11, 27, 1), ms(2026, 11, 27, 2)))
         self.assertEqual(len(out), 1)
-        self.assertEqual(tuple(out[0]), ("entry_time", "exit_time", "stake_sol", "realized_sol"))
+        self.assertEqual(tuple(out[0]), ("entry_time", "exit_time", "stake_sol", "realized_sol", "failed"))
         blob = json.dumps(out)
         for bad in ("exit_reason", "tp", "SIGSECRET", "POOLSECRET", "ORDER1", "MINTX", "signature", "mint", "order_id", "pool"):
             self.assertNotIn(bad, blob if bad != "tp" else blob.replace("stake_sol", ""))
@@ -56,6 +56,14 @@ class TradeTests(unittest.TestCase):
         out = self.rows(led + other)
         self.assertEqual(len(out), 1)
         self.assertAlmostEqual(out[0]["realized_sol"], -0.25)
+        self.assertIs(out[0]["failed"], True)
+
+    def test_failed_flag(self):
+        ok = trade_rows(ms(2026, 11, 27, 1), ms(2026, 11, 27, 2), mint="OKT")
+        bad = trade_rows(ms(2026, 11, 27, 3), 0, mint="BADT", ok=False)
+        unsent = trade_rows(ms(2026, 11, 27, 5), 0, mint="UNS")[:1] + [{"bot_id": BOT, "mint": "UNS", "ev": "writeoff", "ts_ms": ms(2026, 11, 27, 6), "sol_in_lamports": 0, "sol_out_lamports": 5000}]
+        by = {r["entry_time"]: r["failed"] for r in self.rows(ok + bad + unsent)}
+        self.assertEqual(list(by.values()), [False, True, True])
 
     def test_24h_lag(self):
         exit_ = ms(2026, 11, 29, 10)
