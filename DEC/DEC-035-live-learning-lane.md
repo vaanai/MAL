@@ -2424,3 +2424,19 @@ The live host `end_ms` may be as early as 2026-12-16T00:00Z, so the host restart
 - No fill, P&L or edge is measured or claimed. A later end date is not evidence about FLOOR.
 
 No book has cleared the promotion gate. floor-lane-1 has not cleared the promotion gate. Nothing here says FLOOR makes money.
+
+## Records erratum 2026-11-24: external release of floor-lane-1 closed trades and the open-sim board (private repo vaanai/MAL-data)
+Written 2026-11-24 (`date -u` 17:4xZ) by manager24, at main 5fa082aabb41edbe3688b4409a22f0b073f5bae1. Records only; changes no threshold, window, look rule, criterion, clock, limit or live setting. **No book has cleared the promotion gate. Nothing here says FLOOR or any book makes money.**
+
+- **Ruling.** QP-RULING-1124-external-extract (`/data/mal/hunt-1008/ops/QP-RULING-1124-external-extract.md`, sha256 `cfe5d5681ff8b732fbb63b23dd04d7584cdcc223f2bab5f04f54b838a8e33f41`), items 1 and 2. Items 3 (price prints) and 4 (launch stream) are not released under this erratum; each needs its own pinned extractor, HOLDOUT_LEDGER line and T1 records. FLOOR's candidate list is never released (ruling item 4: No).
+- **Owner.** The owner, 2026-11-24, to manager24: "You have my okay. I'll get helm to do it, just give me the instructions". Helm created the PRIVATE repo `vaanai/MAL-data` (HELM-REPLY-1124-1). Recipient: the owner's Duet research workspace (read access via Helm).
+- **What is released, from instant X.** X is the first push of a release dir to `vaanai/MAL-data`. It is not before this erratum merges, and it is recorded in the daily records batch with the MAL-data commit and each file's sha256. Each release is the byte output of `scripts/ops/mal_data_extract.py` at main 5fa082aa (PR #1495; QP OK and REVIEWER APPROVE at 9f12cf9d; blob c49d0604, sha256 4c8c21c5):
+  - floor-lane-1 closed trades only, with the fields entry_time, exit_time, stake_sol, realized_sol and failed, at least 24 h after exit. Excluded in every form: exit_reason, the tp/sl/time-stop mix, pool, mint, signature, order_id, price, reserve and slot;
+  - the open-sim board.json and board.md, with at least a 24 h lag and each book's disclosure lines verbatim;
+  - per-UTC-day sends, landed, failed, exits and realized SOL, complete days only.
+- **Hold-back.** Entries in [2026-11-18T12:00:00Z, 2026-12-03T00:00:00Z) are withheld, as are book A's and its twins' board rows for E2 entries (QP-RULING-1118-floor-brake E2 and its extension). `--e2-first-read-decided` is passed only after a DECIDED first E2 read, and `--release-e2-window` only after the E2 reads are written.
+- **Seals.** SEALS-BRIEF line (v) MAL-DATA EXTRACT was added and line (m) amended for the external board copy (SEALS-BRIEF sha256 prefix 1a665717, 2026-11-24T17:36Z). Lab agents never open `vaanai/MAL-data` unless a brief names it.
+- **What it means for reads.** Every hour the recipient could see is in-sample for any rule it suggests (ruling section 3). Such a rule enters docs/library labelled "external workspace" and needs its own card or Am.9 record, with constants frozen and S in the future, before any forward hour counts.
+- **Owed (ruling item 1 (iv)).** The S' registration, when written, states "not blind: external per-trade release from X", and that no externally suggested change is acted on inside [S', R'); acting on one would be a FAIL end.
+
+Paper and records only. No book has cleared the promotion gate.
