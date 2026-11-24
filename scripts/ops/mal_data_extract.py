@@ -14,11 +14,11 @@ INPUTS (each named on the command line; the tool opens nothing else)
                   both files hourly into <snapshot-dir>/<any name>/board.json + board.md (byte copies). The newest snapshot whose board.json generated_utc is at least 24 h
                   before the run instant is released.
   --totals-file   text lines like lane_daily_report.summary(): `2026-11-24 floor-lane-1: sends 8 landed 8 failed 0 (cost X SOL), exits 7, realized X SOL after all fees, open 9 (basis Y SOL)`.
-                  Optional missed counts by cause on the same line: `missed lane_budget 3, lane_max_open 2` (or `missed: cause=n`). The format of missed counts is an ASSUMPTION; absent = {}.
+                  Only per-UTC-day sends, landed, failed (+cost), exits and realized SOL are kept, for complete UTC days; open count, basis and any missed counts are dropped.
 
   --disclosures   manager-written JSON {book_id: [verbatim Am.9 disclosure lines]}, pinned by --disclosures-sha256; the run refuses if a released book has no entry.
 
-E2 HOLD (ruling item 1; QP + reviewer on PR #1495): entries in [2026-11-18T12:00Z, 2026-12-03T00:00Z) are withheld by default (the extension end). `--e2-first-read-done`
+E2 HOLD (ruling item 1; QP + reviewer on PR #1495): entries in [2026-11-18T12:00Z, 2026-12-03T00:00Z) are withheld by default (the extension end). `--e2-first-read-decided`
 narrows the hold to [2026-11-26T00:00Z, 2026-12-03T00:00Z) once the first E2 read is written and decided; `--release-e2-window` releases everything after the final read.
 The board hold is by book, not by day: while ANY hold is on, book A and its twins (role starting "control", pair partners, --e2-book) are replaced by number-free rows, their pairs
 are dropped, and the control-derived fields of the variants (vs_control, control_forward, paired_difference, floor_holds) are nulled; board.md has the matching lines removed.
@@ -88,10 +88,10 @@ def sol(lamports: int) -> str:
     return "%s%d.%09d" % (sign, a // 10**9, a % 10**9)
 
 
-def hold_range(first_read_done: bool, release: bool) -> tuple[int, int] | None:
+def hold_range(first_read_decided: bool, release: bool) -> tuple[int, int] | None:
     if release:
         return None
-    return (E2_END_MS if first_read_done else E2_START_MS, E2_EXT_END_MS)
+    return (E2_END_MS if first_read_decided else E2_START_MS, E2_EXT_END_MS)
 
 
 # ------------------------------------------------------------------------------------------------------------------ item 1: closed trades
@@ -292,25 +292,22 @@ def filter_board(board: dict[str, Any], md: str, hold_on: bool, deny: Sequence[s
 
 # ------------------------------------------------------------------------------------------------------------------ daily totals
 TOTALS_RE = re.compile(r"^(\d{4}-\d\d-\d\d) (\S+): sends (\d+) landed (\d+) failed (\d+)(?: \(cost (-?[\d.]+) SOL\))?, exits (\d+), realized (-?[\d.]+) SOL after all fees, open (\d+) \(basis (-?[\d.]+) SOL\)(.*)$")
-MISSED_RE = re.compile(r"missed:?\s+(.*)$")
+DAY_MS = 86_400_000
 
 
-def parse_totals(text: str, bot_id: str) -> list[dict[str, Any]]:
+def parse_totals(text: str, bot_id: str, now_ms: int) -> list[dict[str, Any]]:
+    """Per-UTC-day trade counts and realized SOL only (QP r2 on PR #1495; DEC-035 section 5 already reports exactly this set). The open count, the open basis and any
+    missed-by-cause counts are parsed past and never written (open positions are never released; missed counts are live-host decision aggregates). A day that is not
+    complete at the run instant is left out."""
     out = []
     for ln in text.splitlines():
         m = TOTALS_RE.match(ln.strip())
         if not m or m.group(2) != bot_id:
             continue
-        missed: dict[str, int] = {}
-        mm = MISSED_RE.search(m.group(11))
-        if mm:
-            for part in re.split(r"[,;]\s*", mm.group(1).strip().rstrip(".")):
-                k = re.fullmatch(r"([A-Za-z0-9_:.-]+?)(?:=|\s+)(\d+)", part.strip())
-                if k:
-                    missed[k.group(1)] = int(k.group(2))
+        if parse_utc(m.group(1) + "T00:00:00Z") + DAY_MS > now_ms:
+            continue
         out.append({"day": m.group(1), "bot_id": m.group(2), "sends": int(m.group(3)), "landed": int(m.group(4)), "failed": int(m.group(5)),
-                    "failed_cost_sol": m.group(6), "exits": int(m.group(7)), "realized_sol": m.group(8), "open": int(m.group(9)), "open_basis_sol": m.group(10),
-                    "missed_by_cause": missed})
+                    "failed_cost_sol": m.group(6), "exits": int(m.group(7)), "realized_sol": m.group(8)})
     return sorted(out, key=lambda r: r["day"])
 
 
@@ -336,14 +333,14 @@ def load_disclosures(path: Path, sha: str) -> dict[str, Any]:
 
 
 def run(ledger: Path, snapshot_dir: Path, totals_file: Path, out_dir: Path, now_ms: int, release_e2: bool = False, bot_id: str = DEFAULT_BOT,
-        e2_extra: Sequence[str] = (), deny: Sequence[str] = (), commit: str | None = None, first_read_done: bool = False,
+        e2_extra: Sequence[str] = (), deny: Sequence[str] = (), commit: str | None = None, first_read_decided: bool = False,
         disclosures: dict[str, Any] | None = None) -> dict[str, Any]:
-    hold = hold_range(first_read_done, release_e2)
+    hold = hold_range(first_read_decided, release_e2)
     unmatched: list[tuple[int, int]] = []
     rows = trade_rows(closed_trades(read_ledger(ledger), bot_id, unmatched), now_ms, hold)
     snap, board = pick_snapshot(snapshot_dir, now_ms)
     board_out, md_out = filter_board(board, (snap / "board.md").read_text(), hold is not None, deny, e2_extra, disclosures)
-    totals = parse_totals(totals_file.read_text(), bot_id)
+    totals = parse_totals(totals_file.read_text(), bot_id, now_ms)
     unm: dict[str, int] = {}
     for ts, net in unmatched:
         if ts <= now_ms - LAG_MS:
@@ -376,7 +373,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     ap.add_argument("--disclosures", type=Path, required=True)
     ap.add_argument("--disclosures-sha256", required=True)
     ap.add_argument("--now-ms", type=int, default=None)
-    ap.add_argument("--e2-first-read-done", action="store_true", help="manager only: first E2 read written and decided; narrows the hold to [2026-11-26, 2026-12-03)")
+    ap.add_argument("--e2-first-read-decided", action="store_true", help="manager only: pass ONLY after a DECIDED (not NOT_DECIDABLE) first E2 read is written; narrows the hold to [2026-11-26, 2026-12-03). If the read was NOT_DECIDABLE do not pass it; wait for the extended read and use --release-e2-window")
     ap.add_argument("--release-e2-window", action="store_true", help="manager only: final E2 read written; releases the whole hold")
     ap.add_argument("--bot-id", default=DEFAULT_BOT)
     ap.add_argument("--e2-book", action="append", default=[], help="extra book id held for E2 (book A and its twins are found from the board)")
@@ -384,7 +381,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     a = ap.parse_args(argv)
     now_ms = a.now_ms if a.now_ms is not None else int(time.time() * 1000)
     try:
-        m = run(a.ledger, a.snapshot_dir, a.totals_file, a.out_dir, now_ms, a.release_e2_window, a.bot_id, a.e2_book, a.deny_book, None, a.e2_first_read_done,
+        m = run(a.ledger, a.snapshot_dir, a.totals_file, a.out_dir, now_ms, a.release_e2_window, a.bot_id, a.e2_book, a.deny_book, None, a.e2_first_read_decided,
                 load_disclosures(a.disclosures, a.disclosures_sha256))
     except (ExtractError, OSError, ValueError) as e:
         print("mal_data_extract: refused: %s" % e, file=sys.stderr)

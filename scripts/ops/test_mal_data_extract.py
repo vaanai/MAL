@@ -220,13 +220,17 @@ class BoardTests(unittest.TestCase):
 
 class TotalsAndRunTests(unittest.TestCase):
     LINE = "2026-11-24 floor-lane-1: sends 8 landed 8 failed 0 (cost 0.000000000 SOL), exits 7, realized 0.012345678 SOL after all fees, open 9 (basis 1.250000000 SOL) missed lane_budget 3, lane_max_open 2"
+    TODAY = "2026-11-30 floor-lane-1: sends 2 landed 2 failed 0 (cost 0.000000000 SOL), exits 1, realized 0.000100000 SOL after all fees, open 3 (basis 0.750000000 SOL)"
 
-    def test_totals_parse(self):
-        r = X.parse_totals(self.LINE + "\n  gap: landing delay\n2026-11-24 other: sends 1 landed 1 failed 0, exits 0, realized 0 SOL after all fees, open 0 (basis 0 SOL)\n", BOT)
-        self.assertEqual(len(r), 1)
-        self.assertEqual((r[0]["sends"], r[0]["landed"], r[0]["failed"], r[0]["exits"], r[0]["open"]), (8, 8, 0, 7, 9))
-        self.assertEqual((r[0]["realized_sol"], r[0]["open_basis_sol"]), ("0.012345678", "1.250000000"))
-        self.assertEqual(r[0]["missed_by_cause"], {"lane_budget": 3, "lane_max_open": 2})
+    def test_totals_parse_counts_and_realized_only_complete_days(self):
+        r = X.parse_totals(self.LINE + "\n  gap: landing delay\n2026-11-24 other: sends 1 landed 1 failed 0, exits 0, realized 0 SOL after all fees, open 0 (basis 0 SOL)\n" + self.TODAY + "\n", BOT, NOW)
+        self.assertEqual(len(r), 1)  # other bot and the current (incomplete) UTC day are out
+        self.assertEqual(r[0], {"day": "2026-11-24", "bot_id": BOT, "sends": 8, "landed": 8, "failed": 0, "failed_cost_sol": "0.000000000", "exits": 7, "realized_sol": "0.012345678"})
+        for gone in ("open", "open_basis_sol", "missed_by_cause"):
+            self.assertNotIn(gone, r[0])
+        end_of_day = ms(2026, 11, 30)
+        self.assertEqual(len(X.parse_totals(self.TODAY, BOT, end_of_day + 24 * H)), 1)  # a day whose end is at or before the run is complete
+        self.assertEqual(len(X.parse_totals(self.TODAY, BOT, end_of_day + 24 * H - 1)), 0)
 
     def test_run_notes_manifest_hashes_and_script_sha(self):
         with tempfile.TemporaryDirectory() as t:
@@ -254,9 +258,17 @@ class TotalsAndRunTests(unittest.TestCase):
             self.assertTrue(all(tuple(d) == X.TRADE_FIELDS for d in data))
             self.assertNotIn("exit_reason", (o / "floor-closed-trades.jsonl").read_text())
             dt = json.loads((o / "daily-totals.json").read_text())
+            self.assertNotIn("open", json.dumps(dt["days"]))
+            self.assertNotIn("missed", json.dumps(dt["days"]))
             self.assertEqual((dt["days"][0]["sends"], dt["note"], dt["unmatched_fee_sol_by_day"]), (8, X.TRADES_NOTE, {"2026-11-10": "-0.000009000"}))
             self.assertIn(X.TRADES_NOTE, (o / "NOTES.txt").read_text())
             self.assertNotIn("r4bt", (o / "board.md").read_text())
+
+    def test_flag_renamed_to_decided(self):
+        base = ["--ledger", "l", "--snapshot-dir", "s", "--totals-file", "t", "--out-dir", "o", "--disclosures", "d", "--disclosures-sha256", "0"]
+        with self.assertRaises(SystemExit):
+            X.main(base + ["--e2-first-read-done"])
+        self.assertEqual(X.main(base + ["--e2-first-read-decided"]), 2)  # parses; then refuses on the missing input files
 
     def test_disclosures_sha_pin(self):
         with tempfile.TemporaryDirectory() as t:
