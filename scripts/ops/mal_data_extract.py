@@ -16,6 +16,15 @@ INPUTS (each named on the command line; the tool opens nothing else)
   --totals-file   text lines like lane_daily_report.summary(): `2026-11-24 floor-lane-1: sends 8 landed 8 failed 0 (cost X SOL), exits 7, realized X SOL after all fees, open 9 (basis Y SOL)`.
                   Optional missed counts by cause on the same line: `missed lane_budget 3, lane_max_open 2` (or `missed: cause=n`). The format of missed counts is an ASSUMPTION; absent = {}.
 
+  --disclosures   manager-written JSON {book_id: [verbatim Am.9 disclosure lines]}, pinned by --disclosures-sha256; the run refuses if a released book has no entry.
+
+E2 HOLD (ruling item 1; QP + reviewer on PR #1495): entries in [2026-11-18T12:00Z, 2026-12-03T00:00Z) are withheld by default (the extension end). `--e2-first-read-done`
+narrows the hold to [2026-11-26T00:00Z, 2026-12-03T00:00Z) once the first E2 read is written and decided; `--release-e2-window` releases everything after the final read.
+The board hold is by book, not by day: while ANY hold is on, book A and its twins (role starting "control", pair partners, --e2-book) are replaced by number-free rows, their pairs
+are dropped, and the control-derived fields of the variants (vs_control, control_forward, paired_difference, floor_holds) are nulled; board.md has the matching lines removed.
+(Cumulative windows released daily could be differenced into per-day E2 rows, so no partial redaction is attempted.)
+The row_id dedupe in closed_trades is as in h5_lane_executor.lane_fold (lane_daily_report.bot_report does not dedupe; harmless).
+
 OUTPUTS in --out-dir: floor-closed-trades.jsonl, board.json, board.md, daily-totals.json, MANIFEST.json (sha256 of each other file, extractor git commit, run instant, ruling sha).
 """
 from __future__ import annotations
@@ -35,8 +44,11 @@ RULING_NAME = "QP-RULING-1124-external-extract.md"
 RULING_SHA256 = "cfe5d5681ff8b732fbb63b23dd04d7584cdcc223f2bab5f04f54b838a8e33f41"
 LAG_MS = 24 * 3600 * 1000
 E2_START_MS = calendar.timegm((2026, 11, 18, 12, 0, 0)) * 1000
-E2_END_MS = calendar.timegm((2026, 11, 26, 0, 0, 0)) * 1000
+E2_END_MS = calendar.timegm((2026, 11, 26, 0, 0, 0)) * 1000  # end of the first E2 read window
+E2_EXT_END_MS = calendar.timegm((2026, 12, 3, 0, 0, 0)) * 1000  # end of the extended window
 DEFAULT_BOT = "floor-lane-1"
+WITHHELD = "withheld: E2 hold-back"
+LIVE_WITHHELD = "withheld in external copy"
 TRADE_FIELDS = ("entry_time", "exit_time", "stake_sol", "realized_sol", "failed")  # the whitelist: the only keys a trade row may carry
 TRADES_NAME = "floor-closed-trades.jsonl"
 TRADES_NOTE = "Real-fill lane trades; not a gate read; floor-lane-1 has not cleared the promotion gate."
@@ -69,17 +81,27 @@ def _int(v: Any, key: str) -> int:
     return v
 
 
-def sol(lamports: int) -> float:
-    return lamports / 1e9
+def sol(lamports: int) -> str:
+    """Exact 9-decimal SOL string (integer arithmetic), as tools/lane_daily_report.sol."""
+    sign = "-" if lamports < 0 else ""
+    a = abs(int(lamports))
+    return "%s%d.%09d" % (sign, a // 10**9, a % 10**9)
+
+
+def hold_range(first_read_done: bool, release: bool) -> tuple[int, int] | None:
+    if release:
+        return None
+    return (E2_END_MS if first_read_done else E2_START_MS, E2_EXT_END_MS)
 
 
 # ------------------------------------------------------------------------------------------------------------------ item 1: closed trades
-def closed_trades(rows: Sequence[Any], bot_id: str) -> list[dict[str, int]]:
+def closed_trades(rows: Sequence[Any], bot_id: str, unmatched: list[tuple[int, int]] | None = None) -> list[dict[str, int]]:
     """Fold one bot's ledger rows to closed trades (lamports, ms). A trade closes on exit, writeoff or a failed buy fill (failed sends and failed landings are
     included at real cost, as in lane_daily_report). Open positions, rows with no send_intent and other bots' rows are never returned."""
     pos: dict[str, dict[str, int]] = {}
     out: list[dict[str, int]] = []
     seen: set[str] = set()
+    last_closed: dict[str, dict[str, int]] = {}
     for r in rows:
         if not isinstance(r, dict) or not isinstance(r.get("ev"), str):
             raise ExtractError("ledger row is not an object with an ev")
@@ -99,6 +121,11 @@ def closed_trades(rows: Sequence[Any], bot_id: str) -> list[dict[str, int]]:
             continue
         p = pos.get(key)
         if p is None:
+            if ev == "fee":  # a fee booked after the close (superseded / prior_unresolved sell): a real cost, never dropped
+                if key in last_closed:
+                    last_closed[key]["realized"] += net
+                elif unmatched is not None:
+                    unmatched.append((ts, net))
             continue  # no intent in this ledger: no stake to report, never guessed
         p["cash"] += net
         closed = False
@@ -112,34 +139,41 @@ def closed_trades(rows: Sequence[Any], bot_id: str) -> list[dict[str, int]]:
             closed = True
             failed = ev == "writeoff" and not p["filled"]  # intent never filled (not sent / expired): failed send
         if closed:
-            out.append({"entry_ms": p["entry_ms"], "exit_ms": ts, "stake": p["stake"], "realized": p["cash"], "failed": int(failed)})
+            t = {"entry_ms": p["entry_ms"], "exit_ms": ts, "stake": p["stake"], "realized": p["cash"], "failed": int(failed)}
+            out.append(t)
+            last_closed[key] = t
             del pos[key]
     return out
 
 
-def trade_rows(trades: Sequence[dict[str, int]], now_ms: int, release_e2: bool) -> list[dict[str, Any]]:
-    """Apply the 24 h exit lag and the E2 hold-back, then project to the whitelist."""
+def trade_rows(trades: Sequence[dict[str, int]], now_ms: int, hold: tuple[int, int] | None) -> list[dict[str, Any]]:
+    """Apply the 24 h exit lag and the E2 hold-back (by ENTRY time, [start, end)), then project to the whitelist."""
     keep = []
     for t in trades:
         if t["exit_ms"] > now_ms - LAG_MS:
             continue
-        if not release_e2 and E2_START_MS <= t["entry_ms"] < E2_END_MS:
+        if hold is not None and hold[0] <= t["entry_ms"] < hold[1]:
             continue
         keep.append(t)
     keep.sort(key=lambda t: (t["exit_ms"], t["entry_ms"]))
     rows = [{"entry_time": iso_ms(t["entry_ms"]), "exit_time": iso_ms(t["exit_ms"]), "stake_sol": sol(t["stake"]), "realized_sol": sol(t["realized"]), "failed": bool(t["failed"])} for t in keep]
     for r in rows:
-        assert tuple(r) == TRADE_FIELDS
+        if tuple(r) != TRADE_FIELDS:
+            raise ExtractError("trade row keys outside the whitelist")
     return rows
 
 
 def read_ledger(path: Path) -> list[Any]:
+    text = path.read_text()
+    lines = text.split("\n")
     out = []
-    for x in path.read_text().splitlines():
+    for i, x in enumerate(lines):
         if x.strip():
             try:
                 out.append(json.loads(x))
             except ValueError as exc:
+                if i == len(lines) - 1:
+                    continue  # unterminated final line: a writer mid-append; its row is younger than 24 h and cannot close a releasable trade
                 raise ExtractError("unreadable ledger line: %s" % exc) from None
     return out
 
@@ -169,8 +203,9 @@ def pick_snapshot(snapshot_dir: Path, now_ms: int) -> tuple[Path, dict[str, Any]
 
 
 def e2_books(board: dict[str, Any], extra: Sequence[str]) -> set[str]:
-    """Book A (the control) and its twins: role control, the strict/twin ids of any pair that names one, and --e2-book ids."""
-    held = {str(b.get("id")) for b in board.get("books", []) if b.get("role") == "control"} | set(extra)
+    """Book A (the control) and its twins: role starting "control" (osb_board renames twins "control (incl. gap-in-hold twin)" / "control (latency twin ..)"),
+    the strict/twin ids of any pair that names one, and --e2-book ids."""
+    held = {str(b.get("id")) for b in board.get("books", []) if str(b.get("role", "")).startswith("control")} | set(extra)
     for p in board.get("pairs", []) or []:
         ids = {str(p.get(k)) for k in ("twin", "strict") if p.get(k)}
         if ids & held:
@@ -178,57 +213,81 @@ def e2_books(board: dict[str, Any], extra: Sequence[str]) -> set[str]:
     return held
 
 
-def _e2_day(day: str) -> bool:
-    # whole UTC days that overlap the E2 entry window (conservative: 2026-11-18 .. 2026-11-25)
-    return "2026-11-18" <= str(day)[:10] <= "2026-11-25"
+def _id_re(ids: Sequence[str]) -> "re.Pattern[str] | None":
+    if not ids:
+        return None
+    return re.compile(r"(?<![A-Za-z0-9_.-])(?:" + "|".join(re.escape(i) for i in sorted(ids)) + r")(?![A-Za-z0-9_.])")
 
 
-def filter_board(board: dict[str, Any], md: str, release_e2: bool, deny: Sequence[str], e2_extra: Sequence[str]) -> tuple[dict[str, Any], str]:
-    """Remove sealed-book rows (json books/pairs and every md line naming them); unless release_e2, withhold held-book trade, per-day and open rows touching E2."""
+def check_disclosures(books: Sequence[dict[str, Any]], disclosures: dict[str, Any]) -> None:
+    for b in books:
+        v = disclosures.get(str(b.get("id")))
+        if not (isinstance(v, list) and v and all(isinstance(x, str) and x for x in v)):
+            raise ExtractError("no Am.9 disclosure lines for released book %s" % b.get("id"))
+
+
+def filter_board(board: dict[str, Any], md: str, hold_on: bool, deny: Sequence[str], e2_extra: Sequence[str], disclosures: dict[str, Any] | None = None) -> tuple[dict[str, Any], str]:
+    """Sealed-book removal always. While a hold is on: book A and its twins become number-free rows, their pairs go, the variants' control-derived fields are nulled,
+    and board.md loses every line naming a held book (except a placeholder table row) and every figure derived from the control. "live" is never passed through."""
     sealed = {str(b.get("id")) for b in board.get("books", []) if is_sealed_book(b.get("id", ""), deny)}
-    held = set() if release_e2 else e2_books(board, e2_extra)
-    drop_tids: set[str] = set()
+    held = e2_books(board, e2_extra) - sealed if hold_on else set()
     out = json.loads(json.dumps(board))
     out["books"] = [b for b in out.get("books", []) if str(b.get("id")) not in sealed]
+    pairs = [p for p in out.get("pairs", []) or [] if not ({str(p.get(k)) for k in ("twin", "strict")} & sealed)]
     if "pairs" in out:
-        out["pairs"] = [p for p in out["pairs"] if not ({str(p.get(k)) for k in ("twin", "strict")} & sealed)]
+        out["pairs"] = [p for p in pairs if not ({str(p.get(k)) for k in ("twin", "strict")} & held)]
+    out["live"] = LIVE_WITHHELD
     for b in out["books"]:
-        if str(b.get("id")) not in held:
-            continue
-        for r in b.get("rows", []):
-            keep = []
-            for t in r.get("trades", []):
-                if E2_START_MS <= parse_utc(t["entry_utc"]) < E2_END_MS:
-                    drop_tids.add(str(t.get("tid")))
-                else:
-                    keep.append(t)
-            r["trades"] = keep
-            r["per_day"] = [x for x in r.get("per_day", []) if not _e2_day(x.get("day", ""))]
-            for o in r.get("open", []):
-                if E2_START_MS <= parse_utc(o["entry_utc"]) < E2_END_MS:
-                    drop_tids.add(str(o.get("tid")))
-            r["open"] = [o for o in r.get("open", []) if str(o.get("tid")) not in drop_tids]
+        if str(b.get("id")) in held:
+            b["rows"] = []
+            b["state"] = WITHHELD
+            b.pop("sim_off", None)
+        elif held:
+            for r in b.get("rows", []):
+                r["vs_control"] = None
+                d = r.get("disclosure")
+                if isinstance(d, dict):
+                    for k in ("control_forward", "paired_difference", "floor_holds"):
+                        if k in d:
+                            d[k] = None
+    if disclosures is not None:
+        check_disclosures(out["books"], disclosures)
+        out["label"] = BOARD_NOTE
+        out["am9_disclosures"] = {str(b["id"]): disclosures[str(b["id"])] for b in out["books"]}
+    seal_re, held_re = _id_re(sorted(sealed)), _id_re(sorted(held))
     lines: list[str] = []
-    section_book = None
     skipping = False
     for ln in md.split("\n"):
-        m = re.match(r"## (\S+?), stake", ln)
         if ln.startswith("## "):
-            section_book = m.group(1).rstrip(",") if m else None
-            skipping = section_book in sealed  # a sealed book's whole section, tables and bullets included
+            m = re.match(r"## (\S+?), stake", ln)
+            sec_book = m.group(1).rstrip(",") if m else None
+            skipping = bool((sec_book in sealed or sec_book in held) or (seal_re and seal_re.search(ln)) or (held_re and held_re.search(ln)))
         if skipping:
             continue
-        if any(re.search(r"(?<![A-Za-z0-9_.-])" + re.escape(s) + r"(?![A-Za-z0-9_.])", ln) for s in sealed) and not ln.startswith("# "):
+        if ln.startswith("- Live:"):
+            ln = "- Live: %s." % LIVE_WITHHELD
+        if seal_re and seal_re.search(ln) and not ln.startswith("# "):
             continue
-        cell0 = re.match(r"\| (\S+) \|", ln)
-        if cell0 and cell0.group(1) in drop_tids:
+        cells = [c.strip() for c in ln.strip().strip("|").split("|")] if ln.startswith("| ") else []
+        if held and cells and len(cells) == 12 and cells[0] not in ("book", "---"):
+            if cells[0] in held:
+                ln = "| %s | %s | %s |" % (cells[0], cells[1], WITHHELD)
+            else:
+                ln = "| " + " | ".join(cells[:10] + [WITHHELD, cells[11]]) + " |"  # the QP-floor cell derives from the control
+        elif held_re and held_re.search(ln):
             continue
-        if cell0 and section_book in held and re.fullmatch(r"\d{4}-\d\d-\d\d", cell0.group(1)) and _e2_day(cell0.group(1)):
-            continue
-        if any(ln.startswith("- %s entered" % t) for t in drop_tids):
-            continue
+        if held and ln.startswith("- control, same stake:"):
+            ln = "- control, same stake: %s." % WITHHELD
+        if held and ln.startswith("## ") and "forward disclosure (QP floor:" in ln:
+            ln = re.sub(r"\(QP floor: .*\)\s*$", "(QP floor: %s)" % WITHHELD, ln)
         lines.append(ln)
-    return out, "\n".join(lines)
+    text = "\n".join(lines)
+    if disclosures is not None:
+        head = ["# Open sim board (external copy)", "", "> " + BOARD_NOTE, ""]
+        for b in out["books"]:
+            head += ["- Am.9 disclosure, %s: %s" % (b["id"], x) for x in disclosures[str(b["id"])]]
+        text = "\n".join(head) + "\n\n" + text
+    return out, text
 
 
 # ------------------------------------------------------------------------------------------------------------------ daily totals
@@ -267,23 +326,43 @@ def git_commit() -> str:
         return "unknown"
 
 
+def load_disclosures(path: Path, sha: str) -> dict[str, Any]:
+    if sha256_file(path) != sha.lower():
+        raise ExtractError("disclosures file sha256 does not match --disclosures-sha256")
+    d = json.loads(path.read_text())
+    if not isinstance(d, dict):
+        raise ExtractError("disclosures file must be an object {book_id: [lines]}")
+    return d
+
+
 def run(ledger: Path, snapshot_dir: Path, totals_file: Path, out_dir: Path, now_ms: int, release_e2: bool = False, bot_id: str = DEFAULT_BOT,
-        e2_extra: Sequence[str] = (), deny: Sequence[str] = (), commit: str | None = None) -> dict[str, Any]:
-    rows = trade_rows(closed_trades(read_ledger(ledger), bot_id), now_ms, release_e2)
+        e2_extra: Sequence[str] = (), deny: Sequence[str] = (), commit: str | None = None, first_read_done: bool = False,
+        disclosures: dict[str, Any] | None = None) -> dict[str, Any]:
+    hold = hold_range(first_read_done, release_e2)
+    unmatched: list[tuple[int, int]] = []
+    rows = trade_rows(closed_trades(read_ledger(ledger), bot_id, unmatched), now_ms, hold)
     snap, board = pick_snapshot(snapshot_dir, now_ms)
-    board_out, md_out = filter_board(board, (snap / "board.md").read_text(), release_e2, deny, e2_extra)
+    board_out, md_out = filter_board(board, (snap / "board.md").read_text(), hold is not None, deny, e2_extra, disclosures)
     totals = parse_totals(totals_file.read_text(), bot_id)
+    unm: dict[str, int] = {}
+    for ts, net in unmatched:
+        if ts <= now_ms - LAG_MS:
+            day = iso_ms(ts)[:10]
+            unm[day] = unm.get(day, 0) + net
     out_dir.mkdir(parents=True, exist_ok=True)
-    (out_dir / TRADES_NAME).write_text("".join(json.dumps(r, sort_keys=False) + "\n" for r in rows))
+    (out_dir / TRADES_NAME).write_text(json.dumps({"note": TRADES_NOTE}) + "\n" + "".join(json.dumps(r, sort_keys=False) + "\n" for r in rows))
     (out_dir / "board.json").write_text(json.dumps(board_out, indent=1) + "\n")
     (out_dir / "board.md").write_text(md_out)
-    (out_dir / "daily-totals.json").write_text(json.dumps({"note": TRADES_NOTE, "bot_id": bot_id, "days": totals}, indent=1) + "\n")
-    (out_dir / "NOTES.txt").write_text("floor-closed-trades.jsonl, daily-totals.json: %s\nboard.json, board.md: %s\nE2 window (entries in [2026-11-18T12:00:00Z, 2026-11-26T00:00:00Z)) %s.\n"
-                                       % (TRADES_NOTE, BOARD_NOTE, "RELEASED" if release_e2 else "withheld"))
+    (out_dir / "daily-totals.json").write_text(json.dumps({"note": TRADES_NOTE, "bot_id": bot_id, "days": totals,
+                                                            "unmatched_fee_sol_by_day": {d: sol(v) for d, v in sorted(unm.items())}}, indent=1) + "\n")
+    hold_txt = "released" if hold is None else "withheld: entries in [%s, %s)" % (iso_ms(hold[0]), iso_ms(hold[1]))
+    (out_dir / "NOTES.txt").write_text("%s\nfloor-closed-trades.jsonl line 1 is a note object; every other line has exactly the keys %s.\nboard.json, board.md: %s\nE2 hold: %s.\n"
+                                       "Fees booked after a close are added to that trade's realized_sol; with no earlier trade they are in daily-totals.json unmatched_fee_sol_by_day.\n"
+                                       % (TRADES_NOTE, ", ".join(TRADE_FIELDS), BOARD_NOTE, hold_txt))
     names = [TRADES_NAME, "board.json", "board.md", "daily-totals.json", "NOTES.txt"]
-    manifest = {"files": {n: sha256_file(out_dir / n) for n in names}, "extractor_commit": commit or git_commit(), "run_utc": iso_ms(now_ms),
-                "ruling": RULING_NAME, "ruling_sha256": RULING_SHA256, "board_snapshot_generated_utc": board["generated_utc"], "e2_window_released": release_e2,
-                "n_trades": len(rows)}
+    manifest = {"files": {n: sha256_file(out_dir / n) for n in names}, "extractor_commit": commit or git_commit(), "extractor_sha256": sha256_file(Path(__file__).resolve()),
+                "run_utc": iso_ms(now_ms), "ruling": RULING_NAME, "ruling_sha256": RULING_SHA256, "board_snapshot_generated_utc": board["generated_utc"],
+                "e2_hold": None if hold is None else [iso_ms(hold[0]), iso_ms(hold[1])], "n_trades": len(rows)}
     (out_dir / "MANIFEST.json").write_text(json.dumps(manifest, indent=1) + "\n")
     return manifest
 
@@ -294,16 +373,20 @@ def main(argv: Sequence[str] | None = None) -> int:
     ap.add_argument("--snapshot-dir", type=Path, required=True)
     ap.add_argument("--totals-file", type=Path, required=True)
     ap.add_argument("--out-dir", type=Path, required=True)
+    ap.add_argument("--disclosures", type=Path, required=True)
+    ap.add_argument("--disclosures-sha256", required=True)
     ap.add_argument("--now-ms", type=int, default=None)
-    ap.add_argument("--release-e2-window", action="store_true", help="manager only, after the brake E2 read is written on main")
+    ap.add_argument("--e2-first-read-done", action="store_true", help="manager only: first E2 read written and decided; narrows the hold to [2026-11-26, 2026-12-03)")
+    ap.add_argument("--release-e2-window", action="store_true", help="manager only: final E2 read written; releases the whole hold")
     ap.add_argument("--bot-id", default=DEFAULT_BOT)
-    ap.add_argument("--e2-book", action="append", default=[], help="extra book id held for E2 (book A and its pair twins are found from the board)")
+    ap.add_argument("--e2-book", action="append", default=[], help="extra book id held for E2 (book A and its twins are found from the board)")
     ap.add_argument("--deny-book", action="append", default=[], help="extra book id to remove")
     a = ap.parse_args(argv)
     now_ms = a.now_ms if a.now_ms is not None else int(time.time() * 1000)
     try:
-        m = run(a.ledger, a.snapshot_dir, a.totals_file, a.out_dir, now_ms, a.release_e2_window, a.bot_id, a.e2_book, a.deny_book)
-    except (ExtractError, OSError) as e:
+        m = run(a.ledger, a.snapshot_dir, a.totals_file, a.out_dir, now_ms, a.release_e2_window, a.bot_id, a.e2_book, a.deny_book, None, a.e2_first_read_done,
+                load_disclosures(a.disclosures, a.disclosures_sha256))
+    except (ExtractError, OSError, ValueError) as e:
         print("mal_data_extract: refused: %s" % e, file=sys.stderr)
         return 2
     print("mal_data_extract: %d trades, board %s, files %s" % (m["n_trades"], m["board_snapshot_generated_utc"], ", ".join("%s=%s" % (k, v[:12]) for k, v in m["files"].items())))
