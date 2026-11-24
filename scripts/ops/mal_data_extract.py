@@ -208,10 +208,14 @@ def filter_board(board: dict[str, Any], md: str, release_e2: bool, deny: Sequenc
             r["open"] = [o for o in r.get("open", []) if str(o.get("tid")) not in drop_tids]
     lines: list[str] = []
     section_book = None
+    skipping = False
     for ln in md.split("\n"):
         m = re.match(r"## (\S+?), stake", ln)
-        if m:
-            section_book = m.group(1).rstrip(",")
+        if ln.startswith("## "):
+            section_book = m.group(1).rstrip(",") if m else None
+            skipping = section_book in sealed  # a sealed book's whole section, tables and bullets included
+        if skipping:
+            continue
         if any(re.search(r"(?<![A-Za-z0-9_.-])" + re.escape(s) + r"(?![A-Za-z0-9_.])", ln) for s in sealed) and not ln.startswith("# "):
             continue
         cell0 = re.match(r"\| (\S+) \|", ln)
