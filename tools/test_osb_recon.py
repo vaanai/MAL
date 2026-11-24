@@ -217,7 +217,7 @@ def test_output_allow_list_and_stdout(tmp_path, capsys):
         assert s not in text
     res = load(out)
     allowed = {"order_id", "tid", "class", "reason", "entry_utc", "stake_sol", "no_rung", "entry_slip_pp", "landing_ms", "landing_k", "exit_reason_host", "exit_reason_live", "exit_reason_sim", "exit_dt_ms", "exit_coded",
-               "net_live_sol", "net_sim_sol", "net_live_pp", "net_sim_pp", "fees_live_pp", "fees_model_pp", "rent_unreclaimed", "gap_in_hold", "blind_s", "no_sim_price"}
+               "net_live_sol", "net_sim_sol", "net_live_pp", "net_sim_pp", "net_sim_press_sol", "fees_live_pp", "fees_model_pp", "rent_unreclaimed", "gap_in_hold", "blind_s", "no_sim_price"}
     assert all(set(r) <= allowed for r in res["rows"])
     assert res["executor_unlisted"] == 1 and not any(r["reason"].startswith("executor:") for r in res["rows"])  # an unlisted word is never an explained reason
     assert "|" in (out / "recon.md").read_text()
@@ -957,3 +957,77 @@ def test_h2_c_feed_gap_row_without_blocked_until_covers_only_24h(tmp_path):
     assert reasons == ["unexplained"]
     reasons, _ = _h2_reason(_sub(tmp_path, "explicit"), [blocked, dict(old(R.FEED_GAP_LOCK_MS + 5 * H), blocked_until_ms=t + 1)])
     assert reasons == ["feed_gap_mismatch"]  # an explicit blocked_until_ms is used as is
+
+
+# ---- missed (sim-only) rows valued at the 0.25 rung -------------------------------------------------------------------------------------------------------------------
+NEW_ROW_KEYS = ("net_sim_sol", "net_sim_pp", "net_sim_press_sol")
+
+
+def missed_world(tmp):
+    """one matched trade; sim-only: s_lane (executor:lane_full, closed, 8 000 000), s_lock (restart_lockout, closed, -2 000 000), s_open (restart_lockout, book-A trade still open)"""
+    rows, dec = [], []
+    for pid, i, net in (("m1", 0, 5_000_000), ("s_lane", 4, 8_000_000), ("s_lock", 1, -2_000_000), ("s_open", 2, None)):
+        t0 = entry_ms(i)
+        rows += TB.tp(pid, t0, net) if net is not None else [TB.op(pid, t0)]
+        dec.append({"kind": "entry", "ms": t0, "order_id": pid, "pool": "P_" + pid, "meta": {"mint": "M_" + pid, "signal_slot": 1000 + i, "signal_t_recv_ms": t0 - 800}})
+        if net is not None:
+            dec.append({"kind": "exit", "ms": t0 + 2 * H, "order_id": pid, "pool": "P_" + pid, "reason": "tp_1.5x"})
+    mp, out = TB.make_book(tmp, "A", rows)
+    d = out / "runs" / "0001" / "decisions" / "l1-floor-v2"
+    d.mkdir(parents=True)
+    (d / "2026-11-14.jsonl").write_text("".join(json.dumps(r) + "\n" for r in dec))
+    t = lambda i: entry_ms(i) - 800
+    live = [live_order("m1", 0), live_order("s_lane", 4, sent=False, refused_why="lane_full", led_ok_buy=False, led_close_ev=None),
+            {"kind": "gap_refusal", "t_ms": entry_ms(1), "pool": "P_s_lock", "trig_slot": 1001, "trig_ms": t(1), "reason": "pool_blocked_after_restart"},
+            {"kind": "gap_refusal", "t_ms": entry_ms(2), "pool": "P_s_open", "trig_slot": 1002, "trig_ms": t(2), "reason": "pool_blocked_after_restart"}]
+    return mp, live
+
+
+def run_missed(tmp):
+    mp, live = missed_world(tmp)
+    ex = write_extract(tmp / "extract", live)
+    out = tmp / "recon"
+    rc = R.main(["--extract-dir", str(ex), "--manifest", str(mp), "--out-dir", str(out), "--now-ms", str(TB.END + 60_000)], roots=(str(tmp),), out_roots=(str(out),))
+    assert rc == 0
+    return out
+
+
+def test_missed_sim_only_rows_are_valued_at_025_and_an_open_one_stays_none(tmp_path):
+    out = run_missed(tmp_path)
+    res = load(out)
+    sim_only = [r for r in res["rows"] if r["class"] == "sim_only"]
+    lane = next(r for r in sim_only if r["reason"] == "executor:lane_full")
+    lock = next(r for r in sim_only if r["reason"] == "restart_lockout" and r["net_sim_sol"] is not None)
+    opn = next(r for r in sim_only if r["reason"] == "restart_lockout" and r["net_sim_sol"] is None)
+    assert lane["net_sim_sol"] == 8_000_000 / 1e9 and lane["net_sim_pp"] == 8_000_000 / (0.25 * 1e9) * 100.0
+    assert lane["net_sim_press_sol"] == int(8_000_000 * 0.9) / 1e9  # the board's pressure leg at the 0.25 rung
+    assert lock["net_sim_sol"] == -2_000_000 / 1e9
+    assert opn["net_sim_pp"] is None and opn["net_sim_press_sol"] is None
+    m = res["missed"]
+    assert m["rung_sol"] == 0.25
+    assert m["by_reason"]["executor:lane_full"] == {"n": 1, "n_priced": 1, "sum_net_sim_sol": 8_000_000 / 1e9, "sum_net_sim_press_sol": int(8_000_000 * 0.9) / 1e9}
+    assert m["by_reason"]["restart_lockout"]["n"] == 2 and m["by_reason"]["restart_lockout"]["n_priced"] == 1
+    assert m["by_reason"]["restart_lockout"]["sum_net_sim_sol"] == -2_000_000 / 1e9
+    assert set(m["by_reason"]) == {"executor:lane_full", "restart_lockout"}
+    md = (out / "recon.md").read_text()
+    assert "Missed (sim-only, valued at 0.25, paper model): " in md and "executor:lane_full n 1, valued 1" in md
+
+
+def test_missed_pricing_changes_no_existing_field(tmp_path, monkeypatch):
+    new = load(run_missed(_sub(tmp_path, "new")))
+    # baseline: the same run with the new step switched off (no new row keys; an empty summary so the md renders)
+    monkeypatch.setattr(R, "price_missed", lambda rows, sim: {"rung_sol": 0.25, "by_reason": {}})
+    old = load(run_missed(_sub(tmp_path, "old")))
+    assert not any(k in r for r in old["rows"] if r["class"] == "sim_only" for k in NEW_ROW_KEYS)
+
+    def strip(res):
+        res = json.loads(json.dumps(res))
+        res.pop("missed")
+        res.pop("generated_utc", None)
+        for r in res["rows"]:
+            if r["class"] == "sim_only":
+                for k in NEW_ROW_KEYS:
+                    r.pop(k, None)
+        return json.dumps(res, sort_keys=True).encode()
+
+    assert strip(new) == strip(old)

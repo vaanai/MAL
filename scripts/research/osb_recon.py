@@ -835,8 +835,8 @@ def recon_md(res):
           "- Counts: matched %d, live-only %d, sim-only %d. By reason: %s." % (res["counts"]["matched"], res["counts"]["live_only"], res["counts"]["sim_only"], json.dumps(res["counts_by_reason"], sort_keys=True))
           + " Bridge-only orders dropped from the extract (not ours): %d. Gap-in-hold trades in the twin set: %d. No sim figure (no_sim, outside S1/S2): gap at entry %d, gap at exit %d, missing V %d, other %d. Take-profits in a sim-side hole (tp_in_sim_gap): %d. Strict can overstate: in Nov 2-12 the trades it left out for a feed gap were net negative (DEC-035 Am.6 Erratum 3). Twin: %s." % (
               res["dropped_bridge_only"], res["gap_in_hold_n"], *(res["no_sim_price_counts"][w] for w in NO_SIM_WORDS), res["h3"].get("n_tp_in_sim_gap", 0), res["twin_book_id"] or "none"),
-          "- Missed (sim-only, priced at %g, paper model): %s." % (res["missed"]["rung_sol"], "; ".join("%s n %d, priced %d, sum %s SOL (press %s)" % (
-              k, v["n"], v["n_priced"], f2(v["sum_net_sim_sol"]), f2(v["sum_net_sim_press_sol"])) for k, v in res["missed"]["by_reason"].items()) or "none") if res.get("missed") else "- Missed (sim-only, priced at 0.25, paper model): n/a.",
+          "- Missed (sim-only, valued at %g, paper model): %s." % (res["missed"]["rung_sol"], "; ".join("%s n %d, valued %d, sum %s SOL (press %s)" % (
+              k, v["n"], v["n_priced"], f2(v["sum_net_sim_sol"]), f2(v["sum_net_sim_press_sol"])) for k, v in res["missed"]["by_reason"].items()) or "none") if res.get("missed") else "- Missed (sim-only, valued at 0.25, paper model): n/a.",
           "- Live non-rule exits (coded live_nonrule_exit, set after the first run: post hoc; excluded from S2, kept in S1, S3, S4; cap %s): %d%s." % (
               res["h3"]["nonrule_cap"], res["h3"]["n_live_nonrule_exit"],
               "".join("; order %s live net %s SOL" % (r["order_id"], f2(r.get("net_live_sol"))) for r in res["rows"] if r.get("reason") == CODED_NONRULE)),
