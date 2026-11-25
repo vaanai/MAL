@@ -155,7 +155,7 @@ def test_output_and_checkpoint_md5_equal_to_base(tmp_path, workers, seed):
     assert any(k.startswith("tip/migrations-") for k in dn) and any(k.startswith("tip/skipped") for k in dn)
     assert fn.blocks == fo.blocks and fn.gaps == fo.gaps and fn.skipped == fo.skipped
     so, sn = fo.status(), fn.status()
-    assert set(sn) - set(so) == {"lookup_pool_ms", "lookup_pool_calls", "lookup_v_ms", "lookup_v_calls"}
+    assert set(sn) - set(so) == {"lookup_pool_ms", "lookup_pool_calls", "lookup_v_ms", "lookup_v_calls", "lookup_overlap_blocks", "prefetch_lookups", "prefetch_hits", "prefetch_discards", "prefetch_failures", "prefetch_v_values", "v_read_lead_ms_p50", "v_read_lead_ms_p90", "v_read_lead_ms_max"}
     assert fn.lookup_v_calls >= 1
 
 
