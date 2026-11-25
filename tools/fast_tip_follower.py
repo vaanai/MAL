@@ -45,6 +45,7 @@ from __future__ import annotations
 import argparse
 import base64
 import binascii
+import gzip
 import hashlib
 import http.client
 import json
@@ -54,7 +55,9 @@ import signal
 import sys
 import threading
 import time
+import urllib.parse
 from collections import OrderedDict, deque
+from functools import lru_cache
 from concurrent.futures import Future, ThreadPoolExecutor, TimeoutError as FutureTimeout
 from datetime import datetime, timezone
 from pathlib import Path
@@ -66,13 +69,16 @@ import tools.pump_history_backfill as _backfill_mod
 from observe.trade_decode import EVENT_V_KEYS, decode_pool_account, records_from_logs
 from tools.pump_history_backfill import (
     CreditBudget,
+    CreditBudgetExceeded,
     RateLimiter,
     redact_rpc_url,
     resolve_rpc_url,
-    cpi_events_from_tx,
+    ANCHOR_EVENT_IX_TAG,
+    _CPI_PROGRAMS,
     resolve_unresolved,
     rows_from_block,
     rpc_call,
+    tx_account_keys,
     tx_signature,
 )
 
@@ -107,6 +113,59 @@ def _canonical_pool_str(mint: str) -> str:
     return str(canonical_pool(Pubkey.from_string(mint)))
 
 
+_B58_ALPHABET = "123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz"
+_B58_IDX = {ch: i for i, ch in enumerate(_B58_ALPHABET)}
+_B58_CHUNK = 10
+_B58_CHUNK_MUL = 58**_B58_CHUNK
+
+
+def b58decode_fast(text: str) -> bytes | None:
+    """observe.trade_decode.b58decode, same result for every input, without a per-character bytes find.
+
+    Characters are looked up in a dict and folded ten at a time into the big integer (one multiply per
+    ten characters). Leading '1's are leading zero bytes, an empty/all-zero value gives only those, and any
+    character outside the alphabet (non-ASCII included) gives None.
+    """
+    val = 0
+    n = len(text)
+    idx = _B58_IDX
+    try:
+        for i in range(0, n, _B58_CHUNK):
+            part = 0
+            chunk = text[i : i + _B58_CHUNK]
+            for ch in chunk:
+                part = part * 58 + idx[ch]
+            val = val * (_B58_CHUNK_MUL if len(chunk) == _B58_CHUNK else 58 ** len(chunk)) + part
+    except KeyError:
+        return None
+    body = val.to_bytes((val.bit_length() + 7) // 8, "big") if val else b""
+    n_zeros = n - len(text.lstrip("1"))
+    return b"\x00" * n_zeros + body
+
+
+_b58decode_cached = lru_cache(maxsize=4096)(b58decode_fast)
+
+
+def cpi_events_fast(tx: Mapping[str, Any]) -> list[bytes]:
+    """tools.pump_history_backfill.cpi_events_from_tx with the faster, memoised base58 decode (same output)."""
+    keys = tx_account_keys(tx)
+    meta = tx.get("meta") if isinstance(tx.get("meta"), dict) else {}
+    out: list[bytes] = []
+    for group in meta.get("innerInstructions") or []:
+        if not isinstance(group, dict):
+            continue
+        for ins in group.get("instructions") or []:
+            if not isinstance(ins, dict):
+                continue
+            pid = ins.get("programIdIndex")
+            if not isinstance(pid, int) or pid >= len(keys) or keys[pid] not in _CPI_PROGRAMS:
+                continue
+            data = _b58decode_cached(ins["data"]) if isinstance(ins.get("data"), str) else None
+            if data and len(data) >= 16 and data[:8] == ANCHOR_EVENT_IX_TAG:
+                out.append(data[8:])
+    return out
+
+
 def inner_migration_rows(
     block: Mapping[str, Any],
     decoded: Mapping[str, Any],
@@ -135,7 +194,7 @@ def inner_migration_rows(
         if isinstance(tx, dict):
             meta = tx.get("meta") if isinstance(tx.get("meta"), dict) else {}
             if meta.get("err") is None and meta.get("innerInstructions") and tx_signature(tx) not in have:
-                cand = any(b[:8] == _MIGRATE_DISC for b in cpi_events_from_tx(tx))
+                cand = any(b[:8] == _MIGRATE_DISC for b in cpi_events_fast(tx))
         keep.append(tx if cand else None)
         any_cand = any_cand or cand
     if not any_cand:
@@ -438,6 +497,10 @@ class TipFollower:
         self.skipped = 0
         self.unresolved_dropped = 0
         self.lookup_failures = 0
+        self.lookup_pool_ms = 0.0
+        self.lookup_pool_calls = 0
+        self.lookup_v_ms = 0.0
+        self.lookup_v_calls = 0
         self.backlog_jumps = 0
         self.breaker_trips = 0
         self.blocks = 0
@@ -695,12 +758,16 @@ class TipFollower:
         if need and self.v_lookup is not None:
             for off in range(0, len(need), 100):
                 chunk = need[off : off + 100]
+                t0 = time.monotonic()
                 try:
                     got = self.v_lookup(chunk)
                 except Exception as exc:  # network: rows stay null, retried later
                     self.lookup_failures += 1
                     self._log_limited("v_lookup", f"pool V lookup failed: {type(exc).__name__}")
                     got = {}
+                finally:  # status-only diagnosis counters; never written to a row
+                    self.lookup_v_ms += (time.monotonic() - t0) * 1000.0
+                    self.lookup_v_calls += 1
                 for pool in chunk:
                     self._note_v(pool, got.get(pool), now)
         for r in swaps:
@@ -787,6 +854,7 @@ class TipFollower:
             self._note_v(pool, v, now)
 
     def _safe_lookup(self, pools: list[str]) -> dict[str, tuple[str, str]]:
+        t0 = time.monotonic()
         try:
             return self.lookup(pools)
         except Exception as exc:  # network: the caller counts the drops
@@ -794,6 +862,9 @@ class TipFollower:
             self._lookup_failed = True
             self._log_limited("lookup", f"pool lookup failed: {type(exc).__name__}")
             return {}
+        finally:  # status-only diagnosis counters; never written to a row
+            self.lookup_pool_ms += (time.monotonic() - t0) * 1000.0
+            self.lookup_pool_calls += 1
 
     # ------------------------------------------------------------ bookkeeping
     def _count_hour(self, hour: str, rows: Mapping[str, list], outcome: str) -> None:
@@ -831,6 +902,10 @@ class TipFollower:
             "skipped": self.skipped,
             "unresolved_dropped": self.unresolved_dropped,
             "lookup_failures": self.lookup_failures,
+            "lookup_pool_ms": round(self.lookup_pool_ms, 1),
+            "lookup_pool_calls": self.lookup_pool_calls,
+            "lookup_v_ms": round(self.lookup_v_ms, 1),
+            "lookup_v_calls": self.lookup_v_calls,
             "backlog_jumps": self.backlog_jumps,
             "breaker_trips": self.breaker_trips,
             "pool_cache": len(self.pool_cache),
@@ -964,11 +1039,9 @@ class TipFollower:
         if self._next_submit is None or self._next_submit <= self.last_done:
             self._next_submit = self.last_done + 1
         cap = self.fetch_workers * 2
-        while self._next_submit <= tip and len(self._futs) < cap:
-            self._futs[self._next_submit] = self._pool.submit(self._timed_fetch, self._next_submit)
-            self._next_submit += 1
+        self._refill(tip, cap)
         n = 0
-        while self._futs:
+        while self._futs and n < cap:  # n < cap: the same per-step bound as before refill-in-drain
             slot = self.last_done + 1
             fut = self._futs.get(slot)
             if fut is None:  # a contradicted-skip refetch moved nothing here; resync
@@ -987,8 +1060,16 @@ class TipFollower:
             self._fetch_ms.append(ms)
             self._commit(slot, block, outcome)
             n += 1
+            if self._next_submit is not None:  # keep the workers busy while the main thread commits
+                self._refill(tip, cap)
             self.heartbeat()
         return n
+
+    def _refill(self, tip: int, cap: int) -> None:
+        assert self._pool is not None and self._next_submit is not None
+        while self._next_submit <= tip and len(self._futs) < cap:
+            self._futs[self._next_submit] = self._pool.submit(self._timed_fetch, self._next_submit)
+            self._next_submit += 1
 
     def close_pool(self) -> None:
         if self._pool is not None:
@@ -1053,16 +1134,150 @@ class TipFollower:
 
 
 # ---------------------------------------------------------------- real RPC glue
+_KA_SKIP_CODES = frozenset({-32007, -32009, -32004})  # tools.pump_history_backfill._SKIP_CODES
+
+
+class KeepAliveRpc:
+    """tools.pump_history_backfill.rpc_call over one persistent HTTPS connection per calling thread.
+
+    Used for the main-thread calls (getSlot, getMultipleAccounts), which otherwise open a new TCP + TLS
+    connection per call. Same request body and headers (Content-Type, Accept-Encoding: gzip), same
+    credit reserve and limiter acquire per attempt, same retry/backoff schedule and the same errors. Only
+    the transport differs: the connection is kept open between calls. A connection the server closed
+    while idle is replaced and the call sent again once, with its own reserve + acquire, so each
+    request actually sent is still counted.
+    """
+
+    def __init__(self, url: str, connect: Callable[..., Any] | None = None) -> None:
+        parts = urllib.parse.urlsplit(url)
+        self._https = parts.scheme == "https"
+        self._host = parts.hostname or ""
+        self._port = parts.port
+        self._path = (parts.path or "/") + (("?" + parts.query) if parts.query else "")
+        self._connect = connect
+        self._tls = threading.local()
+        self.connects = 0
+        self.reused = 0
+
+    def _conn(self, timeout: float) -> tuple[Any, bool]:
+        conn = getattr(self._tls, "conn", None)
+        if conn is not None:
+            conn.timeout = timeout
+            try:
+                if conn.sock is not None:
+                    conn.sock.settimeout(timeout)
+                return conn, True
+            except OSError:  # a socket that is already dead: open a fresh connection
+                self._drop()
+        if self._connect is not None:
+            conn = self._connect(self._host, self._port, timeout)
+        elif self._https:
+            conn = http.client.HTTPSConnection(self._host, self._port, timeout=timeout)
+        else:
+            conn = http.client.HTTPConnection(self._host, self._port, timeout=timeout)
+        self._tls.conn = conn
+        self.connects += 1
+        return conn, False
+
+    def _drop(self) -> None:
+        conn = getattr(self._tls, "conn", None)
+        self._tls.conn = None
+        if conn is not None:
+            try:
+                conn.close()
+            except Exception:
+                pass
+
+    def call(self, method: str, params: list[Any], limiter: RateLimiter | None, timeout: float,
+             budget: CreditBudget | None) -> tuple[Any, int, int | None]:
+        body = json.dumps({"jsonrpc": "2.0", "id": 1, "method": method, "params": params}).encode()
+        headers = {"Content-Type": "application/json", "Accept-Encoding": "gzip"}
+        last_code: int | None = None
+        stale_resend = True
+        attempt = 0
+        while attempt < 6:
+            if budget is not None and not budget.reserve():
+                raise CreditBudgetExceeded(budget.used, budget.cap)
+            if limiter is not None:
+                limiter.acquire()
+            conn, was_reused = self._conn(timeout)
+            try:
+                conn.request("POST", self._path, body=body, headers=headers)
+                resp = conn.getresponse()
+                raw = resp.read()
+                status = resp.status
+                if resp.will_close:
+                    self._drop()
+            except ConnectionError as exc:  # includes RemoteDisconnected
+                self._drop()
+                if was_reused and stale_resend:
+                    stale_resend = False  # idle connection closed by the peer: one fresh resend, not an attempt
+                    continue
+                if attempt < 5:
+                    time.sleep(0.6 * (2**attempt))
+                    attempt += 1
+                    continue
+                raise RuntimeError(redact_rpc_url(f"{method} transport {type(exc).__name__}")) from None
+            except http.client.HTTPException:  # IncompleteRead & co escape, as from rpc_call
+                self._drop()
+                raise
+            except (TimeoutError, OSError) as exc:  # urllib.error.URLError is an OSError; socket timeouts too
+                self._drop()
+                if attempt < 5:
+                    time.sleep(0.6 * (2**attempt))
+                    attempt += 1
+                    continue
+                raise RuntimeError(redact_rpc_url(f"{method} transport {type(exc).__name__}")) from None
+            if was_reused:
+                self.reused += 1
+            if status >= 400:
+                last_code = status
+                if status == 429 and attempt < 5:
+                    time.sleep(0.4 * (2**attempt))
+                    attempt += 1
+                    continue
+                if attempt < 5 and status >= 500:
+                    time.sleep(0.6 * (2**attempt))
+                    attempt += 1
+                    continue
+                raise RuntimeError(f"{method} http {status}") from None
+            wire = len(raw)
+            try:
+                if raw[:2] == b"\x1f\x8b":
+                    raw = gzip.decompress(raw)
+                payload = json.loads(raw)
+            except (gzip.BadGzipFile, json.JSONDecodeError, EOFError, TimeoutError) as exc:
+                if attempt < 5:
+                    time.sleep(0.6 * (2**attempt))
+                    attempt += 1
+                    continue
+                raise RuntimeError(f"{method} decode {type(exc).__name__}") from exc
+            if "error" in payload:
+                err = payload["error"] or {}
+                code = err.get("code")
+                message = str(err.get("message") or "")
+                if code == 429 and attempt < 5:
+                    last_code = 429
+                    time.sleep(0.4 * (2**attempt))
+                    attempt += 1
+                    continue
+                if code in _KA_SKIP_CODES or "skipped" in message.lower() or "not available" in message.lower():
+                    return None, wire, code if isinstance(code, int) else None
+                raise RuntimeError(f"{method} {code} {message[:160]}")
+            return payload.get("result"), wire, None
+        raise RuntimeError(f"{method} gave up after 429 ({last_code})")
+
 def make_rpc(
     url: str, rps: float, credits_per_call: int = 1
 ) -> tuple[Fetcher, Callable[[], int], Callable[[], int], Callable[[list[str]], dict]]:
     """credits_per_call is 1: the Helius dashboard showed about 1 credit per getBlock on this plan."""
     limiter = RateLimiter(rps)
     budget = CreditBudget(cap=10**12, per_call=credits_per_call)
+    ka = KeepAliveRpc(url)  # main-thread calls only: getSlot and the account lookups
 
     def get_tip() -> int:
         try:
-            result, _w, _c = rpc_call(url, "getSlot", [{"commitment": "confirmed"}], limiter, timeout=15.0, budget=budget)
+            result, _w, _c = ka.call("getSlot", [{"commitment": "confirmed"}], limiter, timeout=15.0, budget=budget)
         except RuntimeError as exc:
             raise TransientError(redact_rpc_url(str(exc))) from None
         except http.client.HTTPException as exc:  # e.g. IncompleteRead: a cut chunked body escapes rpc_call's own retries
@@ -1097,8 +1312,8 @@ def make_rpc(
     v_seen: dict[str, int | None] = {}
 
     def _accounts(pools: list[str]) -> tuple[dict[str, tuple[str, str]], dict[str, int | None]]:
-        result, _w, _c = rpc_call(
-            url, "getMultipleAccounts", [pools, {"encoding": "base64", "commitment": "confirmed"}],
+        result, _w, _c = ka.call(
+            "getMultipleAccounts", [pools, {"encoding": "base64", "commitment": "confirmed"}],
             limiter, timeout=20.0, budget=budget,
         )
         values = result.get("value") if isinstance(result, dict) else None
