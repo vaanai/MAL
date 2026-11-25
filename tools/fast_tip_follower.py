@@ -563,6 +563,11 @@ class TipFollower:
         self._accounts = getattr(self.lookup, "accounts", None)  # pure (found, vs) getMultipleAccounts
         self.prefetch_lookups = bool(prefetch_lookups) and self._accounts is not None
         self._cur_pf: _Prefetch | None = None
+        # pool/V reads already claimed by an earlier in-flight block: ("p"|"v", pool) -> lowest claiming slot. A hot
+        # new pool appears in many consecutive blocks; only the first of them reads it (its commit caches it, so the
+        # later blocks never need it). Advisory only: a claim that does not pan out means a synchronous read at commit.
+        self._pf_claims: dict[tuple[str, str], int] = {}
+        self._pf_claim_lock = threading.Lock()
         self.prefetch_hits = 0
         self.prefetch_discards = 0
         self.prefetch_failures = 0
@@ -736,7 +741,11 @@ class TipFollower:
     def _commit(self, slot: int, block: dict[str, Any] | None, outcome: str, pf: _Prefetch | None = None) -> None:
         if outcome == "ok" and block is not None:
             self._verify_skips(block)
-        self._emit(slot, block, outcome, pf=pf)
+        try:
+            self._emit(slot, block, outcome, pf=pf)
+        finally:
+            if self.prefetch_lookups:
+                self._release_claims(slot)
         if outcome == "skipped":
             self._pending_skips.append(slot)
         elif outcome == "ok":
@@ -1209,6 +1218,8 @@ class TipFollower:
         self.backlog_jumps += 1
         self._pending_skips.clear()
         self._drop_inflight()
+        with self._pf_claim_lock:
+            self._pf_claims.clear()
         self.last_done = last
         self._next_submit = None
         self._checkpoint(None)
@@ -1232,6 +1243,22 @@ class TipFollower:
         ms = (time.monotonic() - t0) * 1000.0  # getBlock only: the prefetch below is not part of fetch_ms
         pf = self._prefetch(slot, block) if self.prefetch_lookups and outcome == "ok" and block is not None else None
         return block, outcome, ms, pf
+
+    def _claim(self, key: tuple[str, str], slot: int) -> bool:
+        """Caller holds _pf_claim_lock. False if a lower in-flight slot already reads this."""
+        if self.last_done is not None and slot <= self.last_done:
+            return False  # a late worker of a dropped slot: nothing will release its claim
+        cur = self._pf_claims.get(key)
+        if cur is not None and cur < slot:
+            return False
+        self._pf_claims[key] = slot
+        return True
+
+    def _release_claims(self, slot: int) -> None:
+        with self._pf_claim_lock:
+            if self._pf_claims:
+                for key in [k for k, sl in self._pf_claims.items() if sl <= slot]:
+                    del self._pf_claims[key]
 
     def _pf_call(self, chunk: list[str]) -> tuple[dict[str, tuple[str, str]], dict[str, int | None], float]:
         found, vs = self._accounts(chunk)  # type: ignore[misc]
@@ -1268,6 +1295,9 @@ class TipFollower:
                 vseen.add(pool)
                 if not OrderedDict.__contains__(self.v_cache, pool) and self._v_retry_at.get(pool, 0.0) <= now:
                     v_need.append(pool)
+            with self._pf_claim_lock:
+                pool_need = [p for p in pool_need if self._claim(("p", p), slot)]
+                v_need = [p for p in v_need if self._claim(("v", p), slot)]
             if not pool_need and not v_need:
                 return None
             ex = self._pool_lk("_pf_pool", max(4, self.fetch_workers * 2), "prefetch")
