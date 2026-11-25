@@ -287,6 +287,82 @@ class LRUPools(OrderedDict):
         return default
 
 
+PREFETCH_TIMEOUT_S = 8.0  # a worker never waits longer than this for its block's prefetched lookups
+
+
+class _PoolOverlay(dict):
+    """Read-only view of the follower's pool cache for a fetch worker's decode. Reads fall through to the
+    base without reordering it (no LRU touch); writes (CreatePool priming) stay in this throwaway dict."""
+
+    def __init__(self, base: "OrderedDict[str, Any]") -> None:
+        super().__init__()
+        self._base = base
+
+    def __contains__(self, key: object) -> bool:
+        return dict.__contains__(self, key) or OrderedDict.__contains__(self._base, key)
+
+    def __getitem__(self, key: str) -> Any:
+        if dict.__contains__(self, key):
+            return dict.__getitem__(self, key)
+        return OrderedDict.__getitem__(self._base, key)  # KeyError as a dict would
+
+    def get(self, key: str, default: Any = None) -> Any:
+        try:
+            return self[key]
+        except KeyError:
+            return default
+
+
+class _Prefetch:
+    """Advisory lookup data for one block, read by a fetch worker after its getBlock. Only the main thread
+    decides at commit what, if anything, is applied (E1). `*_req` are the pools of calls that succeeded."""
+
+    __slots__ = ("pool_req", "found", "vs", "pool_t", "v_req", "v_own", "v_vals", "v_t", "used_pool", "used_v")
+
+    def __init__(self) -> None:
+        self.pool_req: set[str] = set()
+        self.found: dict[str, tuple[str, str]] = {}
+        self.vs: dict[str, int | None] = {}
+        self.pool_t: dict[str, float] = {}
+        self.v_req: set[str] = set()  # pools whose V is known: own V call, or the pool call's own read
+        self.v_own: set[str] = set()  # pools of the separate V call (only these count as discards)
+        self.v_vals: dict[str, int | None] = {}
+        self.v_t: dict[str, float] = {}
+        self.used_pool: set[str] = set()
+        self.used_v: set[str] = set()
+
+
+class _VJob:
+    """The V reads of one block issued on lookup threads (design a): (chunk, future) pairs, joined by the main
+    thread in `_stamp_virtual`. The futures carry data only; no cache is touched off the main thread."""
+
+    def __init__(self) -> None:
+        self.parts: list[tuple[list[str], Future]] = []
+
+    def add(self, chunk: list[str], fut: Future) -> None:
+        self.parts.append((chunk, fut))
+
+    def collect(self, fol: "TipFollower", need: set[str]) -> tuple[dict[str, int | None], set[str]]:
+        """Join every part. Returns (pool -> V for successful chunks, pools of failed chunks). A chunk none of
+        whose pools is needed at commit is joined and dropped, uncounted. A needed chunk is counted, and a
+        failure counted, as the synchronous call would have been."""
+        ok: dict[str, int | None] = {}
+        bad: set[str] = set()
+        for chunk, fut in self.parts:
+            got, err, ms = fut.result()
+            if not need.intersection(chunk):
+                continue
+            fol.lookup_v_ms += ms
+            fol.lookup_v_calls += 1
+            if err is not None or got is None:
+                fol.lookup_failures += 1
+                fol._log_limited("v_lookup", f"pool V lookup failed: {type(err).__name__}")
+                bad.update(chunk)
+            else:
+                ok.update({p: got.get(p) for p in chunk})
+        return ok, bad
+
+
 V_RETRY_S = 30.0  # first retry of a pool whose V could not be read (never stamped 0); doubles per failure
 V_RETRY_CAP_S = 300.0
 
@@ -429,6 +505,7 @@ class TipFollower:
         log: Callable[[str], None] | None = None,
         trade_event_v: bool = False,
         mono: Callable[[], float] = time.monotonic,
+        prefetch_lookups: bool = False,
     ) -> None:
         self._mono = mono
         self._progress_mono = mono()
@@ -473,6 +550,18 @@ class TipFollower:
         self.summary_every_s = summary_every_s
         self._stat_lock = threading.Lock()
         self._pool: ThreadPoolExecutor | None = None
+        self._ov_pool: ThreadPoolExecutor | None = None  # design (a): the V lookup that overlaps the pool lookup
+        self._pf_pool: ThreadPoolExecutor | None = None  # design (b): the fetch workers' prefetch calls
+        self._lk_lock = threading.Lock()
+        self._accounts = getattr(self.lookup, "accounts", None)  # pure (found, vs) getMultipleAccounts
+        self.prefetch_lookups = bool(prefetch_lookups) and self._accounts is not None
+        self._cur_pf: _Prefetch | None = None
+        self.prefetch_hits = 0
+        self.prefetch_discards = 0
+        self.prefetch_failures = 0
+        self.prefetch_v_values = 0
+        self.lookup_overlap_blocks = 0
+        self._v_lead_ms: deque[float] = deque(maxlen=METRIC_WINDOW)
         self._futs: dict[int, Future] = {}
         self._next_submit: int | None = None
         self._tip_at = -1e9
@@ -637,10 +726,10 @@ class TipFollower:
         block, outcome = self._fetch_with_retry(slot)
         self._commit(slot, block, outcome)
 
-    def _commit(self, slot: int, block: dict[str, Any] | None, outcome: str) -> None:
+    def _commit(self, slot: int, block: dict[str, Any] | None, outcome: str, pf: _Prefetch | None = None) -> None:
         if outcome == "ok" and block is not None:
             self._verify_skips(block)
-        self._emit(slot, block, outcome)
+        self._emit(slot, block, outcome, pf=pf)
         if outcome == "skipped":
             self._pending_skips.append(slot)
         elif outcome == "ok":
@@ -672,13 +761,15 @@ class TipFollower:
                                "t_recv_ms": self.clock_ms()})
             self._emit(s, blk, out, count_gap=False)
 
-    def _emit(self, slot: int, block: dict[str, Any] | None, outcome: str, count_gap: bool = True) -> None:
+    def _emit(self, slot: int, block: dict[str, Any] | None, outcome: str, count_gap: bool = True,
+              pf: _Prefetch | None = None) -> None:
         t_ms = max(self.clock_ms(), self.last_t_recv_ms)  # non-decreasing in the files
         hour, day = hour_of_ms(t_ms), day_of_ms(t_ms)
         rows: dict[str, list[dict[str, Any]]] = {k: [] for k in KINDS}
         obs: list[dict[str, Any]] = []
         self._lookup_failed = False
         dropped = 0
+        vjob: _VJob | None = None
         if outcome == "ok" and block is not None:
             block["slot"] = slot
             decoded = rows_from_block(block, self.pool_cache, FEED)
@@ -686,7 +777,12 @@ class TipFollower:
             bt = block.get("blockTime")
             ready: list[dict[str, Any]] = []
             if pending and isinstance(bt, int):
-                ready, dropped = resolve_unresolved(pending, self.pool_cache, bt, self._safe_lookup)
+                vjob = self._start_v_overlap(decoded, pending, pf)
+                self._cur_pf = pf
+                try:
+                    ready, dropped = resolve_unresolved(pending, self.pool_cache, bt, self._safe_lookup)
+                finally:
+                    self._cur_pf = None
                 self.unresolved_dropped += dropped
             for kind in KINDS:
                 rows[kind] = list(decoded.get(kind) or [])
@@ -701,7 +797,9 @@ class TipFollower:
             rows["migrations"].extend(extra)
             self.migrations_inner_added += len(extra)
             rows["trades"].extend(ready)
-            self._stamp_virtual(rows["trades"])
+            self._stamp_virtual(rows["trades"], vjob, pf)
+            if pf is not None:  # whatever was not applied at this commit is dropped
+                self.prefetch_discards += len(pf.pool_req - pf.used_pool) + len(pf.v_own - pf.used_v)
             if self.trade_event_v:  # after `ready`: resolved rows are stamped too
                 self._stamp_event_v(block, slot, rows["trades"])
             for kind in KINDS:
@@ -742,8 +840,13 @@ class TipFollower:
         self.last_t_recv_ms = t_ms
         self._count_hour(hour, rows, outcome)
 
-    def _stamp_virtual(self, trades: list[dict[str, Any]]) -> None:
-        """Add `virtual_quote_reserve` (lamports, int, or null if unknown) to every PumpSwap trade row."""
+    def _stamp_virtual(self, trades: list[dict[str, Any]], vjob: "_VJob | None" = None,
+                       pf: _Prefetch | None = None) -> None:
+        """Add `virtual_quote_reserve` (lamports, int, or null if unknown) to every PumpSwap trade row.
+
+        The pools to read are chosen here, on the main thread, exactly as before. Their values may come from
+        the overlapped V lookup of this block (`vjob`, design a) or from the fetch worker's prefetch (`pf`,
+        design b); a pool with neither is read synchronously. Caches change only here."""
         swaps = [r for r in trades if r.get("venue") == "pumpswap"]
         if not swaps:
             return
@@ -756,24 +859,101 @@ class TipFollower:
                     and self._v_retry_at.get(pool, 0.0) <= now:
                 need.append(pool)
         if need and self.v_lookup is not None:
-            for off in range(0, len(need), 100):
-                chunk = need[off : off + 100]
+            got: dict[str, int | None] = {}
+            sync: list[str] = []
+            ov_ok, ov_bad = vjob.collect(self, set(need)) if vjob is not None else ({}, set())
+            for pool in need:
+                if pf is not None and pool in pf.v_req:
+                    got[pool] = pf.v_vals.get(pool)
+                    pf.used_v.add(pool)
+                    self.prefetch_hits += 1
+                    if isinstance(got[pool], int):
+                        self.prefetch_v_values += 1
+                        self._v_lead_ms.append((time.monotonic() - pf.v_t.get(pool, time.monotonic())) * 1000.0)
+                elif pool in ov_ok:
+                    got[pool] = ov_ok[pool]
+                elif pool in ov_bad:
+                    got[pool] = None  # the overlapped call failed: counted and noted as a failed read, as before
+                else:
+                    sync.append(pool)
+            for off in range(0, len(sync), 100):
+                chunk = sync[off : off + 100]
                 t0 = time.monotonic()
                 try:
-                    got = self.v_lookup(chunk)
+                    res = self.v_lookup(chunk)
                 except Exception as exc:  # network: rows stay null, retried later
                     self.lookup_failures += 1
                     self._log_limited("v_lookup", f"pool V lookup failed: {type(exc).__name__}")
-                    got = {}
+                    res = {}
                 finally:  # status-only diagnosis counters; never written to a row
                     self.lookup_v_ms += (time.monotonic() - t0) * 1000.0
                     self.lookup_v_calls += 1
                 for pool in chunk:
-                    self._note_v(pool, got.get(pool), now)
+                    got[pool] = res.get(pool)
+            for pool in need:
+                self._note_v(pool, got.get(pool), now)
         for r in swaps:
             pool = r.get("pool")
             v = self.v_cache.get(pool) if isinstance(pool, str) else None
             r["virtual_quote_reserve"] = v if isinstance(v, int) else None
+
+    def _v_candidates(self, recs: list[dict[str, Any]], pf: _Prefetch | None) -> list[str]:
+        """Pools of PumpSwap rows whose V may be read for this block, without touching a cache. Used before the
+        resolution of pending rows is known, so it may name pools the commit-time `need` will not contain."""
+        now = time.monotonic()
+        out: list[str] = []
+        seen: set[str] = set()
+        for r in recs:
+            pool = r.get("pool")
+            if r.get("venue") != "pumpswap" or not isinstance(pool, str) or pool in seen:
+                continue
+            seen.add(pool)
+            if pool in self.v_cache or self._v_retry_at.get(pool, 0.0) > now:
+                continue
+            if isinstance(self._v_seen.get(pool), int) or (pf is not None and pool in pf.v_req):
+                continue
+            out.append(pool)
+        return out
+
+    def _pool_lk(self, attr: str, size: int, name: str) -> ThreadPoolExecutor:
+        with self._lk_lock:
+            pool = getattr(self, attr)
+            if pool is None:
+                pool = ThreadPoolExecutor(max_workers=size, thread_name_prefix=name)
+                setattr(self, attr, pool)
+            return pool
+
+    def _start_v_overlap(self, decoded: Mapping[str, Any], pending: list[dict[str, Any]],
+                         pf: _Prefetch | None) -> "_VJob | None":
+        """Design (a): a block that needs a pool lookup will also need V for the pools that lookup resolves and
+        for its already-known swaps. Issue the V reads now, on a lookup thread, while the main thread does the
+        pool lookup; `_stamp_virtual` joins them before the commit and applies only what its own `need` asks."""
+        if self.v_lookup is None:
+            return None
+        pool_need = [r.get("pool") for r in pending
+                     if isinstance(r.get("pool"), str) and r.get("pool") not in self.pool_cache]
+        if not pool_need:
+            return None
+        if pf is not None and all(p in pf.pool_req for p in pool_need):
+            return None  # the pool lookup costs nothing here: nothing to overlap with
+        cands = self._v_candidates(list(decoded.get("trades") or []) + list(pending), pf)
+        if not cands:
+            return None
+        pool = self._pool_lk("_ov_pool", 2, "vlookup")
+        job = _VJob()
+        for off in range(0, len(cands), 100):
+            chunk = cands[off : off + 100]
+            job.add(chunk, pool.submit(self._timed_v, chunk))
+        self.lookup_overlap_blocks += 1
+        return job
+
+    def _timed_v(self, chunk: list[str]) -> tuple[dict[str, int | None] | None, BaseException | None, float]:
+        """Runs on a lookup thread: the V read only. Touches no follower state."""
+        t0 = time.monotonic()
+        try:
+            return self.v_lookup(chunk), None, (time.monotonic() - t0) * 1000.0  # type: ignore[misc]
+        except Exception as exc:
+            return None, exc, (time.monotonic() - t0) * 1000.0
 
     def _stamp_event_v(self, block: Mapping[str, Any], slot: int, trades: list[dict[str, Any]]) -> None:
         """Copy each print's own EVENT_V_KEYS onto its trade row, matched by (signature, event_index).
@@ -854,6 +1034,16 @@ class TipFollower:
             self._note_v(pool, v, now)
 
     def _safe_lookup(self, pools: list[str]) -> dict[str, tuple[str, str]]:
+        pf = self._cur_pf
+        if pf is not None and pools and all(p in pf.pool_req for p in pools):
+            # prefetched by the fetch worker: apply only what this commit asks for; the V side channel is
+            # filled as the real lookup fills it
+            pf.used_pool.update(pools)
+            self.prefetch_hits += len(pools)
+            seen = getattr(self.lookup, "v_seen", None)
+            if seen is not None:
+                seen.update({p: pf.vs[p] for p in pools if p in pf.vs})
+            return {p: pf.found[p] for p in pools if p in pf.found}
         t0 = time.monotonic()
         try:
             return self.lookup(pools)
@@ -906,6 +1096,15 @@ class TipFollower:
             "lookup_pool_calls": self.lookup_pool_calls,
             "lookup_v_ms": round(self.lookup_v_ms, 1),
             "lookup_v_calls": self.lookup_v_calls,
+            "lookup_overlap_blocks": self.lookup_overlap_blocks,
+            "prefetch_lookups": self.prefetch_lookups,
+            "prefetch_hits": self.prefetch_hits,
+            "prefetch_discards": self.prefetch_discards,
+            "prefetch_failures": self.prefetch_failures,
+            "prefetch_v_values": self.prefetch_v_values,
+            "v_read_lead_ms_p50": _pct(self._v_lead_ms, 50),
+            "v_read_lead_ms_p90": _pct(self._v_lead_ms, 90),
+            "v_read_lead_ms_max": max(self._v_lead_ms) if self._v_lead_ms else None,
             "backlog_jumps": self.backlog_jumps,
             "breaker_trips": self.breaker_trips,
             "pool_cache": len(self.pool_cache),
@@ -1020,10 +1219,81 @@ class TipFollower:
             self._tip_at = now
         return self.tip
 
-    def _timed_fetch(self, slot: int) -> tuple[dict[str, Any] | None, str, float]:
+    def _timed_fetch(self, slot: int) -> tuple[dict[str, Any] | None, str, float, _Prefetch | None]:
         t0 = time.monotonic()
         block, outcome = self._fetch_with_retry(slot)
-        return block, outcome, (time.monotonic() - t0) * 1000.0
+        ms = (time.monotonic() - t0) * 1000.0  # getBlock only: the prefetch below is not part of fetch_ms
+        pf = self._prefetch(slot, block) if self.prefetch_lookups and outcome == "ok" and block is not None else None
+        return block, outcome, ms, pf
+
+    def _pf_call(self, chunk: list[str]) -> tuple[dict[str, tuple[str, str]], dict[str, int | None], float]:
+        found, vs = self._accounts(chunk)  # type: ignore[misc]
+        return found, vs, time.monotonic()
+
+    def _prefetch(self, slot: int, block: dict[str, Any]) -> _Prefetch | None:
+        """Design (b), on a fetch worker after its getBlock: choose the pools this block will need looked up,
+        from a read-only snapshot of the caches, and read them. The result is advisory data only: the main
+        thread re-derives its own need sets at commit and applies a pool's data only if it still needs it.
+        Never raises; a failure just means the commit does the lookups itself, as without the flag."""
+        try:
+            bt = block.get("blockTime")
+            if not isinstance(bt, int):
+                return None
+            block["slot"] = slot  # as _emit sets it; same value
+            decoded = rows_from_block(block, _PoolOverlay(self.pool_cache), FEED)
+            pending = decoded.get("unresolved") or []
+            overlay_cache = self.pool_cache
+            pool_need: list[str] = []
+            seen: set[str] = set()
+            for rec in pending:
+                pool = rec.get("pool")
+                if isinstance(pool, str) and pool not in seen and not OrderedDict.__contains__(overlay_cache, pool):
+                    seen.add(pool)
+                    pool_need.append(pool)
+            pend_pools = {r.get("pool") for r in pending}
+            now = time.monotonic()
+            v_need: list[str] = []
+            vseen: set[str] = set()
+            for rec in decoded.get("trades") or []:
+                pool = rec.get("pool")
+                if rec.get("venue") != "pumpswap" or not isinstance(pool, str) or pool in vseen or pool in pend_pools:
+                    continue
+                vseen.add(pool)
+                if not OrderedDict.__contains__(self.v_cache, pool) and self._v_retry_at.get(pool, 0.0) <= now:
+                    v_need.append(pool)
+            if not pool_need and not v_need:
+                return None
+            ex = self._pool_lk("_pf_pool", max(4, self.fetch_workers * 2), "prefetch")
+            pf = _Prefetch()
+            deadline = time.monotonic() + PREFETCH_TIMEOUT_S
+            jobs = [("pool", c, ex.submit(self._pf_call, c)) for c in (pool_need[i:i + 100] for i in range(0, len(pool_need), 100))]
+            jobs += [("v", c, ex.submit(self._pf_call, c)) for c in (v_need[i:i + 100] for i in range(0, len(v_need), 100))]
+            for kind, chunk, fut in jobs:
+                try:
+                    found, vs, t_read = fut.result(timeout=max(0.0, deadline - time.monotonic()))
+                except Exception:  # includes the timeout: that chunk is simply not covered
+                    with self._stat_lock:
+                        self.prefetch_failures += 1
+                    continue
+                if kind == "pool":
+                    pf.pool_req.update(chunk)
+                    pf.found.update(found)
+                    pf.vs.update(vs)
+                    for p in chunk:  # the pool call is also the V read of the pools it resolves
+                        pf.v_req.add(p)
+                        pf.v_vals[p] = vs.get(p)
+                        pf.v_t[p] = t_read
+                else:
+                    for p in chunk:
+                        pf.v_req.add(p)
+                        pf.v_own.add(p)
+                        pf.v_vals[p] = vs.get(p)
+                        pf.v_t[p] = t_read
+            return pf
+        except Exception:
+            with self._stat_lock:
+                self.prefetch_failures += 1
+            return None
 
     def _step_parallel(self) -> int:
         """Pipelined step: keep up to fetch_workers*2 slots in flight (last_done + 1 .. tip),
@@ -1056,9 +1326,9 @@ class TipFollower:
                 except FutureTimeout:
                     break
             del self._futs[slot]
-            block, outcome, ms = fut.result()
+            block, outcome, ms, pf = fut.result()
             self._fetch_ms.append(ms)
-            self._commit(slot, block, outcome)
+            self._commit(slot, block, outcome, pf)
             n += 1
             if self._next_submit is not None:  # keep the workers busy while the main thread commits
                 self._refill(tip, cap)
@@ -1075,6 +1345,11 @@ class TipFollower:
         if self._pool is not None:
             self._pool.shutdown(wait=False, cancel_futures=True)
             self._pool = None
+        for attr in ("_ov_pool", "_pf_pool"):
+            ex = getattr(self, attr)
+            if ex is not None:
+                ex.shutdown(wait=False, cancel_futures=True)
+                setattr(self, attr, None)
         self._futs.clear()
 
     def step(self) -> int:
@@ -1351,6 +1626,7 @@ def make_rpc(
             return {}
         return _accounts(pools)[1]
 
+    lookup.accounts = _accounts  # type: ignore[attr-defined]  # pure read, for the prefetch (--prefetch-lookups)
     lookup.v_seen = v_seen  # type: ignore[attr-defined]
     lookup.v_lookup = v_lookup  # type: ignore[attr-defined]
     return fetch, get_tip, (lambda: budget.used), lookup
@@ -1370,6 +1646,11 @@ def main(argv: Sequence[str] | None = None) -> int:
     ap.add_argument(
         "--trade-event-v", action="store_true",
         help=f"stamp each trade row's own event-V keys (off by default; also {TRADE_EVENT_V_ENV}=1)",
+    )
+    ap.add_argument(
+        "--prefetch-lookups", action="store_true",
+        help="fetch workers prefetch the pool and V lookups of their block; the main thread applies them at commit "
+             "(off by default; QP-RULING-1125-follower-fetch-workers Addendum 2, design b)",
     )
     ap.add_argument(
         "--check-decoder-pins", action="store_true",
@@ -1402,6 +1683,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         fetch_workers=max(1, min(MAX_FETCH_WORKERS, args.fetch_workers)),
         tip_poll_s=0.4,
         trade_event_v=trade_event_v,
+        prefetch_lookups=bool(args.prefetch_lookups),
     )
     if trade_event_v:
         print(
