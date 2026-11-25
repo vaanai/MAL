@@ -460,11 +460,11 @@ def test_lookup_failure_counted_and_logged_per_slot(tmp_path):
 def test_lookup_goes_through_limiter_and_budget(monkeypatch):
     calls = []
 
-    def fake(url, method, params, limiter, timeout=60.0, budget=None, header_out=None):
+    def fake(self, method, params, limiter, timeout, budget):
         calls.append((method, limiter is not None, budget is not None))
         return {"value": [None]}, 0, None
 
-    monkeypatch.setattr(ftf, "rpc_call", fake)
+    monkeypatch.setattr(ftf.KeepAliveRpc, "call", fake)
     _f, _t, _credits, lookup = ftf.make_rpc("https://example.invalid/?api-key=K", 1000.0)
     assert lookup(["PoolA"]) == {}
     assert calls == [("getMultipleAccounts", True, True)]
@@ -649,11 +649,11 @@ def test_make_rpc_lookup_records_v_and_v_lookup_returns_it(monkeypatch):
 
     good, bare = _pool_account(V_LAMPORTS), _pool_account(None, short_tail=True)
 
-    def fake(url, method, params, limiter, timeout=60.0, budget=None, header_out=None):
+    def fake(self, method, params, limiter, timeout, budget):
         enc = lambda b: {"data": [base64.b64encode(b).decode(), "base64"]}
         return {"value": [enc(good), enc(bare), None]}, 0, None
 
-    monkeypatch.setattr(ftf, "rpc_call", fake)
+    monkeypatch.setattr(ftf.KeepAliveRpc, "call", fake)
     *_, lookup = ftf.make_rpc("https://example.invalid/?api-key=K", 1000.0)
     found = lookup(["P1", "P2", "P3"])
     assert set(found) == {"P1", "P2"}
