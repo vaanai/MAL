@@ -355,6 +355,13 @@ class _VJob:
             fol.lookup_v_ms += ms
             fol.lookup_v_calls += 1
             if err is not None or got is None:
+                if not set(chunk) <= need:
+                    # the overlapped chunk also named pools this commit does not need (it was chosen before the
+                    # pool lookup resolved): the call the commit would have made is a different one, so it is
+                    # made synchronously, and counted there. Never a failure of its own.
+                    fol.lookup_v_ms -= ms
+                    fol.lookup_v_calls -= 1
+                    continue
                 fol.lookup_failures += 1
                 fol._log_limited("v_lookup", f"pool V lookup failed: {type(err).__name__}")
                 bad.update(chunk)
