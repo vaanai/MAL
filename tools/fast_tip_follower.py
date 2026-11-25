@@ -438,6 +438,10 @@ class TipFollower:
         self.skipped = 0
         self.unresolved_dropped = 0
         self.lookup_failures = 0
+        self.lookup_pool_ms = 0.0
+        self.lookup_pool_calls = 0
+        self.lookup_v_ms = 0.0
+        self.lookup_v_calls = 0
         self.backlog_jumps = 0
         self.breaker_trips = 0
         self.blocks = 0
@@ -695,12 +699,16 @@ class TipFollower:
         if need and self.v_lookup is not None:
             for off in range(0, len(need), 100):
                 chunk = need[off : off + 100]
+                t0 = time.monotonic()
                 try:
                     got = self.v_lookup(chunk)
                 except Exception as exc:  # network: rows stay null, retried later
                     self.lookup_failures += 1
                     self._log_limited("v_lookup", f"pool V lookup failed: {type(exc).__name__}")
                     got = {}
+                finally:  # status-only diagnosis counters; never written to a row
+                    self.lookup_v_ms += (time.monotonic() - t0) * 1000.0
+                    self.lookup_v_calls += 1
                 for pool in chunk:
                     self._note_v(pool, got.get(pool), now)
         for r in swaps:
@@ -787,6 +795,7 @@ class TipFollower:
             self._note_v(pool, v, now)
 
     def _safe_lookup(self, pools: list[str]) -> dict[str, tuple[str, str]]:
+        t0 = time.monotonic()
         try:
             return self.lookup(pools)
         except Exception as exc:  # network: the caller counts the drops
@@ -794,6 +803,9 @@ class TipFollower:
             self._lookup_failed = True
             self._log_limited("lookup", f"pool lookup failed: {type(exc).__name__}")
             return {}
+        finally:  # status-only diagnosis counters; never written to a row
+            self.lookup_pool_ms += (time.monotonic() - t0) * 1000.0
+            self.lookup_pool_calls += 1
 
     # ------------------------------------------------------------ bookkeeping
     def _count_hour(self, hour: str, rows: Mapping[str, list], outcome: str) -> None:
@@ -831,6 +843,10 @@ class TipFollower:
             "skipped": self.skipped,
             "unresolved_dropped": self.unresolved_dropped,
             "lookup_failures": self.lookup_failures,
+            "lookup_pool_ms": round(self.lookup_pool_ms, 1),
+            "lookup_pool_calls": self.lookup_pool_calls,
+            "lookup_v_ms": round(self.lookup_v_ms, 1),
+            "lookup_v_calls": self.lookup_v_calls,
             "backlog_jumps": self.backlog_jumps,
             "breaker_trips": self.breaker_trips,
             "pool_cache": len(self.pool_cache),
@@ -964,11 +980,9 @@ class TipFollower:
         if self._next_submit is None or self._next_submit <= self.last_done:
             self._next_submit = self.last_done + 1
         cap = self.fetch_workers * 2
-        while self._next_submit <= tip and len(self._futs) < cap:
-            self._futs[self._next_submit] = self._pool.submit(self._timed_fetch, self._next_submit)
-            self._next_submit += 1
+        self._refill(tip, cap)
         n = 0
-        while self._futs:
+        while self._futs and n < cap:  # n < cap: the same per-step bound as before refill-in-drain
             slot = self.last_done + 1
             fut = self._futs.get(slot)
             if fut is None:  # a contradicted-skip refetch moved nothing here; resync
@@ -987,8 +1001,16 @@ class TipFollower:
             self._fetch_ms.append(ms)
             self._commit(slot, block, outcome)
             n += 1
+            if self._next_submit is not None:  # keep the workers busy while the main thread commits
+                self._refill(tip, cap)
             self.heartbeat()
         return n
+
+    def _refill(self, tip: int, cap: int) -> None:
+        assert self._pool is not None and self._next_submit is not None
+        while self._next_submit <= tip and len(self._futs) < cap:
+            self._futs[self._next_submit] = self._pool.submit(self._timed_fetch, self._next_submit)
+            self._next_submit += 1
 
     def close_pool(self) -> None:
         if self._pool is not None:
