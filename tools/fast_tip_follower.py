@@ -1163,9 +1163,12 @@ class KeepAliveRpc:
         conn = getattr(self._tls, "conn", None)
         if conn is not None:
             conn.timeout = timeout
-            if conn.sock is not None:
-                conn.sock.settimeout(timeout)
-            return conn, True
+            try:
+                if conn.sock is not None:
+                    conn.sock.settimeout(timeout)
+                return conn, True
+            except OSError:  # a socket that is already dead: open a fresh connection
+                self._drop()
         if self._connect is not None:
             conn = self._connect(self._host, self._port, timeout)
         elif self._https:
