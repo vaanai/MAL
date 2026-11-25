@@ -96,8 +96,11 @@ def build(mod, tmp, rows, *, live, real_engine=True, engine=None):
     if not reg.exists():
         register_rules(_first_print_rules(), str(reg), SHA40, H0, now_ms=H0 - 1, verify_sha=False)
     eng = engine or (ArenaEngine(str(tmp / "ledger"), str(reg), cfg=R_.stack_config(7)) if real_engine else FakeEngine(tmp / "rules"))
-    return mod.make_lane_host(root=str(tmp / "rules"), ledger_root=str(tmp / "ledger"), registry=str(reg), tape_dir=str(tape), clock_start_ms=H0, live=live, binding=BINDING, start_ms=0,
+    host = mod.make_lane_host(root=str(tmp / "rules"), ledger_root=str(tmp / "ledger"), registry=str(reg), tape_dir=str(tape), clock_start_ms=H0, live=live, binding=BINDING, start_ms=0,
                               table_mode="first_print", engine=eng)
+    if real_engine and engine is None:  # the engine's call clock is the host's own (the default is the wall clock: a run would not be repeatable)
+        eng.now_fn = (lambda: host.now_fn()) if live else (lambda: host.sim_now)
+    return host
 
 
 def fingerprint(tmp):
@@ -183,7 +186,7 @@ def test_restart_replay_md5_equal_with_burst_held_positions_and_resume_rows(tmp_
     assert fp_head == fp_off == fp_main and log_head == log_main
     k = kinds_of(log_head)
     # held positions at the crash resume as resume_reopen; the downtime refuses entries; refusals and exits of every kind present
-    assert k["entry"] >= 4 and any(r["kind"] == "exit" and r.get("reason") == "resume_reopen" for r in log_head), k
+    assert k["entry"] >= 4 and k["resume_reopen"] >= 1 and k["start"] == 2 and k["order_refused"] >= 1 and k["sell_alert"] >= 1, k
     assert k[H.KIND_GAP_REFUSED] >= 1 and hb.prune_counters["errors"] == 0 and hb.prune_counters["state_pools"] > 0, (k, hb.prune_counters)
 
 
