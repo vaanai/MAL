@@ -89,6 +89,10 @@ NO_LOSS_KIND, NO_LOSS_REASON = "tip_gap_status_unhealthy", "status_unhealthy"  #
 NO_LOSS_MAX_MS = 120_000
 NO_LOSS_SPAN_KEYS = ("prog", "kind", "from_ms", "to_ms")  # ArenaState drops `src`, so a span is matched to the captured raw row on these
 SHADOW_MARGIN_MS = 60_000  # the warm-up must start this much before the last lane checkpoint's shadow start
+# MEMORY ONLY (QP-RULING-1125-floor-host-memory Q3): drop the per-pool state of pools FLOOR can never buy. Never buyable = the pool table decided it (first print seen) and did not admit it
+# (PoolTable.base(pool) is None) and it is not waiting for a create / complete row (not in PoolTable.pending) and nothing holds it (no book position, no engine position or pending sell).
+PRUNE_EVERY_MS = 300_000  # row time (t_recv_ms): the same 5 minutes as the engine's trim_history cadence
+PRUNE_STATE_QUIET_MS = 600_000  # an ArenaState key must be quiet this long (state clock) before it is dropped
 
 # sha256 of the decision-relevant files. IDENTICAL_AT_FROZEN: byte-equal to the blob at FROZEN_SHA. The rest: pinned at the lane host's baseline (see module docstring).
 PINS: dict[str, str] = {
@@ -275,6 +279,74 @@ class LaneHost(HostV2):
         self.gap_refusals = 0
         self._last_lane_ckpt = 0
         self._last_T = 0
+        self._last_prune_ms = 0  # row time of the last prune pass (0 = none yet: the first row only sets the clock)
+        self.prune_counters: dict[str, int] = {"passes": 0, "state_pools": 0, "engine_pools": 0, "errors": 0}
+
+    # -- memory: forget pools FLOOR can never buy
+    def _held_pools(self) -> set[str]:
+        held: set[str] = set()
+        for bk in self.books.values():
+            held.update(str(p.pool) for p in bk.open.values())
+        eng = self.engine
+        held.update(str(p.pool) for p in (getattr(eng, "positions", None) or {}).values())  # open, pending and retrying sells all keep their Position here
+        held.update(str(k) for k in (getattr(eng, "pending", None) or {}))
+        held.update(str(k) for k in (getattr(eng, "priced", None) or {}))  # late-print detection of an already priced position reads the pool's history
+        return held
+
+    def _never_buyable(self, held: set[str]) -> Callable[[str], bool]:
+        tab = self.table
+        pend = {p for lst in tab.pending.values() for p, _ in lst}
+        seen = tab.seen
+        # tab.base() is the table's own admission result (the rule's `M is None` test); `seen` = the first print was judged, so None is final (a pending first print is judged later)
+        return lambda pool: pool in seen and tab.base(pool) is None and pool not in pend and pool not in held
+
+    def prune_nonbuyable(self) -> tuple[int, int]:
+        """Drop ArenaState keys and engine PoolHists of never-buyable pools (see PRUNE_*). Returns (state keys, engine pools) dropped. The engine's own prune() is NOT used: it drops the
+        scalar V state a revived pool prices from. Here only pools the rule can never Buy are dropped, so nothing a decision reads is touched: the rule reads state.pool(p) / the table
+        only for a pool it holds or that has a base time, and engine.buy() reads only the bought pool's history. An engine pool is dropped only after trim_history() has already
+        reduced it to its anchor (quiet for TRIM_KEEP_SLOTS), so a late print for it is judged as before."""
+        from tools import arena_paper as AP
+        ok = self._never_buyable(self._held_pools())
+        n_state = n_eng = 0
+        st = self.state
+        pools = getattr(st, "_pools", None)
+        if isinstance(pools, dict):
+            cut = int(st.now_ms) - PRUNE_STATE_QUIET_MS
+            by_mint = getattr(st, "_by_mint", {})
+            for k in [k for k, p in pools.items() if p.last_ms < cut and ok(k)]:
+                p = pools.pop(k)
+                if p.mint and p.mint in by_mint:
+                    by_mint[p.mint].discard(k)
+                    if not by_mint[p.mint]:
+                        del by_mint[p.mint]
+                n_state += 1
+        ep = getattr(self.engine, "pools", None)
+        if isinstance(ep, dict):
+            cut_slot = int(self.engine.hw_slot) - AP.TRIM_KEEP_SLOTS
+            for k in [k for k, h in ep.items() if h.last_slot < cut_slot and ok(k)]:
+                del ep[k]
+                n_eng += 1
+        return n_state, n_eng
+
+    def _maybe_prune(self, t: Any) -> None:
+        if not _is_int(t):
+            return
+        if self._last_prune_ms == 0:
+            self._last_prune_ms = int(t)
+            return
+        if t - self._last_prune_ms < PRUNE_EVERY_MS:
+            return
+        self._last_prune_ms = int(t)
+        try:
+            ns, ne = self.prune_nonbuyable()
+            self.prune_counters["passes"] += 1
+            self.prune_counters["state_pools"] += ns
+            self.prune_counters["engine_pools"] += ne
+        except Exception:  # noqa: BLE001 - memory work only: a failed pass changes no decision, so it is counted and the host carries on
+            self.prune_counters["errors"] += 1
+
+    def status(self) -> dict[str, Any]:
+        return {**super().status(), "prune_counters": dict(self.prune_counters)}
 
     # -- gap knowledge: the ArenaState's spans (24 h) + persisted ones + host-down spans
     def spans(self, t0: int, t1: int) -> list[dict]:
@@ -483,6 +555,7 @@ class LaneHost(HostV2):
         info["shadow_active"], info["shadow_fallback"] = sh["active"], sh["fallback"]
 
     def _on_row(self, row: dict) -> None:
+        self._maybe_prune(row.get("t_recv_ms"))  # between rows: no row is half applied here (the state has applied this one; it reaches the engine and the rule below)
         if self.status_span_no_loss and captured_no_loss_row(row):
             horizon = int(row["to_ms"]) - LOOKBACK_MAX_S * 1000 - BLOCK_MS  # a span older than the longest lookback + block can never match a judge() window again
             for k in [k for k, v in self._noloss.items() if int(v["to_ms"]) < horizon]:
