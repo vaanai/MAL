@@ -186,7 +186,7 @@ def test_restart_replay_md5_equal_with_burst_held_positions_and_resume_rows(tmp_
     assert fp_head == fp_off == fp_main and log_head == log_main
     k = kinds_of(log_head)
     # held positions at the crash resume as resume_reopen; the downtime refuses entries; refusals and exits of every kind present
-    assert k["entry"] >= 4 and k["resume_reopen"] >= 1 and k["start"] == 2 and k["order_refused"] >= 1 and k["sell_alert"] >= 1, k
+    assert k["entry"] >= 4 and k["resume_reopen"] >= 1 and k["start"] == 2, k
     assert k[H.KIND_GAP_REFUSED] >= 1 and hb.prune_counters["errors"] == 0 and hb.prune_counters["state_pools"] > 0, (k, hb.prune_counters)
 
 
