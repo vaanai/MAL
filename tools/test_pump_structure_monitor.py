@@ -564,7 +564,7 @@ def test_committed_pins_match_the_recorded_chain_state():
     rec = {"accounts": acc["accounts"], "programs": m.stage_programs(c, acc["program_accounts"], PINS)}
     cmp_ = m.compare_pins(rec, PINS)
     assert cmp_["changed"] == [] and cmp_["unpinned"] == [] and cmp_["unread"] == [] and len(cmp_["ok"]) == 6
-    assert PINS["accounts"]["pumpswap_global_config"]["sha256"].startswith("a698009a419d0b8c")  # == repo fixture tools/fixtures/pumpswap/global_config.json
+    assert PINS["accounts"]["pumpswap_global_config"]["sha256"].startswith("a4c67d6dc665973c")  # == GlobalConfig entry of tools/fixtures/pump_structure_monitor/config_accounts.json (post 2026-11-25 rotation)
     assert all(p["deploy_utc"] for p in rec["programs"].values())  # unchanged slot: block time comes from the pin, no getBlockTime call
     assert "getBlockTime" not in node.methods
 
