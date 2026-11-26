@@ -79,7 +79,7 @@ def entries(root, bot):
 
 @pytest.mark.parametrize("tp", TPS)
 def test_v4_admits_the_mid_vault_pool_and_stamps_meta(tmp_path, tp):
-    run_rule(tmp_path, mid_vault_rows(), V4_ID, None, hours=34) if False else _run_v4(tmp_path, mid_vault_rows(), tp, hours=34)
+    _run_v4(tmp_path, mid_vault_rows(), tp, hours=34)
     ent = entries(tmp_path / "rules", V4_ID)
     assert len(ent) == 1 and ent[0]["meta"]["rule"] == V4_ID and ent[0]["meta"]["tp"] == tp and ent[0]["meta"]["q_star_lamports"] == ONE
     assert ent[0]["meta"]["hold_s"] == L.HOLD_S and ent[0]["stake_sol"] == 0.25
@@ -98,7 +98,7 @@ def _run_v4(tmp, rows, tp, hours=60):
     if not reg.exists():
         register_rules([rule], str(reg), SHA40, H0, now_ms=H0 - 1, verify_sha=False)
     h = H.make_lane_host(root=str(tmp / "rules"), ledger_root=str(tmp / "ledger"), registry=str(reg), tape_dir=str(tape), clock_start_ms=H0, live=False, binding=BINDING,
-                         start_ms=0, table_mode="first_print", engine=__import__("tools.arena_rules_testkit", fromlist=["FakeEngine"]).FakeEngine(tmp / "rules"),
+                         start_ms=0, table_mode="first_print", engine=FakeEngine(tmp / "rules"),
                          rule_id=V4_ID, q_star_lamports=None, tp=tp)
     h.resume()
     h.run(H0, H0 + hours * HOUR)
