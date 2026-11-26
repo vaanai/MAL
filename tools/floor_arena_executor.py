@@ -32,7 +32,7 @@ import hashlib
 import json
 import sys
 from pathlib import Path
-from typing import Any, Callable, Mapping
+from typing import Any, Callable, Mapping, Sequence
 
 from tools import arena_live_bridge as B
 from tools import arena_rule_l1 as L
@@ -50,7 +50,12 @@ FROZEN_SHA_PREFIX = FROZEN_SHA[:8]
 # rule's own table) and, when config `expected_q_star_lamports` is given, to equal it. Anything else latches Q_STAR_LATCH (no entries). Plumbing only: nothing here says any arm makes money.
 RULE_V2 = BOT_ID
 RULE_V3 = "l1-floor-v3"
-RULE_IDS = (RULE_V2, RULE_V3)
+# `l1-floor-v4` = v3 at vault 1.0 SOL with the take-profit multiple pinned by config `expected_tp` (REQUIRED for v4, one of {1.3, 1.5}; v2 / v3 refuse the key). For v4 the entry meta `tp`
+# must equal that pinned value (v2 / v3: still L.TP), the start row's binding.tp must equal it (else TP_LATCH, no entries), and the followed take-profit exit reason is `tp_<tp>x`.
+RULE_V4 = "l1-floor-v4"
+RULE_IDS = (RULE_V2, RULE_V3, RULE_V4)
+TP_ALLOWED: tuple[float, ...] = (1.3, 1.5)
+TP_LATCH = "tp_mismatch"
 Q_STAR_ALLOWED: tuple[int, ...] = (500_000_000, 750_000_000, 1_000_000_000)
 Q_STAR_LATCH = "q_star_mismatch"
 HOLD_MS = L.HOLD_MS  # 24 h + 1.9 s, the rule's own constant (never config)
@@ -89,15 +94,34 @@ def _num(v: Any) -> bool:
     return isinstance(v, (int, float)) and not isinstance(v, bool) and v == v and abs(v) != float("inf")
 
 
+def followed_exit_reasons(tp: float | None = None) -> tuple[str, str]:
+    """v2 / v3 (tp None): the module constants. v4: the pinned TP's reason."""
+    return FOLLOWED_EXIT_REASONS if tp is None else (f"tp_{tp}x", L.REASON_TIME)
+
+
+def expected_tp(d: Mapping[str, Any]) -> float | None:
+    """Config `expected_tp`. v4: REQUIRED, exactly one of TP_ALLOWED (a float; no bool / int / string). v2 / v3: the key is refused (even null)."""
+    if d.get("rule_id", RULE_V2) != RULE_V4:
+        if "expected_tp" in d:
+            raise ValueError(f"expected_tp is only for {RULE_V4!r} (remove the key, even if null)")
+        return None
+    tp = d.get("expected_tp")
+    if isinstance(tp, bool) or not isinstance(tp, float) or tp not in TP_ALLOWED:
+        raise ValueError(f"expected_tp is required for {RULE_V4!r} and must be one of {list(TP_ALLOWED)} (got {tp!r})")
+    return tp
+
+
 def expected_q_star(d: Mapping[str, Any]) -> int | None:
     """Optional config `expected_q_star_lamports` (v3 only; a pinned value, exact int). Absent or null = any pinned value. v2 refuses the key (a stray key must not look like it did something)."""
-    if d.get("rule_id", RULE_V2) != RULE_V3:
+    if d.get("rule_id", RULE_V2) not in (RULE_V3, RULE_V4):
         if "expected_q_star_lamports" in d:
-            raise ValueError(f"expected_q_star_lamports is only for {RULE_V3!r} (remove the key, even if null)")
+            raise ValueError(f"expected_q_star_lamports is only for {RULE_V3!r} / {RULE_V4!r} (remove the key, even if null)")
         return None
     q = d.get("expected_q_star_lamports")
     if q is None:
         return None
+    if d.get("rule_id") == RULE_V4 and (isinstance(q, bool) or q != 1_000_000_000):
+        raise ValueError(f"expected_q_star_lamports for {RULE_V4!r} must be 1000000000 (got {q!r})")
     if isinstance(q, bool) or not isinstance(q, int) or q not in Q_STAR_ALLOWED:
         raise ValueError(f"expected_q_star_lamports must be one of {list(Q_STAR_ALLOWED)} (got {q!r})")
     return q
@@ -113,6 +137,7 @@ def make_config(d: Mapping[str, Any]) -> B.Config:
     if d.get("bot_id", rule_id) != rule_id:
         raise ValueError(f"bot_id must be {rule_id}")
     expected_q_star(d)
+    expected_tp(d)
     sha = d.get("frozen_sha")
     if sha != FROZEN_SHA:
         raise ValueError("frozen_sha must be FLOOR's frozen sha")
@@ -162,12 +187,17 @@ class FloorBridge(B.Bridge):
 
     def __init__(self, cfg: B.Config, port: B.OrderPort, *, now_ms: Callable[[], int] | None = None, dry_replay_caps: bool = False,
                  live_ok_path: Path = B.LIVE_OK_PATH, tier_path: Path = B.TIER_PATH, root_checks: bool = True,
-                 close_blocked: Callable[[str], bool | None] | None = None, expected_q_star: int | None = None) -> None:
+                 close_blocked: Callable[[str], bool | None] | None = None, expected_q_star: int | None = None, expected_tp: float | None = None) -> None:
         if cfg.bot_id not in RULE_IDS or cfg.max_hold_ms != HOLD_MS or cfg.frozen_sha != FROZEN_SHA:
             raise SystemExit("floor executor start refused: book pin")
-        if expected_q_star is not None and (cfg.bot_id != RULE_V3 or isinstance(expected_q_star, bool) or expected_q_star not in Q_STAR_ALLOWED):
+        if expected_q_star is not None and (cfg.bot_id not in (RULE_V3, RULE_V4) or isinstance(expected_q_star, bool) or expected_q_star not in Q_STAR_ALLOWED
+                                            or (cfg.bot_id == RULE_V4 and expected_q_star != 1_000_000_000)):
             raise SystemExit("floor executor start refused: expected_q_star")
+        if (cfg.bot_id == RULE_V4) != (expected_tp is not None) or (expected_tp is not None and (isinstance(expected_tp, bool) or expected_tp not in TP_ALLOWED)):
+            raise SystemExit("floor executor start refused: expected_tp")  # v4 needs a pinned TP, v2 / v3 take none
         self.expected_q_star = expected_q_star
+        self.expected_tp = expected_tp
+        self.followed_exits = followed_exit_reasons(expected_tp)
         self._start_guard(cfg, port)
         self.dry_replay_caps = bool(dry_replay_caps)
         sd = Path(cfg.state_dir)
@@ -235,10 +265,10 @@ class FloorBridge(B.Bridge):
         meta = row.get("meta") or {}
         if row.get("stake_sol") != PAPER_STAKE_SOL:
             return "paper_stake_pin"
-        if meta.get("rule") != self.cfg.bot_id or meta.get("cell") != CELL or meta.get("hold_s") != L.HOLD_S or meta.get("tp") != L.TP:
+        if meta.get("rule") != self.cfg.bot_id or meta.get("cell") != CELL or meta.get("hold_s") != L.HOLD_S or meta.get("tp") != (L.TP if self.expected_tp is None else self.expected_tp):
             return "meta_pin"
-        if self.cfg.bot_id == RULE_V3 and (self.fs.get("q_star_lamports") is None or meta.get("q_star_lamports") != self.fs["q_star_lamports"]):
-            return "q_star_pin"  # v3 only: the entry was decided at the cap the start row pinned
+        if self.cfg.bot_id in (RULE_V3, RULE_V4) and (self.fs.get("q_star_lamports") is None or meta.get("q_star_lamports") != self.fs["q_star_lamports"]):
+            return "q_star_pin"  # v3 / v4 only: the entry was decided at the cap the start row pinned
         v, age = meta.get("v"), meta.get("age_s")
         if not _num(v) or not V_LO <= v <= V_HI:
             return "v_band"  # the rule tested it on the deciding row; restated here because the canary universe is the band (QP 10-23 item 5)
@@ -263,7 +293,7 @@ class FloorBridge(B.Bridge):
         """v3 only: the start row's binding.q_star_lamports must be a pinned value, equal config expected_q_star_lamports when given, and equal the value of an earlier start row."""
         b = row.get("binding")
         q = b.get("q_star_lamports") if isinstance(b, dict) else None
-        if isinstance(q, bool) or not isinstance(q, int) or q not in Q_STAR_ALLOWED:
+        if isinstance(q, bool) or not isinstance(q, int) or q not in Q_STAR_ALLOWED or (self.cfg.bot_id == RULE_V4 and q != 1_000_000_000):
             self._latch(Q_STAR_LATCH, f"start row q_star_lamports {q!r} is not a pinned value")
         elif self.expected_q_star is not None and q != self.expected_q_star:
             self._latch(Q_STAR_LATCH, f"start row q_star_lamports {q} != expected {self.expected_q_star}")
@@ -271,6 +301,17 @@ class FloorBridge(B.Bridge):
             self._latch(Q_STAR_LATCH, f"start row q_star_lamports {q} != earlier start row {self.fs['q_star_lamports']}")
         else:
             self.fs["q_star_lamports"] = q
+
+    def _check_start_tp(self, row: Mapping[str, Any]) -> None:
+        """v4 only: the start row's binding.tp must equal config expected_tp and the value of an earlier start row."""
+        b = row.get("binding")
+        tp = b.get("tp") if isinstance(b, dict) else None
+        if isinstance(tp, bool) or not isinstance(tp, float) or tp != self.expected_tp:
+            self._latch(TP_LATCH, f"start row tp {tp!r} != expected {self.expected_tp}")
+        elif self.fs.get("tp") not in (None, tp):
+            self._latch(TP_LATCH, f"start row tp {tp} != earlier start row {self.fs['tp']}")
+        else:
+            self.fs["tp"] = tp
 
     # -- decision rows
     def _gap(self, ms: int, why: str) -> None:
@@ -281,8 +322,10 @@ class FloorBridge(B.Bridge):
     def handle_row(self, row: dict[str, Any]) -> None:
         k = row.get("kind")
         if k == "start":
-            if self.cfg.bot_id == RULE_V3:
+            if self.cfg.bot_id in (RULE_V3, RULE_V4):
                 self._check_start_q_star(row)
+            if self.cfg.bot_id == RULE_V4:
+                self._check_start_tp(row)
             self.fs["starts_seen"] += 1
             if self.fs["starts_seen"] > 1:
                 self._gap(row["ms"], "host_restart")
@@ -295,7 +338,7 @@ class FloorBridge(B.Bridge):
             return
         elif k == "exit":
             reason = row.get("reason")
-            if reason not in FOLLOWED_EXIT_REASONS:
+            if reason not in self.followed_exits:
                 n = self.fs["exits_not_followed"]
                 n[str(reason)] = n.get(str(reason), 0) + 1
                 self._count("exit_not_followed")
@@ -357,13 +400,13 @@ class _Clock:
 REPLAY_LAG_MS = 50  # the bridge reads each row this long after its decision instant (inside the 5 s age limit)
 
 
-def decisions_from_log(root: str, bot_id: str = BOT_ID) -> list[tuple[str, str]]:
+def decisions_from_log(root: str, bot_id: str = BOT_ID, followed: Sequence[str] = FOLLOWED_EXIT_REASONS) -> list[tuple[str, str]]:
     """The decisions the bridge must act on: one buy per entry row, one sell per order with at least one followed exit row. Sorted for comparison."""
     out, sold = [], set()
     for r in DecisionLog(root).rows(bot_id):
         if r.get("kind") == "entry":
             out.append(("buy", str(r["order_id"])))
-        elif r.get("kind") == "exit" and r.get("reason") in FOLLOWED_EXIT_REASONS and r["order_id"] not in sold:
+        elif r.get("kind") == "exit" and r.get("reason") in followed and r["order_id"] not in sold:
             sold.add(r["order_id"])
             out.append(("sell", str(r["order_id"])))
     return sorted(out)
@@ -375,7 +418,7 @@ def replay_equivalence(cfg_dict: Mapping[str, Any]) -> dict[str, Any]:
     cfg = make_config(cfg_dict)
     port = B.DryPort(cfg.dry_balance_lamports)
     clk = _Clock(0)
-    br = FloorBridge(cfg, port, now_ms=clk, dry_replay_caps=True, expected_q_star=expected_q_star(cfg_dict))
+    br = FloorBridge(cfg, port, now_ms=clk, dry_replay_caps=True, expected_q_star=expected_q_star(cfg_dict), expected_tp=expected_tp(cfg_dict))
     for row in br.read_new_rows():
         clk.t = int(row["ms"]) + REPLAY_LAG_MS
         br.handle_row(row)
@@ -384,7 +427,7 @@ def replay_equivalence(cfg_dict: Mapping[str, Any]) -> dict[str, Any]:
         br._poll_ports()
     br._save()
     orders = sorted((w["side"], str(w["order_id"])) for w in port.would_send)
-    want = decisions_from_log(cfg.root, cfg.bot_id)
+    want = decisions_from_log(cfg.root, cfg.bot_id, followed_exit_reasons(expected_tp(cfg_dict)))
     md5 = lambda x: hashlib.md5(canon(x).encode()).hexdigest()  # noqa: E731
     refused = {k: v for k, v in br.state.counts.items() if k.startswith("refused_")}
     return {"orders": len(orders), "decisions": len(want), "md5_orders": md5(orders), "md5_decisions": md5(want), "refused": refused,
@@ -407,7 +450,7 @@ def main(argv: list[str] | None = None) -> int:
         print(canon(res))
         return 0 if res["equal"] else 1
     cfg = make_config(raw)
-    br = FloorBridge(cfg, B.DryPort(cfg.dry_balance_lamports), expected_q_star=expected_q_star(raw))
+    br = FloorBridge(cfg, B.DryPort(cfg.dry_balance_lamports), expected_q_star=expected_q_star(raw), expected_tp=expected_tp(raw))
     print(f"floor_arena_executor mode=dry bot={cfg.bot_id} stake={cfg.stake_lamports}", flush=True)
     br.run(once=a.once)
     return 0
