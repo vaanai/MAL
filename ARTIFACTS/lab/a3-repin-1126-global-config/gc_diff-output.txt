@@ -1,0 +1,14 @@
+old fixture sha256 a698009a419d0b8c56ff257626d15cba305c4989a602fa86e65ca252b2c200f4 len 949 slot 453130332
+read slot 474089869 utc 2026-11-26T08:59:30Z owner pAMMBay6oceH9fJKBRHGP5D4bD4sWpmSwMn52FMfXEA
+new sha256 a4c67d6dc665973c16ae2b4c41400e0eb8d728414f358ea41ddd925d058ca011 len 949
+diff ranges (inclusive) [[57, 312]] changed bytes 256
+bytes outside ranges equal: True
+admin: old=FFWtrEQ4B4PKQoVuHYzZq8FabGkVatYzDpEVHsK5rrhF new=FFWtrEQ4B4PKQoVuHYzZq8FabGkVatYzDpEVHsK5rrhF
+lp_fee_bps: old=20 new=20
+protocol_fee_bps: old=5 new=5
+disable_flags: old=0 new=0
+protocol_fee_recipients: old=['62qc2CNXwrYqQScmEdiZFFAnJR262PxWEuNQtxfafNgV', '7VtfL8fvgNfhz17qKRMjzQEXgbdpnHHHQRh54R9jP2RJ', '7hTckgnGnLQR6sdH7YkqFTAA7VwTfYFaZ6EhEsU3saCX', '9rPYyANsfQZw3DnDmKE3YCQF5E8oD89UXoHn9JFEhJUz', 'AVmoTthdrX6tKt4nDjco2D775W2YK3sDhxPcMmzUAmTY', 'FWsW1xNtWscwNmKv6wVsU1iTzRN6wmmk3MjxRP5tT7hz', 'G5UZAVbAf46s7cKWoyKu8kYTip9DGTpbLZ2qa9Aq69dP', 'JCRGumoE9Qi5BBgULTgdgTLjSgkCMSbF62ZZfGs84JeU'] new=['2aSWZ3QXsNLVVBr1UB1HxSw7sqMRR2pv2qa5ohsTi5Gp', '3Mqk6qHEj7r3TFNFYjCP85a5venbp2mefYQTSKVVchBC', 'A3cm36KqisUXVTSRCK6VQ7kvXLene4gsbQedhcd5MujQ', 'BWNNnhN6id5j71h5wfkzmXjnV2fgF9zA61FqGJJjnakw', 'DrcDxWxLi3i7Yd7cTyCyd44DE7pwS9BvFxSsPx1c7XTv', 'EAN7utdjyxhKVaqA69DRyxW5ffBhnidRZfifmfhwUgPm', 'Eh7hTLi6iMbT55jAEYVgtN5QaSb6z9Ytzwxs2LGG5qg4', 'Fso3Ggq2Um1pQT6Uzq8wDicgRh62vANYZUT8uqJd2fXh']  CHANGED
+coin_creator_fee_bps: old=5 new=5
+admin_set_coin_creator_authority: old=UqN2p5bAzBqYdHXcgB6WLtuVrdvmy9JSAtgqZb3CMKw new=UqN2p5bAzBqYdHXcgB6WLtuVrdvmy9JSAtgqZb3CMKw
+BAR PASS
+FULL_NEW_SHA256 a4c67d6dc665973c16ae2b4c41400e0eb8d728414f358ea41ddd925d058ca011
