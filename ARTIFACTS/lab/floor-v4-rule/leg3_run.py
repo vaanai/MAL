@@ -15,7 +15,7 @@ What it does
      send and stack config; the engine is the plain ArenaEngine the live host uses; GapRangeEngine with gap_exclusion on is documented byte-identical). It writes only into a fresh mkdtemp
      directory under --work-root (removed at the end), never into a live or book dir. The tape is only read.
   4. floor_v4_leg3_compare.normalized_md5(ledger rows, v4 entry rows) vs B, leg3_equal.
-  5. Prints ONLY: git HEAD, hours (first, last, count), seed_from_hour, B, A, EQUAL/UNEQUAL, the row counts of each side, the exit code. No price, fill, P&L, exit_reason, TP/SL mix or row.
+  5. Prints ONLY: git HEAD, hours (first, last, count), seed_from_hour, B, A, EQUAL/UNEQUAL, the distinct-position counts of each side (never a row count), the exit code. No price, fill, P&L, exit_reason, TP/SL mix or row.
 Exit codes: 0 equal, 1 unequal, 2 setup error (span, seed, manifest, pins, paths, tape hour missing, B unstable).
 """
 
@@ -61,6 +61,35 @@ class SetupError(Exception):
     """exit 2"""
 
 
+CE1_ID = "osb-ce1"
+CE1_OVERRIDES = {"Q_STAR": 1.0e9, "TP": 1.3}
+WORK_ALLOWED = ("/data2/mal/scratch",)
+WORK_REFUSED = ("/var/lib", "/etc")
+
+
+def check_ce1_shape(m):
+    """Exit 2 unless the manifest has exactly osb-ce1's shape: the only shape for which every GapRangeEngine override hands off to ArenaEngine (QP on PR 1505)."""
+    checks = [("book_id is osb-ce1", m.get("book_id") == CE1_ID),
+              ("host is lane", m.get("host") == "lane"),
+              ("rule_overrides are exactly Q_STAR 1e9 and TP 1.3", m.get("rule_overrides") == CE1_OVERRIDES),
+              ("gap_exclusion absent or on", m.get("gap_exclusion", "on") == "on"),
+              ("no pricing_lat_entry_s (no latency twin)", "pricing_lat_entry_s" not in m),
+              ("no twin_of", "twin_of" not in m)]
+    for name, ok in checks:
+        if not ok:
+            raise SetupError("manifest shape: check failed: %s" % name)
+
+
+def check_work_root(work_root, m, allowed=WORK_ALLOWED):
+    """--work-root must sit under an allowed scratch root and under none of: the arena output root, /var/lib, /etc, the book's out_root, the tape_dir. The run uses a fresh mkdtemp inside it."""
+    w = os.path.realpath(work_root)
+    refused = tuple(WORK_REFUSED) + (R.ARENA_OUTPUT_ROOT, os.path.realpath(m["out_root"]), os.path.realpath(m["tape_dir"]))
+    if any(TP._under(w, os.path.realpath(r)) or TP._under(os.path.realpath(r), w) for r in refused):
+        raise SetupError("work root refused")
+    if not any(TP._under(w, os.path.realpath(a)) for a in allowed):
+        raise SetupError("work root is not under an allowed scratch root")
+
+
 def git_head():
     try:
         return subprocess.run(["git", "-C", str(REPO), "rev-parse", "HEAD"], capture_output=True, text=True, timeout=30, check=True).stdout.strip()
@@ -94,7 +123,7 @@ def span_of(m, status):
 
 
 def read_b(out_root, roots, sleep_fn=time.sleep, tries=B_TRIES, retry_s=B_RETRY_S):
-    """(B, n_rows, status) : the whole-span decisions md5 of the active run's ledger rows, accepted only when status.json is unchanged around the read and agrees with it."""
+    """(B, n_rows, rows, status) : the whole-span decisions md5 of the active run's ledger rows, accepted only when status.json is unchanged around the read and agrees with it."""
     out_root = Path(out_root)
     link = out_root / "book"
     for attempt in range(tries):
@@ -110,7 +139,7 @@ def read_b(out_root, roots, sleep_fn=time.sleep, tries=B_TRIES, retry_s=B_RETRY_
         s2 = read_status(out_root)
         same = s1.get("last_hour_end_ms") == s2.get("last_hour_end_ms") and s1.get("run") == s2.get("run") and os.path.realpath(link) == target
         if same and s2.get("decisions_md5") == b and any(r.get("kind") == "open" for r in rows):
-            return b, len(rows), s2
+            return b, len(rows), rows, s2
         if attempt + 1 < tries:
             sleep_fn(retry_s)
     raise SetupError("the book's decisions md5 was not stable against status.json after %d reads" % tries)
@@ -156,12 +185,17 @@ def check_tape_hours(m, first_ms, last_end_ms, roots):
         cursor += HOUR_MS
 
 
+def distinct_positions(rows):
+    """the number of distinct position_ids among the open / trade / excluded rows (what decisions_md5_from_rows hashes); never a row count"""
+    return len({r["position_id"] for r in rows if r.get("kind") in ("open", "trade", "excluded") and isinstance(r.get("position_id"), str)})
+
+
 def emit(lines):
     for ln in lines:
         print(ln, flush=True)
 
 
-def run(argv=None, *, roots=None, sleep_fn=time.sleep, v4_runner=None, table_mode=None, engine_kw=None, head=None):
+def run(argv=None, *, roots=None, work_allowed=WORK_ALLOWED, sleep_fn=time.sleep, v4_runner=None, table_mode=None, engine_kw=None, head=None):
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     ap.add_argument("--manifest", default=DEFAULT_MANIFEST)
     ap.add_argument("--work-root", default=DEFAULT_WORK_ROOT)
@@ -175,8 +209,8 @@ def run(argv=None, *, roots=None, sleep_fn=time.sleep, v4_runner=None, table_mod
         try:
             m = O.load_manifest(a.manifest)
             O.guard_paths(m, roots)
-            if m["host"] != "lane":
-                raise SetupError("manifest host is not lane")
+            check_ce1_shape(m)
+            check_work_root(a.work_root, m, work_allowed)
             out_root = Path(m["out_root"])
             try:
                 pin = (out_root / "manifest.sha256").read_text().strip()
@@ -185,11 +219,9 @@ def run(argv=None, *, roots=None, sleep_fn=time.sleep, v4_runner=None, table_mod
             if pin != O.manifest_sha256(m):
                 raise SetupError("manifest pin mismatch")
             H.verify_pins(pins=H.pins_for(H.RULE_V4))
-            first_ms, last_end, first_key, last_key, count = span_of(m, read_status(out_root))
+            b, _n_rows, b_rows, st = read_b(out_root, roots, sleep_fn, a.b_tries, a.b_retry_s)
+            first_ms, last_end, first_key, last_key, count = span_of(m, st)  # the span of the very status the accepted B agreed with
             check_tape_hours(m, first_ms, last_end, roots)
-            b, n_b, st = read_b(out_root, roots, sleep_fn, a.b_tries, a.b_retry_s)
-            if st.get("last_hour_end_ms") != last_end:
-                raise SetupError("the book moved on while the span was fixed")
             os.makedirs(a.work_root, exist_ok=True)
             workdir = tempfile.mkdtemp(prefix="run-", dir=a.work_root)
             ledger_rows, entry_rows = (v4_runner or run_v4)(m, last_end, workdir, **({"table_mode": table_mode, "engine_kw": engine_kw} if v4_runner is None else {}))
@@ -197,8 +229,8 @@ def run(argv=None, *, roots=None, sleep_fn=time.sleep, v4_runner=None, table_mod
         except (SetupError, O.Refused) as e:
             emit(["git_head: %s" % head, "SETUP ERROR: %s" % str(e)[:200], "exit_code: %d" % EXIT_SETUP])
             return EXIT_SETUP
-        except (R.HostError, R.HostFatal) as e:
-            emit(["git_head: %s" % head, "SETUP ERROR: %s: %s" % (type(e).__name__, str(e)[:200]), "exit_code: %d" % EXIT_SETUP])
+        except (R.HostError, R.HostFatal) as e:  # class name only: HostFatal carries engine exception text
+            emit(["git_head: %s" % head, "SETUP ERROR: %s" % type(e).__name__, "exit_code: %d" % EXIT_SETUP])
             return EXIT_SETUP
         except Exception as e:  # noqa: BLE001  (class name only: an exception text could carry a row)
             emit(["git_head: %s" % head, "SETUP ERROR: %s" % type(e).__name__, "exit_code: %d" % EXIT_SETUP])
@@ -211,7 +243,7 @@ def run(argv=None, *, roots=None, sleep_fn=time.sleep, v4_runner=None, table_mod
               "B: %s" % b,
               "A: %s" % a_md5,
               "result: %s" % ("EQUAL" if eq else "UNEQUAL"),
-              "rows: B_ledger_rows=%d A_ledger_rows=%d A_entry_rows=%d" % (n_b, len(ledger_rows), len(entry_rows)),
+              "positions: B_distinct_positions=%d A_distinct_positions=%d A_entry_rows=%d" % (distinct_positions(b_rows), distinct_positions(ledger_rows), len(entry_rows)),
               "exit_code: %d" % code])
         return code
     finally:
