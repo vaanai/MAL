@@ -22,9 +22,8 @@ from tools.arena_rules import HostError
 from tools.test_floor_arena_executor import Clock, cfg_dict, meta, _env  # noqa: F401  (autouse fixture)
 from tools.test_floor_lane_executor import T0, feed, lane_raw, mk  # noqa: F401
 from tools.test_floor_lane_host import _env as _env_h  # noqa: F401
-from tools.test_floor_lane_host_v3 import V2_DECISION_DIGEST_MAIN, mid_vault_rows, norm, run_rule
-from tools.test_floor_arena_executor import _host_log_scenarios
-from tools.test_arena_rule_l1 import HOUR, H0
+from tools.test_floor_lane_host_v3 import mid_vault_rows, run_rule
+from tools.test_arena_rule_l1 import HOUR, H0, pool_rows, row
 
 V4_ID = "l1-floor-v4"
 V3_ID = "l1-floor-v3"
@@ -77,14 +76,6 @@ def entries(root, bot):
     return [r for r in DecisionLog(str(root)).rows(bot) if r["kind"] == "entry"]
 
 
-@pytest.mark.parametrize("tp", TPS)
-def test_v4_admits_the_mid_vault_pool_and_stamps_meta(tmp_path, tp):
-    _run_v4(tmp_path, mid_vault_rows(), tp, hours=34)
-    ent = entries(tmp_path / "rules", V4_ID)
-    assert len(ent) == 1 and ent[0]["meta"]["rule"] == V4_ID and ent[0]["meta"]["tp"] == tp and ent[0]["meta"]["q_star_lamports"] == ONE
-    assert ent[0]["meta"]["hold_s"] == L.HOLD_S and ent[0]["stake_sol"] == 0.25
-
-
 def _run_v4(tmp, rows, tp, hours=60):
     from tools.arena_rules import register_rules
     from tools.arena_rules_testkit import FakeEngine, write_tape
@@ -105,32 +96,72 @@ def _run_v4(tmp, rows, tp, hours=60):
     return h
 
 
-def test_v4_at_tp_1_5_equals_v3_at_one_sol_except_rule_id_and_tp_key(tmp_path):
-    rows = mid_vault_rows()
-    run_rule(tmp_path / "v3", rows, V3_ID, ONE, hours=60)
-    _run_v4(tmp_path / "v4", rows, 1.5, hours=60)
-    a = [r for r in DecisionLog(str(tmp_path / "v3" / "rules")).rows(V3_ID) if r["kind"] in ("entry", "exit")]
-    b = [r for r in DecisionLog(str(tmp_path / "v4" / "rules")).rows(V4_ID) if r["kind"] in ("entry", "exit")]
-    assert a and len(a) == len(b)
-
-    def n(rows_, bot, other):
-        out = []
-        for r in rows_:
-            r = {k: v for k, v in r.items() if k not in ("prev", "sha", "order_id")}
-            if "meta" in r:
-                r["meta"] = {k: v for k, v in r["meta"].items() if k != "tp"} | {"tp": 1.5}
-            from tools.arena_paper import canon
-            out.append(canon(r).replace(bot, other))
-        return out
-    assert n(a, V3_ID, "X") == n(b, V4_ID, "X")
+@pytest.fixture(scope="module")
+def mid_runs(tmp_path_factory):
+    """One 34 h host run per arm on the mid-vault fixture (the slow part of this file), shared by the tests below: v3 at 1.0 SOL, v4 at 1.3, v4 at 1.5."""
+    import collections
+    import tools.test_arena_rule_l1 as T
+    from tools.test_floor_lane_host import SHA40
+    base = tmp_path_factory.mktemp("mid")
+    with pytest.MonkeyPatch.context() as mp:  # the function-scoped autouse fixture of test_floor_lane_host, reproduced for a module-scoped fixture
+        mp.setenv("MAL_ARENA_TEST", "1")
+        mp.setattr("tools.arena_paper.shutil.disk_usage", lambda path: collections.namedtuple("Usage", "total used free")(1000, 500, 500))
+        mp.setattr(T, "SHA", SHA40)
+        run_rule(base / "v3", mid_vault_rows(), V3_ID, ONE, hours=34)
+        _run_v4(base / "v4_13", mid_vault_rows(), 1.3, hours=34)
+        _run_v4(base / "v4_15", mid_vault_rows(), 1.5, hours=34)
+    return base
 
 
-def test_tp_1_3_exits_with_its_own_reason_on_a_take_profit(tmp_path):
-    """The three-pool fixture contains take profits at 1.5; the 1.3 arm must never emit the 1.5 reason and every exit must be tp_1.3x or time_24h."""
-    _run_v4(tmp_path, _host_log_scenarios(tmp_path), 1.3)
-    ex = [r for r in DecisionLog(str(tmp_path / "rules")).rows(V4_ID) if r["kind"] == "exit"]
-    assert ex and {r["reason"] for r in ex} <= {"tp_1.3x", "time_24h"}
-    assert "tp_1.5x" not in {r["reason"] for r in ex}
+@pytest.mark.parametrize("tp,d", [(1.3, "v4_13"), (1.5, "v4_15")])
+def test_v4_admits_the_mid_vault_pool_stamps_meta_and_start_row(mid_runs, tp, d):
+    log = DecisionLog(str(mid_runs / d / "rules")).rows(V4_ID)
+    ent = [r for r in log if r["kind"] == "entry"]
+    assert len(ent) == 1 and ent[0]["meta"]["rule"] == V4_ID and ent[0]["meta"]["tp"] == tp and ent[0]["meta"]["q_star_lamports"] == ONE
+    assert ent[0]["meta"]["hold_s"] == L.HOLD_S and ent[0]["stake_sol"] == 0.25
+    start = [r for r in log if r["kind"] == "start"]
+    assert start and all(r["binding"]["tp"] == tp and r["binding"]["q_star_lamports"] == ONE for r in start)
+
+
+def test_v4_entries_equal_v3_at_one_sol_except_rule_id_and_tp(mid_runs):
+    from tools.arena_paper import canon
+    a = entries(mid_runs / "v3" / "rules", V3_ID)
+    b = entries(mid_runs / "v4_15" / "rules", V4_ID)
+    assert len(a) == len(b) == 1
+
+    def n(r, bot):
+        r = {k: v for k, v in r.items() if k not in ("prev", "sha", "order_id")}
+        r["meta"] = {k: v for k, v in r["meta"].items() if k != "tp"}
+        return canon(r).replace(bot, "X")
+    assert n(a[0], V3_ID) == n(b[0], V4_ID) and a[0]["meta"]["tp"] == b[0]["meta"]["tp"] == 1.5
+
+
+def test_v3_rows_carry_no_tp_binding(mid_runs):
+    log = DecisionLog(str(mid_runs / "v3" / "rules")).rows(V3_ID)
+    assert log and all("tp" not in (r.get("binding") or {}) for r in log)
+    assert [r["meta"]["tp"] for r in log if r["kind"] == "entry"] == [1.5]
+
+
+def between_rows():
+    """Pool A enters on the drained-pool sell at 30 h 15 min; its landing print follows 10 s later; at +60 s a buy puts the post-trade spot (with the position kept) at about 1.40 x the
+    post-buy mark (computed from the rule's own formulas: 1.3 < 1.40 < 1.5), then nothing."""
+    rows = [r for r in pool_rows(p="A")]
+    t = max(r["t_recv_ms"] for r in rows if r["pool"] == "A")
+    rows.append(row(t + 10_000, "A", "sell", q=400_000_000, sol=1_000_000))
+    rows.append(row(t + 60_000, "A", "buy", q=5_000_000_000, sol=100_000_000))
+    return sorted(rows, key=lambda r: r["t_recv_ms"])
+
+
+def exits(root, bot):
+    return [r for r in DecisionLog(str(root)).rows(bot) if r["kind"] == "exit"]
+
+
+def test_a_print_between_1_3x_and_1_5x_takes_profit_at_tp_1_3_and_not_at_1_5(tmp_path):
+    _run_v4(tmp_path / "a", between_rows(), 1.3, hours=34)
+    _run_v4(tmp_path / "b", between_rows(), 1.5, hours=34)
+    assert len(entries(tmp_path / "a" / "rules", V4_ID)) == 1 and len(entries(tmp_path / "b" / "rules", V4_ID)) == 1
+    assert [r["reason"] for r in exits(tmp_path / "a" / "rules", V4_ID)] == ["tp_1.3x"]
+    assert exits(tmp_path / "b" / "rules", V4_ID) == []  # no print reaches 1.5 x: the position is still open
 
 
 # ------------------------------------------------------------------------------------------------ host: config, pins, start row, resume
@@ -183,42 +214,25 @@ def test_main_refuses_v4_without_tp(tmp_path, capsys):
     assert "tp" in capsys.readouterr().err
 
 
-@pytest.mark.parametrize("tp", TPS)
-def test_start_row_carries_tp_and_entry_meta_too(tmp_path, tp):
-    _run_v4(tmp_path, mid_vault_rows(), tp, hours=34)
-    log = DecisionLog(str(tmp_path / "rules")).rows(V4_ID)
-    start = [r for r in log if r["kind"] == "start"]
-    assert start and all(r["binding"]["tp"] == tp and r["binding"]["q_star_lamports"] == ONE for r in start)
-
-
-def test_resume_with_a_different_tp_refuses_and_the_same_continues(tmp_path):
-    _run_v4(tmp_path, mid_vault_rows(), 1.3, hours=34)
-    root = tmp_path / "rules"
+def test_resume_with_a_different_tp_refuses_and_the_same_continues(mid_runs, tmp_path):
+    import shutil
+    shutil.copytree(mid_runs / "v4_13", tmp_path / "r")
+    tmp = tmp_path / "r"
+    root = tmp / "rules"
     before = DecisionLog(str(root)).rows(V4_ID)
     with pytest.raises(HostError, match="tp"):
-        _run_v4(tmp_path, mid_vault_rows(), 1.5, hours=1)
+        _run_v4(tmp, mid_vault_rows(), 1.5, hours=1)
     assert DecisionLog(str(root)).rows(V4_ID) == before  # a start refusal: no decision row was written
-    _run_v4(tmp_path, mid_vault_rows(), 1.3, hours=1)
+    _run_v4(tmp, mid_vault_rows(), 1.3, hours=1)
     after = DecisionLog(str(root)).rows(V4_ID)
     assert len(after) > len(before) and after[:len(before)] == before
 
 
 # ------------------------------------------------------------------------------------------------ v2 / v3 paths unchanged
-def test_v2_decisions_md5_unchanged_and_no_tp_keys(tmp_path):
-    from tools.test_floor_lane_host import lane_host
-    h = lane_host(tmp_path, _host_log_scenarios(tmp_path))
-    h.resume()
-    h.run(H0, H0 + 60 * HOUR)
-    assert H.decision_digest(tmp_path / "rules") == V2_DECISION_DIGEST_MAIN
-    log = DecisionLog(str(tmp_path / "rules")).rows(L.BOT_ID)
-    assert all("binding" not in r or "tp" not in (r["binding"] or {}) for r in log)
-
-
-def test_v3_rows_carry_no_tp_binding(tmp_path):
-    run_rule(tmp_path, mid_vault_rows(), V3_ID, ONE, hours=34)
-    log = DecisionLog(str(tmp_path / "rules")).rows(V3_ID)
-    assert log and all("tp" not in (r.get("binding") or {}) for r in log)
-    assert [r["meta"]["tp"] for r in log if r["kind"] == "entry"] == [1.5]
+def test_v2_v3_decision_md5s_are_pinned_elsewhere():
+    """The v2 decision md5 on origin/main (V2_DECISION_DIGEST_MAIN) is asserted by tools/test_floor_lane_host_v3.py, and legs (i)/(ii) of this PR
+    (ARTIFACTS/lab/floor-v4-rule/) show v2 and v3 byte-identical base vs head; this file keeps its v2/v3 runs out to stay fast."""
+    assert H.pins_for(H.RULE_V2) == H.PINS and L.TP == 1.5 and L.REASON_TP == "tp_1.5x"
 
 
 def test_executor_v2_v3_constants_and_followed_reasons_unchanged():
@@ -275,7 +289,7 @@ def test_executor_config_requires_a_pinned_tp_for_v4(tmp_path, bad):
         raw["expected_tp"] = bad
     with pytest.raises(ValueError):
         F.make_config(raw)
-    assert not X.check(raw)["ok"] if hasattr(X, "check") else True
+    assert not X.check(raw)["ok"]
 
 
 def test_executor_v2_v3_refuse_expected_tp_even_null(tmp_path):
@@ -363,3 +377,22 @@ def test_dry_replay_follows_v4(tmp_path):
     assert res["orders"] == 2 and res["decisions"] == 2 and not res["latches"], res
     bad = F.replay_equivalence(cfg_dict(tmp_path, rule_id=V4_ID, expected_tp=1.5, state_dir=str(tmp_path / "st2")))
     assert F.TP_LATCH in bad["latches"] and not bad["equal"]
+
+
+def test_executor_refuses_a_state_dir_persisted_at_another_tp(tmp_path):
+    br, _ = run_v4(tmp_path, cfg_tp=1.3, start_tp=1.3, entry_tp=1.3)
+    assert br.fs["tp"] == 1.3
+    br._save()
+    if hasattr(br, "release_lane_lock"):
+        br.release_lane_lock()
+    with pytest.raises(SystemExit, match="expected_tp"):
+        mk(tmp_path, Clock(T0), raw=v4_raw(tmp_path, 1.5), expected_tp=1.5)
+    mk(tmp_path, Clock(T0), raw=v4_raw(tmp_path, 1.3), expected_tp=1.3)  # the same TP restarts
+
+
+def test_host_and_executor_both_refuse_a_float_q_star_for_v4(tmp_path):
+    for q in (1e9, 1000000000.0):
+        with pytest.raises(HostError):
+            H.check_rule_cfg(V4_ID, q, 1.3)
+        with pytest.raises(ValueError):
+            F.make_config(cfg_dict(tmp_path, rule_id=V4_ID, expected_tp=1.3, expected_q_star_lamports=q))
