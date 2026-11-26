@@ -53,7 +53,7 @@ def run_v3(tmp, *, start_q=Q, expected=None, binding="q", entry_q=Q):
 
 
 def test_pins_equal_the_rules_own_table():
-    assert F.RULE_V3 == V3.BOT_ID == "l1-floor-v3" and F.RULE_V2 == "l1-floor-v2" and F.RULE_IDS == ("l1-floor-v2", "l1-floor-v3")
+    assert F.RULE_V3 == V3.BOT_ID == "l1-floor-v3" and F.RULE_V2 == "l1-floor-v2" and F.RULE_IDS == ("l1-floor-v2", "l1-floor-v3", "l1-floor-v4")
     assert F.Q_STAR_ALLOWED == V3.Q_STAR_ALLOWED
 
 
@@ -67,7 +67,7 @@ def test_default_is_v2_and_a_stray_expected_key_is_refused(tmp_path):
             F.make_config(cfg_dict(tmp_path, **bad))
 
 
-@pytest.mark.parametrize("rid", ["l1-floor-v1", "l1-floor-v4", "h5v1", "", None, 3, ["l1-floor-v3"], "L1-FLOOR-V3", "l1-floor-v3 "])
+@pytest.mark.parametrize("rid", ["l1-floor-v1", "l1-floor-v5", "h5v1", "", None, 3, ["l1-floor-v3"], "L1-FLOOR-V3", "l1-floor-v3 "])
 def test_unpinned_rule_id_refuses(tmp_path, rid):
     with pytest.raises(ValueError):
         F.make_config(cfg_dict(tmp_path, rule_id=rid))
