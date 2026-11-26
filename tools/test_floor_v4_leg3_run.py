@@ -10,6 +10,9 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "scripts" / "research"))
 import osb_follow as O  # noqa: E402
+from tools import floor_lane_host as H  # noqa: E402
+from tools.arena_rules_testkit import hour_name  # noqa: E402
+from tools.test_osb_follow import T0  # noqa: E402
 from tools.test_osb_follow import (EK, N_HOURS, RT, START_HOUR, SEED, _env, link, make_world, manifest, run_once, shifted_rows, world)  # noqa: E402,F401
 
 SPEC = importlib.util.spec_from_file_location("leg3_run", Path(__file__).resolve().parent.parent / "ARTIFACTS" / "lab" / "floor-v4-rule" / "leg3_run.py")
@@ -25,6 +28,8 @@ def book(world_, **over):
     """a CE1-style book (Q_STAR 1e9, TP 1.3) followed over the fixture by osb_follow itself, up to the last fixture hour"""
     tmp, src, names = world_
     link(src, tmp / "tape", names, N_HOURS)
+    for i in range(int((T0 - H.parse_hour(SEED)) // 3_600_000)):  # empty files for the seed hours the fixture tape lacks (10-22 .. 10-31)
+        (tmp / "tape" / hour_name(H.parse_hour(SEED) + i * 3_600_000)).touch()
     mp, m = manifest(tmp, **{"book_id": "osb-ce1", "rule_overrides": {"Q_STAR": 1.0e9, "TP": 1.3}, **over})
     assert run_once(tmp, mp) == 0
     return tmp, mp, m
@@ -32,9 +37,10 @@ def book(world_, **over):
 
 def go(tmp, mp, capsys, **kw):
     capsys.readouterr()  # drop the fixture book's own driver output
-    code = L3.run(["--manifest", str(mp), "--work-root", str(tmp / "work")], roots=(str(tmp),), work_allowed=(str(tmp),), sleep_fn=lambda s: None, head="deadbeef", **kw)
-    out = capsys.readouterr().out
-    return code, out
+    code = L3.run(["--manifest", str(mp), "--work-root", str(tmp / "work")], roots=(str(tmp),), work_allowed=(str(tmp),), manifest_pin=O.manifest_sha256(O.load_manifest(mp)), sleep_fn=lambda s: None, head="deadbeef", **kw)
+    cap = capsys.readouterr()
+    assert cap.err == "", cap.err  # the job log captures both streams
+    return code, cap.out
 
 
 def check_fields(out):
@@ -153,15 +159,35 @@ def test_manifest_not_ce1_shaped_is_exit_2(world, capsys, over):
     mp, m = manifest(tmp, **mm)
     code, out = go(tmp, mp, capsys, v4_runner=lambda *a, **k: ([], []))
     check_fields(out)
-    assert code == 2 and "manifest shape" in out or code == 2  # a manifest the loader itself refuses is also exit 2
+    assert code == 2  # our shape check, or the manifest loader's own refusal
+
+
+def test_manifest_sha_pin_mismatch_is_exit_2(world, capsys):
+    tmp, mp, m = book(world)
+    capsys.readouterr()
+    code = L3.run(["--manifest", str(mp), "--work-root", str(tmp / "work")], roots=(str(tmp),), work_allowed=(str(tmp),), manifest_pin="0" * 64, sleep_fn=lambda s: None, head="d", v4_runner=lambda *a, **k: ([], []))
+    out = capsys.readouterr().out
+    assert code == 2 and "canonical manifest sha256" in out
+
+
+def test_missing_seed_hour_is_exit_2(world, capsys):
+    tmp, mp, m = book(world)
+    (tmp / "tape" / hour_name(H.parse_hour(SEED) + 5 * 3_600_000)).unlink()
+    code, out = go(tmp, mp, capsys, v4_runner=lambda *a, **k: ([], []))
+    check_fields(out)
+    assert code == 2 and "result:" not in out
+
+
+def test_real_ce1_pin_constant():
+    assert L3.CE1_MANIFEST_SHA == "5fe6053311e4dce37f8affa21b7bb9bed9d4cf930ed513d935da7ffaf6c7767a"
 
 
 def test_each_shape_check_is_named(world):
     base = {"book_id": "osb-ce1", "host": "lane", "rule_overrides": {"Q_STAR": 1.0e9, "TP": 1.3}}
-    L3.check_ce1_shape(base)
+    L3.check_ce1_shape(base, O.manifest_sha256(base))
     for k, v in (("book_id", "x"), ("host", "hostv2"), ("rule_overrides", {}), ("gap_exclusion", "hold"), ("pricing_lat_entry_s", 3.01), ("twin_of", "y")):
         with pytest.raises(L3.SetupError, match="manifest shape"):
-            L3.check_ce1_shape({**base, k: v})
+            L3.check_ce1_shape({**base, k: v}, O.manifest_sha256(base))
 
 
 def test_work_root_guard(world, capsys):
@@ -172,7 +198,7 @@ def test_work_root_guard(world, capsys):
             L3.check_work_root(bad, mm, allowed=(str(tmp),))
     L3.check_work_root(str(tmp / "work"), mm, allowed=(str(tmp),))
     capsys.readouterr()
-    code = L3.run(["--manifest", str(mp), "--work-root", "/var/lib/mal-x"], roots=(str(tmp),), work_allowed=(str(tmp),), sleep_fn=lambda s: None, head="d", v4_runner=lambda *a, **k: ([], []))
+    code = L3.run(["--manifest", str(mp), "--work-root", "/var/lib/mal-x"], roots=(str(tmp),), work_allowed=(str(tmp),), manifest_pin=O.manifest_sha256(O.load_manifest(mp)), sleep_fn=lambda s: None, head="d", v4_runner=lambda *a, **k: ([], []))
     assert code == 2 and "exit_code: 2" in capsys.readouterr().out
 
 

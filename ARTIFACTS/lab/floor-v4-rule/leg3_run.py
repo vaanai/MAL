@@ -63,11 +63,12 @@ class SetupError(Exception):
 
 CE1_ID = "osb-ce1"
 CE1_OVERRIDES = {"Q_STAR": 1.0e9, "TP": 1.3}
+CE1_MANIFEST_SHA = "5fe6053311e4dce37f8affa21b7bb9bed9d4cf930ed513d935da7ffaf6c7767a"  # canonical manifest sha256 of osb-ce1, DEC-035 Amendment 9 book-list record 2026-11-16
 WORK_ALLOWED = ("/data2/mal/scratch",)
 WORK_REFUSED = ("/var/lib", "/etc")
 
 
-def check_ce1_shape(m):
+def check_ce1_shape(m, pin=None):
     """Exit 2 unless the manifest has exactly osb-ce1's shape: the only shape for which every GapRangeEngine override hands off to ArenaEngine (QP on PR 1505)."""
     checks = [("book_id is osb-ce1", m.get("book_id") == CE1_ID),
               ("host is lane", m.get("host") == "lane"),
@@ -75,17 +76,20 @@ def check_ce1_shape(m):
               ("gap_exclusion absent or on", m.get("gap_exclusion", "on") == "on"),
               ("no pricing_lat_entry_s (no latency twin)", "pricing_lat_entry_s" not in m),
               ("no twin_of", "twin_of" not in m)]
+    checks.append(("canonical manifest sha256 is osb-ce1's (DEC-035 Am.9)", O.manifest_sha256(m) == (pin or CE1_MANIFEST_SHA)))
     for name, ok in checks:
         if not ok:
             raise SetupError("manifest shape: check failed: %s" % name)
 
 
-def check_work_root(work_root, m, allowed=WORK_ALLOWED):
+def check_work_root(work_root, m, allowed=WORK_ALLOWED, roots=None):
     """--work-root must sit under an allowed scratch root and under none of: the arena output root, /var/lib, /etc, the book's out_root, the tape_dir. The run uses a fresh mkdtemp inside it."""
     w = os.path.realpath(work_root)
     refused = tuple(WORK_REFUSED) + (R.ARENA_OUTPUT_ROOT, os.path.realpath(m["out_root"]), os.path.realpath(m["tape_dir"]))
     if any(TP._under(w, os.path.realpath(r)) or TP._under(os.path.realpath(r), w) for r in refused):
         raise SetupError("work root refused")
+    if TP.refusal(w, tuple(allowed) if roots is None else tuple(roots)):
+        raise SetupError("work root refused by the tape path guard")
     if not any(TP._under(w, os.path.realpath(a)) for a in allowed):
         raise SetupError("work root is not under an allowed scratch root")
 
@@ -177,11 +181,14 @@ def run_v4(m, last_end_ms, workdir, table_mode=None, engine_kw=None):
 
 
 def check_tape_hours(m, first_ms, last_end_ms, roots):
+    """every hour in [seed_from_hour, last_end) must have a tape file: the seed and warm-up hours too (rebuild_table_since skips a missing one silently, which would seed another table: a spurious UNEQUAL that cannot be re-run)"""
     TP.require_files_ok(m["tape_dir"], roots)
-    cursor = first_ms
+    cursor = H.parse_hour(m["seed_from_hour"])
+    if cursor > first_ms:
+        raise SetupError("seed_from_hour is after start_hour")
     while cursor < last_end_ms:
         if O.hour_file(m["tape_dir"], cursor) is None:
-            raise SetupError("a tape hour of the span is missing")
+            raise SetupError("a tape hour of the seed, warm-up or span is missing")
         cursor += HOUR_MS
 
 
@@ -195,7 +202,7 @@ def emit(lines):
         print(ln, flush=True)
 
 
-def run(argv=None, *, roots=None, work_allowed=WORK_ALLOWED, sleep_fn=time.sleep, v4_runner=None, table_mode=None, engine_kw=None, head=None):
+def run(argv=None, *, roots=None, work_allowed=WORK_ALLOWED, manifest_pin=None, sleep_fn=time.sleep, v4_runner=None, table_mode=None, engine_kw=None, head=None):
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     ap.add_argument("--manifest", default=DEFAULT_MANIFEST)
     ap.add_argument("--work-root", default=DEFAULT_WORK_ROOT)
@@ -209,7 +216,7 @@ def run(argv=None, *, roots=None, work_allowed=WORK_ALLOWED, sleep_fn=time.sleep
         try:
             m = O.load_manifest(a.manifest)
             O.guard_paths(m, roots)
-            check_ce1_shape(m)
+            check_ce1_shape(m, manifest_pin)
             check_work_root(a.work_root, m, work_allowed)
             out_root = Path(m["out_root"])
             try:
