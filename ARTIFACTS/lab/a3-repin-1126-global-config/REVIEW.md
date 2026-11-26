@@ -35,4 +35,8 @@ The executor takes GlobalConfig from `StaticCache` in `tools/probe_executor.py` 
 "PumpSwap GlobalConfig protocol-fee-recipient rotation 2026-11-25T21:08:54Z (slot 473891616, UpdateFeeConfig, bytes 57..312 only, fee bps unchanged), review ARTIFACTS/lab/a3-repin-1126-global-config/@<sha>." No re-price and no "fee model changed" label for FLOOR or any book. DEC-031 arena books bound by the account-pin hard-halt text follow their own rule; this PR does not waive it.
 
 ## Live sends (manager job)
-(To be filled by the manager from `sends-count-1126.py`: landed buys/sells, slot > 473891616, distinct pools per side, failed sends with an instruction/account/constraint word, count inside [21:08:54Z, 21:13:54Z).)
+MiScusi job #3441 on mal-fast-0 at bbe05882 (the rule-line commit), `sudo -n python3 ARTIFACTS/lab/a3-repin-1126-global-config/sends-count-1126.py`, rc 0, counts only (FLOOR bridge rows with ts_ms >= 2026-11-25T21:08:54Z):
+- buys: sent 5, landed 5, failed 0; landed slot > 473891616: 5 of 5 (0 missing); distinct pools landed 5; send attempts per order {1: 5}.
+- sells: sent 3, landed 3, failed 0; landed slot > 473891616: 3 of 3 (0 missing); distinct pools landed 3; attempts {1: 3}.
+- failed sends with an instruction / account / constraint word: 0. Sends inside [21:08:54Z, 21:13:54Z) (300 s StaticCache window): 0.
+- `bar_met`: true (>= 3 landed per side, all slot > bar, >= 2 pools per side, 0 bad words). No keyless sim needed.
