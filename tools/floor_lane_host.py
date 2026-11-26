@@ -467,7 +467,7 @@ class LaneHost(HostV2):
                 raise R.HostError(f"decision log was written at tp {got!r}, configured {tp}: refusing to resume (a new tp is a new root)")
 
     def _check_q_star(self) -> None:
-        """v3 only: refuse (no decisions written) when the log already holds a start row or an entry decided at another q_star, or a start row / entry with none."""
+        """v3 / v4 (v4: TP checked first via _check_tp): refuse (no decisions written) when the log already holds a start row or an entry decided at another q_star, or a start row / entry with none."""
         self._check_tp()
         q = self._q_star()
         if q is None:
@@ -722,7 +722,7 @@ def check_rule_cfg(rule_id: Any, q_star_lamports: Any, tp: Any = None) -> tuple[
     if rule_id == RULE_V4:
         from tools import arena_rule_l1_v4 as V4
         V4.check_tp(tp)
-        if q_star_lamports is not None and (isinstance(q_star_lamports, bool) or q_star_lamports != V4.Q_STAR_LAMPORTS):
+        if q_star_lamports is not None and (isinstance(q_star_lamports, bool) or not isinstance(q_star_lamports, int) or q_star_lamports != V4.Q_STAR_LAMPORTS):
             raise R.HostError(f"config q_star_lamports for {RULE_V4!r} must be {V4.Q_STAR_LAMPORTS} or absent (got {q_star_lamports!r})")
         return rule_id, V4.Q_STAR_LAMPORTS
     if rule_id == RULE_V2:

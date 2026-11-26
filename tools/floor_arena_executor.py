@@ -203,6 +203,8 @@ class FloorBridge(B.Bridge):
         sd = Path(cfg.state_dir)
         self.fs_path = sd / f"floor-state-{cfg.mode}.json"
         self.fs = self._load_fs()
+        if self.expected_tp is not None and self.fs.get("tp") not in (None, self.expected_tp):
+            raise SystemExit("floor executor start refused: expected_tp")  # same state_dir, other TP: open positions would lose their take-profit sell
         super().__init__(cfg, port, now_ms=now_ms, live_ok_path=live_ok_path, tier_path=tier_path, root_checks=root_checks, close_blocked=close_blocked)
 
     def _start_guard(self, cfg: B.Config, port: B.OrderPort) -> None:
