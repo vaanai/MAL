@@ -100,7 +100,7 @@ def test_real_limiter_interval_and_burst():
         assert lim.interval == interval and lim.burst == pe.PRIORITY_BURST
 
 
-@pytest.mark.parametrize("extra,shown", [({}, "rpc_rps=2.0 presend_batch=false"), ({"rpc_rps": 4}, "rpc_rps=4.0 presend_batch=false"), ({"presend_batch": True}, "presend_batch=true")])
+@pytest.mark.parametrize("extra,shown", [({}, "rpc_rps=2.0 presend_batch=false"), ({"rpc_rps": 4}, "rpc_rps=4.0 presend_batch=false"), ({"presend_batch": True}, "presend_batch=true"), ({}, "canary_max_ms=1209600000"), ({"canary_max_ms": 2_592_000_000}, "canary_max_ms=2592000000")])
 def test_run_logs_effective_value(tmp_path, capsys, extra, shown):
     write_live_ok(tmp_path)
     from tools.test_floor_lane_a3_flag_list import Clock, T0, a3_file

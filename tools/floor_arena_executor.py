@@ -453,7 +453,7 @@ def main(argv: list[str] | None = None) -> int:
         return 0 if res["equal"] else 1
     cfg = make_config(raw)
     br = FloorBridge(cfg, B.DryPort(cfg.dry_balance_lamports), expected_q_star=expected_q_star(raw), expected_tp=expected_tp(raw))
-    print(f"floor_arena_executor mode=dry bot={cfg.bot_id} stake={cfg.stake_lamports}", flush=True)
+    print(f"floor_arena_executor mode=dry bot={cfg.bot_id} stake={cfg.stake_lamports} canary_max_ms={cfg.canary_max_ms}", flush=True)
     br.run(once=a.once)
     return 0
 
