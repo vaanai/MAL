@@ -156,7 +156,7 @@ def test_v2_refuses_a_q_star_key_and_unknown_rule_ids_refuse():
             H.check_rule_cfg(H.RULE_V2, q)
     with pytest.raises(HostError):
         H.build_rules("first_print", H.LOOKBACK_MIN_S, [None], H.RULE_V2, 1_000_000_000)
-    for rid in ("l1-floor-v1", "l1-floor-v4", "", None):
+    for rid in ("l1-floor-v1", "l1-floor-v5", "", None):
         with pytest.raises(HostError):
             H.check_rule_cfg(rid, None)
     assert H.check_rule_cfg(H.RULE_V2, None) == (H.RULE_V2, None)
