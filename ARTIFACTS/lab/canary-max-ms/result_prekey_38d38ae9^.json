@@ -1,0 +1,83 @@
+{
+ "executor/canary_14d_absent": {
+  "effective_ms": 1209600000,
+  "n_would_send": 1,
+  "refused_canary_expired": 1,
+  "would_send_md5": "44652d706f5e557d30f58b0c7e3da73c"
+ },
+ "v2/cooldown": {
+  "decision_md5": "ec7befe8cdfe360b1e622a5872eb797d",
+  "entries": 4,
+  "exits": 4,
+  "log_md5": "77105c15d5c48e4c4e8cbdf7e08e8f50"
+ },
+ "v2/mid_vault": {
+  "decision_md5": "d751713988987e9331980363e24189ce",
+  "entries": 0,
+  "exits": 0,
+  "log_md5": "d0f43a639c7860c8470cfa3a4dc9f539"
+ },
+ "v2/three_pool": {
+  "decision_md5": "fea992d89367720188d67792ea8043cd",
+  "entries": 3,
+  "exits": 3,
+  "log_md5": "6b6437eba0173668e9ce7ebe8ff8f162"
+ },
+ "v3_q1000/cooldown": {
+  "decision_md5": "6737005096bff7fa482c37e712f69513",
+  "entries": 4,
+  "exits": 4,
+  "log_md5": "c577d98cae2d732a498ed71a29946d71"
+ },
+ "v3_q1000/mid_vault": {
+  "decision_md5": "637267623576e13f6a574bb60d3058be",
+  "entries": 1,
+  "exits": 1,
+  "log_md5": "f3cfb0ea3595988cb13bd06e7640eb81"
+ },
+ "v3_q1000/three_pool": {
+  "decision_md5": "9886e6158321733fe7f2d2bd1cca7e87",
+  "entries": 3,
+  "exits": 3,
+  "log_md5": "a9cdae7700a6a9ca71cb727840d8d341"
+ },
+ "v3_q500/cooldown": {
+  "decision_md5": "3e619821a43efe2b1d5673b6b8644d6d",
+  "entries": 4,
+  "exits": 4,
+  "log_md5": "d017c41a06b958673ab41c130cae2e70"
+ },
+ "v3_q500/mid_vault": {
+  "decision_md5": "d751713988987e9331980363e24189ce",
+  "entries": 0,
+  "exits": 0,
+  "log_md5": "81fd624bfbf5eff70c5275d9cb85bbb8"
+ },
+ "v3_q500/three_pool": {
+  "decision_md5": "286d65d0ce3dedb595dd7daaee8064ec",
+  "entries": 3,
+  "exits": 3,
+  "log_md5": "f20d703d27636b22a6f7bbd629c22aac"
+ },
+ "v3_q750/cooldown": {
+  "decision_md5": "90500520cf725f446fb2bc3ff9aaa08a",
+  "entries": 4,
+  "exits": 4,
+  "log_md5": "a8778bd87c7060db8f5e00efd0c0679b"
+ },
+ "v3_q750/mid_vault": {
+  "decision_md5": "ae9c5141458a0b0e96287db11413eee8",
+  "entries": 1,
+  "exits": 1,
+  "log_md5": "31135503ddb451b39d30a5e96681f385"
+ },
+ "v3_q750/three_pool": {
+  "decision_md5": "696535f3190e8c3ea6f6c10b39492a66",
+  "entries": 3,
+  "exits": 3,
+  "log_md5": "92002d4471bc488270112a3fda75b20b"
+ },
+ "v4_tp1.3/cooldown": "skipped_tree_has_no_v4",
+ "v4_tp1.3/mid_vault": "skipped_tree_has_no_v4",
+ "v4_tp1.3/three_pool": "skipped_tree_has_no_v4"
+}
