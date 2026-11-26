@@ -303,6 +303,7 @@ def test_v2_style_tp_entry_is_refused_by_v4_but_v2_still_requires_l_tp(tmp_path)
     br, inner = run_v4(tmp_path, cfg_tp=1.3, start_tp=1.3, entry_tp=L.TP)
     assert inner.buys == []
     clk = Clock(T0)
+    (tmp_path / "v2").mkdir()
     b2, i2 = mk(tmp_path / "v2", clk)
     assert b2.expected_tp is None and b2.followed_exits == F.FOLLOWED_EXIT_REASONS
 
@@ -338,6 +339,7 @@ def test_a_second_start_row_at_another_tp_latches(tmp_path):
 def test_exit_reason_follows_the_pinned_tp(tmp_path):
     br, _ = run_v4(tmp_path, exit_reason="tp_1.3x")
     assert br.fs["exits_not_followed"] == {}
+    (tmp_path / "b").mkdir()
     br2, _ = run_v4(tmp_path / "b", exit_reason="tp_1.5x")
     assert br2.fs["exits_not_followed"] == {"tp_1.5x": 1}
 
