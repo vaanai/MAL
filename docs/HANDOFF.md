@@ -144,6 +144,7 @@ Re-create the crons from `crons-manager23.json` with CronCreate.
 | **~11-22 14:30** | **Executor canary end** (FLOOR executor probe-limit clock; the job #2348 alert of 11-14T12:00Z was a false alarm: stale blob allow-list; any such check must test for the fix lines, not a blob list). |
 | **by 11-27 01:01** | **r4bt-a2 screen read** (conditional on registration; Am.30). |
 | **11-27 18:00** | **Price keeper #2636 successor** (ends ~11-27T20Z). |
+| **before ~12-01 09:44** | **Dead-man #2957 successor** (it ends ~12-01T09:44Z per QP's read of the job list; the executor checks the A3 gate in `/var/lib/mal-hv4-c0/a3/daily.jsonl`). |
 | **before ~12-04 16:08** | **A3 loop #3446 successor** at pin P''' `f327682d` (limit 199 h, ends ~12-04T16:08Z; command file `ops/manager24/a3loop-1126.cmd`). |
 | ~11-29 | Tip-health recorder #2808 (loop end 11-29T01:00Z) and staging #2810 (END 11-29T03:00Z) end: successors. Tip writer/push #2503/#2504: check their limits in the job list. |
 | weekly | Clean stale job trees on fast-0 (disk). |
@@ -179,7 +180,7 @@ MiScusi refuses job limits above 14 days. `after` fires only on exit 0, never on
 
 ## 8. Running jobs (from the state file, 2026-11-15T20:25Z; do not start anything from this list)
 - **FLOOR:** watch **#2775** (host 3750092, executor 3992781, 72 h); **#2546** disk guard at 27%; **#2566** keeper `tapecopy-roll` (research-0); #2290 daily report, #2291 health watch (successors in place), #2266 tip link-dir, #2348 (false alarm of 11-14T12:00Z) and #2353 checks.
-- **A3 and monitors (updated 2026-11-26):** guard loop **#3446** (pin P''' f327682d, submitted 2026-11-26T09:08:01Z, limit 199 h, ends ~12-04T16:08Z; never job status/log), dead-man **#2957**, research-0 monitor **#3448** (pin P2''' 83e900b5); cancelled A3 and monitor jobs: #1898, #2708, #2845, #3205 (loops), #2710, #2711, #2848, #3210 (monitors); watchdog **#2586**; carry timer `mal-hv4-c0-a3-carry` (root). (#2708, #2710, #2711 cancelled.)
+- **A3 and monitors (updated 2026-11-26):** guard loop **#3446** (pin P''' f327682d, submitted 2026-11-26T09:08:01Z, limit 199 h, ends ~12-04T16:08Z; never job status/log), dead-man **#2957**, research-0 monitor **#3448** (pin P2''' 83e900b5); cancelled A3 and monitor jobs: #1898, #2708, #2845, #3205 (loops), #2710, #2711, #2848, #3210 (monitors); watchdog **#2586**; carry timer `mal-hv4-c0-a3-carry` (root). 
 - **Open sims (research-0 unless noted):** books A #2670, D1 #2672, C #2673, E1 #2674, E2 #2675, D0 #2677; twins A-gh **#2743**, A-lt-b **#2756**, A-lt-a **#2772**, A-lt-c **#2791**; board **#2792**; recon loop **#2823**; live extract loop **#2696** (fast-0); osb keeper **#2630**; proof **#2800** (Running since ~16:04Z; #2799 PASSED).
 - **r4-b:** price keeper **#2636**; declog copier **#2642** (fast-0; exactly one); r4bt-a2 dry jobs #2590, #2591, #2592 (stop check, queued), #2593 (P0 count, queued), #2594.
 - **Tip:** writer **#2503**, push **#2504** (check their limits in the job list); pool_cache recorder **#2808**, staging **#2810** (exactly one process), sampler #2062 (ends ~11-21T01Z), #2055 and #2064 replaced; #2033/#2039 ended at their limits.
