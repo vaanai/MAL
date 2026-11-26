@@ -17,22 +17,22 @@ L3 = importlib.util.module_from_spec(SPEC)
 SPEC.loader.exec_module(L3)
 
 ALLOWED = re.compile(r"^(git_head: \S+|hours: first=\S+ last=\S+ count=\d+|seed_from_hour: \S+|B: [0-9a-f]{32}|A: ([0-9a-f]{32}|None)|result: (EQUAL|UNEQUAL)|"
-                     r"rows: B_ledger_rows=\d+ A_ledger_rows=\d+ A_entry_rows=\d+|exit_code: [012]|SETUP ERROR: .*)$")
-FORBIDDEN = ("price", "fill", "pnl", "exit_reason", "tp_1", "sl", "reason")
+                     r"positions: B_distinct_positions=\d+ A_distinct_positions=\d+ A_entry_rows=\d+|exit_code: [012]|SETUP ERROR: .*)$")
+FORBIDDEN = ("price", "fill", "pnl", "exit_reason", "tp_1", "sl", "reason", "ledger_rows")
 
 
 def book(world_, **over):
     """a CE1-style book (Q_STAR 1e9, TP 1.3) followed over the fixture by osb_follow itself, up to the last fixture hour"""
     tmp, src, names = world_
     link(src, tmp / "tape", names, N_HOURS)
-    mp, m = manifest(tmp, rule_overrides={"Q_STAR": 1.0e9, "TP": 1.3}, **over)
+    mp, m = manifest(tmp, **{"book_id": "osb-ce1", "rule_overrides": {"Q_STAR": 1.0e9, "TP": 1.3}, **over})
     assert run_once(tmp, mp) == 0
     return tmp, mp, m
 
 
 def go(tmp, mp, capsys, **kw):
     capsys.readouterr()  # drop the fixture book's own driver output
-    code = L3.run(["--manifest", str(mp), "--work-root", str(tmp / "work")], roots=(str(tmp),), sleep_fn=lambda s: None, head="deadbeef", **kw)
+    code = L3.run(["--manifest", str(mp), "--work-root", str(tmp / "work")], roots=(str(tmp),), work_allowed=(str(tmp),), sleep_fn=lambda s: None, head="deadbeef", **kw)
     out = capsys.readouterr().out
     return code, out
 
@@ -55,7 +55,8 @@ def test_equal_returns_0_and_prints_only_allowed_fields(world, capsys, monkeypat
     assert "B: %s" % b in lines and "A: %s" % b in lines
     assert "hours: first=%s last=%s count=%d" % (START_HOUR, "2026-11-03T11", 34) in lines  # start 26 h into a 60 h fixture
     assert "seed_from_hour: %s" % SEED in lines and "git_head: deadbeef" in lines
-    assert "rows: B_ledger_rows=%d A_ledger_rows=1 A_entry_rows=1" % len(list(O.decision_rows(Path(m["out_root"]) / "book" / "ledger"))) in lines
+    nb = len({r["position_id"] for r in O.decision_rows(Path(m["out_root"]) / "book" / "ledger") if r.get("kind") in ("open", "trade", "excluded")})
+    assert "positions: B_distinct_positions=%d A_distinct_positions=0 A_entry_rows=1" % nb in lines  # the stub's rows carry no position_id
 
 
 def test_unequal_returns_1(world, capsys, monkeypatch):
@@ -127,16 +128,61 @@ def test_missing_tape_hour_is_exit_2(world, capsys):
     assert code == 2
 
 
-def test_end_to_end_v4_offline_run_on_the_fixture(world, capsys):
-    """no stub: the real v4 host path over the fixture hours; the result is whatever it is (EQUAL or UNEQUAL), but the run completes, prints only allowed fields and cleans its work dir"""
+def test_ce1_shaped_fixture_is_EQUAL_with_exit_0(world, capsys):
+    """parity, no stub: a CE1-shaped osb_follow book (Q_STAR 1e9, TP 1.3, with entries and exits) vs the real v4 offline run. Must be EQUAL: a structural mismatch would otherwise first show on real data."""
     tmp, mp, m = book(world)
+    rows = list(O.decision_rows(Path(m["out_root"]) / "book" / "ledger"))
+    assert any(r.get("kind") == "open" for r in rows) and any(r.get("kind") in ("trade", "excluded") for r in rows)  # at least one entry and one exit
     code, out = go(tmp, mp, capsys, table_mode="first_print", engine_kw=EK)
     lines = check_fields(out)
-    assert code in (0, 1), out
-    assert any(ln.startswith("A: ") and ln != "A: None" for ln in lines)
-    a_entries = int(re.search(r"A_entry_rows=(\d+)", out).group(1))
-    assert a_entries > 0
+    assert code == 0 and "result: EQUAL" in lines and "exit_code: 0" in lines, out
+    a, b = [ln.split(": ")[1] for ln in lines if ln.startswith(("A: ", "B: "))]
+    assert a == b
+    assert int(re.search(r"A_entry_rows=(\d+)", out).group(1)) > 0
     assert not list((tmp / "work").iterdir())  # the mkdtemp dir is removed
+
+
+@pytest.mark.parametrize("over", [{"book_id": "osb-x"}, {"host": "hostv2", "lane": None}, {"rule_overrides": {"Q_STAR": 1.0e9}}, {"rule_overrides": {"Q_STAR": 1.0e9, "TP": 1.5}},
+                                  {"gap_exclusion": "hold", "twin_of": "osb-ce1x"}, {"gap_exclusion": "off"}, {"twin_of": "osb-ce1x", "gap_exclusion": "hold"}, {"pricing_lat_entry_s": 3.010, "twin_of": "osb-ce1x"}])
+def test_manifest_not_ce1_shaped_is_exit_2(world, capsys, over):
+    tmp, src, names = world
+    mm = {"book_id": "osb-ce1", "rule_overrides": {"Q_STAR": 1.0e9, "TP": 1.3}}
+    mm.update(over)
+    if mm.get("lane", 1) is None:
+        mm.pop("lane")
+    mp, m = manifest(tmp, **mm)
+    code, out = go(tmp, mp, capsys, v4_runner=lambda *a, **k: ([], []))
+    check_fields(out)
+    assert code == 2 and "manifest shape" in out or code == 2  # a manifest the loader itself refuses is also exit 2
+
+
+def test_each_shape_check_is_named(world):
+    base = {"book_id": "osb-ce1", "host": "lane", "rule_overrides": {"Q_STAR": 1.0e9, "TP": 1.3}}
+    L3.check_ce1_shape(base)
+    for k, v in (("book_id", "x"), ("host", "hostv2"), ("rule_overrides", {}), ("gap_exclusion", "hold"), ("pricing_lat_entry_s", 3.01), ("twin_of", "y")):
+        with pytest.raises(L3.SetupError, match="manifest shape"):
+            L3.check_ce1_shape({**base, k: v})
+
+
+def test_work_root_guard(world, capsys):
+    tmp, mp, m = book(world)
+    mm = O.load_manifest(mp)
+    for bad in ("/var/lib/x", "/etc", mm["out_root"], str(Path(mm["out_root"]) / "w"), mm["tape_dir"], "/tmp/not-allowed-root-x"):
+        with pytest.raises(L3.SetupError):
+            L3.check_work_root(bad, mm, allowed=(str(tmp),))
+    L3.check_work_root(str(tmp / "work"), mm, allowed=(str(tmp),))
+    capsys.readouterr()
+    code = L3.run(["--manifest", str(mp), "--work-root", "/var/lib/mal-x"], roots=(str(tmp),), work_allowed=(str(tmp),), sleep_fn=lambda s: None, head="d", v4_runner=lambda *a, **k: ([], []))
+    assert code == 2 and "exit_code: 2" in capsys.readouterr().out
+
+
+def test_host_error_prints_class_name_only(world, capsys):
+    tmp, mp, m = book(world)
+
+    def boom(*a, **k):
+        raise L3.R.HostFatal("secret-looking engine text 12345")
+    code, out = go(tmp, mp, capsys, v4_runner=boom)
+    assert code == 2 and "SETUP ERROR: HostFatal" in out and "12345" not in out
 
 
 def test_run_v4_writes_only_under_its_workdir(world):
