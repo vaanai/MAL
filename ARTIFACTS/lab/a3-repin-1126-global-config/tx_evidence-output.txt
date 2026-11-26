@@ -1,0 +1,9 @@
+slot 473891616
+blockTime utc 2026-11-25T21:08:54Z
+meta.err None
+log line: ['Program log: Instruction: UpdateFeeConfig']
+PumpSwap inner ix count 2 targets GlobalConfig [True, False]
+PumpSwap outer ix targeting GlobalConfig []
+GlobalConfig in account keys True | pAMM in keys True
+admin FFWtrEQ4 in account keys True
+BAR PASS
