@@ -11,6 +11,7 @@ import pytest
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "scripts" / "research"))
 import osb_follow as O  # noqa: E402
 import tools.test_osb_follow as TOF  # noqa: E402
+from tools.arena_declog import DecisionLog  # noqa: E402
 from tools import floor_lane_host as H  # noqa: E402
 from tools.arena_rules_testkit import hour_name  # noqa: E402
 from tools.test_osb_follow import T0  # noqa: E402
@@ -162,9 +163,23 @@ def test_ce1_shaped_fixture_is_EQUAL_with_exit_0(world_long, capsys, monkeypatch
     # at least one entry and one exit DECISION (the host's decision log counts, from the driver's own status). The sparse fixture prices no exit into the ledger (no trade row), so B's exit
     # field is None for every position here: the parity covers entry decisions and the exit decisions of the host, not the md5 of a priced exit instant (stated in the PR).
     assert any(r.get("kind") == "open" for r in rows) and st["n_entries"] >= 1 and st["n_exits"] >= 1
-    code, out = go(tmp, mp, capsys, table_mode="first_print", engine_kw=EK)
+    seen = {}
+
+    def v4_runner(m_, last_end, wd):
+        led, ent = L3.run_v4(m_, last_end, wd, table_mode="first_print", engine_kw=EK)
+        seen["rows"] = DecisionLog(str(wd)).rows(H.RULE_V4)  # copied before the work dir is removed
+        return led, ent
+
+    code, out = go(tmp, mp, capsys, v4_runner=v4_runner)
     lines = check_fields(out)
     assert code == 0 and "result: EQUAL" in lines and "exit_code: 0" in lines, out
+    # exit decisions: A's v4 decision-log exits == the fixture book's own l1-floor-v2 decision-log exits on (pool, entry ms, exit ms); non-empty; at least one take-profit exit
+    def exits(log_rows):
+        ent = {r["order_id"]: r for r in log_rows if r.get("kind") == "entry"}
+        return sorted((x["pool"], ent[x["order_id"]]["ms"], x["ms"], x["reason"]) for x in log_rows if x.get("kind") == "exit")
+    ex_a, ex_b = exits(seen["rows"]), exits(DecisionLog(str(Path(m["out_root"]) / "book")).rows("l1-floor-v2"))
+    assert ex_a and [t[:3] for t in ex_a] == [t[:3] for t in ex_b], (len(ex_a), len(ex_b))
+    assert any(t[3].startswith("tp_") for t in ex_a) and any(t[3].startswith("tp_") for t in ex_b)  # a take-profit exit on both sides (labels differ: tp_1.3x vs tp_1.5x, not compared)
     a, b = [ln.split(": ")[1] for ln in lines if ln.startswith(("A: ", "B: "))]
     assert a == b
     assert int(re.search(r"A_entry_rows=(\d+)", out).group(1)) > 0
