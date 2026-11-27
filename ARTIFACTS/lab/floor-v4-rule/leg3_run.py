@@ -235,6 +235,9 @@ def run(argv=None, *, roots=None, work_allowed=WORK_ALLOWED, manifest_pin=None, 
             with open(os.devnull, "w") as dn, contextlib.redirect_stdout(dn), contextlib.redirect_stderr(dn):  # the host prints its own progress lines (table checkpoints, counts): only the allowed fields reach the job log
                 ledger_rows, entry_rows = (v4_runner or run_v4)(m, last_end, workdir, **({"table_mode": table_mode, "engine_kw": engine_kw} if v4_runner is None else {}))
             a_md5 = C.normalized_md5(ledger_rows, entry_rows)
+        except SystemExit:  # floor_tape_paths guards raise SystemExit(text): a recoverable setup error, never the UNEQUAL status 1; the text (paths) is not printed
+            emit(["git_head: %s" % head, "SETUP ERROR: tape path refused", "exit_code: %d" % EXIT_SETUP])
+            return EXIT_SETUP
         except (SetupError, O.Refused) as e:
             emit(["git_head: %s" % head, "SETUP ERROR: %s" % str(e)[:200], "exit_code: %d" % EXIT_SETUP])
             return EXIT_SETUP

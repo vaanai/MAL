@@ -208,6 +208,16 @@ def test_manifest_sha_pin_mismatch_is_exit_2(world, capsys):
     assert code == 2 and "canonical manifest sha256" in out
 
 
+def test_tape_symlink_outside_roots_is_exit_2_not_1(world, capsys, tmp_path_factory):
+    tmp, mp, m = book(world)
+    outside = tmp_path_factory.mktemp("outside") / "tape-2026-11-03T20.jsonl"
+    outside.write_text("")
+    (tmp / "tape" / "tape-2026-11-20T00.jsonl").symlink_to(outside)  # resolves outside the allowed roots
+    code, out = go(tmp, mp, capsys, v4_runner=lambda *a, **k: ([], []))  # go() asserts stderr is empty
+    lines = check_fields(out)
+    assert code == 2 and "exit_code: 2" in lines and "result:" not in out
+
+
 def test_missing_seed_hour_is_exit_2(world, capsys):
     tmp, mp, m = book(world)
     (tmp / "tape" / hour_name(H.parse_hour(SEED) + 5 * 3_600_000)).unlink()
