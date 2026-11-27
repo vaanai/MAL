@@ -251,6 +251,7 @@ As of 2026-10-05 ~09:45Z.
 | Fast listeners / two-socket public tape trial | `mal-fast-0` | Superseded as the runner's feed by the tip follower. The public tape failed coverage on 10-03 (93.869%). |
 | Claude schedules | `mal-fast-0`, user `claude` | `mal-daily-review` 05:00 UTC, `mal-runner-daily-restart` 00:00 UTC. |
 | Healthcheck | Oracle `mal-healthcheck.timer` every 5 min | `/var/lib/mal/eng/healthcheck.sh` |
+| Open-sim book osb-ce1 (paper; QP-RULING-1115-ce1-prereg; holdout H of QP-RULING-1126-floor-wider-rule-path) | `mal-research-0`, MiScusi job, 14 GB | **Restarted 2026-11-27 (time-limit replacement, QP-RULING-1127-ce1-successor-H-capture, sha256 eea3169f).** Book job #2921 was cancelled by the manager at 2026-11-27T07:55:42Z (its MiScusi limit of 1,200,000 s would have ended it at about 2026-11-30T23:31:38Z, inside holdout H, and the 14-day cap allowed no extension past about 2026-12-01T02:10Z); successor job #3491 (same manifest, same code pin 457795f4, job memory 14336 MB) replays from start_hour with decision and ledger md5 checks of the 247 stored hours (through 2026-11-27T06); runs/0001 kept on record. Decided from job records only; no H row was read. The E1 replay #3418 (ran 53 s) and the queued E2 #3419 were cancelled at 07:56:39Z so CE1 could start: **E1 and E2 are paused** (QP-1125 Q4). H capture rule corrected (R1-R9 of the same ruling; capture job of this PR). |
 
 Moved verbatim to [ARTIFACTS/lab/lab-state-archive-2026-10.md](ARTIFACTS/lab/lab-state-archive-2026-10.md) on 2026-10-15T19:27:08Z (docs-slimming PR).
 
