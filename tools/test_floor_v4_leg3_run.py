@@ -28,10 +28,11 @@ def book(world_, **over):
     """a CE1-style book (Q_STAR 1e9, TP 1.3) followed over the fixture by osb_follow itself, up to the last fixture hour"""
     tmp, src, names = world_
     link(src, tmp / "tape", names, N_HOURS)
-    for i in range(int((T0 - H.parse_hour(SEED)) // 3_600_000)):  # empty files for the seed hours the fixture tape lacks (10-22 .. 10-31)
-        (tmp / "tape" / hour_name(H.parse_hour(SEED) + i * 3_600_000)).touch()
     mp, m = manifest(tmp, **{"book_id": "osb-ce1", "rule_overrides": {"Q_STAR": 1.0e9, "TP": 1.3}, **over})
     assert run_once(tmp, mp) == 0
+    # empty files for the seed hours the fixture tape lacks (10-22 .. 10-31), added AFTER the book ran: ArenaState globs the tape dir on every tick, so 240 extra names make the driver run very slow
+    for i in range(int((T0 - H.parse_hour(SEED)) // 3_600_000)):
+        (tmp / "tape" / hour_name(H.parse_hour(SEED) + i * 3_600_000)).touch()
     return tmp, mp, m
 
 
