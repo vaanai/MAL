@@ -2583,7 +2583,7 @@ QP-RULING-1126 Q4 arithmetic, QP's figures (manager hourly counts, hourly #3459)
 
 ### 9. Am.15 alone if this step fails
 
-If H fails or is NOT_DECIDABLE, or the owner's word is not given, Am.15 alone installs at `7ab40363` with the v2 rule (Erratum 1 below). Because this PR is then closed unmerged, the manager moves `### Amendment 15, Erratum 1 (tree)` unchanged into its own T1 records PR, which needs its own QP OK and REVIEWER APPROVE and merges before the Am.15 GO. The C fallback (QP-RULING-1126 Q3, "Fallback (C only)") needs H for osb-c and its own record; this amendment does not cover it.
+If H fails or is NOT_DECIDABLE, or the owner's word is not given, Am.15 alone installs at `7ab40363` with the v2 rule, under Amendment 15, Erratum 1 (PR #1510), which does not depend on this amendment. The C fallback (QP-RULING-1126 Q3, "Fallback (C only)") needs H for osb-c and its own record; this amendment does not cover it.
 
 ### 10. What kills it
 
@@ -2607,19 +2607,6 @@ QP-RULING-1126 Q5, verbatim: "**Not measured:** CE1's peak open count; the recon
 
 Also not measured here: nothing was read from a host; no board disclosure section or per-day row was read; the job outputs of #3475 and #3476 were not opened (their figures are the manager's). QP's GUESS range after the switch (0.21-0.40 SOL/day, QP-RULING-1126 Q5) is a guess, not a measurement.
 
-### Amendment 15, Erratum 1 (tree)
-
-In force from its merge, for Amendment 15's install. Records only. It does not depend on H or on the Amendment 16 owner word (section 9 gives its path if Amendment 16 is closed). As with earlier errata, Amendment 15 is not edited in place; this block follows it and controls where they differ. It changes no clock, limit or rollback of Amendment 15.
-
-1. **Tree.** The Am.15 executor tree changes from `38d38ae9` to **`7ab40363a9f2ef46a7fbd114a41d6f7a17168eb7`**. `38d38ae9` is an ancestor of `7ab40363` (`git merge-base --is-ancestor` rc 0). The new tree holds the same `canary_max_ms` key (PR #1484 at `38d38ae9`, merged before the v4 work), plus the lane-code PRs since: #1501 (host pool-prune, `8288ba12`), #1504 (the v4 rule, host and executor allowlist), #1505 and #1507 (the leg (iii) runner, `ARTIFACTS/lab` only) and #1506 (start-line report and the canary proof). Every Am.15 reference to `38d38ae9` as the install tree reads `7ab40363` (precondition 3 (iii), section 1, section 2 item 1, section 5 item 3).
-2. **Proof.** The canary md5 leg of Amendment 16 section 7 covers it, with QP's open question there.
-3. **Restage.** Helm staged `38d38ae9` in HELM-REPLY-1123-1-prepare. A restage at `7ab40363` is needed with the GO: the four configs (step, R1, R2, S10) with the tree path changed, new sha256 values, and the section 2 item 1 load checks rerun at `7ab40363`. The reference sha256 values of Am.15 section 5 item 5 become the restaged `7ab40363` ones.
-4. **Start line.** PR #1506 adds `canary_max_ms=<value>` at the end of the executor start line (`tools/floor_lane_executor.py:764` at `7ab40363`). The Am.15 section 5 item 4 tails therefore end `presend_batch=false canary_max_ms=<value>`, with the value fixed at the GO (`3456000000` for 40 d). Am.15's sentence "The start line prints neither `end_ms` nor `canary_max_ms`" no longer holds for `canary_max_ms`. The loaded-config sha256 is still the only proof of `end_ms` and of R1 against R2.
-5. **The v4 code is inert unless the config names it.** Checked in the code at `7ab40363`:
-   - Host, `tools/floor_lane_host.py`: a config with no `rule_id` loads `l1-floor-v2` (`d.get("rule_id", RULE_V2)`). `_load_rule` imports `tools.arena_rule_l1_v4` only when `rule_id == RULE_V4`. A `tp` key with any other rule id is refused at load. `pins_for(RULE_V2)` is `PINS` alone, and the v2 `PINS` dict is the same at `38d38ae9` and `7ab40363` (diffed here).
-   - Executor, `tools/floor_arena_executor.py`: `rule_id` defaults to v2 and must be in `RULE_IDS`. `expected_tp` returns None for v2 and refuses the key if present. With no TP pin, the followed exit reasons are the module constants `FOLLOWED_EXIT_REASONS` and the entry meta `tp` check is against `L.TP`, as before. `expected_q_star_lamports` is refused for v2.
-   - Legs (i) and (ii) show v2 and v3 decisions byte-identical between base and head (section 7).
-   - So **if H fails, Am.15 alone still installs at `7ab40363` with the v2 rule**, with the v2 configs as restaged (no `rule_id`, `tp`, `expected_tp` or `expected_q_star_lamports` key). The only output change on the v2 path is the start line of item 4.
-   - Am.15 section 4 keeps the host on its installed code with `end_ms` the only config change. The host pool-prune `8288ba12` reaches the live host only with a host code move, which this erratum does not make.
+**Amendment 15, Erratum 1** (install tree 7ab40363, expected start lines, restage, canary leg, host note) is its own T1 records PR, #1510; it is not part of this amendment.
 
 No book has cleared the promotion gate. floor-lane-1 has not cleared the promotion gate. Nothing here says FLOOR makes money.
