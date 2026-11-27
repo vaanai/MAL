@@ -133,7 +133,8 @@ def read_b(out_root, roots, sleep_fn=time.sleep, tries=B_TRIES, retry_s=B_RETRY_
       - status.json `ledger_md5` is a 32-hex value, equal in the status read before and after, and equal to osb_follow.tree_md5(<book target>/ledger) computed in that window (the driver writes it
         after the hour is done, so a row written for the NEXT hour before the status update makes the tree md5 differ: retry);
       - status last_hour, last_hour_end_ms and run are unchanged, the `book` link target is unchanged, and basename(target) == status `run`;
-      - two consecutive full reads of the rows give the same md5.
+      - two consecutive full reads of the rows give the same md5;
+      - no row's entry or exit decision_ms is at or after status `last_hour_end_ms` (a row of the next hour: retry).
     Anything else (a torn last line, an OSError, a ValueError from the tree md5) is a retry, then SetupError (exit 2), never an uncaught error (exit 1).
     status.json `decisions_md5` is NOT used: books run from older commits (osb-ce1 at 457795f4) do not write that key; `ledger_md5` is written there and tree_md5 is byte-identical at both commits."""
     out_root = Path(out_root)
@@ -164,7 +165,11 @@ def read_b(out_root, roots, sleep_fn=time.sleep, tries=B_TRIES, retry_s=B_RETRY_
         except (OSError, ValueError):  # a torn or half-written line, a file moving under us: retry
             ok = False
         else:
-            if ok and tree == tree2 == lm and stamp(s1, target) == stamp(s2, os.path.realpath(link)) and b1 == b2 and any(r.get("kind") == "open" for r in rows):
+            end = s2.get("last_hour_end_ms")
+            beyond = isinstance(end, int) and not isinstance(end, bool) and any(
+                isinstance(v, (int, float)) and not isinstance(v, bool) and v >= end
+                for r in rows if r.get("kind") in ("open", "trade", "excluded") for v in ((r.get("decision_ms") or {}).get("entry"), (r.get("decision_ms") or {}).get("exit")))
+            if ok and not beyond and tree == tree2 == lm and stamp(s1, target) == stamp(s2, os.path.realpath(link)) and b1 == b2 and any(r.get("kind") == "open" for r in rows):
                 return b1, len(rows), rows, s2
         if attempt + 1 < tries:
             sleep_fn(retry_s)

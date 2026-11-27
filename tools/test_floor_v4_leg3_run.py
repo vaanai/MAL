@@ -219,6 +219,20 @@ def test_missing_or_bad_ledger_md5_is_exit_2(tmp_path, monkeypatch):
             L3.read_b(out, (str(tmp_path),), sleep_fn=lambda s: None, tries=2)
 
 
+@pytest.mark.parametrize("field,ms,ok", [("entry", 999, True), ("entry", 1000, False), ("entry", 1001, False), ("exit", 999, True), ("exit", 1000, False)])
+def test_row_decided_at_or_after_the_last_hour_end_is_retried(tmp_path, monkeypatch, field, ms, ok):
+    out = fake_book(tmp_path, {"last_hour": "h", "last_hour_end_ms": 1000, "run": "0001"})
+    dm = {"entry": 10}
+    dm[field] = ms
+    rows = [{"kind": "open", "position_id": "p", "decision_ms": dm}] + ([{"kind": "trade", "position_id": "p", "decision_ms": dm}] if field == "exit" else [])
+    monkeypatch.setattr(O, "decision_rows", lambda d: list(rows))
+    if ok:
+        assert L3.read_b(out, (str(tmp_path),), sleep_fn=lambda s: None, tries=2)[0] == O.decisions_md5_from_rows(rows)
+    else:
+        with pytest.raises(L3.SetupError, match="not stable"):
+            L3.read_b(out, (str(tmp_path),), sleep_fn=lambda s: None, tries=2)
+
+
 def test_two_differing_reads_are_exit_2(world, capsys, monkeypatch):
     tmp, mp, m = book(world)
     real, n = O.decision_rows, [0]
