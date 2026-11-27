@@ -180,6 +180,45 @@ def test_status_without_decisions_md5_is_accepted(world, capsys, monkeypatch):
     assert code == 0 and "B: %s" % b in lines
 
 
+def test_row_appended_after_the_status_write_is_exit_2(world, capsys):
+    """a complete row for the NEXT hour lands before the driver rewrites status.json: tree md5 != status ledger_md5, so no B (exit 2 after the retries); a torn last line is a retry too, never exit 1"""
+    tmp, mp, m = book(world)
+    led = Path(m["out_root"]) / "book" / "ledger"
+    f = sorted(p for p in led.rglob("*") if p.is_file() and p.stat().st_size)[-1]
+    original = f.read_bytes()
+    row = json.dumps({"kind": "open", "position_id": "zz-next-hour", "decision_ms": {"entry": 1}}) + "\n"
+    f.write_bytes(original + row.encode())
+    code, out = go(tmp, mp, capsys, v4_runner=lambda *a, **k: ([], []))
+    check_fields(out)
+    assert code == 2 and "not stable" in out and "result:" not in out
+    f.write_bytes(original + b'{"kind": "open", "position_id": "to')  # torn last line
+    code, out = go(tmp, mp, capsys, v4_runner=lambda *a, **k: ([], []))
+    check_fields(out)
+    assert code == 2 and "not stable" in out
+
+
+def test_link_target_not_the_status_run_is_exit_2(tmp_path):
+    out = fake_book(tmp_path, {"last_hour": "h", "last_hour_end_ms": 1, "run": "0002"})  # the link points at 0001
+    monkey_rows = [{"kind": "open", "position_id": "p", "decision_ms": {"entry": 1}}]
+    L3.O.decision_rows, saved = (lambda d: list(monkey_rows)), L3.O.decision_rows
+    try:
+        with pytest.raises(L3.SetupError, match="not stable"):
+            L3.read_b(out, (str(tmp_path),), sleep_fn=lambda s: None, tries=2)
+    finally:
+        L3.O.decision_rows = saved
+
+
+def test_missing_or_bad_ledger_md5_is_exit_2(tmp_path, monkeypatch):
+    out = fake_book(tmp_path, {"last_hour": "h", "last_hour_end_ms": 1, "run": "0001"})
+    monkeypatch.setattr(O, "decision_rows", lambda d: [{"kind": "open", "position_id": "p", "decision_ms": {"entry": 1}}])
+    st = json.loads((out / "status.json").read_text())
+    for bad in (None, "xyz", "0" * 32):  # absent, not hex, hex but not the tree md5
+        st["ledger_md5"] = bad
+        (out / "status.json").write_text(json.dumps(st))
+        with pytest.raises(L3.SetupError, match="not stable"):
+            L3.read_b(out, (str(tmp_path),), sleep_fn=lambda s: None, tries=2)
+
+
 def test_two_differing_reads_are_exit_2(world, capsys, monkeypatch):
     tmp, mp, m = book(world)
     real, n = O.decision_rows, [0]
@@ -199,6 +238,7 @@ def fake_book(tmp, status):
     (out / "runs" / "0001" / "ledger").mkdir(parents=True)
     (out / "runs" / "0002" / "ledger").mkdir(parents=True)
     (out / "book").symlink_to(out / "runs" / "0001")
+    status = {**status, "ledger_md5": O.tree_md5(out / "runs" / "0001" / "ledger")}  # what the driver writes after an hour
     (out / "status.json").write_text(json.dumps(status))
     return out
 

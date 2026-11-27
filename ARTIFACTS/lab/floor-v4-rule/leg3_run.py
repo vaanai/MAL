@@ -25,6 +25,7 @@ import argparse
 import contextlib
 import dataclasses
 import json
+import re
 import os
 import shutil
 import subprocess
@@ -128,33 +129,46 @@ def span_of(m, status):
 
 
 def read_b(out_root, roots, sleep_fn=time.sleep, tries=B_TRIES, retry_s=B_RETRY_S):
-    """(B, n_rows, rows, status): the whole-span decisions md5 of the active run's ledger rows. Accepted only when status.json (last_hour, last_hour_end_ms, run) and the `book` link target are unchanged
-    around the reads AND two consecutive full reads of the rows give the same md5; else retried, then SetupError (exit 2). status.json `decisions_md5` is NOT used: books run from older commits
-    (osb-ce1 at 457795f4) do not write that key."""
+    """(B, n_rows, rows, status): the whole-span decisions md5 of the active run's ledger rows. Accepted only when ALL hold, read in one window:
+      - status.json `ledger_md5` is a 32-hex value, equal in the status read before and after, and equal to osb_follow.tree_md5(<book target>/ledger) computed in that window (the driver writes it
+        after the hour is done, so a row written for the NEXT hour before the status update makes the tree md5 differ: retry);
+      - status last_hour, last_hour_end_ms and run are unchanged, the `book` link target is unchanged, and basename(target) == status `run`;
+      - two consecutive full reads of the rows give the same md5.
+    Anything else (a torn last line, an OSError, a ValueError from the tree md5) is a retry, then SetupError (exit 2), never an uncaught error (exit 1).
+    status.json `decisions_md5` is NOT used: books run from older commits (osb-ce1 at 457795f4) do not write that key; `ledger_md5` is written there and tree_md5 is byte-identical at both commits."""
     out_root = Path(out_root)
     link = out_root / "book"
 
     def stamp(st, target):
-        return (st.get("last_hour"), st.get("last_hour_end_ms"), st.get("run"), target)
+        return (st.get("last_hour"), st.get("last_hour_end_ms"), st.get("run"), st.get("ledger_md5"), target)
 
     for attempt in range(tries):
-        s1 = read_status(out_root)
-        if not link.is_symlink():
-            raise SetupError("no book link")
-        target = os.path.realpath(link)
-        why = TP.refusal(target, roots)
-        if why:
-            raise SetupError("ledger path refused")
-        rows = list(O.decision_rows(Path(target) / "ledger"))
-        b1 = O.decisions_md5_from_rows(rows)
-        rows2 = list(O.decision_rows(Path(target) / "ledger"))
-        b2 = O.decisions_md5_from_rows(rows2)
-        s2 = read_status(out_root)
-        if stamp(s1, target) == stamp(s2, os.path.realpath(link)) and b1 == b2 and any(r.get("kind") == "open" for r in rows):
-            return b1, len(rows), rows, s2
+        try:
+            s1 = read_status(out_root)
+            if not link.is_symlink():
+                raise SetupError("no book link")
+            target = os.path.realpath(link)
+            why = TP.refusal(target, roots)
+            if why:
+                raise SetupError("ledger path refused")
+            ledger = Path(target) / "ledger"
+            lm = s1.get("ledger_md5")
+            ok = isinstance(lm, str) and re.fullmatch(r"[0-9a-f]{32}", lm) is not None and os.path.basename(target) == s1.get("run")
+            tree = O.tree_md5(ledger) if ok else None
+            rows = list(O.decision_rows(ledger))
+            b1 = O.decisions_md5_from_rows(rows)
+            rows2 = list(O.decision_rows(ledger))
+            b2 = O.decisions_md5_from_rows(rows2)
+            tree2 = O.tree_md5(ledger) if ok else None
+            s2 = read_status(out_root)
+        except (OSError, ValueError):  # a torn or half-written line, a file moving under us: retry
+            ok = False
+        else:
+            if ok and tree == tree2 == lm and stamp(s1, target) == stamp(s2, os.path.realpath(link)) and b1 == b2 and any(r.get("kind") == "open" for r in rows):
+                return b1, len(rows), rows, s2
         if attempt + 1 < tries:
             sleep_fn(retry_s)
-    raise SetupError("the book's decisions md5 was not stable after %d reads (status, link and two equal reads)" % tries)
+    raise SetupError("the book's decisions md5 was not stable after %d reads (status, ledger md5, link and two equal reads)" % tries)
 
 
 def run_v4(m, last_end_ms, workdir, table_mode=None, engine_kw=None):
