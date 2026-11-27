@@ -283,7 +283,7 @@ def test_status_or_link_changing_mid_read_is_exit_2(tmp_path, monkeypatch, chang
 
 
 def test_stable_book_without_decisions_md5_key_is_accepted_unit(tmp_path, monkeypatch):
-    out = fake_book(tmp_path, {"last_hour": "h", "last_hour_end_ms": 1, "run": "0001"})
+    out = fake_book(tmp_path, {"last_hour": "h", "last_hour_end_ms": 1000, "run": "0001"})
     rows = [{"kind": "open", "position_id": "p", "decision_ms": {"entry": 1}}]
     monkeypatch.setattr(O, "decision_rows", lambda d: list(rows))
     b, n, got, st = L3.read_b(out, (str(tmp_path),), sleep_fn=lambda s: None, tries=2)
