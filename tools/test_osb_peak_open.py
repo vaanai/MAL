@@ -202,8 +202,8 @@ def test_entry_side_exclusion_near_ceiling_counted_and_early_exit_side_ok(capsys
     assert rc == 0 and "excluded=1" in out
     # exclusion status flips in H for an entry before the hold bound: it cannot have been open at the ceiling, so its status is unchanged by H
     early = CEIL - PO.HOLD_BOUND_MS - H
-    rc, out = lines_for(capsys, [pos(early, None, "engine_excluded", reason="feed_gap_exit")])
-    assert rc == 0 and "excluded=1" in out
+    rc, cap = go(capsys, FakeBoard([pos(early, None, "engine_excluded", reason="feed_gap_exit")], D25 + 5 * PO.DAY_MS), "2026-11-24", "2026-11-24")
+    assert rc == 0 and "day=2026-11-24 book=osb-ce1 stake=0.25 peak_open=0 positions_opened=0 excluded=1" in cap.out
 
 
 @pytest.mark.parametrize("first,last", [("2026-11-07", "2026-11-07"), ("2026-11-06", "2026-11-08"), ("2026-11-01", "2026-11-20")])
