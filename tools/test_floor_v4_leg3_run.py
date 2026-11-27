@@ -36,9 +36,16 @@ def book(world_, **over):
     return tmp, mp, m
 
 
+def pin_of(mp):
+    try:
+        return O.manifest_sha256(O.load_manifest(mp))
+    except O.Refused:
+        return None  # the runner refuses the manifest itself
+
+
 def go(tmp, mp, capsys, **kw):
     capsys.readouterr()  # drop the fixture book's own driver output
-    code = L3.run(["--manifest", str(mp), "--work-root", str(tmp / "work")], roots=(str(tmp),), work_allowed=(str(tmp),), manifest_pin=O.manifest_sha256(O.load_manifest(mp)), sleep_fn=lambda s: None, head="deadbeef", **kw)
+    code = L3.run(["--manifest", str(mp), "--work-root", str(tmp / "work")], roots=(str(tmp),), work_allowed=(str(tmp),), manifest_pin=pin_of(mp), sleep_fn=lambda s: None, head="deadbeef", **kw)
     cap = capsys.readouterr()
     assert cap.err == "", cap.err  # the job log captures both streams
     return code, cap.out
