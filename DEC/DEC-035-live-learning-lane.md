@@ -2469,7 +2469,7 @@ Paper and records only. No book has cleared the promotion gate.
 
 **Status: DRAFT. NOT installed. It authorises nothing until all of these hold:**
 1. QP OK and REVIEWER APPROVE at the exact head, then the merge.
-2. **H passes** (section 2). H is read once, from the first board build generated at or after 2026-12-02T02:00:00Z.
+2. **H passes** (section 2). H is read once, from the capture build fixed by QP-RULING-1127 R1-R9 (the first build generated in [2026-12-02T02:00:00Z, 2026-12-02T12:00:00Z] in which both books of the pair are `running` with `today_day` >= 2026-12-01; section 2, Erratum).
 3. **Vaan's own words in Helm's chat, quoted by Helm in a HELM-REPLY**, for this rule step and its revert waiver (section 3).
 4. A Helm GO.
 
@@ -2525,6 +2525,16 @@ Written 2026-11-27 (`date -u` 2026-11-27T06:02:41Z) for manager24, at main `7ab4
 > - (d) both books ran through 12-01 with no STALE flag; if either is STALE, H is NOT_DECIDABLE and the proposal says so.
 >
 > If H fails, CE1 is not proposed. For C, the same H with osb-c applies, if C is the fallback.
+
+**Erratum to the H instant (QP-RULING-1127-ce1-successor-H-capture, `/data/mal/hunt-1008/ops/`, sha256 `eea3169f79cdce3bef30e317bc0077aaf2b1ba3c67d0fdf6a9f383db03713f18`, OK WITH CONDITIONS, 2026-11-27; outcome-blind: no H row had been read).** Under the pinned board code (osb_board.py at ff00e565), day 12-01 is complete for a book only once its hour 2026-12-02T01 is stored, so "the first board build generated at or after 2026-12-02T02:00:00Z" would read 12-01 as a partial day. It is replaced by the ruling's R1-R9:
+- Pairs P-CE1 = {osb-ce1, osb-a} and P-C = {osb-c, osb-a}, each captured on its own.
+- The capture is the first build whose `generated_utc` is in [2026-12-02T02:00:00Z, 2026-12-02T12:00:00Z] and in which each book of the pair has `state` exactly "running" and `today_day` >= "2026-12-01". board.json and board.md are copied byte for byte (generated_utc, board_version, sha256 of both recorded).
+- With no qualifying build by 2026-12-02T12:00:00Z, H for that pair is NOT_DECIDABLE under (d). There is no later capture.
+- (d) is tested at the captured build. A disclosed, md5-verified successor inside the window does not fail (d).
+- If the captured board_version differs from osb_board.py=0343d90f in any of its four blobs, nobody reads its rows until QP rules.
+- The H seal holds until the capture or the cut-off, whichever comes first. The capture job is `scripts/ops/osb_h_capture.py` (PR #1511), which replaces job #3460.
+
+**CE1 disclosure (ruling C5; verbatim in the H record):** "Book job #2921 was cancelled by the manager at 2026-11-27T07:55:42Z (time-limit replacement: its MiScusi limit of 1,200,000 s would have ended it at about 2026-11-30T23:31:38Z, inside holdout H, and the 14-day cap allowed no extension past about 2026-12-01T02:10Z); successor job #3491 (same manifest, same code pin, MemoryMax <X>) replayed from start_hour, md5-by-hour verified through <last stored hour> (<n> hours, decision and ledger md5), re-processed hour <hour running at cancel>, and processed later hours with a delay; runs/0001 kept on record. The replacement was decided from job records only; no H row was read." The fields in angle brackets are filled from the flip record: job memory 14336 MB; 247 stored hours through 2026-11-27T06 at the cancel; no hour was running at the cancel (status wall time 07:55:12Z, last hour 2026-11-27T06). The QP-1125 Q3 disclosures (SEALS D7 feed gaps; the pool-creation burst) stay in force.
 
 The filled field gives: the board build's generated_utc, board_version and sha256; the six day pairs used; (a), (b), (c), (d) each as true or false under both legs; and the word PASS, FAIL or NOT_DECIDABLE. One look only. The read is not repeated on a later build. **If H is FAIL or NOT_DECIDABLE, this amendment is closed unmerged**, v2 stays, and only Am.15 installs (section 9).
 
