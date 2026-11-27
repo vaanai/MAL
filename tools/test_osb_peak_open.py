@@ -19,8 +19,8 @@ D1 = D0 + PO.DAY_MS
 LINE = re.compile(r"^(day=\d{4}-\d{2}-\d{2} book=[a-z0-9-]+ stake=[0-9.]+ peak_open=\d+ positions_opened=\d+ excluded=\d+|max_peak_open=\d+)$")
 
 
-def pos(t0, t1, status="closed", stake="0.25"):
-    return {"pid": "p%d" % t0, "t0": t0, "t1": t1, "status": {str(float(stake)): status}}
+def pos(t0, t1, status="closed", stake="0.25", reason=None):
+    return {"pid": "p%d" % t0, "t0": t0, "t1": t1, "status": {str(float(stake)): status}, "reason": ({str(float(stake)): reason} if reason else {})}
 
 
 class FakeBoard:
@@ -169,3 +169,49 @@ def test_real_inspect_book_path_with_running_book(tmp_path, monkeypatch, capsys)
     rc, cap = go(capsys, RB, last="2026-11-20")
     assert rc == 0 and cap.err == ""
     assert cap.out.splitlines() == ["day=2026-11-20 book=osb-ce1 stake=0.25 peak_open=1 positions_opened=1 excluded=0", "max_peak_open=1"]
+
+
+D25 = PO.day_start_ms("2026-11-25")
+CEIL = PO.CEILING_MS
+
+
+def lines_for(capsys, ps):
+    rc, cap = go(capsys, FakeBoard(ps, D25 + 5 * PO.DAY_MS), "2026-11-25", "2026-11-25")
+    return rc, cap.out
+
+
+def test_h_era_status_changes_do_not_change_ceiling_day(capsys):
+    fixed = [pos(D25 - H, D25 + H), pos(D25 + 3 * H, D25 + 4 * H), pos(D25 + 5 * H, None, "engine_excluded", reason="feed_gap_entry")]
+    rc0, base = lines_for(capsys, fixed + [pos(CEIL - H, None, "open_at_tape_end")])
+    assert rc0 == 0 and "excluded=1" in base
+    # the near-ceiling entry later gets an exit in H, or a trade row after the ceiling: byte-identical
+    for h_era in (pos(CEIL - H, CEIL + H), pos(CEIL - H, CEIL + 20 * H), pos(CEIL + H, CEIL + 2 * H)):
+        rc, out = lines_for(capsys, fixed + [h_era] if h_era["t0"] < CEIL else fixed + [pos(CEIL - H, None, "open_at_tape_end"), h_era])
+        assert (rc, out) == (rc0, base)
+
+
+@pytest.mark.parametrize("reason", ["feed_gap_exit", "exit_before_entry_landing", "feed_gap", "missing_v", "other", None])
+def test_exit_side_or_unknown_exclusion_near_ceiling_refused(capsys, reason):
+    for t0 in (CEIL - H, CEIL - PO.HOLD_BOUND_MS):
+        rc, out = lines_for(capsys, [pos(D25 - H, D25 + H), pos(t0, None, "engine_excluded", reason=reason)])
+        assert rc == 2 and out == ""
+
+
+def test_entry_side_exclusion_near_ceiling_counted_and_early_exit_side_ok(capsys):
+    rc, out = lines_for(capsys, [pos(CEIL - H, None, "engine_excluded", reason="feed_gap_entry"), pos(D25 - H, D25 + H)])
+    assert rc == 0 and "excluded=1" in out
+    # exclusion status flips in H for an entry before the hold bound: it cannot have been open at the ceiling, so its status is unchanged by H
+    early = CEIL - PO.HOLD_BOUND_MS - H
+    rc, out = lines_for(capsys, [pos(early, None, "engine_excluded", reason="feed_gap_exit")])
+    assert rc == 0 and "excluded=1" in out
+
+
+@pytest.mark.parametrize("first,last", [("2026-11-07", "2026-11-07"), ("2026-11-06", "2026-11-08"), ("2026-11-01", "2026-11-20")])
+def test_cutover_day_refused(capsys, first, last):
+    rc, cap = go(capsys, FakeBoard([pos(PO.day_start_ms("2026-11-01"), PO.day_start_ms("2026-11-01") + H)], D0 + 5 * PO.DAY_MS), first, last)
+    assert rc == 2 and cap.out == ""
+
+
+def test_cutover_day_not_in_range_ok(capsys):
+    rc, cap = go(capsys, FakeBoard([pos(PO.day_start_ms("2026-11-01"), PO.day_start_ms("2026-11-01") + H)], D0 + 5 * PO.DAY_MS), "2026-11-08", "2026-11-09")
+    assert rc == 0
