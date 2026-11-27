@@ -2579,7 +2579,19 @@ The figures for the jobs are as the manager gave them. This record did not open 
 
 QP-RULING-1126 Q4 arithmetic, QP's figures (manager hourly counts, hourly #3459): wallet at cost W = free 1.752330734 + basis 3.213390720 = 4.965721454 SOL; k slots need W ≥ 4.3801 (9), 4.7833 (10), 5.1866 (11), 5.5899 (12), 5.9931 (13); "so today about 10 concurrent; about +0.62 SOL for 12." Above 12 slots the 5.00 budget binds, and only a new owner word and an amendment move it. The top-up is HELM-ASK-1127-2 item 3. It is not a precondition of this amendment.
 
-**CE1 peak simultaneous open count: `PENDING (count job; else "unknown for CE1")`.** QP-RULING-1126 Q4: "Before Am.16, the manager adds one counts-only figure: the peak simultaneous open count of osb-ce1 and osb-a at 0.25 per complete day ... Without it, the amendment states the slot count as "unknown for CE1"." Do not raise the budget on a guess.
+**CE1 peak simultaneous open count.** QP-RULING-1126 Q4: "Before Am.16, the manager adds one counts-only figure: the peak simultaneous open count of osb-ce1 and osb-a at 0.25 per complete day ... Without it, the amendment states the slot count as "unknown for CE1"." The count is from manager job #3483 (PR #1508 merge fde52ab7, SEALS-BRIEF (y); MiScusi notebook n_AB0ZITTuJ8Oylw). The figures are the manager's. This record did not open the job output. Per day, at 0.25, 11-17 to 11-25:
+
+| Book | 11-17 | 11-18 | 11-19 | 11-20 | 11-21 | 11-22 | 11-23 | 11-24 | 11-25 | max |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| osb-ce1 | 13 | 12 | 13 | 11 | 14 | 12 | 13 | 20* | 15* | 20 |
+| osb-a | 13 | 11 | 11 | 11 | 13 | 9 | 10 | 21* | 16* | 21 |
+
+Disclosures:
+- \* Late 11-24 hours and 11-25 are upper bounds, under the as-of-ceiling rule.
+- On the other days the count can be lower than live concurrency would be. Engine-excluded entries are not in `peak_open`. These are the QP and reviewer disclosures on #1508.
+- It is a sim with no slot, budget or wallet limits. It is not a live count.
+
+**Reading.** On 11-17 to 11-23, CE1's daily peak is 11 to 14 and A's is 9 to 13, about one slot more. Both books go above the 12-slot live cap at times. The +0.62 SOL top-up reaches 12 slots only. At those peaks, the cap or the wallet floor would refuse some CE1 entries that the sim takes. Do not raise the budget on a guess.
 
 ### 9. Am.15 alone if this step fails
 
@@ -2603,9 +2615,9 @@ QP-RULING-1126 Q5, verbatim:
 
 ### 11. Not measured
 
-QP-RULING-1126 Q5, verbatim: "**Not measured:** CE1's peak open count; the recon S1/S2 direction at n 20; v4 equivalence on a real host log; the refuse-all length for a new root; the live TP mark at 0.40. Any switch is a rule step below decision-grade on a SIM OFF board, taken on the owner's word."
+QP-RULING-1126 Q5, verbatim: "**Not measured:** CE1's peak open count; the recon S1/S2 direction at n 20; v4 equivalence on a real host log; the refuse-all length for a new root; the live TP mark at 0.40. Any switch is a rule step below decision-grade on a SIM OFF board, taken on the owner's word." Since the ruling, CE1's peak open count has been counted in the sim only (section 8, job #3483). Its live concurrency is still not measured.
 
-Also not measured here: nothing was read from a host; no board disclosure section or per-day row was read; the job outputs of #3475 and #3476 were not opened (their figures are the manager's). QP's GUESS range after the switch (0.21-0.40 SOL/day, QP-RULING-1126 Q5) is a guess, not a measurement.
+Also not measured here: nothing was read from a host; no board disclosure section or per-day row was read; the job outputs of #3475, #3476 and #3483 were not opened (their figures are the manager's). QP's GUESS range after the switch (0.21-0.40 SOL/day, QP-RULING-1126 Q5) is a guess, not a measurement.
 
 **Amendment 15, Erratum 1** (install tree 7ab40363, expected start lines, restage, canary leg, host note) is its own T1 records PR, #1510; it is not part of this amendment.
 
