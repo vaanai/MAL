@@ -2538,9 +2538,15 @@ Written 2026-11-27 (`date -u` 2026-11-27T06:02:41Z) for manager24, at main `7ab4
 
 The filled field gives: the board build's generated_utc, board_version and sha256; the six day pairs used; (a), (b), (c), (d) each as true or false under both legs; and the word PASS, FAIL or NOT_DECIDABLE. One look only. The read is not repeated on a later build. **If H is FAIL or NOT_DECIDABLE, this amendment is closed unmerged**, v2 stays, and only Am.15 installs (section 9).
 
-### 3. The owner's word for this rule step (PENDING)
+### 3. The owner's word for this rule step (FILLED 2026-11-27; QP to confirm it meets the fill rule)
 
-**Owner word: `PENDING`.** Fill rule: Vaan's own words in Helm's chat, quoted word for word by Helm in a HELM-REPLY, that cover (i) the rule step l1-floor-v2 to l1-floor-v4 (vault 1.0 SOL, take-profit 1.3x) below decision-grade, (ii) the waiver of the Am.9 §3 automatic revert for this step, and (iii) the step-back check and the Am.14 rollbacks staying in force. The words asked for are HELM-ASK-1127-2 item 2:
+**Owner word: FILLED.** Source: `/data/mal/hunt-1008/push-1016/hunt29/p1/HELM-REPLY-1127-2-owner-words-am15-am16.md`, sha256 `c397c95274027de431e8523f58808e137ac49b82e8621c9d70c57d180388d09f` (Helm, 2026-11-27 09:38 PST). Helm quotes Vaan's own words in Helm chat, 2026-11-27 09:37 PST, verbatim:
+
+> "Yes on everything, I'm still trying on the top up it's just taking forever."
+
+Helm records that Vaan was answering Helm's question, which listed exactly three items relayed from HELM-ASK-1127-2. Helm's item 2 reads: "Am.16: switch l1-floor-v2 to l1-floor-v4 (vault 1.0 SOL, TP 1.3x) in the same install, below decision-grade, only if the 2026-12-02 fresh-day holdout passes. The Am.9 section 3 automatic revert is waived for this step; the step-back check (30 v4 trades or 2026-12-12) and the Am.14 rollbacks stay." So the words cover (i), (ii) and (iii) **by reference to that question**, not by restating them. This is the owner's word only if QP rules that "Yes on everything" to a question naming the three items meets the fill rule below. If QP rules it does not, this field goes back to `PENDING` and a restated yes is asked through Helm. Helm adds: "Words only. Nothing is installed. Install needs your GO HELM-ASK for one Dec 3-5 window, with a restage of 7ab40363." The top-up (item 3) has NOT landed (Helm will confirm on chain).
+
+Fill rule (kept for the record): Vaan's own words in Helm's chat, quoted word for word by Helm in a HELM-REPLY, that cover (i) the rule step l1-floor-v2 to l1-floor-v4 (vault 1.0 SOL, take-profit 1.3x) below decision-grade, (ii) the waiver of the Am.9 §3 automatic revert for this step, and (iii) the step-back check and the Am.14 rollbacks staying in force. The words asked for are HELM-ASK-1127-2 item 2:
 
 > **2. Am.16:** Yes to switching FLOOR's rule from l1-floor-v2 to l1-floor-v4 (vault 1.0 SOL, take-profit 1.3x) in the same install, below decision-grade, if the 2026-12-02 fresh-day holdout check passes. I waive the automatic Am.9 §3 revert for this step; the step-back check (at 30 v4 trades or 2026-12-12) and the Am.14 rollbacks stay.
 
