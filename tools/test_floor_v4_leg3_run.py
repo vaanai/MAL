@@ -29,10 +29,41 @@ FORBIDDEN = ("price", "fill", "pnl", "exit_reason", "tp_1", "sl", "reason", "led
 N_LONG = 100  # hours: the 60 h fixture ends before any exit row is priced; trailing quiet hours let the three fixture positions close
 
 
+TP_PRINT_RATIO = 1.4  # pool A's mid print: post-trade spot at 1.4 x the position's mark, inside [1.3 x, 1.5 x)
+TP_PRINT = {}  # filled by world_long: the extra print's t_recv_ms (H0-shifted onto the calendar) and the jump print's
+
+
+def tp_mid_row(landing_q=400_000_000):
+    """One extra pool-A buy between A's landing print and the 60 SOL jump, sized so the take-profit test (arena_rule_l1._tp_hit: (q + 0.99 so + V + net) / (b - token - tok) >= TP x mark)
+    sees 1.4 x the mark: above 1.3, below 1.5. The mark is derived with the rule's own formula from the landing state (pre-trade q 0.4 SOL, base 1e12, V)."""
+    from tools import arena_rule_l1 as L1
+    from tools.arena_stack import fee_ppm
+    from tools.test_arena_rule_l1 import V as VQ
+    b, so = 10**12, 1_000_000
+    Qe = landing_q + VQ
+    net = L1.STAKE_LAMPORTS * (1 - float(fee_ppm(Qe, b)) / 1e6)
+    tok = b * net / (Qe + net)
+    mark = (Qe + net) / (b - tok)
+    q = TP_PRINT_RATIO * mark * (b - so * 1000 - tok) - (0.99 * so + VQ + net)
+    return int(q), so
+
+
 @pytest.fixture
 def world_long(tmp_path, monkeypatch):
+    """a COPY of the executor test's three-pool rows (that fixture is not edited) plus one pool-A buy at 1.4 x the mark between the landing print and the jump print; 100 h."""
+    from tools.test_arena_rule_l1 import row as arow
     monkeypatch.setattr(TOF, "N_HOURS", N_LONG)  # make_world reads the module global
-    return make_world(tmp_path, shifted_rows(tmp_path))
+    rows = TOF._host_log_scenarios(tmp_path)
+    a = [r for r in rows if r["pool"] == "A"]
+    jump = next(r for r in a if r["side"] == "buy" and r["quote_reserve"] == 60 * 10**9)
+    landing = next(r for r in a if r["side"] == "sell" and r["quote_reserve"] == 400_000_000)
+    q, so = tp_mid_row()
+    t_mid = (landing["t_recv_ms"] + jump["t_recv_ms"]) // 2
+    rows.append(arow(t_mid, "A", "buy", q=q, sol=so, n=7))
+    rows.sort(key=lambda r: r["t_recv_ms"])
+    shift = T0 - TOF.H0
+    TP_PRINT.update(mid=t_mid + shift, jump=jump["t_recv_ms"] + shift)
+    return make_world(tmp_path, shifted_rows(tmp_path, rows))
 
 
 def book(world_, n=N_HOURS, seed_files=True, **over):
@@ -179,7 +210,12 @@ def test_ce1_shaped_fixture_is_EQUAL_with_exit_0(world_long, capsys, monkeypatch
         return sorted((x["pool"], ent[x["order_id"]]["ms"], x["ms"], x["reason"]) for x in log_rows if x.get("kind") == "exit")
     ex_a, ex_b = exits(seen["rows"]), exits(DecisionLog(str(Path(m["out_root"]) / "book")).rows("l1-floor-v2"))
     assert ex_a and [t[:3] for t in ex_a] == [t[:3] for t in ex_b], (len(ex_a), len(ex_b))
-    assert any(t[3].startswith("tp_") for t in ex_a) and any(t[3].startswith("tp_") for t in ex_b)  # a take-profit exit on both sides (labels differ: tp_1.3x vs tp_1.5x, not compared)
+    # the take-profit exit of pool A sits on the 1.4 x print (inside [1.3 x, 1.5 x)), before the jump print, on BOTH sides: a v4 that kept the default 1.5, or a book that ignored TP 1.3, would exit at the jump
+    tp_a = [t for t in ex_a if t[3].startswith("tp_")]
+    tp_b = [t for t in ex_b if t[3].startswith("tp_")]
+    assert len(tp_a) == 1 and len(tp_b) == 1
+    assert tp_a[0][2] == TP_PRINT["mid"] < TP_PRINT["jump"] and tp_b[0][2] == TP_PRINT["mid"], (tp_a, tp_b, TP_PRINT)
+    assert tp_a[0][3] == "tp_1.3x"  # A's label (B keeps tp_1.5x: osb_follow does not override REASON_TP; labels are not compared across the sides)
     a, b = [ln.split(": ")[1] for ln in lines if ln.startswith(("A: ", "B: "))]
     assert a == b
     assert int(re.search(r"A_entry_rows=(\d+)", out).group(1)) > 0
