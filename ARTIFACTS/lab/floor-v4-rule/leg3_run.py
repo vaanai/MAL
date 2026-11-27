@@ -22,6 +22,7 @@ Exit codes: 0 equal, 1 unequal, 2 setup error (span, seed, manifest, pins, paths
 from __future__ import annotations
 
 import argparse
+import contextlib
 import dataclasses
 import json
 import os
@@ -231,7 +232,8 @@ def run(argv=None, *, roots=None, work_allowed=WORK_ALLOWED, manifest_pin=None, 
             check_tape_hours(m, first_ms, last_end, roots)
             os.makedirs(a.work_root, exist_ok=True)
             workdir = tempfile.mkdtemp(prefix="run-", dir=a.work_root)
-            ledger_rows, entry_rows = (v4_runner or run_v4)(m, last_end, workdir, **({"table_mode": table_mode, "engine_kw": engine_kw} if v4_runner is None else {}))
+            with open(os.devnull, "w") as dn, contextlib.redirect_stdout(dn), contextlib.redirect_stderr(dn):  # the host prints its own progress lines (table checkpoints, counts): only the allowed fields reach the job log
+                ledger_rows, entry_rows = (v4_runner or run_v4)(m, last_end, workdir, **({"table_mode": table_mode, "engine_kw": engine_kw} if v4_runner is None else {}))
             a_md5 = C.normalized_md5(ledger_rows, entry_rows)
         except (SetupError, O.Refused) as e:
             emit(["git_head: %s" % head, "SETUP ERROR: %s" % str(e)[:200], "exit_code: %d" % EXIT_SETUP])
