@@ -2,6 +2,7 @@
 Checks: only the allowed fields are printed; exit 0 equal, 1 unequal, 2 on an unresolvable span / seed / pin; an end-to-end v4 offline run on the fixture hours. Nothing here says any book makes money."""
 import importlib.util
 import json
+import os
 import re
 import sys
 from pathlib import Path
@@ -165,15 +166,74 @@ def test_manifest_pin_mismatch_is_exit_2(world, capsys):
     assert code == 2
 
 
-def test_status_disagreeing_with_rows_is_exit_2_after_retries(world, capsys):
+def test_status_without_decisions_md5_is_accepted(world, capsys, monkeypatch):
+    """osb-ce1 runs from 457795f4, whose status.json has no decisions_md5 key: B must still be accepted (run 3472 failed on exactly this)"""
     tmp, mp, m = book(world)
     sp = Path(m["out_root"]) / "status.json"
     st = json.loads(sp.read_text())
-    st["decisions_md5"] = "1" * 32
+    st.pop("decisions_md5", None)
     sp.write_text(json.dumps(st))
+    b = O.book_decisions_md5(m["out_root"])
+    monkeypatch.setattr(L3.C, "normalized_md5", lambda led, ent, md5_fn=None: b)
+    code, out = go(tmp, mp, capsys, v4_runner=lambda *a, **k: ([{"kind": "open"}], [{"kind": "entry"}]))
+    lines = check_fields(out)
+    assert code == 0 and "B: %s" % b in lines
+
+
+def test_two_differing_reads_are_exit_2(world, capsys, monkeypatch):
+    tmp, mp, m = book(world)
+    real, n = O.decision_rows, [0]
+
+    def flaky(d):
+        n[0] += 1
+        rows = list(real(d))
+        return rows + ([{"kind": "open", "position_id": "x%d" % n[0], "decision_ms": {"entry": n[0]}}] if n[0] % 2 else [])  # every second read differs from the first
+    monkeypatch.setattr(O, "decision_rows", flaky)
     code, out = go(tmp, mp, capsys, v4_runner=lambda *a, **k: ([], []))
     check_fields(out)
-    assert code == 2
+    assert code == 2 and "not stable" in out and "result:" not in out
+
+
+def fake_book(tmp, status):
+    out = tmp / "out"
+    (out / "runs" / "0001" / "ledger").mkdir(parents=True)
+    (out / "runs" / "0002" / "ledger").mkdir(parents=True)
+    (out / "book").symlink_to(out / "runs" / "0001")
+    (out / "status.json").write_text(json.dumps(status))
+    return out
+
+
+@pytest.mark.parametrize("change", ["last_hour", "last_hour_end_ms", "run", "link"])
+def test_status_or_link_changing_mid_read_is_exit_2(tmp_path, monkeypatch, change):
+    st = {"last_hour": "2026-11-03T11", "last_hour_end_ms": 1, "run": "0001"}
+    out = fake_book(tmp_path, st)
+    rows = [{"kind": "open", "position_id": "p", "decision_ms": {"entry": 1}}]
+
+    n = [0]
+
+    def moving(d):  # a new hour / run / link lands during every read
+        n[0] += 1
+        if change == "link":
+            if n[0] % 2:  # flip on the first read of each attempt only
+                cur_t = os.path.realpath(out / "book")
+                (out / "book").unlink()
+                (out / "book").symlink_to(out / "runs" / ("0002" if cur_t.endswith("0001") else "0001"))
+        else:
+            cur = json.loads((out / "status.json").read_text())
+            cur[change] = cur[change] + ("x" if isinstance(cur[change], str) else 1)
+            (out / "status.json").write_text(json.dumps(cur))
+        return list(rows)
+    monkeypatch.setattr(O, "decision_rows", moving)
+    with pytest.raises(L3.SetupError, match="not stable"):
+        L3.read_b(out, (str(tmp_path),), sleep_fn=lambda s: None, tries=2)
+
+
+def test_stable_book_without_decisions_md5_key_is_accepted_unit(tmp_path, monkeypatch):
+    out = fake_book(tmp_path, {"last_hour": "h", "last_hour_end_ms": 1, "run": "0001"})
+    rows = [{"kind": "open", "position_id": "p", "decision_ms": {"entry": 1}}]
+    monkeypatch.setattr(O, "decision_rows", lambda d: list(rows))
+    b, n, got, st = L3.read_b(out, (str(tmp_path),), sleep_fn=lambda s: None, tries=2)
+    assert b == O.decisions_md5_from_rows(rows) and n == 1
 
 
 def test_missing_tape_hour_is_exit_2(world, capsys):
