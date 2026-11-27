@@ -1,6 +1,6 @@
 """Counts-only peak simultaneous open count of one open-sim book at one stake rung (QP-RULING-1126 Q4). Standalone; osb_board.py is imported, not changed.
 Reads only the entry and exit instants (and the open/closed status) of each position at the rung, through the board's own book lookup and pricer. Prints day lines and one max line, nothing else.
-Hard ceiling in code: any day after 2026-11-25 is refused (exit 2); the pricer reads the whole ledger in memory, and the output is made independent of rows at or after the ceiling by the rules in spans_of (exits and entries cut, exclusions of unknown timing near the ceiling refused);
+Hard ceiling in code: any day after 2026-11-25 is refused (exit 2); the pricer reads the whole ledger in memory, and the output is made independent of rows at or after the ceiling by the rules in spans_of (exits and entries cut, entries within the hold bound before the ceiling counted as open to the end whatever their status);
 the 2026-11-07 cut-over day is refused; the first data day may be partial and prints as a full day; 2026-11-26..2026-12-01 is holdout H, sealed until 2026-12-02T02:00Z. Exit codes: 0 ok, 2 setup error."""
 import argparse, math, re, sys, time
 from datetime import datetime, timezone
@@ -43,8 +43,8 @@ def check_days(first, last):
     return a, b
 
 
-HOLD_BOUND_MS = 86_400_000 + 1_900 + 1_000 + 2 * 3_600_000  # max hold (arena_rule_l1 HOLD_MS) + host tick + 2 h for an exit-side exclusion to resolve (floor_nov_pnl exit-completeness comment)
-ENTRY_SIDE_REASON = "feed_gap_entry"  # the only exclusion reason decided at the entry (floor_gap_range_engine); every other reason is exit-side or of unknown timing
+DEFAULT_HOLD_S, LEG_MS, TICK_MS, MARGIN_MS = 86_400, 1_900, 1_000, 2 * 3_600_000
+HOLD_BOUND_MS = int(DEFAULT_HOLD_S * 1000) + LEG_MS + TICK_MS + MARGIN_MS  # default bound; max hold (arena_rule_l1 HOLD_MS) + host tick + 2 h for an exit-side exclusion to resolve (floor_nov_pnl exit-completeness comment)
 CUTOVER_DAY = "2026-11-07"  # floor_nov_pnl drops the 2026-11-07T18Z cut-over hour's entries, so counts for that day would be low: refused
 assert CEILING_MS == int(datetime(2026, 11, 26, tzinfo=timezone.utc).timestamp() * 1000)
 
@@ -77,28 +77,41 @@ def day_counts(spans, d0):
     return peak, opened
 
 
-def spans_of(pnl, stake, end_ms):
+def hold_bound_ms(manifest):
+    """max(default hold, the manifest's HOLD_S override) + leg + tick + 2 h margin. A manifest whose override cannot be read is a setup error (independent of holdout data)."""
+    ov = manifest.get("rule_overrides", {})
+    if not isinstance(ov, dict):
+        raise Refusal("rule_overrides unreadable")
+    hold_s = ov.get("HOLD_S", DEFAULT_HOLD_S)
+    if isinstance(hold_s, bool) or not isinstance(hold_s, (int, float)) or not math.isfinite(hold_s) or hold_s <= 0:
+        raise Refusal("HOLD_S unreadable")
+    return int(max(DEFAULT_HOLD_S, hold_s) * 1000) + LEG_MS + TICK_MS + MARGIN_MS
+
+
+def spans_of(pnl, stake, end_ms, bound_ms=HOLD_BOUND_MS):
     """-> (spans, excluded_t0s, first_t0). Output is made independent of rows at or after CEILING_MS (the pricer itself still reads them in memory): an entry at or after it is dropped, an exit at or after it (or still open) is open to the end.
-    A closed entry with no exit instant is a setup error. engine_excluded entries are not opens; their entry instants are returned for the per-day excluded count."""
+    A closed entry with no exit instant is a setup error. engine_excluded entries before the NEAR window are not opens; their entry instants are returned for the per-day excluded count."""
     sk, out, exc, first = str(float(stake)), [], [], None
     end_ms = min(end_ms, CEILING_MS)
+    near_from = CEILING_MS - bound_ms
     for p in pnl.get("positions", []):
         st = p["status"].get(sk)
         t0, t1 = p["t0"], p.get("t1")
+        if t0 >= CEILING_MS:
+            continue
         first = t0 if first is None else min(first, t0)
         if t0 >= end_ms:
             continue
-        if st == "closed":
+        if t0 >= near_from:
+            # NEAR the ceiling: an exit, an exclusion row or its absence could all come from holdout H, so the status is not read: the entry counts as opened and open to the end (an upper bound)
+            out.append((t0, None))
+        elif st == "closed":
             if t1 is None:
                 raise Refusal("closed entry without exit instant")
             out.append((t0, None if t1 >= end_ms else t1))
         elif st == "open_at_tape_end":
             out.append((t0, None))
         elif st == "engine_excluded":
-            # the pricer keeps no instant for the exclusion row. Entry-side (decided at the entry): counted. Anything else could have been decided in H for an entry still open at the ceiling: refuse
-            reason = (p.get("reason") or {}).get(sk)
-            if reason != ENTRY_SIDE_REASON and t0 >= CEILING_MS - HOLD_BOUND_MS:
-                raise Refusal("exclusion of unknown timing near the ceiling")
             exc.append(t0)
     return out, exc, first
 
@@ -124,7 +137,7 @@ def run(a, B):
         raise Refusal("no ledger")
     last_complete = B.complete_last_day(end)
     out, mx = [], 0
-    spans, exc, first = spans_of(pnl, rung, end)
+    spans, exc, first = spans_of(pnl, rung, end, hold_bound_ms(hit[0]["m"]))
     if first is None or first_ms < first // DAY_MS * DAY_MS:
         raise Refusal("day before the book's data start")
     for d0 in range(first_ms, last_ms + 1, DAY_MS):

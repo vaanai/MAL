@@ -26,11 +26,11 @@ def pos(t0, t1, status="closed", stake="0.25", reason=None):
 class FakeBoard:
     LAG = 90 * 60_000
 
-    def __init__(self, positions, end, found=True, torn=False):
-        self.positions, self.end, self.found, self.torn = positions, end, found, torn
+    def __init__(self, positions, end, found=True, torn=False, extra=None):
+        self.positions, self.end, self.found, self.torn, self.extra = positions, end, found, torn, extra or {}
 
     def load_books_file(self, path):
-        return ([{"m": {"book_id": "osb-ce1", "stakes_sol": [0.1, 0.25]}}] if self.found else [{"m": {"book_id": "other"}}]), None
+        return ([{"m": {"book_id": "osb-ce1", "stakes_sol": [0.1, 0.25], **self.extra}}] if self.found else [{"m": {"book_id": "other"}}]), None
 
     def inspect_book(self, b, now_ms, roots):
         if self.torn:
@@ -144,7 +144,7 @@ def test_holdout_events_cannot_change_ceiling_day(capsys):
         assert rc == 0
         outs.append(cap.out)
     assert outs[0] == outs[1] == outs[2]
-    assert "day=2026-11-25 book=osb-ce1 stake=0.25 peak_open=2 positions_opened=2 excluded=0" in outs[0]
+    assert "day=2026-11-25 book=osb-ce1 stake=0.25 peak_open=3 positions_opened=2 excluded=0" in outs[0]
 
 
 def test_day_before_data_start_refused(capsys):
@@ -175,35 +175,64 @@ D25 = PO.day_start_ms("2026-11-25")
 CEIL = PO.CEILING_MS
 
 
-def lines_for(capsys, ps):
-    rc, cap = go(capsys, FakeBoard(ps, D25 + 5 * PO.DAY_MS), "2026-11-25", "2026-11-25")
+def lines_for(capsys, ps, manifest_extra=None):
+    rc, cap = go(capsys, FakeBoard(ps, D25 + 5 * PO.DAY_MS, **({"extra": manifest_extra} if manifest_extra else {})), "2026-11-25", "2026-11-25")
     return rc, cap.out
 
 
-def test_h_era_status_changes_do_not_change_ceiling_day(capsys):
-    fixed = [pos(D25 - H, D25 + H), pos(D25 + 3 * H, D25 + 4 * H), pos(D25 + 5 * H, None, "engine_excluded", reason="feed_gap_entry")]
-    rc0, base = lines_for(capsys, fixed + [pos(CEIL - H, None, "open_at_tape_end")])
-    assert rc0 == 0 and "excluded=1" in base
-    # the near-ceiling entry later gets an exit in H, or a trade row after the ceiling: byte-identical
-    for h_era in (pos(CEIL - H, CEIL + H), pos(CEIL - H, CEIL + 20 * H), pos(CEIL + H, CEIL + 2 * H)):
-        rc, out = lines_for(capsys, fixed + [h_era] if h_era["t0"] < CEIL else fixed + [pos(CEIL - H, None, "open_at_tape_end"), h_era])
-        assert (rc, out) == (rc0, base)
+def test_near_entries_output_independent_of_later_rows(capsys):
+    fixed = [pos(D25 - H, D25 + H), pos(D25 + 3 * H, D25 + 4 * H)]
+    near_t0 = [CEIL - H, CEIL - 3 * H]
+    variants = [
+        lambda t0: pos(t0, t0 + 2 * H),                                   # exits before the ceiling
+        lambda t0: pos(t0, CEIL + 5 * H),                                  # exits in H
+        lambda t0: pos(t0, None, "engine_excluded", reason="feed_gap_entry"),
+        lambda t0: pos(t0, None, "engine_excluded", reason="feed_gap_exit"),
+        lambda t0: pos(t0, None, "engine_excluded", reason="other"),
+        lambda t0: pos(t0, None, "engine_excluded"),
+        lambda t0: pos(t0, None, "open_at_tape_end"),                      # no later row
+        lambda t0: pos(t0, None, "closed"),                                # closed with no exit instant: no refusal
+    ]
+    outs = set()
+    for v in variants:
+        if v is variants[0]:
+            continue  # an exit before the ceiling is the only variant below: see test_near_exit_before_ceiling
+        rc, out = lines_for(capsys, fixed + [v(t) for t in near_t0])
+        assert rc == 0
+        outs.add(out)
+    assert len(outs) == 1
+    out = outs.pop()
+    assert "peak_open=4 positions_opened=3 excluded=0" in out  # every entry of the day is inside the NEAR window (about 26 h)
+    # near-ceiling entries count as opened and open to the end of 11-25
+    rc, out0 = lines_for(capsys, fixed + [pos(t, t + 2 * H) for t in near_t0])
+    assert rc == 0 and out0 == out
 
 
-@pytest.mark.parametrize("reason", ["feed_gap_exit", "exit_before_entry_landing", "feed_gap", "missing_v", "other", None])
-def test_exit_side_or_unknown_exclusion_near_ceiling_refused(capsys, reason):
-    for t0 in (CEIL - H, CEIL - PO.HOLD_BOUND_MS):
-        rc, out = lines_for(capsys, [pos(D25 - H, D25 + H), pos(t0, None, "engine_excluded", reason=reason)])
-        assert rc == 2 and out == ""
-
-
-def test_entry_side_exclusion_near_ceiling_counted_and_early_exit_side_ok(capsys):
-    rc, out = lines_for(capsys, [pos(CEIL - H, None, "engine_excluded", reason="feed_gap_entry"), pos(D25 - H, D25 + H)])
-    assert rc == 0 and "excluded=1" in out
-    # exclusion status flips in H for an entry before the hold bound: it cannot have been open at the ceiling, so its status is unchanged by H
+def test_pre_near_entries_keep_exit_and_excluded_logic(capsys):
     early = CEIL - PO.HOLD_BOUND_MS - H
     rc, cap = go(capsys, FakeBoard([pos(early, None, "engine_excluded", reason="feed_gap_exit")], D25 + 5 * PO.DAY_MS), "2026-11-24", "2026-11-24")
-    assert rc == 0 and "day=2026-11-24 book=osb-ce1 stake=0.25 peak_open=0 positions_opened=0 excluded=1" in cap.out
+    assert rc == 0 and "peak_open=0 positions_opened=0 excluded=1" in cap.out
+
+
+def test_hold_bound_reads_manifest_override():
+    assert PO.hold_bound_ms({}) == PO.HOLD_BOUND_MS
+    assert PO.hold_bound_ms({"rule_overrides": {"TP": 1.2}}) == PO.HOLD_BOUND_MS
+    assert PO.hold_bound_ms({"rule_overrides": {"HOLD_S": 172800}}) == PO.HOLD_BOUND_MS + 86_400_000
+    assert PO.hold_bound_ms({"rule_overrides": {"HOLD_S": 3600}}) == PO.HOLD_BOUND_MS  # max with the default
+    for bad in ({"rule_overrides": []}, {"rule_overrides": {"HOLD_S": "x"}}, {"rule_overrides": {"HOLD_S": float("nan")}}, {"rule_overrides": {"HOLD_S": -1}}, {"rule_overrides": {"HOLD_S": True}}):
+        with pytest.raises(PO.Refusal):
+            PO.hold_bound_ms(bad)
+
+
+def test_longer_manifest_hold_widens_near_window(capsys):
+    t0 = CEIL - PO.HOLD_BOUND_MS - H  # outside the default window, inside a 2-day hold's window
+    rc3, cap = go(capsys, FakeBoard([pos(t0, t0 + H)], D25 + 5 * PO.DAY_MS, extra={"rule_overrides": {"HOLD_S": 172800}}), "2026-11-24", "2026-11-25")
+    assert rc3 == 0 and cap.out.splitlines()[-2].endswith("peak_open=1 positions_opened=0 excluded=0")
+
+
+def test_unreadable_manifest_hold_exit_2(capsys):
+    rc, out = lines_for(capsys, [pos(D25 - H, D25 + H)], {"rule_overrides": {"HOLD_S": "x"}})
+    assert rc == 2 and out == ""
 
 
 @pytest.mark.parametrize("first,last", [("2026-11-07", "2026-11-07"), ("2026-11-06", "2026-11-08"), ("2026-11-01", "2026-11-20")])
