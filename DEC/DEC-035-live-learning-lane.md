@@ -2526,3 +2526,177 @@ Written 2026-11-24 by manager24 (first text committed at 17:37:04Z, commit 704d1
 - **Owed (ruling item 1 (iv)).** The S' registration, when written, states "not blind: external per-trade release from X; the open-sim board's sim exit labels (book A included) released externally from X", and that no externally suggested change is acted on inside [S', R'); acting on one would be a FAIL end.
 
 Paper and records only. No book has cleared the promotion gate.
+
+## Amendment 16 (2026-11-27): floor-lane-1 rule step l1-floor-v2 to l1-floor-v4 (vault 1.0 SOL, TP 1.3), below decision-grade (DRAFT)
+
+**Status: DRAFT. NOT installed. It authorises nothing until all of these hold:**
+1. QP OK and REVIEWER APPROVE at the exact head, then the merge.
+2. **H passes** (section 2). H is read once, from the capture build fixed by QP-RULING-1127 R1-R9 (the first build generated in [2026-12-02T02:00:00Z, 2026-12-02T12:00:00Z] in which both books of the pair are `running` with `today_day` >= 2026-12-01; section 2, Erratum).
+3. **Vaan's own words in Helm's chat, quoted by Helm in a HELM-REPLY**, for this rule step and its revert waiver (section 3).
+4. A Helm GO.
+
+**This PR is opened now. It merges only after the H result and the owner's words are filled in.** Both are marked `PENDING` below, with the exact rule for filling them. A merge with either field still `PENDING` is not allowed. H cannot be read before 2026-12-02T02:00:00Z.
+
+Written 2026-11-27 (`date -u` 2026-11-27T06:02:41Z) for manager24, at main `7ab40363a9f2ef46a7fbd114a41d6f7a17168eb7`. Amendment 16 is the next free number (Amendment 15 is the last). Records only: no code, config, host, unit or live file is touched here. **floor-lane-1 has not cleared the promotion gate, and nothing here says FLOOR or l1-floor-v4 makes money.** No gate threshold, seal or registered clock changes.
+
+**Sources.**
+- `/data/mal/hunt-1008/ops/QP-RULING-1126-floor-wider-rule-path.md` (sha256 `115c39d4f2468d8bb1df893a0d97997633c07c94f3ddf709b05ea22e78c266c9`). **Q3 step 3 is the spec of this amendment.** Q2 (H and the step-back rule), Q4 (capital) and Q5 (what kills it, not measured) feed it. Where this text and the ruling differ, the ruling controls.
+- `/data/mal/hunt-1008/push-1016/hunt29/p1/HELM-ASK-1127-2-owner-words-am15-am16.md` (sha256 `124a1c90cfed2da56e29669dc712201603b2ae22dc7f41372688724e83aa9add`), the owner-word ask already sent to Helm.
+- QP-RULING-1120-floor-gate-path Q5; the QP verdict on PR #1457 (`ops/reports/2026-11-18/qp-pr1457-floor-v3-executor.md`, "Notes for deploy"); the QP verdict on PR #1506.
+- Amendment 7 item 3; Amendment 9 §3; Amendment 14 (values, rollback triggers B1 to B5, Am.13 interaction); Amendment 15.
+- The v4 code PRs #1504 (merge 704c75fe), #1505 (merge b5b569a1), #1506 (merge ea33f699) and #1507 (merge 7ab40363), each merged with QP OK and REVIEWER APPROVE at its head.
+
+**Decider.** Vaan (owner), by the word of section 3. Until that word is quoted, there is no decider and no step.
+
+### 1. The Am.9 §3 disclosure, and the label
+
+**This step is below decision-grade.** The open-sim recon FAILs, so every board book is "SIM OFF". Am.9 §3, last paragraph, is the only route: "a rule or parameter step at an unchanged or lower stake is taken only on the owner's explicit word for that step, quoted in the record", and a board number may be shown "with that label, but no live step rests on it". **No board number is the ground for this step. The owner's word is.**
+
+**Board labels, verbatim from the source** `scripts/research/osb_board.py` at `7ab40363` (blob `f1bb3a6b7ecae46f398a5d9f24e7f5f58d80d0ac`):
+- `SIM_OFF = "SIM OFF: not decision-grade"` (line 47).
+- The board.md line on a recon FAIL (line 914): "SIM OFF: not decision-grade: a recon band FAILs (see the Recon line); every figure below is greyed and no live step rests on it."
+- `WATCH_SENTENCE = "best of %d book rows; treat as shrunk"` (line 63). With 36 rows watched: **"best of 36 book rows; treat as shrunk"**.
+- `LIMIT_SENTENCE = "No limit layer (max_open, budget, daily stop) is applied to any book; live results can differ from these rows when a limit binds."` (line 52).
+- `EXTRAP_LABEL = "model only, extrapolated; not for steering"` (line 64), for stakes above 0.25.
+
+**The board recon line, verbatim** from `/home/claude/data/open-sim/board.md` lines 5 to 8 only (board "Generated 2026-11-27T06:00:38Z; tape through 2026-11-25T15:00:00Z (the slowest book with data); board_version osb_board.py=0343d90f02fde0a79c2bdc62a5c316c5ea97f511"):
+
+> Recon: FAIL (book A against the live bot, 2026-11-11T12:00:00Z to 2026-11-27T05:00:00Z): H1 PASS, H2 PASS, H3 PASS; sim-only 35: executor:a3_pause 1, executor:lane_budget 12, executor:wallet_floor 19, restart_lockout 3 (explained, not counted); S1 FAIL (n 20); S2 FAIL (n 20); S3 PASS (n 20); S4 FAIL (n 20). SIM OFF: not decision-grade.
+
+**The Am.9 §3 disclosure figures**, as QP-RULING-1126 Q1 quotes them verbatim from the board build generated 2026-11-26T19:15:20Z (0.25 SOL, flat / pressure, forward, paired against osb-a on the same days). This record did not read the board's disclosure section or any per-day row.
+- Book id and start instant: `osb-ce1`, start 2026-11-17T00:00:00Z; no in-sample entry.
+- osb-ce1: n 108 over 9 days, positive 9/9 both legs; net +2.7120 / +2.5559; ex-top-3 +1.9816 / +1.8656.
+- Control osb-a on the same days: +1.5712 / +1.4799 (ex-top-3 +0.7834 / +0.7385).
+- Paired difference: +1.1408 / +1.0760 over 9 days.
+- Live-minus-sim bias of the control book: not on the board (QP-RULING-1126 Q2: "The current n 20 direction is not on the board").
+- "best of 36 book rows; treat as shrunk".
+- Every row "SIM OFF: not decision-grade".
+
+**Selection and concentration (QP-RULING-1126 Q1, restated).** CE1 was the best of 36 rows, picked after seeing C and E1. Its design is in-sample (vault 1.0 and TP 1.3 "were chosen on 2026-11-03..11-16 data"). 64% of the CE1 gap over osb-a sits on two days (11-23, 11-24). The board applies no limit layer. No live fill of TP 1.3 or vault 1.0 exists. QP's gate check of "CE1 is better": "Clears the gate: **NO**".
+
+**At the H read the manager adds** the same disclosure from the H board build (generated_utc, board_version, sha256), by the same Am.9 §3 list. That build's figures replace none of the above; both stand.
+
+### 2. H: the fresh-day holdout (PENDING)
+
+**H result: `PENDING`.** Fill rule (QP-RULING-1126 Q2, verbatim):
+
+> **H. Fresh-day holdout, fixed now (one look, before any install).** Days not seen when CE1 was picked or when this ruling was written: complete UTC days 2026-11-26 through 2026-12-01. Read once from the first board build generated at or after 2026-12-02T02:00:00Z (record generated_utc, board_version, sha256). Use the per-day rows of osb-ce1 and osb-a at 0.25. The switch proposal goes forward only if ALL hold, under both flat and pressure:
+> - (a) Σ(CE1 day) − Σ(A day) over the 6 days > 0;
+> - (b) CE1 − A > 0 on at least 4 of the 6 days (flat);
+> - (c) Σ(CE1 day) over the 6 days > 0;
+> - (d) both books ran through 12-01 with no STALE flag; if either is STALE, H is NOT_DECIDABLE and the proposal says so.
+>
+> If H fails, CE1 is not proposed. For C, the same H with osb-c applies, if C is the fallback.
+
+**Erratum to the H instant (QP-RULING-1127-ce1-successor-H-capture, `/data/mal/hunt-1008/ops/`, sha256 `eea3169f79cdce3bef30e317bc0077aaf2b1ba3c67d0fdf6a9f383db03713f18`, OK WITH CONDITIONS, 2026-11-27; outcome-blind: no H row had been read).** Under the pinned board code (osb_board.py at ff00e565), day 12-01 is complete for a book only once its hour 2026-12-02T01 is stored, so "the first board build generated at or after 2026-12-02T02:00:00Z" would read 12-01 as a partial day. It is replaced by the ruling's R1-R9:
+- Pairs P-CE1 = {osb-ce1, osb-a} and P-C = {osb-c, osb-a}, each captured on its own.
+- The capture is the first build whose `generated_utc` is in [2026-12-02T02:00:00Z, 2026-12-02T12:00:00Z] and in which each book of the pair has `state` exactly "running" and `today_day` >= "2026-12-01". board.json and board.md are copied byte for byte (generated_utc, board_version, sha256 of both recorded). It is the first such build **observed** by the capture job at a 10 s poll; a build replaced within one poll is not seen. By R4 its H rows equal the captured build's in every other qualifying build, since days 11-26..12-01 are complete in all of them, so which qualifying build is seen first does not change H.
+- With no qualifying build observed by 2026-12-02T12:00:00Z, H for that pair is NOT_DECIDABLE under (d). There is no later capture. The record then carries the capture job's `job_start_utc` from its state log, so a NOT_DECIDABLE caused by job downtime is not described as a board fact.
+- (d) is tested at the captured build. A disclosed, md5-verified successor inside the window does not fail (d).
+- If the captured board_version differs from osb_board.py=0343d90f in any of its four blobs, nobody reads its rows until QP rules.
+- The H seal holds until the capture or the cut-off, whichever comes first. The capture job is `scripts/ops/osb_h_capture.py` (PR #1511), which replaces job #3460.
+
+**CE1 disclosure (ruling C5; verbatim in the H record):** "Book job #2921 was cancelled by the manager at 2026-11-27T07:55:42Z (time-limit replacement: its MiScusi limit of 1,200,000 s would have ended it at about 2026-11-30T23:31:38Z, inside holdout H, and the 14-day cap allowed no extension past about 2026-12-01T02:10Z); successor job #3491 (same manifest, same code pin, MemoryMax <X>) replayed from start_hour, md5-by-hour verified through <last stored hour> (<n> hours, decision and ledger md5), re-processed hour <hour running at cancel>, and processed later hours with a delay; runs/0001 kept on record. The replacement was decided from job records only; no H row was read." The fields in angle brackets are filled from the flip record: job memory 14336 MB; 247 stored hours through 2026-11-27T06 at the cancel; no hour was running at the cancel (status wall time 07:55:12Z, last hour 2026-11-27T06). The QP-1125 Q3 disclosures (SEALS D7 feed gaps; the pool-creation burst) stay in force.
+
+The filled field gives: the board build's generated_utc, board_version and sha256; the six day pairs used; (a), (b), (c), (d) each as true or false under both legs; and the word PASS, FAIL or NOT_DECIDABLE. One look only. The read is not repeated on a later build. **If H is FAIL or NOT_DECIDABLE, this amendment is closed unmerged**, v2 stays, and only Am.15 installs (section 9).
+
+### 3. The owner's word for this rule step (FILLED 2026-11-27; QP to confirm it meets the fill rule)
+
+**Owner word: FILLED.** Source: `/data/mal/hunt-1008/push-1016/hunt29/p1/HELM-REPLY-1127-2-owner-words-am15-am16.md`, sha256 `c397c95274027de431e8523f58808e137ac49b82e8621c9d70c57d180388d09f` (Helm, 2026-11-27 09:38 PST). Helm quotes Vaan's own words in Helm chat, 2026-11-27 09:37 PST, verbatim:
+
+> "Yes on everything, I'm still trying on the top up it's just taking forever."
+
+Helm records that Vaan was answering Helm's question, which listed exactly three items relayed from HELM-ASK-1127-2. Helm's item 2 reads: "Am.16: switch l1-floor-v2 to l1-floor-v4 (vault 1.0 SOL, TP 1.3x) in the same install, below decision-grade, only if the 2026-12-02 fresh-day holdout passes. The Am.9 section 3 automatic revert is waived for this step; the step-back check (30 v4 trades or 2026-12-12) and the Am.14 rollbacks stay." So the words cover (i), (ii) and (iii) **by reference to that question**, not by restating them. This is the owner's word only if QP rules that "Yes on everything" to a question naming the three items meets the fill rule below. If QP rules it does not, this field goes back to `PENDING` and a restated yes is asked through Helm. Helm adds: "Words only. Nothing is installed. Install needs your GO HELM-ASK for one Dec 3-5 window, with a restage of 7ab40363." The top-up (item 3) has NOT landed (Helm will confirm on chain).
+
+Fill rule (kept for the record): Vaan's own words in Helm's chat, quoted word for word by Helm in a HELM-REPLY, that cover (i) the rule step l1-floor-v2 to l1-floor-v4 (vault 1.0 SOL, take-profit 1.3x) below decision-grade, (ii) the waiver of the Am.9 §3 automatic revert for this step, and (iii) the step-back check and the Am.14 rollbacks staying in force. The words asked for are HELM-ASK-1127-2 item 2:
+
+> **2. Am.16:** Yes to switching FLOOR's rule from l1-floor-v2 to l1-floor-v4 (vault 1.0 SOL, take-profit 1.3x) in the same install, below decision-grade, if the 2026-12-02 fresh-day holdout check passes. I waive the automatic Am.9 §3 revert for this step; the step-back check (at 30 v4 trades or 2026-12-12) and the Am.14 rollbacks stay.
+
+Those words, or Vaan's own words covering the same three items, fill the field. The filled field names the HELM-REPLY file and its sha256 and quotes the words in full. A manager or agent saying the owner agreed does not count (Helm's rule, Am.14 ask record precondition 8). **The waiver is needed because the control book already fails a band** (QP-RULING-1126 Q2): without it, Am.9 §3 "A live step taken on a board proposal is reverted if the control book later fails a band, unless the owner says otherwise" would revert the step at once.
+
+### 4. The rule and its pinned config
+
+- **Rule id `l1-floor-v4`**: l1-floor-v3 at vault 1.0 SOL with the take-profit multiple pinned by config, one of {1.3, 1.5}, no default (`tools/arena_rule_l1_v4.py`, host pin sha256 `ab233efb47e2f0ca4d8a59ffd788a875d18f2fefb31f4d78443edb2e9d24b832`, `tools/floor_lane_host.py` `PINS_V4_EXTRA`). **The TP pin is 1.3.**
+- **Bot ids.** `LANE_BOT_ID` stays `floor-lane-1` (QP-RULING-1126 Q3, "Parallel second bot: no": it shares the lane budget, daily stop and wallet and gets no new headroom). The decision book's bot id is the rule id, `l1-floor-v4`, because the executor requires `bot_id` equal to `rule_id` (`tools/floor_arena_executor.py` `make_config`). This is the "new bot_id" sense of QP-RULING-1120 Q5 at the decision layer; QP confirms this reading on this PR.
+- **Its own future registration.** QP-RULING-1120 Q5: "CE1 belongs under a **new bot_id** with rule `l1-floor-v3` and its **own** registration. Its D counts only its own sends from its own S''." QP-RULING-1126 Q3: "Register the v4 bot after its install, with S'' at the first 00:00Z after install plus margin. Disclose CE1's selection in that registration." This amendment opens no registration. QP-RULING-1120 Q5 also holds: during a registered floor-lane-1 read, this switch "ends the read FAIL" at the install.
+- **Pinned config.**
+  - Executor: `rule_id` `"l1-floor-v4"`, `expected_q_star_lamports` **1000000000**, `expected_tp` **1.3** (required for v4; a float; v2 and v3 refuse the key), and a **fresh `state_dir`** (QP-1457 note b: "Use a fresh `state_dir` for v3, or close any open v2 positions first. A v3 bridge reads only `decisions/l1-floor-v3`, so v2 exits would never arrive for positions carried over."). The executor also refuses a `state_dir` persisted at another TP (PR #1504).
+  - Host: `rule_id` `"l1-floor-v4"`, `tp` **1.3**, `q_star_lamports` 1000000000 or absent (`check_rule_cfg`), and a **new decision `root`** ("a new q_star is a new root", `tools/floor_lane_host.py`; the v4 host refuses to resume a log written at another TP or q_star).
+  - Every other key is the Am.15 restaged step config and the live `host.json`, unchanged. Helm's GO reply gives the sha256 of each new file and a diff against the file it replaces. The install record pins them.
+- **The host restart.** The host restarts with the v4 config and the new root, and the executor restarts. Expected cost (Am.7 item 3, **not verified** by a run here): "The deploy restart is NOT cheap": a first start without a cheap-restart checkpoint refuses every pool for 24 h. Plan for 1 to 2 days with no new entries (QP-RULING-1126 Q3 step 5).
+- **v2 positions.** They close first, or they stay with the old bridge on the old `state_dir` and the old root until they close (QP-1457 note b). They are never moved to the v4 bridge.
+- **Bundling.** The step installs in the same Helm window as Am.15 (QP-RULING-1126 Q3, "Bundling"), so there is one host restart and one refuse-all day, not two.
+
+### 5. The step-back rule, and the Am.14 rollbacks
+
+**Am.14 rollback set, unchanged.** B1 to B4 and Am.13 Y2 (1.50 SOL lifetime drawdown) apply as Am.14 "Rollback triggers" and "Amendment 13 (decay monitor) interaction" state, with the Am.15 drop-in names and reference sha256 values (Am.15 section 5). This amendment changes none of them. Their targets R1, R2 and S10 are the Am.15 restaged configs, which run `l1-floor-v2`. Whether R1, R2 and S10 also need v4 copies is not decided here; QP rules on it on this PR. Until QP rules, a step-back to R1, R2 or S10 is also a step back to the v2 rule, with its own host restart and refuse-all.
+
+**Step-back check, verbatim** (QP-RULING-1126 Q2):
+
+> **Step-back after a live switch, declared in the amendment.** Use the Am.14 rollback set (B1-B4, Y2) as is. In addition, at 30 closed v4 trades or 2026-12-12T00:00:00Z, whichever is first: revert to the pre-staged v2 config if the v4 live realized SOL per complete day is below the v2 live realized SOL per complete day over the 7 complete days before the switch (manager hourly counts named as such). This comparison is confounded by market regime, and the confound is disclosed.
+
+**Regime-confound disclosure.** The two sides of this check are different days. A market change between the v2 week and the v4 days moves the comparison as much as the rule does. A pass does not show v4 is better, and a fail does not show it is worse. The check is a brake, not a test. Its inputs are manager hourly counts, named as such, not records.
+
+The pre-staged v2 config is the Am.15 step config (s040-b500 on tree `7ab40363`), with its old `state_dir` and the old host root. A revert is one HELM-ASK under the owner's install word, recorded the same hour as an Am.14 step-back is.
+
+### 6. Limits: unchanged
+
+**Stake 0.40, budget 5.00, daily stop 0.80, wallet floor 0.75 and the lifetime bound are unchanged.** They are the Am.14 values ("What this amendment changes", items 1 to 3; "Unchanged", the 0.75 SOL wallet floor) as Am.15 carries them ("What it changes, and only this"; section 3 "Unchanged"). The lifetime bound stays 5.00 SOL plus FLOOR's realized figure at the Am.14 switch (Am.14; Am.15 "Reading"). `max_open`, STOP/HALT, the A3 pause and the Am.13 decay monitor and its constants are unchanged. A rule step is not a stake step: Am.9 §3, "no stake step ever rests on a board number".
+
+### 7. The md5 decision-equivalence proof (CLAUDE.md rule), at install tree `7ab40363a9f2ef46a7fbd114a41d6f7a17168eb7`
+
+The figures for the jobs are as the manager gave them. This record did not open the job outputs.
+- **Legs (i) and (ii), v2 and v3 byte-identical, base vs head:** md5 `72d36014bc21820149f39acb99348b95`, IDENTICAL (manager job #3476). The committed `ARTIFACTS/lab/floor-v4-rule/result_base_efbe2eb1.json` and `result_head.json` both have md5 `72d36014bc21820149f39acb99348b95` (checked here with `md5sum`).
+- **canary_max_ms leg:** md5 `2f591f6e5d3a777860d385461640e999`, IDENTICAL (manager job #3476). The committed `ARTIFACTS/lab/canary-max-ms/result_base_704c75fe.json` and `result_head.json` both have md5 `2f591f6e5d3a777860d385461640e999` (checked here).
+- **Leg (iii), v4 host vs osb-ce1 on real hours 2026-11-17T00..2026-11-27T01 (242 h), seed_from_hour 2026-11-03T03:** A = B = `6f5d882132f8122b3d66b49a9be70c02`, EQUAL, rc 0, 151 distinct positions on each side (manager job #3475). **Leg (iii) is spent. It is never re-run.**
+- **QP's canary leg of the live tree `e85447f8` against the install head**, from the QP VERDICT on PR #1506 (`QP VERDICT ff5a97219764e06098215e284c992326a3b0d4d0 OK`), item 4: "I ran head's equiv_canary.py against an e85447f8 worktree. Its output has md5 `fb57fcfcad21beb986059663993b3ada` and is byte-identical to the committed `result_prekey_38d38ae9^.json`. That file differs from `result_head.json` only in the three v4 arms (skipped). So e85447f8 == head on every runnable arm." QP's condition: "If the install head is not ff5a9721, rerun the leg at the real install head." The install head is `7ab40363`, not `ff5a9721`. The canary leg at `7ab40363` (job #3476) gives `2f591f6e5d3a777860d385461640e999`, the same md5 as the committed `ff5a9721` head output. `equiv_canary.py` is the same blob at `ff5a9721` and `7ab40363` (`8521e37fedd531871d1a8a5b9bf7dccccaa75d18`). **Whether this meets QP's rerun condition, or a direct e85447f8-vs-7ab40363 run is still owed, is for QP to rule on this PR.** The #1504 executor changes are covered by legs (i) and (ii) (QP on #1506: "the install record must cite them as well").
+- **Runner:** `ARTIFACTS/lab/floor-v4-rule/leg3_run.py` (PR #1505 merge b5b569a1, then PR #1507 merge 7ab40363), and SEALS-BRIEF item (x) (SEALS-BRIEF sha256 `94cfee00114155eb0d79a05b1b6744695edcc5c46517cc3375407462652969e2` as read here).
+- **Host pool-prune in the tree:** `git merge-base --is-ancestor 8288ba12 7ab40363` returns rc 0. Commit `8288ba12` (PR #1501, "floor lane host: drop ArenaState and engine entries of pools FLOOR can never buy (memory only)") is in the install tree, as ruling Q3 step 2 requires.
+
+### 8. Capital
+
+QP-RULING-1126 Q4 arithmetic, QP's figures (manager hourly counts, hourly #3459): wallet at cost W = free 1.752330734 + basis 3.213390720 = 4.965721454 SOL; k slots need W ≥ 4.3801 (9), 4.7833 (10), 5.1866 (11), 5.5899 (12), 5.9931 (13); "so today about 10 concurrent; about +0.62 SOL for 12." Above 12 slots the 5.00 budget binds, and only a new owner word and an amendment move it. The top-up is HELM-ASK-1127-2 item 3. It is not a precondition of this amendment.
+
+**CE1 peak simultaneous open count.** QP-RULING-1126 Q4: "Before Am.16, the manager adds one counts-only figure: the peak simultaneous open count of osb-ce1 and osb-a at 0.25 per complete day ... Without it, the amendment states the slot count as "unknown for CE1"." The count is from manager job #3483 (PR #1508 merge fde52ab7, SEALS-BRIEF (y); MiScusi notebook n_AB0ZITTuJ8Oylw). The figures are the manager's. This record did not open the job output. Per day, at 0.25, 11-17 to 11-25:
+
+| Book | 11-17 | 11-18 | 11-19 | 11-20 | 11-21 | 11-22 | 11-23 | 11-24 | 11-25 | max |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| osb-ce1 | 13 | 12 | 13 | 11 | 14 | 12 | 13 | 20* | 15* | 20 |
+| osb-a | 13 | 11 | 11 | 11 | 13 | 9 | 10 | 21* | 16* | 21 |
+
+Disclosures:
+- \* Late 11-24 hours and 11-25 are upper bounds, under the as-of-ceiling rule.
+- On the other days the count can be lower than live concurrency would be. Engine-excluded entries are not in `peak_open`. These are the QP and reviewer disclosures on #1508.
+- It is a sim with no slot, budget or wallet limits. It is not a live count.
+
+**Reading.** On 11-17 to 11-23, CE1's daily peak is 11 to 14 and A's is 9 to 13, about one slot more. Both books go above the 12-slot live cap at times. The +0.62 SOL top-up reaches 12 slots only. At those peaks, the cap or the wallet floor would refuse some CE1 entries that the sim takes. Do not raise the budget on a guess.
+
+### 9. Am.15 alone if this step fails
+
+If H fails or is NOT_DECIDABLE, or the owner's word is not given, Am.15 alone installs at `7ab40363` with the v2 rule, under Amendment 15, Erratum 1 (PR #1510), which does not depend on this amendment. The C fallback (QP-RULING-1126 Q3, "Fallback (C only)") needs H for osb-c and its own record; this amendment does not cover it.
+
+### 10. What kills it
+
+QP-RULING-1126 Q5, verbatim:
+- H fails or is NOT_DECIDABLE;
+- the v4 md5 leg (iii) mismatches;
+- no owner word by 12-01;
+- the step-back check fails;
+- Am.14 B1-B4/Y2 trip;
+- fills at 0.40 below the impact model;
+- host memory: the 11-25 pool burst pushed the host RSS to 9.3-9.7 GB of a 12 GiB runtime limit, and a v4 host with a new root must be checked under that limit;
+- quiet market (trigger-limited days, revenue-push-plan §2);
+- wallet below the 0.75 floor or the lifetime bound;
+- Am.15 not installed by 12-07T18:00Z.
+
+(Leg (iii) did not mismatch: section 7.)
+
+### 11. Not measured
+
+QP-RULING-1126 Q5, verbatim: "**Not measured:** CE1's peak open count; the recon S1/S2 direction at n 20; v4 equivalence on a real host log; the refuse-all length for a new root; the live TP mark at 0.40. Any switch is a rule step below decision-grade on a SIM OFF board, taken on the owner's word." Since the ruling, CE1's peak open count has been counted in the sim only (section 8, job #3483). Its live concurrency is still not measured.
+
+Also not measured here: nothing was read from a host; no board disclosure section or per-day row was read; the job outputs of #3475, #3476 and #3483 were not opened (their figures are the manager's). QP's GUESS range after the switch (0.21-0.40 SOL/day, QP-RULING-1126 Q5) is a guess, not a measurement.
+
+**Amendment 15, Erratum 1** (install tree 7ab40363, expected start lines, restage, canary leg, host note) is its own T1 records PR, #1510; it is not part of this amendment.
+
+No book has cleared the promotion gate. floor-lane-1 has not cleared the promotion gate. Nothing here says FLOOR makes money.
