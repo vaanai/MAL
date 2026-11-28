@@ -1006,11 +1006,21 @@ def test_migrate_events_through_the_frozen_path_equal_the_idl_decode():
 
 
 # ---- QP repin ruling C3'b / C3'c
-def test_shipped_trailing_pin_is_exactly_8_on_four_events_and_0_elsewhere():
+def test_shipped_trailing_pin_is_exactly_8_on_three_events_and_0_elsewhere():
+    # 2026-11-28 re-pin (QP-RULING-1128 ADD1 s1): pump TradeEvent now trails 0 under the new IDL.
     shipped = json.loads((Path(c.__file__).with_name("a3_redeploy_pins.json")).read_text())
     tb = c.validate_trailing_pins(shipped["trailing_bytes"])
-    assert {k for k, v in tb.items() if v == [8]} == {"TradeEvent", "BuyEvent", "SellEvent", "WithdrawEvent"}
+    assert {k for k, v in tb.items() if v == [8]} == {"BuyEvent", "SellEvent", "WithdrawEvent"}
+    assert tb["TradeEvent"] == [0]
     assert all(v == [0] for k, v in tb.items() if k not in c.TRAILING_EVENTS)
+    assert shipped["idl"]["pump"]["sha256"].startswith("a6c28543")
+
+
+def test_trade_event_trailing_zero_is_valid_but_other_zero_on_an_8_event_is_not():
+    ok = {"TradeEvent": [0], "BuyEvent": [8], "SellEvent": [8], "WithdrawEvent": [8]}
+    assert c.validate_trailing_pins(ok) == ok
+    with pytest.raises(c.CheckError):
+        c.validate_trailing_pins({**ok, "BuyEvent": [0]})
 
 
 @pytest.mark.parametrize("bad", [{"TradeEvent": [0, 8], "BuyEvent": [8], "SellEvent": [8], "WithdrawEvent": [8]},
@@ -1055,6 +1065,40 @@ def test_nonzero_added_field_on_a_sol_quoted_bonding_trade_is_a_hard_halt(tmp_pa
         trade = encode("TradeEvent", prog="pump", over={"quote_mint": q}, trail=NONZERO)
         v = run(make_rec(), tmp_path / q.hex()[:4], client=FakeClient(sample_blobs([(trade, PUMP)])))
         assert v["verdict"] == "FAIL" and any("NON-ZERO" in r for r in v["reasons"])
+
+
+def _new_layout_trade(qtf=0, b0f=0, quote=bytes(32)):
+    """pump TradeEvent in the 2026-11-27 layout: quote_transfer_fee and block0_fee are IDL fields after the last old field; nothing trails."""
+    idls = copy.deepcopy(IDLS)
+    t = next(t for t in idls["pump"]["types"] if t["name"] == "TradeEvent")
+    t["type"]["fields"] += fields("quote_transfer_fee:u64 block0_fee:u64")
+    blob = encode("TradeEvent", prog="pump", over={"quote_mint": quote}, trail=b"") + struct.pack("<QQ", qtf, b0f)
+    return idls, blob
+
+
+def test_new_layout_trade_both_added_fields_zero_passes_the_c3c_check():
+    idls, blob = _new_layout_trade()
+    ev = c.evaluate_blobs([blob], idls, None, {"TradeEvent": [0]})
+    assert ev["nonzero_trailing"] == [] and ev["layout_mismatch"] == {}
+
+
+@pytest.mark.parametrize("qtf,b0f", [(5, 0), (0, 7), (5, 7)])
+@pytest.mark.parametrize("quote", [bytes(32), mon.b58decode(mon.WSOL_MINT)])
+def test_new_layout_trade_nonzero_added_field_is_a_hard_fail(qtf, b0f, quote):
+    idls, blob = _new_layout_trade(qtf, b0f, quote)
+    ev = c.evaluate_blobs([blob], idls, None, {"TradeEvent": [0]})
+    assert [x["name"] for x in ev["nonzero_trailing"]] == ["TradeEvent"]
+    fails: list[str] = []
+    c.sample_failures(ev, "log sample", build_pins([(blob, PUMP)]), fails, client=FakeClient(sample_blobs()))
+    assert any("NON-ZERO" in f for f in fails)
+
+
+def test_new_layout_trade_nonzero_on_a_non_sol_quote_is_counted_not_failed():
+    idls, blob = _new_layout_trade(5, 0, bytes([77]) * 32)
+    ev = c.evaluate_blobs([blob], idls, None, {"TradeEvent": [0]})
+    fails: list[str] = []
+    c.sample_failures(ev, "log sample", build_pins([(blob, PUMP)]), fails, client=FakeClient(sample_blobs()))
+    assert len(ev["nonzero_trailing"]) == 1 and not any("NON-ZERO" in f for f in fails)
 
 
 def test_nonzero_on_an_unreadable_pool_fails_closed(tmp_path):
