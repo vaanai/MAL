@@ -16,7 +16,7 @@ for s in ("raw", "raw_pre"):
     hrs = {time.strftime("%FT%H", time.gmtime(v["blockTime"])) for v in i.values()}
     sl = [v["slot"] for v in i.values()]
     res["coverage"][s] = {"txs": len(i), "distinct_utc_hours": len(hrs), "min_slot": min(sl), "max_slot": max(sl), "n_blocks_cached": len(os.listdir(B + s + "/blocks")),
-                          "first_hour": min(hrs), "last_hour": max(hrs), "slots_after_deploy_min": min(sl) - 471854493}
+                          "first_hour": min(hrs), "last_hour": max(hrs), "slots_after_deploy_min": min(sl) - 474715515}
 json.dump(res, open(os.environ.get("UPGRADE_OUT", "out") + "/s13_summary.json", "w"), indent=1, default=str)
 for k, v in res["parity"].items():
     print("==", k, {a: b for a, b in v.items() if a not in ("events", "ix_boost_create", "nontrade_value_unmatched", "walker_rows")})

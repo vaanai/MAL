@@ -11,7 +11,10 @@ from tools import pump_history_backfill as bf
 DOCS = Path("/data2/mal/scratch/a3-repin-1128/docs")
 PID = {"pump": "6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P", "pump_amm": "pAMMBay6oceH9fJKBRHGP5D4bD4sWpmSwMn52FMfXEA", "pump_fees": "pfeeUxB6jkeY1Hxd7CsFCAjcbHA9rWtchMGdZ6VojVZ"}
 PNAME = {v: k for k, v in PID.items()}
-IDL = {k: json.load(open(DOCS / f"{k}.main.json")) for k in PID}
+# 2026-11-27 pump redeploy: the pump IDL changed (TradeEvent +16 trailing bytes etc.). PUMP_IDL picks the pump IDL used by the independent walker:
+# "main" = docs e244b35 (new), "639b87f" = the pinned old one. Default: old for the pre samples, new for post. PumpSwap and fees IDLs are unchanged (byte-equal).
+PUMP_IDL = os.environ.get("PUMP_IDL") or ("639b87f" if os.environ.get("SAMPLE") in ("pre", "premig") else "main")
+IDL = {k: json.load(open(DOCS / f"{k}.{PUMP_IDL if k == 'pump' else 'main'}.json")) for k in PID}
 TYPES = {k: {t["name"]: t for t in IDL[k]["types"]} for k in IDL}
 EV = {}   # disc bytes -> (idl, name)
 INS = {}  # (program id, disc) -> name
@@ -360,6 +363,7 @@ res = dict(n_blocks_A=nblocks, n_A_txs_success_touching=len(idx["a"]), tx_analys
     frozen_rows_records_from_logs=acc["frozen_rows"], indep_log_trade_events=acc["indep_log_trade_events"], unresolved_mint_rows=acc["unresolved_mint_rows"], trade_ix_total=acc["trade_ix_total"],
     walker_rows=dict(walker), walker_unknown_disc=dict(wk["unknown_disc"]), walker_bad_disc=dict(wk["bad_disc"]), walker_cpi_only_disc=dict(wk["cpi_only_disc"]),
     empty_tag_cpi=acc["empty_tag_cpi"], nontrade={k: dict(total=acc['nt_total'][k], frozen_none=acc['nt_none'][k], value_unmatched=acc['nt_unmatched'][k], equal=acc['nt_equal'][k], in_migrate_tx=acc['nt_in_migrate_tx'][k]) for k in acc['nt_total']}, trail8=dict(acc['trail8']), refused={f'{a}|{b}': v for (a, b), v in acc['refused'].items()}, refused_quote=dict(acc['refused_quote']), refused_rows=acc['refused_rows'], trail8_values=dict(collections.Counter(v for _, _, v in acc['trail8_by_slot']).most_common(10)), trail8_nonzero=[(a, b, v) for a, b, v in acc['trail8_by_slot'] if v], trail8_total=len(acc['trail8_by_slot']), trail8_first_last_slot=[min((x[0] for x in acc['trail8_by_slot']), default=None), max((x[0] for x in acc['trail8_by_slot']), default=None)], nondecode_by_cat=dict(collections.Counter(n["cat"] for n in acc["nondecode"])), nondecode=acc["nondecode"], blob_sha=blob_sha,
-    idl_sha256={k: hashlib.sha256((DOCS / f"{k}.main.json").read_bytes()).hexdigest() for k in IDL})
-(OUT / {"pre": "s06_parity_pre.json", "premig": "s06_parity_premig.json"}.get(SAMPLE, "s06_parity.json")).write_text(json.dumps(res, indent=1, sort_keys=True, default=str) + "\n")
+    idl_sha256={k: hashlib.sha256((DOCS / f"{k}.{PUMP_IDL if k == 'pump' else 'main'}.json").read_bytes()).hexdigest() for k in IDL}, pump_idl_used=PUMP_IDL)
+_sfx = os.environ.get("OUT_SUFFIX", "")
+(OUT / ({"pre": "s06_parity_pre.json", "premig": "s06_parity_premig.json"}.get(SAMPLE, "s06_parity.json").replace(".json", _sfx + ".json"))).write_text(json.dumps(res, indent=1, sort_keys=True, default=str) + "\n")
 print(json.dumps({k: v for k, v in res.items() if k not in ("nondecode", "ix", "layout_len", "c_sample", "events", "read_events")}, indent=1, default=str)[:5000])
