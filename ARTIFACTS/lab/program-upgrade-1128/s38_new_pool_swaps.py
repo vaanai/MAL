@@ -18,6 +18,7 @@ rows = []   # (hour, slot, name, ok, errword, pool, mint, acc, data_len)
 for p in sorted((BASE / "raw" / "blocks").glob("*.json.gz")):
     blk = json.loads(gzip.open(p).read())["r"]
     if not blk: continue
+    blk["slot"] = int(p.name.split(".")[0])
     hr = time.strftime("%FT%HZ", time.gmtime(blk["blockTime"]))
     for tx in blk["transactions"]:
         meta = tx.get("meta") or {}

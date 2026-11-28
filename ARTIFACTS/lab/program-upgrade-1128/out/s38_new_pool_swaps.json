@@ -1,0 +1,349 @@
+{
+ "N2": {
+  "buy_exact_quote_in": {
+   "all_expected_shape": false,
+   "derive_errors": 0,
+   "discriminator": {
+    "c62e1552b4d9e870": 703
+   },
+   "distinct_new_pools": 70,
+   "expected": [
+    25,
+    26
+   ],
+   "fixed_positions_equal_executor": 703,
+   "n_success_new_pools": 703,
+   "pda_positions_equal_executor": 691,
+   "shape_(data_len,accounts)": {
+    "(24, 26)": 146,
+    "(25, 26)": 555,
+    "(26, 26)": 2
+   }
+  },
+  "sell": {
+   "all_expected_shape": false,
+   "derive_errors": 0,
+   "discriminator": {
+    "33e685a4017f83ad": 963
+   },
+   "distinct_new_pools": 84,
+   "expected": [
+    24,
+    24
+   ],
+   "fixed_positions_equal_executor": 963,
+   "n_success_new_pools": 963,
+   "pda_positions_equal_executor": 952,
+   "shape_(data_len,accounts)": {
+    "(24, 23)": 3,
+    "(24, 24)": 958,
+    "(24, 25)": 1,
+    "(25, 24)": 1
+   }
+  }
+ },
+ "failed_share": {
+  "NEW|buy_exact_quote_in": {
+   "failed": 367,
+   "failed_share": 0.3429906542056075,
+   "failed_share_ex_slippage": 0.08104575163398693,
+   "n": 1070,
+   "per_hour_n_failed_slip": {
+    "2026-11-27T22Z": [
+     100,
+     3,
+     2
+    ],
+    "2026-11-27T23Z": [
+     109,
+     73,
+     68
+    ],
+    "2026-11-28T00Z": [
+     38,
+     2,
+     0
+    ],
+    "2026-11-28T01Z": [
+     147,
+     77,
+     68
+    ],
+    "2026-11-28T02Z": [
+     80,
+     10,
+     7
+    ],
+    "2026-11-28T03Z": [
+     164,
+     46,
+     44
+    ],
+    "2026-11-28T04Z": [
+     69,
+     3,
+     0
+    ],
+    "2026-11-28T05Z": [
+     90,
+     66,
+     54
+    ],
+    "2026-11-28T06Z": [
+     168,
+     81,
+     62
+    ],
+    "2026-11-28T07Z": [
+     59,
+     4,
+     0
+    ],
+    "2026-11-28T08Z": [
+     46,
+     2,
+     0
+    ]
+   },
+   "slippage_failed": 305,
+   "success": 703,
+   "words": {
+    "InstructionError:ComputationalBudgetExceeded": 1,
+    "InstructionError:Custom=1": 34,
+    "InstructionError:Custom=14": 1,
+    "InstructionError:Custom=6000": 7,
+    "InstructionError:Custom=6001": 7,
+    "InstructionError:Custom=6040": 305,
+    "InstructionError:IllegalOwner": 12
+   }
+  },
+  "NEW|sell": {
+   "failed": 342,
+   "failed_share": 0.2620689655172414,
+   "failed_share_ex_slippage": 0.14778761061946902,
+   "n": 1305,
+   "per_hour_n_failed_slip": {
+    "2026-11-27T22Z": [
+     167,
+     7,
+     7
+    ],
+    "2026-11-27T23Z": [
+     35,
+     11,
+     3
+    ],
+    "2026-11-28T00Z": [
+     25,
+     0,
+     0
+    ],
+    "2026-11-28T01Z": [
+     67,
+     5,
+     0
+    ],
+    "2026-11-28T02Z": [
+     72,
+     3,
+     3
+    ],
+    "2026-11-28T03Z": [
+     116,
+     2,
+     0
+    ],
+    "2026-11-28T04Z": [
+     106,
+     44,
+     0
+    ],
+    "2026-11-28T05Z": [
+     135,
+     103,
+     94
+    ],
+    "2026-11-28T06Z": [
+     482,
+     155,
+     67
+    ],
+    "2026-11-28T07Z": [
+     49,
+     7,
+     1
+    ],
+    "2026-11-28T08Z": [
+     51,
+     5,
+     0
+    ]
+   },
+   "slippage_failed": 175,
+   "success": 963,
+   "words": {
+    "InstructionError:Custom=0": 1,
+    "InstructionError:Custom=1": 3,
+    "InstructionError:Custom=13": 116,
+    "InstructionError:Custom=3012": 34,
+    "InstructionError:Custom=6000": 6,
+    "InstructionError:Custom=6001": 3,
+    "InstructionError:Custom=6004": 175,
+    "InstructionError:Custom=6013": 4
+   }
+  },
+  "OLD|buy_exact_quote_in": {
+   "failed": 36,
+   "failed_share": 0.11464968152866242,
+   "failed_share_ex_slippage": 0.11464968152866242,
+   "n": 314,
+   "per_hour_n_failed_slip": {
+    "2026-11-27T22Z": [
+     73,
+     10,
+     0
+    ],
+    "2026-11-27T23Z": [
+     59,
+     8,
+     0
+    ],
+    "2026-11-28T00Z": [
+     43,
+     3,
+     0
+    ],
+    "2026-11-28T01Z": [
+     48,
+     2,
+     0
+    ],
+    "2026-11-28T02Z": [
+     27,
+     8,
+     0
+    ],
+    "2026-11-28T03Z": [
+     15,
+     2,
+     0
+    ],
+    "2026-11-28T04Z": [
+     8,
+     0,
+     0
+    ],
+    "2026-11-28T05Z": [
+     7,
+     0,
+     0
+    ],
+    "2026-11-28T06Z": [
+     12,
+     1,
+     0
+    ],
+    "2026-11-28T07Z": [
+     14,
+     2,
+     0
+    ],
+    "2026-11-28T08Z": [
+     8,
+     0,
+     0
+    ]
+   },
+   "slippage_failed": 0,
+   "success": 278,
+   "words": {
+    "InstructionError:Custom=1": 36
+   }
+  },
+  "OLD|sell": {
+   "failed": 59,
+   "failed_share": 0.25877192982456143,
+   "failed_share_ex_slippage": 0.2555066079295154,
+   "n": 228,
+   "per_hour_n_failed_slip": {
+    "2026-11-27T22Z": [
+     34,
+     12,
+     0
+    ],
+    "2026-11-27T23Z": [
+     39,
+     10,
+     0
+    ],
+    "2026-11-28T00Z": [
+     39,
+     17,
+     1
+    ],
+    "2026-11-28T01Z": [
+     38,
+     6,
+     0
+    ],
+    "2026-11-28T02Z": [
+     12,
+     7,
+     0
+    ],
+    "2026-11-28T03Z": [
+     2,
+     0,
+     0
+    ],
+    "2026-11-28T04Z": [
+     16,
+     3,
+     0
+    ],
+    "2026-11-28T05Z": [
+     14,
+     0,
+     0
+    ],
+    "2026-11-28T06Z": [
+     16,
+     4,
+     0
+    ],
+    "2026-11-28T07Z": [
+     11,
+     0,
+     0
+    ],
+    "2026-11-28T08Z": [
+     7,
+     0,
+     0
+    ]
+   },
+   "slippage_failed": 1,
+   "success": 169,
+   "words": {
+    "InstructionError:ComputationalBudgetExceeded": 2,
+    "InstructionError:Custom=1": 5,
+    "InstructionError:Custom=11": 2,
+    "InstructionError:Custom=3": 1,
+    "InstructionError:Custom=3012": 31,
+    "InstructionError:Custom=6": 1,
+    "InstructionError:Custom=6000": 5,
+    "InstructionError:Custom=6001": 1,
+    "InstructionError:Custom=6004": 1,
+    "InstructionError:Custom=6013": 5,
+    "InstructionError:Custom=6014": 5
+   }
+  }
+ },
+ "n_distinct_pools": 178,
+ "pool_class_counts": {
+  "NEW": 98,
+  "OLD": 79,
+  "UNKNOWN": 1
+ },
+ "rpc_attempts": 181
+}
