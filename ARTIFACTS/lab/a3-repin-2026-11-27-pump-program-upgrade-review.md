@@ -2,7 +2,7 @@
 
 Builder: Claude worker, 2026-11-28 (started `date -u` 08:4xZ), mal-research-0 worktree `/data2/mal/wt/a3-repin-1128`. Public RPC (api.mainnet-beta.solana.com) and unauthenticated GitHub only. 0 Helius credits, no key or env file. No tape, arena, book, ledger, shadow, declog, tip or FLOOR file opened; no price path, outcome or P&L computed. Scripts and small outputs: `ARTIFACTS/lab/program-upgrade-1128/` (`out/*.json`); raw responses are off-repo in `/data2/mal/scratch/a3-repin-1128/`. This is a reading of chain and repo facts. No transaction was built, signed, simulated or sent by this builder. No sentence here says any book makes money; no book has cleared the promotion gate.
 
-Standard: `/data/mal/hunt-1008/ops/QP-RULING-1128-a3-repin-pump.md` did not exist when this review was started (checked after each stage). Until it exists the standard is `QP-RULING-1114-a3-repin-pump.md` plus `-ADD1.md` (the last pump-only re-pin) with the new slots, with the 1121 ruling's F-items not applying (fees unchanged). If the 1128 ruling arrives, it controls and the closing section says where it differs.
+Standard: `/data/mal/hunt-1008/ops/QP-RULING-1128-a3-repin-pump.md` (sha256 `a8855bea53aeb3766ecd6e75161cfc5ea5db725f95ac7aaac47765cd19a2f85c`, OK WITH CONDITIONS, single stage). It did not exist when this review was started and was delivered to the builder while sample A's fetch was running (A anchors 1 to 24 were being fetched; sample P, M and M_pre had not been). Sample A, P and M follow the rule of section 3 as committed (it is the 1114 rule plus ADD1 with the new slots, and is at least as strict as the 1128 carried-over bars on sizes). Everything the 1128 ruling adds (T1-T6, N1-N4, the >= 1,000 pump TradeEvents bar, the tax read, D2) is analysis over the same cached samples, written after the fetch and declared in section 3b; where it is post hoc it says so.
 
 ## 1. Chain facts read (1114 Q1 item 11)
 
@@ -65,3 +65,14 @@ Constants: `D` = `E` = 474715515 (2026-11-27T22:20:22Z), the only write.
 - **(c3) pool accounts:** 10 pools created after `D` (from CreatePoolEvents of A/M) read with `getMultipleAccounts`: owner, data length, 8-byte discriminator and `pumpswap_tx` pool-state offsets, against the 24 pool accounts of the 1114 review where cached.
 - **Keyless sim:** the script and exact commands only (`keyless-sim/`); NOT run, no MiScusi job submitted; the manager runs it if QP requires it.
 - **Re-pin (stage 7):** `tools/pump_structure_pins.json` `programs.pump` only, through the monitor's own `--write-pins` path at a slot after the last sample, plus the fixture `tools/fixtures/pump_structure_monitor/programdata.json` and `tools/test_pump_structure_monitor.py` deploy-slot list, only if every bar is clean; otherwise the PR is a draft and the pins stay.
+
+## 3b. Addendum to the rule: QP-RULING-1128 items (committed after the fetch of A had begun; analysis only, no new fetch rule except where stated)
+
+- **A extras:** >= 1,000 pump TradeEvents with buys and sells both present, every create variant seen (counted from the cached A; if short, reported, and no stage 2 is started without the manager).
+- **T1, T2, T3:** `s03` (complete IDL diff by instruction, account type, event, type and error, with account order, signer/writable flags and PDA seeds), quoting the tape decoder lines for C5 (`s37_t3_tax_decoder.py`).
+- **T4:** `s37_t3_tax_decoder.py` reads the pump `Global` account (PDA `["global"]`) at a slot after the last sample block: rate `block0_tax_bps`, length, sha256; counts of `block0_fee`, `quote_transfer_fee` in every TradeEvent and `block0_fee` in every PostCompleteBuyEvent in A and M; `tax_exempt_creator` values by count on the BondingCurve accounts of M's WSOL-migrated mints.
+- **T5:** applied exactly as written in the ruling. **T6:** discriminators judged against the NEW pump IDL and the pinned pump_amm, pump_fees IDLs; the CPI-program set of pump transactions post vs pre.
+- **N1-N4:** `s11_migration_economics.py` (N1, the pools of M and M_pre), `s18_instruction_shapes.py` and `s38_new_pool_swaps.py` (N2, N3: swaps and failed share on pools migrated at slot >= `D`+150 vs older pools, the same A blocks, ex-slippage per 1121a), `s08_universe_split.py` (N4 Token-2022).
+- **D2 (1116):** `s25_migration_bar_d.py` / `s26`; **s24** classifier (field equality, undecodable `Program data`); **s22** CompleteEvent supplementary sample.
+- **Q2 live counts:** the manager's job, not this builder's. Cited as "manager hourly counts" only until the job output exists.
+- **Keyless sim:** only if N2 is short; script and commands only in `program-upgrade-1128/keyless-sim/`, not run.
