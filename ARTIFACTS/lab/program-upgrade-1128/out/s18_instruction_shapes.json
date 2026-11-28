@@ -1,0 +1,597 @@
+{
+ "executor_expectation": {
+  "buy_exact_quote_in": {
+   "accounts": 26,
+   "data_len": 25,
+   "disc": "c62e1552b4d9e870"
+  },
+  "sell": {
+   "accounts": 24,
+   "data_len": 24,
+   "disc": "33e685a4017f83ad"
+  }
+ },
+ "owner_programs_now": {
+  "post|buy": {
+   "n_available": 1360,
+   "n_instructions": 200,
+   "owner_by_position": {
+    "0": {
+     "pAMMBay6oceH9fJKBRHGP5D4bD4sWpmSwMn52FMfXEA": 200
+    },
+    "1": {
+     "(closed or absent now)": 39,
+     "11111111111111111111111111111111": 161
+    },
+    "10": {
+     "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA": 200
+    },
+    "11": {
+     "BPFLoaderUpgradeab1e11111111111111111111111": 200
+    },
+    "12": {
+     "BPFLoaderUpgradeab1e11111111111111111111111": 200
+    },
+    "13": {
+     "NativeLoader1111111111111111111111111111111": 200
+    },
+    "14": {
+     "BPFLoader2111111111111111111111111111111111": 200
+    },
+    "15": {
+     "11111111111111111111111111111111": 200
+    },
+    "16": {
+     "BPFLoaderUpgradeab1e11111111111111111111111": 200
+    },
+    "17": {
+     "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA": 200
+    },
+    "18": {
+     "(closed or absent now)": 200
+    },
+    "19": {
+     "pAMMBay6oceH9fJKBRHGP5D4bD4sWpmSwMn52FMfXEA": 200
+    },
+    "2": {
+     "pAMMBay6oceH9fJKBRHGP5D4bD4sWpmSwMn52FMfXEA": 200
+    },
+    "20": {
+     "(closed or absent now)": 41,
+     "pAMMBay6oceH9fJKBRHGP5D4bD4sWpmSwMn52FMfXEA": 159
+    },
+    "21": {
+     "pfeeUxB6jkeY1Hxd7CsFCAjcbHA9rWtchMGdZ6VojVZ": 200
+    },
+    "22": {
+     "BPFLoaderUpgradeab1e11111111111111111111111": 200
+    },
+    "23": {
+     "(closed or absent now)": 200
+    },
+    "24": {
+     "pfeeUxB6jkeY1Hxd7CsFCAjcbHA9rWtchMGdZ6VojVZ": 200
+    },
+    "25": {
+     "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA": 200
+    },
+    "3": {
+     "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA": 1,
+     "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb": 199
+    },
+    "4": {
+     "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA": 200
+    },
+    "5": {
+     "(closed or absent now)": 124,
+     "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA": 1,
+     "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb": 75
+    },
+    "6": {
+     "(closed or absent now)": 198,
+     "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA": 2
+    },
+    "7": {
+     "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA": 1,
+     "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb": 199
+    },
+    "8": {
+     "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA": 200
+    },
+    "9": {
+     "pfeeUxB6jkeY1Hxd7CsFCAjcbHA9rWtchMGdZ6VojVZ": 200
+    }
+   }
+  },
+  "post|sell": {
+   "n_available": 1126,
+   "n_instructions": 200,
+   "owner_by_position": {
+    "0": {
+     "pAMMBay6oceH9fJKBRHGP5D4bD4sWpmSwMn52FMfXEA": 200
+    },
+    "1": {
+     "(closed or absent now)": 84,
+     "11111111111111111111111111111111": 116
+    },
+    "10": {
+     "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA": 200
+    },
+    "11": {
+     "BPFLoaderUpgradeab1e11111111111111111111111": 200
+    },
+    "12": {
+     "BPFLoaderUpgradeab1e11111111111111111111111": 200
+    },
+    "13": {
+     "NativeLoader1111111111111111111111111111111": 200
+    },
+    "14": {
+     "BPFLoader2111111111111111111111111111111111": 200
+    },
+    "15": {
+     "11111111111111111111111111111111": 200
+    },
+    "16": {
+     "BPFLoaderUpgradeab1e11111111111111111111111": 200
+    },
+    "17": {
+     "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA": 200
+    },
+    "18": {
+     "(closed or absent now)": 200
+    },
+    "19": {
+     "pfeeUxB6jkeY1Hxd7CsFCAjcbHA9rWtchMGdZ6VojVZ": 200
+    },
+    "2": {
+     "pAMMBay6oceH9fJKBRHGP5D4bD4sWpmSwMn52FMfXEA": 200
+    },
+    "20": {
+     "BPFLoaderUpgradeab1e11111111111111111111111": 200
+    },
+    "21": {
+     "(closed or absent now)": 200
+    },
+    "22": {
+     "pfeeUxB6jkeY1Hxd7CsFCAjcbHA9rWtchMGdZ6VojVZ": 200
+    },
+    "23": {
+     "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA": 200
+    },
+    "3": {
+     "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA": 6,
+     "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb": 194
+    },
+    "4": {
+     "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA": 200
+    },
+    "5": {
+     "(closed or absent now)": 167,
+     "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA": 1,
+     "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb": 32
+    },
+    "6": {
+     "(closed or absent now)": 196,
+     "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA": 4
+    },
+    "7": {
+     "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA": 6,
+     "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb": 194
+    },
+    "8": {
+     "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA": 200
+    },
+    "9": {
+     "pfeeUxB6jkeY1Hxd7CsFCAjcbHA9rWtchMGdZ6VojVZ": 200
+    }
+   }
+  },
+  "pre|buy": {
+   "n_available": 962,
+   "n_instructions": 200,
+   "owner_by_position": {
+    "0": {
+     "pAMMBay6oceH9fJKBRHGP5D4bD4sWpmSwMn52FMfXEA": 200
+    },
+    "1": {
+     "(closed or absent now)": 100,
+     "11111111111111111111111111111111": 100
+    },
+    "10": {
+     "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA": 200
+    },
+    "11": {
+     "BPFLoaderUpgradeab1e11111111111111111111111": 200
+    },
+    "12": {
+     "BPFLoaderUpgradeab1e11111111111111111111111": 200
+    },
+    "13": {
+     "NativeLoader1111111111111111111111111111111": 200
+    },
+    "14": {
+     "BPFLoader2111111111111111111111111111111111": 200
+    },
+    "15": {
+     "11111111111111111111111111111111": 200
+    },
+    "16": {
+     "BPFLoaderUpgradeab1e11111111111111111111111": 200
+    },
+    "17": {
+     "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA": 200
+    },
+    "18": {
+     "(closed or absent now)": 200
+    },
+    "19": {
+     "pAMMBay6oceH9fJKBRHGP5D4bD4sWpmSwMn52FMfXEA": 200
+    },
+    "2": {
+     "pAMMBay6oceH9fJKBRHGP5D4bD4sWpmSwMn52FMfXEA": 200
+    },
+    "20": {
+     "(closed or absent now)": 105,
+     "pAMMBay6oceH9fJKBRHGP5D4bD4sWpmSwMn52FMfXEA": 95
+    },
+    "21": {
+     "pfeeUxB6jkeY1Hxd7CsFCAjcbHA9rWtchMGdZ6VojVZ": 200
+    },
+    "22": {
+     "BPFLoaderUpgradeab1e11111111111111111111111": 200
+    },
+    "23": {
+     "(closed or absent now)": 200
+    },
+    "24": {
+     "pfeeUxB6jkeY1Hxd7CsFCAjcbHA9rWtchMGdZ6VojVZ": 200
+    },
+    "25": {
+     "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA": 200
+    },
+    "3": {
+     "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb": 200
+    },
+    "4": {
+     "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA": 200
+    },
+    "5": {
+     "(closed or absent now)": 162,
+     "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb": 38
+    },
+    "6": {
+     "(closed or absent now)": 195,
+     "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA": 5
+    },
+    "7": {
+     "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb": 200
+    },
+    "8": {
+     "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA": 200
+    },
+    "9": {
+     "pfeeUxB6jkeY1Hxd7CsFCAjcbHA9rWtchMGdZ6VojVZ": 200
+    }
+   }
+  },
+  "pre|sell": {
+   "n_available": 520,
+   "n_instructions": 200,
+   "owner_by_position": {
+    "0": {
+     "pAMMBay6oceH9fJKBRHGP5D4bD4sWpmSwMn52FMfXEA": 200
+    },
+    "1": {
+     "(closed or absent now)": 106,
+     "11111111111111111111111111111111": 94
+    },
+    "10": {
+     "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA": 200
+    },
+    "11": {
+     "BPFLoaderUpgradeab1e11111111111111111111111": 200
+    },
+    "12": {
+     "BPFLoaderUpgradeab1e11111111111111111111111": 200
+    },
+    "13": {
+     "NativeLoader1111111111111111111111111111111": 200
+    },
+    "14": {
+     "BPFLoader2111111111111111111111111111111111": 200
+    },
+    "15": {
+     "11111111111111111111111111111111": 200
+    },
+    "16": {
+     "BPFLoaderUpgradeab1e11111111111111111111111": 200
+    },
+    "17": {
+     "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA": 200
+    },
+    "18": {
+     "(closed or absent now)": 200
+    },
+    "19": {
+     "pfeeUxB6jkeY1Hxd7CsFCAjcbHA9rWtchMGdZ6VojVZ": 200
+    },
+    "2": {
+     "pAMMBay6oceH9fJKBRHGP5D4bD4sWpmSwMn52FMfXEA": 200
+    },
+    "20": {
+     "BPFLoaderUpgradeab1e11111111111111111111111": 200
+    },
+    "21": {
+     "(closed or absent now)": 199,
+     "11111111111111111111111111111111": 1
+    },
+    "22": {
+     "pfeeUxB6jkeY1Hxd7CsFCAjcbHA9rWtchMGdZ6VojVZ": 200
+    },
+    "23": {
+     "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA": 200
+    },
+    "3": {
+     "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb": 200
+    },
+    "4": {
+     "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA": 200
+    },
+    "5": {
+     "(closed or absent now)": 175,
+     "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb": 25
+    },
+    "6": {
+     "(closed or absent now)": 193,
+     "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA": 7
+    },
+    "7": {
+     "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb": 200
+    },
+    "8": {
+     "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA": 200
+    },
+    "9": {
+     "pfeeUxB6jkeY1Hxd7CsFCAjcbHA9rWtchMGdZ6VojVZ": 200
+    }
+   }
+  }
+ },
+ "post": {
+  "failed_by_error_word": {},
+  "position_checks": {
+   "buy": {
+    "derive_error": 2,
+    "have_creator": 386,
+    "n": 386,
+    "pda_buyback_recipient_ata_eq": 382,
+    "pda_buyback_recipient_ata_n": 384,
+    "pda_creator_vault_ata_eq": 384,
+    "pda_creator_vault_ata_n": 384,
+    "pda_creator_vault_authority_eq": 384,
+    "pda_creator_vault_authority_n": 384,
+    "pda_fee_recipient_ata_eq": 384,
+    "pda_fee_recipient_ata_n": 384,
+    "pda_pool_base_vault_eq": 384,
+    "pda_pool_base_vault_n": 384,
+    "pda_pool_quote_vault_eq": 384,
+    "pda_pool_quote_vault_n": 384,
+    "pda_pool_v2_eq": 382,
+    "pda_pool_v2_n": 384,
+    "pda_user_base_ata_eq": 382,
+    "pda_user_base_ata_n": 384,
+    "pda_user_quote_ata_eq": 382,
+    "pda_user_quote_ata_n": 384,
+    "pda_user_volume_accumulator_eq": 384,
+    "pda_user_volume_accumulator_n": 384,
+    "pos13": 386,
+    "pos14": 386,
+    "pos15": 386,
+    "pos16": 386,
+    "pos19": 386,
+    "pos2": 386,
+    "pos21": 386,
+    "pos22": 386,
+    "pos4": 386
+   },
+   "buy_exact_quote_in": {
+    "have_creator": 981,
+    "n": 981,
+    "pda_buyback_recipient_ata_eq": 979,
+    "pda_buyback_recipient_ata_n": 981,
+    "pda_creator_vault_ata_eq": 981,
+    "pda_creator_vault_ata_n": 981,
+    "pda_creator_vault_authority_eq": 981,
+    "pda_creator_vault_authority_n": 981,
+    "pda_fee_recipient_ata_eq": 981,
+    "pda_fee_recipient_ata_n": 981,
+    "pda_pool_base_vault_eq": 981,
+    "pda_pool_base_vault_n": 981,
+    "pda_pool_quote_vault_eq": 981,
+    "pda_pool_quote_vault_n": 981,
+    "pda_pool_v2_eq": 979,
+    "pda_pool_v2_n": 981,
+    "pda_user_base_ata_eq": 976,
+    "pda_user_base_ata_n": 981,
+    "pda_user_quote_ata_eq": 970,
+    "pda_user_quote_ata_n": 981,
+    "pda_user_volume_accumulator_eq": 981,
+    "pda_user_volume_accumulator_n": 981,
+    "pos13": 981,
+    "pos14": 981,
+    "pos15": 981,
+    "pos16": 981,
+    "pos19": 981,
+    "pos2": 981,
+    "pos21": 981,
+    "pos22": 981,
+    "pos4": 981
+   },
+   "sell": {
+    "derive_error": 8,
+    "have_creator": 1137,
+    "n": 1137,
+    "pda_buyback_recipient_ata_eq": 1127,
+    "pda_buyback_recipient_ata_n": 1129,
+    "pda_creator_vault_ata_eq": 1129,
+    "pda_creator_vault_ata_n": 1129,
+    "pda_creator_vault_authority_eq": 1129,
+    "pda_creator_vault_authority_n": 1129,
+    "pda_fee_recipient_ata_eq": 1129,
+    "pda_fee_recipient_ata_n": 1129,
+    "pda_pool_base_vault_eq": 1129,
+    "pda_pool_base_vault_n": 1129,
+    "pda_pool_quote_vault_eq": 1129,
+    "pda_pool_quote_vault_n": 1129,
+    "pda_pool_v2_eq": 1127,
+    "pda_pool_v2_n": 1129,
+    "pda_user_base_ata_eq": 1125,
+    "pda_user_base_ata_n": 1129,
+    "pda_user_quote_ata_eq": 1120,
+    "pda_user_quote_ata_n": 1129,
+    "pos13": 1137,
+    "pos14": 1137,
+    "pos15": 1137,
+    "pos16": 1137,
+    "pos19": 1137,
+    "pos2": 1137,
+    "pos20": 1137,
+    "pos4": 1137
+   }
+  },
+  "shape_counts": {
+   "buy_exact_quote_in|c62e1552b4d9e870|len=24|accts=26": 348,
+   "buy_exact_quote_in|c62e1552b4d9e870|len=24|accts=27": 2,
+   "buy_exact_quote_in|c62e1552b4d9e870|len=25|accts=26": 627,
+   "buy_exact_quote_in|c62e1552b4d9e870|len=26|accts=26": 4,
+   "buy|66063d1201daebea|len=24|accts=26": 42,
+   "buy|66063d1201daebea|len=24|accts=27": 3,
+   "buy|66063d1201daebea|len=25|accts=25": 2,
+   "buy|66063d1201daebea|len=25|accts=26": 337,
+   "buy|66063d1201daebea|len=26|accts=26": 2,
+   "sell|33e685a4017f83ad|len=24|accts=23": 8,
+   "sell|33e685a4017f83ad|len=24|accts=24": 1125,
+   "sell|33e685a4017f83ad|len=24|accts=25": 1,
+   "sell|33e685a4017f83ad|len=24|accts=26": 2,
+   "sell|33e685a4017f83ad|len=25|accts=24": 1
+  }
+ },
+ "pre": {
+  "failed_by_error_word": {},
+  "position_checks": {
+   "buy": {
+    "derive_error": 13,
+    "have_creator": 336,
+    "n": 336,
+    "pda_buyback_recipient_ata_eq": 323,
+    "pda_buyback_recipient_ata_n": 323,
+    "pda_creator_vault_ata_eq": 323,
+    "pda_creator_vault_ata_n": 323,
+    "pda_creator_vault_authority_eq": 323,
+    "pda_creator_vault_authority_n": 323,
+    "pda_fee_recipient_ata_eq": 323,
+    "pda_fee_recipient_ata_n": 323,
+    "pda_pool_base_vault_eq": 323,
+    "pda_pool_base_vault_n": 323,
+    "pda_pool_quote_vault_eq": 323,
+    "pda_pool_quote_vault_n": 323,
+    "pda_pool_v2_eq": 323,
+    "pda_pool_v2_n": 323,
+    "pda_user_base_ata_eq": 322,
+    "pda_user_base_ata_n": 323,
+    "pda_user_quote_ata_eq": 322,
+    "pda_user_quote_ata_n": 323,
+    "pda_user_volume_accumulator_eq": 323,
+    "pda_user_volume_accumulator_n": 323,
+    "pos13": 336,
+    "pos14": 336,
+    "pos15": 336,
+    "pos16": 336,
+    "pos19": 336,
+    "pos2": 336,
+    "pos21": 336,
+    "pos22": 336,
+    "pos4": 336
+   },
+   "buy_exact_quote_in": {
+    "have_creator": 641,
+    "n": 641,
+    "pda_buyback_recipient_ata_eq": 641,
+    "pda_buyback_recipient_ata_n": 641,
+    "pda_creator_vault_ata_eq": 641,
+    "pda_creator_vault_ata_n": 641,
+    "pda_creator_vault_authority_eq": 641,
+    "pda_creator_vault_authority_n": 641,
+    "pda_fee_recipient_ata_eq": 641,
+    "pda_fee_recipient_ata_n": 641,
+    "pda_pool_base_vault_eq": 641,
+    "pda_pool_base_vault_n": 641,
+    "pda_pool_quote_vault_eq": 641,
+    "pda_pool_quote_vault_n": 641,
+    "pda_pool_v2_eq": 641,
+    "pda_pool_v2_n": 641,
+    "pda_user_base_ata_eq": 640,
+    "pda_user_base_ata_n": 641,
+    "pda_user_quote_ata_eq": 635,
+    "pda_user_quote_ata_n": 641,
+    "pda_user_volume_accumulator_eq": 641,
+    "pda_user_volume_accumulator_n": 641,
+    "pos13": 641,
+    "pos14": 641,
+    "pos15": 641,
+    "pos16": 641,
+    "pos19": 641,
+    "pos2": 641,
+    "pos21": 641,
+    "pos22": 641,
+    "pos4": 641
+   },
+   "sell": {
+    "derive_error": 9,
+    "have_creator": 530,
+    "n": 530,
+    "pda_buyback_recipient_ata_eq": 521,
+    "pda_buyback_recipient_ata_n": 521,
+    "pda_creator_vault_ata_eq": 521,
+    "pda_creator_vault_ata_n": 521,
+    "pda_creator_vault_authority_eq": 521,
+    "pda_creator_vault_authority_n": 521,
+    "pda_fee_recipient_ata_eq": 521,
+    "pda_fee_recipient_ata_n": 521,
+    "pda_pool_base_vault_eq": 521,
+    "pda_pool_base_vault_n": 521,
+    "pda_pool_quote_vault_eq": 521,
+    "pda_pool_quote_vault_n": 521,
+    "pda_pool_v2_eq": 521,
+    "pda_pool_v2_n": 521,
+    "pda_user_base_ata_eq": 516,
+    "pda_user_base_ata_n": 521,
+    "pda_user_quote_ata_eq": 518,
+    "pda_user_quote_ata_n": 521,
+    "pos13": 530,
+    "pos14": 530,
+    "pos15": 530,
+    "pos16": 530,
+    "pos19": 530,
+    "pos2": 530,
+    "pos20": 530,
+    "pos4": 530
+   }
+  },
+  "shape_counts": {
+   "buy_exact_quote_in|c62e1552b4d9e870|len=24|accts=26": 444,
+   "buy_exact_quote_in|c62e1552b4d9e870|len=25|accts=26": 195,
+   "buy_exact_quote_in|c62e1552b4d9e870|len=26|accts=26": 2,
+   "buy|66063d1201daebea|len=24|accts=26": 69,
+   "buy|66063d1201daebea|len=24|accts=27": 2,
+   "buy|66063d1201daebea|len=25|accts=25": 13,
+   "buy|66063d1201daebea|len=25|accts=26": 251,
+   "buy|66063d1201daebea|len=26|accts=26": 1,
+   "sell|33e685a4017f83ad|len=24|accts=23": 9,
+   "sell|33e685a4017f83ad|len=24|accts=24": 520,
+   "sell|33e685a4017f83ad|len=24|accts=25": 1
+  }
+ },
+ "rpc_attempts": 49
+}

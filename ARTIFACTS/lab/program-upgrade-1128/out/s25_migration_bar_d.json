@@ -1,0 +1,87 @@
+{
+ "n_pre_this_review": 37,
+ "n_1114_pre": 33,
+ "n_1114_M": 27,
+ "n_1115_pre": 33,
+ "n_1115_M_plus_M2": 60,
+ "union_range": {
+  "sol_amount": [
+   12582941,
+   94846797684
+  ],
+  "mint_amount": [
+   185399044810855,
+   206900000000000
+  ],
+  "initial_liquidity": [
+   51023626810,
+   4193388436247
+  ],
+  "pool_migration_fee": [
+   15000001,
+   15000001
+  ]
+ },
+ "pre_median": {
+  "sol_amount": 84990359483,
+  "mint_amount": 206900000000000,
+  "initial_liquidity": 4193388290252,
+  "pool_migration_fee": 15000001
+ },
+ "pre_fee_values": [
+  15000001
+ ],
+ "M": {
+  "n_wsol": 35,
+  "median": {
+   "sol_amount": 84990359459,
+   "mint_amount": 206900000000000,
+   "initial_liquidity": 4193388290523,
+   "pool_migration_fee": 15000001
+  },
+  "min": {
+   "sol_amount": 56649250,
+   "mint_amount": 184563075851654,
+   "initial_liquidity": 108262319506,
+   "pool_migration_fee": 15000001
+  },
+  "max": {
+   "sol_amount": 95276399924,
+   "mint_amount": 206900000000000,
+   "initial_liquidity": 4193388341906,
+   "pool_migration_fee": 15000001
+  },
+  "fee_values": [
+   15000001
+  ],
+  "medians_equal_pre": {
+   "sol_amount": false,
+   "mint_amount": true,
+   "initial_liquidity": false
+  },
+  "fee_constant_and_equal_pre": true,
+  "outside_union": {
+   "sol_amount": [
+    95276399924
+   ],
+   "mint_amount": [
+    184563075851654
+   ],
+   "initial_liquidity": [],
+   "pool_migration_fee": []
+  },
+  "verdict": "NOT MET"
+ },
+ "first_print_V_post": {
+  "n": 13,
+  "min": 0,
+  "median": 0,
+  "max": 17584505786
+ },
+ "first_print_V_pre": {
+  "n": 4,
+  "min": 0,
+  "median": 0.0,
+  "max": 0
+ }
+}
