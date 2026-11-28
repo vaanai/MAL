@@ -145,7 +145,7 @@ Re-create the crons from `crons-manager23.json` with CronCreate.
 | **by 11-27 01:01** | **r4bt-a2 screen read** (conditional on registration; Am.30). |
 | **11-27 18:00** | **Price keeper #2636 successor** (ends ~11-27T20Z). |
 | **before ~12-01 09:44** | **Dead-man #2957 successor** (it ends ~12-01T09:44Z: started 2026-11-17T09:44:39Z with a 336 h limit, manager state file `ops/manager24/state-manager24.md`; the executor checks the A3 gate in `/var/lib/mal-hv4-c0/a3/daily.jsonl`). |
-| **before ~12-06 16:55** | **A3 loop #3532 successor** at pin P'''' `0bcbaa0c` (limit 199 h, ends ~12-06T16:55Z; command file `ops/manager24/a3loop-1128.cmd`). |
+| **before ~12-06 16:55** | **A3 loop #3532 successor** at pin P'''' `0bcbaa0c` (limit 199 h, ends ~12-06T16:55Z, submitted 2026-11-28T09:55:04Z with --time 11940m; command file `ops/manager24/a3loop-1128.cmd`). |
 | ~11-29 | Tip-health recorder #2808 (loop end 11-29T01:00Z) and staging #2810 (END 11-29T03:00Z) end: successors. Tip writer/push #2503/#2504: check their limits in the job list. |
 | weekly | Clean stale job trees on fast-0 (disk). |
 
