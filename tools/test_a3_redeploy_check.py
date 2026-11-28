@@ -1067,6 +1067,40 @@ def test_nonzero_added_field_on_a_sol_quoted_bonding_trade_is_a_hard_halt(tmp_pa
         assert v["verdict"] == "FAIL" and any("NON-ZERO" in r for r in v["reasons"])
 
 
+def _new_layout_trade(qtf=0, b0f=0, quote=bytes(32)):
+    """pump TradeEvent in the 2026-11-27 layout: quote_transfer_fee and block0_fee are IDL fields after the last old field; nothing trails."""
+    idls = copy.deepcopy(IDLS)
+    t = next(t for t in idls["pump"]["types"] if t["name"] == "TradeEvent")
+    t["type"]["fields"] += fields("quote_transfer_fee:u64 block0_fee:u64")
+    blob = encode("TradeEvent", prog="pump", over={"quote_mint": quote}, trail=b"") + struct.pack("<QQ", qtf, b0f)
+    return idls, blob
+
+
+def test_new_layout_trade_both_added_fields_zero_passes_the_c3c_check():
+    idls, blob = _new_layout_trade()
+    ev = c.evaluate_blobs([blob], idls, None, {"TradeEvent": [0]})
+    assert ev["nonzero_trailing"] == [] and ev["layout_mismatch"] == {}
+
+
+@pytest.mark.parametrize("qtf,b0f", [(5, 0), (0, 7), (5, 7)])
+@pytest.mark.parametrize("quote", [bytes(32), mon.b58decode(mon.WSOL_MINT)])
+def test_new_layout_trade_nonzero_added_field_is_a_hard_fail(qtf, b0f, quote):
+    idls, blob = _new_layout_trade(qtf, b0f, quote)
+    ev = c.evaluate_blobs([blob], idls, None, {"TradeEvent": [0]})
+    assert [x["name"] for x in ev["nonzero_trailing"]] == ["TradeEvent"]
+    fails: list[str] = []
+    c.sample_failures(ev, "log sample", build_pins([(blob, PUMP)]), fails, client=FakeClient(sample_blobs()))
+    assert any("NON-ZERO" in f for f in fails)
+
+
+def test_new_layout_trade_nonzero_on_a_non_sol_quote_is_counted_not_failed():
+    idls, blob = _new_layout_trade(5, 0, bytes([77]) * 32)
+    ev = c.evaluate_blobs([blob], idls, None, {"TradeEvent": [0]})
+    fails: list[str] = []
+    c.sample_failures(ev, "log sample", build_pins([(blob, PUMP)]), fails, client=FakeClient(sample_blobs()))
+    assert len(ev["nonzero_trailing"]) == 1 and not any("NON-ZERO" in f for f in fails)
+
+
 def test_nonzero_on_an_unreadable_pool_fails_closed(tmp_path):
     blob = encode("SellEvent", prog="pump_amm", over={"pool": mon.b58decode(POOLS[0])}, trail=NONZERO)
     v = run(make_rec(), tmp_path, client=FakeClient(sample_blobs([(blob, SWAP)]), pool_quote=None))

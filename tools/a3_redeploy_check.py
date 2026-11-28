@@ -34,7 +34,8 @@ THE CHECK (all must hold, else FAIL; a missing pin or a failed fetch is ERROR; b
   g. the whole check finishes within CHECK_WINDOW_S (24 h) of the earliest unresolved write's instant; later is a FAIL (timeout);
   h. FROZEN GUARD: git blob of each decoder file the frozen book imports (FROZEN_FILES) equals the pinned blob from the book's frozen_sha, else ERROR.
 
-TRAILING BYTES (QP repin ruling C3'b/c): the live Trade / Buy / Sell / Withdraw events carry 8 bytes after the IDL's last field. Pinned EXACTLY [8] for those four events and [0] for
+TRAILING BYTES (QP repin ruling C3'b/c): the live Buy / Sell / Withdraw events carry 8 bytes after the IDL's last field (pump TradeEvent did until the 2026-11-27 IDL, which names
+quote_transfer_fee and block0_fee as fields: pinned [0] there, and those two fields are zero-checked from the IDL). Pinned EXACTLY [8] for the 8-byte events and [0] for
 every other pinned event (anything looser is ERROR; any other count seen is a FAIL). A NON-ZERO value in that field on a SOL-quoted bonding trade or a WSOL-quoted PumpSwap trade is a
 hard FAIL (meaning unknown inside the H5 universe). A Buy/Sell the shadow refuses only for a quote amount above its own 100,000 SOL cap is `capped` (bounded by the pinned
 max_capped_share, a one-sample judgement). `ignored_discs` pins known events the rule does not read.
@@ -118,7 +119,8 @@ IDL_NAMES = ("pump", "pump_amm", "pump_fees")
 LOADER_PROGRAM = "BPFLoaderUpgradeab1e11111111111111111111111"
 LOADER_UPGRADE_TAG = 3  # UpgradeableLoaderInstruction::Upgrade (bincode u32, little endian)
 MAX_WRITE_PAGES = 8  # getSignaturesForAddress(programdata) pages of 1000 back to the pinned deploy slot; not reached => fail closed
-TRAILING_EVENTS = ("TradeEvent", "BuyEvent", "SellEvent", "WithdrawEvent")  # the events that carry the added 8-byte field (QP repin ruling C3'b)
+TRAILING_EVENTS = ("TradeEvent", "BuyEvent", "SellEvent", "WithdrawEvent")  # events that carried the added 8 trailing bytes (QP repin ruling C3'b); pump TradeEvent now names them in its IDL (see TRADE_ADDED_FIELDS) and is pinned [0]
+TRADE_ADDED_FIELDS = frozenset({"quote_transfer_fee", "block0_fee"})  # pump TradeEvent fields appended by the 2026-11-27 IDL; non-zero on a SOL-quoted trade is a hard FAIL (C3'c)
 SOL_QUOTES = (mon.NATIVE_SOL, mon.WSOL_MINT)
 PROGRAM_FLAG_ITEMS = ("pump", "pumpswap")  # the only items whose deploy-slot change may start the check
 BOOST_FLAGS = ("boost_disabled", "boost_share_low", "boost_last_slice_early", "boost_budget_or_slices_changed")
@@ -573,6 +575,13 @@ def evaluate_blobs(blobs: Iterable[bytes], idls: Mapping[str, Json] | None, igno
                     # C3'c: the added field is non-zero. Where is it? A SOL/WSOL-quoted trade (bonding: the event's quote_mint; PumpSwap: the pool's quote mint, looked up later)
                     probe = idl_decode(raw, entry, ["quote_mint"]) if entry[0] == "TradeEvent" else idl_decode(raw, entry, ["pool"]) if "pool" in {f["name"] for f in entry[1]} else {}
                     nonzero.append({"name": entry[0], "quote_mint": probe.get("quote_mint"), "pool": probe.get("pool")})
+                if entry[0] == "TradeEvent" and TRADE_ADDED_FIELDS & {f["name"] for f in entry[1]}:
+                    # New layout (2026-11-27 pump IDL): the added fields are IDL fields, not trailing bytes, so the extra==8 test above never fires. C3'c still binds:
+                    # a non-zero quote_transfer_fee or block0_fee is read from the IDL and recorded exactly like a non-zero trailing field (same hard-fail path).
+                    present = sorted(TRADE_ADDED_FIELDS & {f["name"] for f in entry[1]})
+                    vals = idl_decode(raw, entry, present + ["quote_mint"] if "quote_mint" in {f["name"] for f in entry[1]} else present)
+                    if any(vals[k] != 0 for k in present):
+                        nonzero.append({"name": entry[0], "quote_mint": vals.get("quote_mint"), "pool": None})
                 if extra not in (trailing.get(entry[0]) or [0]):
                     layout_bad[entry[0]] = layout_bad.get(entry[0], 0) + 1
             except CheckError:
@@ -758,7 +767,8 @@ TRAILING_EVENT_MAY_BE_ZERO = ("TradeEvent",)
 
 
 def validate_trailing_pins(trailing: Any) -> dict[str, list[int]]:
-    """C3'b: each pinned event has EXACTLY one allowed trailing count (a one-element list), TRAILING_EVENTS pinned [8], every other pinned event [0]. Anything else is ERROR."""
+    """C3'b: each pinned event has EXACTLY one allowed trailing count (a one-element list): BuyEvent, SellEvent, WithdrawEvent pinned [8], pump TradeEvent [8] (old IDL) or [0] (new IDL, where
+    the two added u64 fields are IDL fields and are zero-checked from the IDL), every other pinned event [0]. Anything else is ERROR."""
     if not isinstance(trailing, dict) or not trailing:
         raise CheckError("pin missing: trailing_bytes")
     for name, v in trailing.items():
