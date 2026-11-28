@@ -1,0 +1,56 @@
+{
+ "start_utc": "2026-11-27T19:00:00Z",
+ "start_epoch": 1795806000,
+ "pump": {
+  "address": "B5MvUwXdiW1NMM6QFFD3ssPKBujD4zMohncbM73Z2BQu",
+  "pages": 1,
+  "n_sigs_fetched": 1000,
+  "oldest_blockTime_fetched": 1795395392,
+  "COMPLETE_back_to_start": true,
+  "n_in_window": 1,
+  "n_failed_in_window": 0,
+  "successful_in_window": [
+   {
+    "slot": 474715515,
+    "utc": "2026-11-27T22:20:22Z",
+    "sig": "5PJrdWV24HTnd91JFLGCiTvxQRQgs8mycTkyVi7hzgvoK8GsJH6px97DYriGp3FiDcjA7eHWNe1Ka7hWBEsgqquB",
+    "pd_writable": true,
+    "loader_ixs": [
+     [
+      "inner",
+      "03000000"
+     ]
+    ],
+    "upgrade_candidate": true,
+    "progs": [
+     "11111111",
+     "BPFLoade",
+     "ComputeB",
+     "SQDS4ep6"
+    ]
+   }
+  ],
+  "upgrades": [
+   {
+    "slot": 474715515,
+    "utc": "2026-11-27T22:20:22Z",
+    "sig": "5PJrdWV24HTnd91JFLGCiTvxQRQgs8mycTkyVi7hzgvoK8GsJH6px97DYriGp3FiDcjA7eHWNe1Ka7hWBEsgqquB",
+    "pd_writable": true,
+    "loader_ixs": [
+     [
+      "inner",
+      "03000000"
+     ]
+    ],
+    "upgrade_candidate": true,
+    "progs": [
+     "11111111",
+     "BPFLoade",
+     "ComputeB",
+     "SQDS4ep6"
+    ]
+   }
+  ]
+ },
+ "rpc_attempts": 2
+}

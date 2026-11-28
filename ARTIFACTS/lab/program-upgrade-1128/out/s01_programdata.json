@@ -1,0 +1,72 @@
+{
+ "config": {
+  "bonding_fee_config": {
+   "account": "8Wf5TiAheLUqBrKXeYg2JtAFFMWtKdG2BSFgqUcPVwTt",
+   "ctx_slot": 474891673,
+   "equals_pin": true,
+   "len": 4097,
+   "pin_sha256": "3504fae20640e15bd441257ab118aa96fb4e99190defc06a01aae26b307bf204",
+   "sha256": "3504fae20640e15bd441257ab118aa96fb4e99190defc06a01aae26b307bf204"
+  },
+  "pumpswap_fee_config": {
+   "account": "5PHirr8joyTMp9JMm6nW7hNDVyEYdkzDqazxPD7RaTjx",
+   "ctx_slot": 474891679,
+   "equals_pin": true,
+   "len": 4097,
+   "pin_sha256": "d8706882a217e82af619b754e37beedf9338a25787ebec717e7d69d2cf347c9d",
+   "sha256": "d8706882a217e82af619b754e37beedf9338a25787ebec717e7d69d2cf347c9d"
+  },
+  "pumpswap_global_config": {
+   "account": "ADyA8hdefvWN2dbGGWFotbzWxrAvLW83WG6QCVXvJKqw",
+   "ctx_slot": 474891683,
+   "equals_pin": true,
+   "len": 949,
+   "pin_sha256": "a4c67d6dc665973c16ae2b4c41400e0eb8d728414f358ea41ddd925d058ca011",
+   "sha256": "a4c67d6dc665973c16ae2b4c41400e0eb8d728414f358ea41ddd925d058ca011"
+  }
+ },
+ "programdata": {
+  "fees": {
+   "account": "75Uu23mqWBb8LM8vDppqC1mQAnCcBuLXhVaDezVMQLRw",
+   "ctx_slot": 474891662,
+   "deploy_slot": 471854409,
+   "elf_sha256_from_45": "303fd7a4540bcd42e9ce715cb7ee5bcde9a1dae27605955d6a45228ed9503e73",
+   "equals_pin": true,
+   "has_authority": 1,
+   "len": 948989,
+   "pin_deploy_slot": 471854409,
+   "pin_sha256": "519e166ee513fc12254ad33d66a23ceba6ab1875320e0684dfcac918889e6868",
+   "program": "pfeeUxB6jkeY1Hxd7CsFCAjcbHA9rWtchMGdZ6VojVZ",
+   "sha256": "519e166ee513fc12254ad33d66a23ceba6ab1875320e0684dfcac918889e6868",
+   "tag": 3
+  },
+  "pump": {
+   "account": "B5MvUwXdiW1NMM6QFFD3ssPKBujD4zMohncbM73Z2BQu",
+   "ctx_slot": 474891634,
+   "deploy_slot": 474715515,
+   "elf_sha256_from_45": "4df2b92842f6b6c0ed8e44c0834615e088c0cf362994c8b58dfdd1ce68ad266f",
+   "equals_pin": false,
+   "has_authority": 1,
+   "len": 10485760,
+   "pin_deploy_slot": 471854454,
+   "pin_sha256": "46bf6c8ee4587208ba682e525184f3cb2ce4fdb5e618cd0cb3b4af246492fac8",
+   "program": "6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P",
+   "sha256": "c6dd30fdf0645a455d4c82fa8fd374f0b5b52f1348828dc93f110f526fca51a3",
+   "tag": 3
+  },
+  "pumpswap": {
+   "account": "6naEzKeUuFh1Jeeu51NXQgr5qkXgXtc9WKNct4xynVJc",
+   "ctx_slot": 474891643,
+   "deploy_slot": 471854493,
+   "elf_sha256_from_45": "c75b6c042e6111965915ebafaba02fd4b241ff508326f6d7c83873910bba1722",
+   "equals_pin": true,
+   "has_authority": 1,
+   "len": 10485760,
+   "pin_deploy_slot": 471854493,
+   "pin_sha256": "92d73e652befd8495a83af09958f333ceff7507ec102c7e6beef1edf47efa6d1",
+   "program": "pAMMBay6oceH9fJKBRHGP5D4bD4sWpmSwMn52FMfXEA",
+   "sha256": "92d73e652befd8495a83af09958f333ceff7507ec102c7e6beef1edf47efa6d1",
+   "tag": 3
+  }
+ }
+}
