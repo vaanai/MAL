@@ -754,6 +754,9 @@ def fetch_idls(http_get: Callable[[str, float], tuple[int, Mapping[str, str], by
     return out, fails
 
 
+TRAILING_EVENT_MAY_BE_ZERO = ("TradeEvent",)
+
+
 def validate_trailing_pins(trailing: Any) -> dict[str, list[int]]:
     """C3'b: each pinned event has EXACTLY one allowed trailing count (a one-element list), TRAILING_EVENTS pinned [8], every other pinned event [0]. Anything else is ERROR."""
     if not isinstance(trailing, dict) or not trailing:
@@ -761,6 +764,8 @@ def validate_trailing_pins(trailing: Any) -> dict[str, list[int]]:
     for name, v in trailing.items():
         if not (isinstance(v, list) and len(v) == 1 and isinstance(v[0], int) and not isinstance(v[0], bool)):
             raise CheckError(f"pin invalid: trailing_bytes.{name} must be a one-element list")
+        if name in TRAILING_EVENT_MAY_BE_ZERO and v[0] == 0:
+            continue  # 2026-11-28 pump redeploy: the new IDL names the old trailing 8 bytes (quote_transfer_fee) and adds block0_fee, so TradeEvent trails 0 (QP-RULING-1128 ADD1 s1)
         if (v[0] == 8) != (name in TRAILING_EVENTS) or v[0] not in (0, 8):
             raise CheckError(f"pin invalid: trailing_bytes.{name} = {v}: only {list(TRAILING_EVENTS)} carry 8, every other event 0")
     missing = [n for n in TRAILING_EVENTS if n not in trailing]

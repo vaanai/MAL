@@ -1006,11 +1006,21 @@ def test_migrate_events_through_the_frozen_path_equal_the_idl_decode():
 
 
 # ---- QP repin ruling C3'b / C3'c
-def test_shipped_trailing_pin_is_exactly_8_on_four_events_and_0_elsewhere():
+def test_shipped_trailing_pin_is_exactly_8_on_three_events_and_0_elsewhere():
+    # 2026-11-28 re-pin (QP-RULING-1128 ADD1 s1): pump TradeEvent now trails 0 under the new IDL.
     shipped = json.loads((Path(c.__file__).with_name("a3_redeploy_pins.json")).read_text())
     tb = c.validate_trailing_pins(shipped["trailing_bytes"])
-    assert {k for k, v in tb.items() if v == [8]} == {"TradeEvent", "BuyEvent", "SellEvent", "WithdrawEvent"}
+    assert {k for k, v in tb.items() if v == [8]} == {"BuyEvent", "SellEvent", "WithdrawEvent"}
+    assert tb["TradeEvent"] == [0]
     assert all(v == [0] for k, v in tb.items() if k not in c.TRAILING_EVENTS)
+    assert shipped["idl"]["pump"]["sha256"].startswith("a6c28543")
+
+
+def test_trade_event_trailing_zero_is_valid_but_other_zero_on_an_8_event_is_not():
+    ok = {"TradeEvent": [0], "BuyEvent": [8], "SellEvent": [8], "WithdrawEvent": [8]}
+    assert c.validate_trailing_pins(ok) == ok
+    with pytest.raises(c.CheckError):
+        c.validate_trailing_pins({**ok, "BuyEvent": [0]})
 
 
 @pytest.mark.parametrize("bad", [{"TradeEvent": [0, 8], "BuyEvent": [8], "SellEvent": [8], "WithdrawEvent": [8]},
