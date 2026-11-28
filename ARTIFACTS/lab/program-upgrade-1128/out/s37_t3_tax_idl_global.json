@@ -1,0 +1,350 @@
+{
+ "instructions": {
+  "create_v2": {
+   "status": "docs/text only (args, accounts incl. signer/writable/PDA seeds, discriminator equal)"
+  },
+  "set_block0_tax_bps": {
+   "status": "added",
+   "sig": {
+    "disc": [
+     68,
+     251,
+     149,
+     89,
+     117,
+     16,
+     71,
+     128
+    ],
+    "args": [
+     [
+      "block0_tax_bps",
+      "u64"
+     ]
+    ],
+    "accounts": [
+     {
+      "name": "global",
+      "writable": true,
+      "signer": null,
+      "optional": null,
+      "pda": {
+       "seeds": [
+        {
+         "kind": "const",
+         "value": [
+          103,
+          108,
+          111,
+          98,
+          97,
+          108
+         ]
+        }
+       ]
+      },
+      "address": null,
+      "relations": null
+     },
+     {
+      "name": "authority",
+      "writable": true,
+      "signer": true,
+      "optional": null,
+      "pda": null,
+      "address": null,
+      "relations": [
+       "global"
+      ]
+     },
+     {
+      "name": "event_authority",
+      "writable": null,
+      "signer": null,
+      "optional": null,
+      "pda": {
+       "seeds": [
+        {
+         "kind": "const",
+         "value": [
+          95,
+          95,
+          101,
+          118,
+          101,
+          110,
+          116,
+          95,
+          97,
+          117,
+          116,
+          104,
+          111,
+          114,
+          105,
+          116,
+          121
+         ]
+        }
+       ]
+      },
+      "address": null,
+      "relations": null
+     },
+     {
+      "name": "program",
+      "writable": null,
+      "signer": null,
+      "optional": null,
+      "pda": null,
+      "address": null,
+      "relations": null
+     }
+    ]
+   }
+  },
+  "update_creator_fee_config": {
+   "status": "changed",
+   "disc_equal": true,
+   "args_old": [
+    [
+     "creator_fee_configurable",
+     "bool"
+    ],
+    [
+     "max_configurable_creator_fee_bps",
+     "u64"
+    ]
+   ],
+   "args_new": [
+    [
+     "creator_fee_configurable",
+     "bool"
+    ],
+    [
+     "max_configurable_creator_fee_bps",
+     "u64"
+    ],
+    [
+     "min_configurable_creator_fee_bps",
+     "u64"
+    ]
+   ],
+   "accounts_changed": false,
+   "accounts_old_n": 4,
+   "accounts_new_n": 4
+  }
+ },
+ "accounts": {},
+ "events": {},
+ "types": {
+  "BondingCurve": {
+   "status": "changed",
+   "old_n_fields": 19,
+   "new_n_fields": 21,
+   "old_is_exact_prefix": true,
+   "appended": [
+    [
+     "created_at_slot",
+     "u64"
+    ],
+    [
+     "tax_exempt_creator",
+     "pubkey"
+    ]
+   ],
+   "other_change": null
+  },
+  "Global": {
+   "status": "changed",
+   "old_n_fields": 30,
+   "new_n_fields": 32,
+   "old_is_exact_prefix": true,
+   "appended": [
+    [
+     "min_configurable_creator_fee_bps",
+     "u64"
+    ],
+    [
+     "block0_tax_bps",
+     "u64"
+    ]
+   ],
+   "other_change": null
+  },
+  "PostCompleteBuyEvent": {
+   "status": "changed",
+   "old_n_fields": 16,
+   "new_n_fields": 17,
+   "old_is_exact_prefix": true,
+   "appended": [
+    [
+     "block0_fee",
+     "u64"
+    ]
+   ],
+   "other_change": null
+  },
+  "TradeEvent": {
+   "status": "changed",
+   "old_n_fields": 35,
+   "new_n_fields": 37,
+   "old_is_exact_prefix": true,
+   "appended": [
+    [
+     "quote_transfer_fee",
+     "u64"
+    ],
+    [
+     "block0_fee",
+     "u64"
+    ]
+   ],
+   "other_change": null
+  },
+  "UpdateCreatorFeeConfigEvent": {
+   "status": "changed",
+   "old_n_fields": 4,
+   "new_n_fields": 5,
+   "old_is_exact_prefix": true,
+   "appended": [
+    [
+     "min_configurable_creator_fee_bps",
+     "u64"
+    ]
+   ],
+   "other_change": null
+  }
+ },
+ "errors": {
+  "6078": {
+   "status": "changed",
+   "old": {
+    "code": 6078,
+    "name": "CreatorFeeBpsOutOfRange",
+    "msg": "Creator fee basis points must be between 1 and the configured maximum"
+   },
+   "new": {
+    "code": 6078,
+    "name": "CreatorFeeBpsOutOfRange",
+    "msg": "Creator fee basis points must be between the configured minimum (at least 1) and the configured maximum"
+   }
+  },
+  "6110": {
+   "status": "added",
+   "name": "QuoteMintNotWritable",
+   "msg": "quote_mint must be writable for a quote with a Token-2022 transfer fee: its withheld fees are harvested to the mint"
+  },
+  "6111": {
+   "status": "added",
+   "name": "CreatorFeeRangeInvalid",
+   "msg": "min_configurable_creator_fee_bps must not exceed max_configurable_creator_fee_bps"
+  },
+  "6112": {
+   "status": "added",
+   "name": "Block0TaxBpsOutOfRange",
+   "msg": "block0_tax_bps must not exceed 10000"
+  },
+  "6113": {
+   "status": "added",
+   "name": "MultiHopBlock0TaxLegRequired",
+   "msg": "multi-hop: a curve in its creation slot only routes on the leg that charges the protocol fee, unless the creator trades"
+  }
+ },
+ "unchanged_named": {
+  "create": true,
+  "create_v2": true,
+  "migrate": true,
+  "buy": true,
+  "sell": true,
+  "buy_exact_quote_in_v2": true,
+  "sell_v2": true,
+  "extend_account": true
+ },
+ "event_types_unchanged": {
+  "CreateEvent": true,
+  "CompleteEvent": true,
+  "CompletePumpAmmMigrationEvent": true
+ },
+ "pump_instruction_names_new": [
+  "add_quote_control_mint",
+  "add_quote_mint",
+  "admin_cto",
+  "admin_set_idl_authority",
+  "admin_update_token_incentives",
+  "buy",
+  "buy_exact_quote_in_v2",
+  "buy_exact_quote_in_v3",
+  "buy_exact_sol_in",
+  "buy_v2",
+  "buy_v3",
+  "claim_cashback",
+  "claim_cashback_v2",
+  "claim_token_incentives",
+  "close_user_volume_accumulator",
+  "collect_creator_fee",
+  "collect_creator_fee_v2",
+  "create",
+  "create_v2",
+  "distribute_creator_fees",
+  "distribute_creator_fees_v2",
+  "distribute_fee_to_holders",
+  "extend_account",
+  "get_minimum_distributable_fee",
+  "init_user_volume_accumulator",
+  "initialize",
+  "initialize_quote_control",
+  "migrate",
+  "migrate_bonding_curve_creator",
+  "migrate_v2",
+  "multi_hop_curve_swap",
+  "remove_quote_control_mint",
+  "remove_quote_mint",
+  "sell",
+  "sell_v2",
+  "sell_v3",
+  "set_block0_tax_bps",
+  "set_creator",
+  "set_max_curve_depth",
+  "set_mayhem_virtual_params",
+  "set_metaplex_creator",
+  "set_params",
+  "set_quote_control_admin",
+  "set_quote_control_mint_reserves",
+  "set_quote_control_reserves_admin",
+  "set_reserved_fee_recipients",
+  "set_virtual_quote_reserves",
+  "sweep_creator_fee",
+  "sweep_protocol_fee",
+  "sync_user_volume_accumulator",
+  "toggle_cashback_enabled",
+  "toggle_create_v2",
+  "toggle_mayhem_mode",
+  "update_buyback_config",
+  "update_creator_fee_config",
+  "update_global_authority",
+  "update_holder_reward_config"
+ ],
+ "Global_offsets_new": {
+  "min_configurable_creator_fee_bps": 1088,
+  "block0_tax_bps": 1096
+ },
+ "Global_size_new": 1104,
+ "Global_size_old": 1088,
+ "Global_pda": "4wTV1YmiEkRvAtNtsSGPtUrqRYQMe5SKy2uB4Jjaxnjf",
+ "Global_read": {
+  "ctx_slot": 474898618,
+  "owner": "6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P",
+  "len": 1104,
+  "sha256": "e105d6a5317ac0c7c63d7ba699bc0d41001ba6e99667ff27eed25d36d3f83dfc",
+  "disc": "a7e8e8b1c86c727f",
+  "block0_tax_bps": 0,
+  "min_configurable_creator_fee_bps": 30,
+  "len_equals_idl_size": true
+ },
+ "decoder_C5": {
+  "pump TradeEvent": "observe/trade_decode.py event_v_fields: for the bonding TradeEvent the only variable read is ix_name at offset 258 (field 21); other reads are the fixed legacy offsets before it (_decode_trade), all before field 21. Appended fields (35 quote_transfer_fee, 36 block0_fee) come after field 27 (a vec) and 34, behind every offset read.",
+  "CreateEvent": "event type layout equal (hash), unchanged",
+  "Complete/Migration": "event type layouts equal (hash), unchanged"
+ }
+}

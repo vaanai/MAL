@@ -1,0 +1,21 @@
+{
+ "post": {
+  "n": 16,
+  "by_ix_set": {
+   "[\"pump_amm.boost_buy_and_burn\", \"pump_amm.e445a52e51cb9a1d\"] <- [\"pump_amm.BuyEvent\"]": 10,
+   "[\"pump.e445a52e51cb9a1d\", \"pump.multi_hop_curve_swap\", \"pump_amm.e445a52e51cb9a1d\", \"pump_amm.multi_hop_swap\"] <- [\"pump.TradeEvent\", \"pump_amm.BuyEvent\"]": 2,
+   "[\"pump_amm.e445a52e51cb9a1d\", \"pump_amm.multi_hop_swap\"] <- [\"pump_amm.BuyEvent\"]": 1,
+   "[\"pump_amm.e445a52e51cb9a1d\", \"pump_amm.multi_hop_swap\"] <- [\"pump_amm.SellEvent\"]": 3
+  }
+ },
+ "pre": {
+  "n": 10,
+  "by_ix_set": {
+   "[\"pump_amm.boost_buy_and_burn\", \"pump_amm.e445a52e51cb9a1d\"] <- [\"pump_amm.BuyEvent\"]": 5,
+   "[\"pump.e445a52e51cb9a1d\", \"pump.multi_hop_curve_swap\", \"pump_amm.e445a52e51cb9a1d\", \"pump_amm.multi_hop_swap\"] <- [\"pump.TradeEvent\", \"pump_amm.BuyEvent\"]": 1,
+   "[\"pump_amm.e445a52e51cb9a1d\", \"pump_amm.multi_hop_swap\"] <- [\"pump_amm.SellEvent\"]": 2,
+   "[\"pump_amm.e445a52e51cb9a1d\", \"pump_amm.multi_hop_swap\"] <- [\"pump_amm.BuyEvent\"]": 1,
+   "[\"pump.e445a52e51cb9a1d\", \"pump.multi_hop_curve_swap\", \"pump_amm.e445a52e51cb9a1d\", \"pump_amm.multi_hop_swap\"] <- [\"pump.TradeEvent\", \"pump_amm.SellEvent\"]": 1
+  }
+ }
+}

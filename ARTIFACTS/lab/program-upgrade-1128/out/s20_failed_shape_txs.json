@@ -1,0 +1,69 @@
+{
+ "post": {
+  "buy_exact_quote_in": {
+   "success": 981,
+   "failed": 403,
+   "failed_share": 0.2911849710982659,
+   "words": {
+    "InstructionError:Custom=6040": 305,
+    "InstructionError:IllegalOwner": 12,
+    "InstructionError:Custom=1": 70,
+    "InstructionError:Custom=6000": 7,
+    "InstructionError:ComputationalBudgetExceeded": 1,
+    "InstructionError:Custom=6001": 7,
+    "InstructionError:Custom=14": 1
+   }
+  },
+  "sell": {
+   "success": 1137,
+   "failed": 401,
+   "failed_share": 0.2607282184655397,
+   "words": {
+    "InstructionError:Custom=6004": 176,
+    "InstructionError:Custom=3012": 65,
+    "InstructionError:Custom=1": 8,
+    "InstructionError:Custom=6013": 9,
+    "InstructionError:Custom=11": 2,
+    "InstructionError:Custom=6000": 11,
+    "InstructionError:Custom=0": 1,
+    "InstructionError:Custom=6001": 4,
+    "InstructionError:ComputationalBudgetExceeded": 2,
+    "InstructionError:Custom=3": 1,
+    "InstructionError:Custom=6": 1,
+    "InstructionError:Custom=6014": 5,
+    "InstructionError:Custom=13": 116
+   }
+  }
+ },
+ "pre": {
+  "buy_exact_quote_in": {
+   "success": 641,
+   "failed": 316,
+   "failed_share": 0.33019853709508884,
+   "words": {
+    "InstructionError:Custom=6040": 280,
+    "InstructionError:Custom=1": 36
+   }
+  },
+  "sell": {
+   "success": 530,
+   "failed": 209,
+   "failed_share": 0.2828146143437077,
+   "words": {
+    "InstructionError:Custom=3012": 57,
+    "InstructionError:Custom=1": 5,
+    "InstructionError:Custom=13": 41,
+    "InstructionError:Custom=6013": 2,
+    "InstructionError:Custom=6014": 5,
+    "InstructionError:Custom=6000": 2,
+    "InstructionError:Custom=6004": 79,
+    "InstructionError:Custom=6001": 8,
+    "InstructionError:Custom=3": 1,
+    "InstructionError:Custom=6009": 3,
+    "InstructionError:Custom=11": 5,
+    "InstructionError:Custom=6053": 1
+   }
+  }
+ },
+ "note": "a transaction counts once per instruction; a failed tx counts every matching instruction it carries"
+}

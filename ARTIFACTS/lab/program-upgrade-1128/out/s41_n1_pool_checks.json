@@ -1,0 +1,321 @@
+{
+ "post_new10": [
+  {
+   "pool": "5vBvk8cEPKVfJV2qPyS7sviquXHmxuyfEMpPNqFcNpEg",
+   "owner": "pAMMBay6oceH9fJKBRHGP5D4bD4sWpmSwMn52FMfXEA",
+   "len": 301,
+   "disc": "f19a6d0411b16dbc",
+   "coin_creator_set": true,
+   "mayhem_byte_eq_event": true,
+   "canonical_eq": true,
+   "base_token_account_owner_program": "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb",
+   "quote_token_account_owner_program": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+  },
+  {
+   "pool": "DMk2kJf1qvxNDiAsSCLe3mEZwyBJ3Xd8TXk4vd57uaHt",
+   "owner": "pAMMBay6oceH9fJKBRHGP5D4bD4sWpmSwMn52FMfXEA",
+   "len": 301,
+   "disc": "f19a6d0411b16dbc",
+   "coin_creator_set": true,
+   "mayhem_byte_eq_event": true,
+   "canonical_eq": true,
+   "base_token_account_owner_program": "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb",
+   "quote_token_account_owner_program": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+  },
+  {
+   "pool": "FfeY74LEkWmfKpR69vLtuXTdy39w3tQTkNmv9XshWWHo",
+   "owner": "pAMMBay6oceH9fJKBRHGP5D4bD4sWpmSwMn52FMfXEA",
+   "len": 301,
+   "disc": "f19a6d0411b16dbc",
+   "coin_creator_set": true,
+   "mayhem_byte_eq_event": true,
+   "canonical_eq": true,
+   "base_token_account_owner_program": "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb",
+   "quote_token_account_owner_program": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+  },
+  {
+   "pool": "3zbM5ESaXorNVLodo1wTJdoELdS6uhMAuYmHabETK8km",
+   "owner": "pAMMBay6oceH9fJKBRHGP5D4bD4sWpmSwMn52FMfXEA",
+   "len": 301,
+   "disc": "f19a6d0411b16dbc",
+   "coin_creator_set": true,
+   "mayhem_byte_eq_event": true,
+   "canonical_eq": true,
+   "base_token_account_owner_program": "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb",
+   "quote_token_account_owner_program": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+  },
+  {
+   "pool": "DYG6Xd6WSshknriASEp3DeycZKqzRmJ7f96a8zR2aure",
+   "owner": "pAMMBay6oceH9fJKBRHGP5D4bD4sWpmSwMn52FMfXEA",
+   "len": 301,
+   "disc": "f19a6d0411b16dbc",
+   "coin_creator_set": true,
+   "mayhem_byte_eq_event": true,
+   "canonical_eq": true,
+   "base_token_account_owner_program": "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb",
+   "quote_token_account_owner_program": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+  },
+  {
+   "pool": "Aeb2xapKZjUN7NeKsMeAAnmi6wL5wBhLhfssw1dVCUJr",
+   "owner": "pAMMBay6oceH9fJKBRHGP5D4bD4sWpmSwMn52FMfXEA",
+   "len": 301,
+   "disc": "f19a6d0411b16dbc",
+   "coin_creator_set": true,
+   "mayhem_byte_eq_event": true,
+   "canonical_eq": true,
+   "base_token_account_owner_program": "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb",
+   "quote_token_account_owner_program": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+  },
+  {
+   "pool": "7NF4oxMYEhewUJyNYFuSLcoFHMBNntJMn8aSs6f6PNfg",
+   "owner": "pAMMBay6oceH9fJKBRHGP5D4bD4sWpmSwMn52FMfXEA",
+   "len": 301,
+   "disc": "f19a6d0411b16dbc",
+   "coin_creator_set": true,
+   "mayhem_byte_eq_event": true,
+   "canonical_eq": true,
+   "base_token_account_owner_program": "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb",
+   "quote_token_account_owner_program": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+  },
+  {
+   "pool": "FF8G61SKvq1zw6gy45dQMxrCZGscfpW5diQxhQyFC1x2",
+   "owner": "pAMMBay6oceH9fJKBRHGP5D4bD4sWpmSwMn52FMfXEA",
+   "len": 301,
+   "disc": "f19a6d0411b16dbc",
+   "coin_creator_set": true,
+   "mayhem_byte_eq_event": true,
+   "canonical_eq": true,
+   "base_token_account_owner_program": "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb",
+   "quote_token_account_owner_program": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+  },
+  {
+   "pool": "EZt5B4dhrN63VMN26vXzMjY1hY3H2UNmPvaWgjqNANZc",
+   "owner": "pAMMBay6oceH9fJKBRHGP5D4bD4sWpmSwMn52FMfXEA",
+   "len": 301,
+   "disc": "f19a6d0411b16dbc",
+   "coin_creator_set": true,
+   "mayhem_byte_eq_event": true,
+   "canonical_eq": true,
+   "base_token_account_owner_program": "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb",
+   "quote_token_account_owner_program": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+  },
+  {
+   "pool": "EwDFY4AAJAcVk1Qxt8VRBGYuHL9Hsfa1opY2BkALg83f",
+   "owner": "pAMMBay6oceH9fJKBRHGP5D4bD4sWpmSwMn52FMfXEA",
+   "len": 301,
+   "disc": "f19a6d0411b16dbc",
+   "coin_creator_set": true,
+   "mayhem_byte_eq_event": true,
+   "canonical_eq": true,
+   "base_token_account_owner_program": "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb",
+   "quote_token_account_owner_program": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+  }
+ ],
+ "post_rows_canonical": {
+  "n": 35,
+  "canonical_eq": 35
+ },
+ "pre_rows_canonical": {
+  "n": 37,
+  "canonical_eq": 37
+ },
+ "summary": {
+  "n_post": 10,
+  "owner_len_disc": [
+   [
+    "pAMMBay6oceH9fJKBRHGP5D4bD4sWpmSwMn52FMfXEA",
+    301,
+    "f19a6d0411b16dbc"
+   ]
+  ],
+  "coin_creator_set": 10,
+  "mayhem_eq": 10,
+  "canonical_eq": 10,
+  "token_program_fields": [
+   [
+    "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb",
+    "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+   ]
+  ]
+ },
+ "pre_ctx_slot": 474901714,
+ "pre_pools": [
+  {
+   "pool": "4d8BP3ZAysR3ZmoYejUyqHL2DGL2XXfjXPQZPTwHeoQd",
+   "owner": "pAMMBay6oceH9fJKBRHGP5D4bD4sWpmSwMn52FMfXEA",
+   "len": 301,
+   "disc": "f19a6d0411b16dbc",
+   "coin_creator_set": true,
+   "coin_creator_eq_event": true,
+   "mayhem_byte_eq_event": true,
+   "base_mint_eq_event_mint": true,
+   "canonical_eq": true,
+   "base_token_account_owner_program": "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb",
+   "quote_token_account_owner_program": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+  },
+  {
+   "pool": "2j7j8bBixAHPsxTHvsY4KoG27pABGTown3zzDCroajx6",
+   "owner": "pAMMBay6oceH9fJKBRHGP5D4bD4sWpmSwMn52FMfXEA",
+   "len": 301,
+   "disc": "f19a6d0411b16dbc",
+   "coin_creator_set": true,
+   "coin_creator_eq_event": true,
+   "mayhem_byte_eq_event": true,
+   "base_mint_eq_event_mint": true,
+   "canonical_eq": true,
+   "base_token_account_owner_program": "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb",
+   "quote_token_account_owner_program": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+  },
+  {
+   "pool": "5hecBb6m4yV7Koiijv9FNqaG1u6374qAjfGAyAK1j842",
+   "owner": "pAMMBay6oceH9fJKBRHGP5D4bD4sWpmSwMn52FMfXEA",
+   "len": 301,
+   "disc": "f19a6d0411b16dbc",
+   "coin_creator_set": true,
+   "coin_creator_eq_event": true,
+   "mayhem_byte_eq_event": true,
+   "base_mint_eq_event_mint": true,
+   "canonical_eq": true,
+   "base_token_account_owner_program": "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb",
+   "quote_token_account_owner_program": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+  },
+  {
+   "pool": "3AidggMc3ahRh2TAsCaUBjVHJaWcXSfPSZjMmMtnjfi7",
+   "owner": "pAMMBay6oceH9fJKBRHGP5D4bD4sWpmSwMn52FMfXEA",
+   "len": 301,
+   "disc": "f19a6d0411b16dbc",
+   "coin_creator_set": true,
+   "coin_creator_eq_event": true,
+   "mayhem_byte_eq_event": true,
+   "base_mint_eq_event_mint": true,
+   "canonical_eq": true,
+   "base_token_account_owner_program": "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb",
+   "quote_token_account_owner_program": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+  },
+  {
+   "pool": "8R1asXEB1ADripn1ejgffa42x8SxU99ZLqiycZMFx2cn",
+   "owner": "pAMMBay6oceH9fJKBRHGP5D4bD4sWpmSwMn52FMfXEA",
+   "len": 301,
+   "disc": "f19a6d0411b16dbc",
+   "coin_creator_set": true,
+   "coin_creator_eq_event": true,
+   "mayhem_byte_eq_event": true,
+   "base_mint_eq_event_mint": true,
+   "canonical_eq": true,
+   "base_token_account_owner_program": "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb",
+   "quote_token_account_owner_program": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+  },
+  {
+   "pool": "CqMMTWgsLFfPs1FFDxrhDDWffkD8KrK7xEzatk6JbFxK",
+   "owner": "pAMMBay6oceH9fJKBRHGP5D4bD4sWpmSwMn52FMfXEA",
+   "len": 301,
+   "disc": "f19a6d0411b16dbc",
+   "coin_creator_set": true,
+   "coin_creator_eq_event": true,
+   "mayhem_byte_eq_event": true,
+   "base_mint_eq_event_mint": true,
+   "canonical_eq": true,
+   "base_token_account_owner_program": "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb",
+   "quote_token_account_owner_program": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+  },
+  {
+   "pool": "JE8oFvRsc2vZCe2JLkDFRavU1iaq5GJKTycqK2F7E2XP",
+   "owner": "pAMMBay6oceH9fJKBRHGP5D4bD4sWpmSwMn52FMfXEA",
+   "len": 301,
+   "disc": "f19a6d0411b16dbc",
+   "coin_creator_set": true,
+   "coin_creator_eq_event": true,
+   "mayhem_byte_eq_event": true,
+   "base_mint_eq_event_mint": true,
+   "canonical_eq": true,
+   "base_token_account_owner_program": "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb",
+   "quote_token_account_owner_program": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+  },
+  {
+   "pool": "EAibqdRCMrX8YtAE5i9HLZJ6rNs6vyH1RsgdW6acEq74",
+   "owner": "pAMMBay6oceH9fJKBRHGP5D4bD4sWpmSwMn52FMfXEA",
+   "len": 301,
+   "disc": "f19a6d0411b16dbc",
+   "coin_creator_set": true,
+   "coin_creator_eq_event": true,
+   "mayhem_byte_eq_event": true,
+   "base_mint_eq_event_mint": true,
+   "canonical_eq": true,
+   "base_token_account_owner_program": "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb",
+   "quote_token_account_owner_program": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+  },
+  {
+   "pool": "CbJoNNgyG4kTTP7jMfZ8enbAFnvfpSDnSk8m6Doba8L8",
+   "owner": "pAMMBay6oceH9fJKBRHGP5D4bD4sWpmSwMn52FMfXEA",
+   "len": 301,
+   "disc": "f19a6d0411b16dbc",
+   "coin_creator_set": true,
+   "coin_creator_eq_event": true,
+   "mayhem_byte_eq_event": true,
+   "base_mint_eq_event_mint": true,
+   "canonical_eq": true,
+   "base_token_account_owner_program": "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb",
+   "quote_token_account_owner_program": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+  },
+  {
+   "pool": "P7p1Ex5Yj5Zt94FHvDd2Ku1FHpCiSrcpjHzBKnXSVAK",
+   "owner": "pAMMBay6oceH9fJKBRHGP5D4bD4sWpmSwMn52FMfXEA",
+   "len": 301,
+   "disc": "f19a6d0411b16dbc",
+   "coin_creator_set": true,
+   "coin_creator_eq_event": true,
+   "mayhem_byte_eq_event": true,
+   "base_mint_eq_event_mint": true,
+   "canonical_eq": true,
+   "base_token_account_owner_program": "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb",
+   "quote_token_account_owner_program": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+  },
+  {
+   "pool": "3XxnLJzsDX9miPBNxqp4qSPQzZLrQnHUXPCrax4sEpVX",
+   "owner": "pAMMBay6oceH9fJKBRHGP5D4bD4sWpmSwMn52FMfXEA",
+   "len": 301,
+   "disc": "f19a6d0411b16dbc",
+   "coin_creator_set": true,
+   "coin_creator_eq_event": true,
+   "mayhem_byte_eq_event": true,
+   "base_mint_eq_event_mint": true,
+   "canonical_eq": true,
+   "base_token_account_owner_program": "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb",
+   "quote_token_account_owner_program": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+  },
+  {
+   "pool": "AUoJ6A54tKH9zSoRKH1pB2FVhPjK19qSra8L3AHfYCCS",
+   "owner": "pAMMBay6oceH9fJKBRHGP5D4bD4sWpmSwMn52FMfXEA",
+   "len": 301,
+   "disc": "f19a6d0411b16dbc",
+   "coin_creator_set": true,
+   "coin_creator_eq_event": true,
+   "mayhem_byte_eq_event": true,
+   "base_mint_eq_event_mint": true,
+   "canonical_eq": true,
+   "base_token_account_owner_program": "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb",
+   "quote_token_account_owner_program": "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+  }
+ ],
+ "pre_summary": {
+  "n_requested": 12,
+  "n_read_open": 12,
+  "owner_len_disc": [
+   [
+    "pAMMBay6oceH9fJKBRHGP5D4bD4sWpmSwMn52FMfXEA",
+    301,
+    "f19a6d0411b16dbc"
+   ]
+  ],
+  "coin_creator_set": 12,
+  "mayhem_eq": 12,
+  "canonical_eq": 12,
+  "token_program_fields": [
+   [
+    "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb",
+    "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA"
+   ]
+  ]
+ },
+ "pre_vs_post_fields_equal": true
+}

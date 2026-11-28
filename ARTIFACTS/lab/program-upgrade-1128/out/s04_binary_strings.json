@@ -1,0 +1,135 @@
+{
+ "pump": {
+  "changed_runs_diff": [
+   [
+    {
+     "ctx_old": "gInstruction: SetMaxCurveDepth",
+     "new": "Instruction: SetBlock0TaxBps",
+     "old": "",
+     "op": "insert"
+    },
+    {
+     "ctx_old": "tWritableCreatorFeeRangeInvali",
+     "new": "dBlock0TaxBpsOutOfRangeMultiHopBlock0TaxLegRequire",
+     "old": "",
+     "op": "insert"
+    },
+    {
+     "ctx_old": "x_configurable_creator_fee_bps",
+     "new": "block0_tax_bps must not exceed 10000multi-hop: a curve in its creation slot only routes on the leg that charges the protocol fee, unless the creator trades",
+     "old": "",
+     "op": "insert"
+    }
+   ],
+   [
+    {
+     "ctx_old": "",
+     "new": "Instruction: IdlCreateAccountInstruction: IdlResizeAccountdata_len should always be >= the cur",
+     "old": "",
+     "op": "insert"
+    },
+    {
+     "ctx_old": "rent ",
+     "new": "account",
+     "old": "",
+     "op": "insert"
+    },
+    {
+     "ctx_old": "rent  ",
+     "new": "spaceInstruction:",
+     "old": "",
+     "op": "insert"
+    },
+    {
+     "ctx_old": "rent   ",
+     "new": "IdlCloseAccountInstruction: IdlCreateBufferInstruction: IdlWriteInstruction: IdlSetAuthorityInstruction: IdlSetBufferInstruction: InitializeInstruction: UpdateGlobalAuthorityInstruction: ToggleCreateV2Instruction: ToggleCashbackEnabledInstruction: UpdateHolderRewardConfigInstruction: SetMaxCurveDept",
+     "old": "",
+     "op": "insert"
+    },
+    {
+     "ctx_old": "rent    N",
+     "new": "ot enough SOL to cover for rent exemption.Buy: Not enough SOL to cover for fees.Slippage: Would buy less tokens than expected min_tokens_outcreator has been migrated to sharing configcreator_vault has been migrated to sharing config, use pump:distribute_creator_fees insteadSharing config is not acti",
+     "old": "",
+     "op": "insert"
+    }
+   ]
+  ],
+  "instruction_pieces": {
+   "n_only_new": 2,
+   "n_only_old": 2
+  },
+  "n_only_new_runs": 1,
+  "n_only_old_runs": 2,
+  "new_len": 10485760,
+  "new_sha256": "c6dd30fdf0645a455d4c82fa8fd374f0b5b52f1348828dc93f110f526fca51a3",
+  "new_standalone_runs": [],
+  "new_vs_idl": {
+   "binary_instruction_tokens_not_idl_names": [
+    "AddQuoteControlMintBuybackFeeRecipientNotAuthorizedA",
+    "BuyCreateV2Disabled",
+    "IdlCloseAccount",
+    "IdlCreateAccount",
+    "IdlSetBuffer",
+    "IdlWrite",
+    "UpdateBuybackConfigAn"
+   ],
+   "idl_errors_missing_in_binary": [],
+   "idl_names_without_bare_occurrence": [
+    "AddQuoteControlMint",
+    "Buy",
+    "SetQuoteControlMintReserves",
+    "UpdateBuybackConfig"
+   ],
+   "n_idl_errors": 114,
+   "n_idl_instructions": 57
+  },
+  "old_len": 10485760,
+  "old_sha256": "46bf6c8ee4587208ba682e525184f3cb2ce4fdb5e618cd0cb3b4af246492fac8",
+  "old_standalone_runs": [
+   "rent    N"
+  ],
+  "old_vs_idl": {
+   "binary_instruction_tokens_not_idl_names": [
+    "AddQuoteControlMintBuybackFeeRecipientNotAuthorizedA",
+    "BuyCreateV2Disabled",
+    "IdlCloseAccount",
+    "IdlCreateAccount",
+    "IdlSetBuffer",
+    "IdlWrite",
+    "SetQuoteControlMintReservesNotAuthorizedAlreadyInitializedTooMuchSolRequiredTooLittleSolReceivedMintDoesNotMatchBondingCurveBondingCurveCompleteBondingCurveNotCompleteNotInitializedWithdrawTooFrequentNewSizeShouldBeGreaterThanCurrentSizeAccountTypeNotSupportedInitialRealTokenReservesShouldBeLessThanTokenTotalSupplyInitialVirtualTokenReservesShouldBeGreaterThanInitialRealTokenReservesAllZerosWithdrawAuthorityPoolMigrationFeeShouldBeLessThanFinalRealSolReservesPoolMigrationFeeShouldBeGreaterThanCreatorFeePlusMaxMigrateFeesDisabledMigrateInvalidCreatorBuyZeroAmountNotEnoughTokensToBuySellZeroAmountNotEnoughTokensToSellTruncationDivisionByZeroNotEnoughRemainingAccountsAllFeeRecipientsShouldBeNonZeroUnsortedNotUniqueFeeRecipientsCreatorShouldNotBeZeroStartTimeInThePastEndTimeBeforeStartTimeTimeRangeTooLargeEndTimeBeforeCurrentDaySupplyUpdateForFinishedRangeDayIndexAfterEndIndexInvalidIncentiveMintBuyNotEnoughSolToCoverRentBuyNotEnoughSolToCoverFeesBuySlippageBelowMinTokensOutNameTooLongSymbolTooLongUriTooLongCpitializeMayhemFailedMayhemModeDisabledCreatorMigratedToSharingConfigUnableToDistributeCreatorVaultMigratedToSharingConfigSharingConfigNotActiveUnableToDistributeCreatorFeesToExecutableRecipientBondingCurveAndSharingConfigCreatorMismatchShareholdersAndRemainingAccountsMismatchInvalidShareBpsCashbackNotEnabledAllBuybackFeeRecipientsShouldBeNonZeroNotUniqueBuybackFeeRecipientsBuybackBasisPointsOutOfRangeWrongBuybackFeeRecipientsCountBuybackFeeRecipientMissingUnsupportedQuoteMintInvalidQuoteTokenProgramInvalidAssociatedQuoteBondingCurveQuoteMintWhitelistFullQuoteMintAlreadyWhitelistedQuoteMintNotWhitelistedUnableToDistributeCreatorFeesToUninitializedAccountMayhemModeQuoteMintNotAllowedMissingCashbackAccountsInvalidCashbackAccumulatorInvalidBondingCurveV2InvalidQuoteControlInvalidCashbackRecipientCreatorFeeNotConfigurableCreatorFeeBpsOutOfRangeCreatorFeeNotEditableCreatorFeeNotAllowedForCashbackCoinBondingCurveAlreadyMigratedCashbackDeprecatedHolderRewardCreatorImmutableHolderRewardDisabledHolderRewardRecipientsMismatchHolderRewardsRentFloorHolderRewardTokenAccountMissingCtoNotAllowedForMayhemCoinCtoNewCreatorRequiredCtoNewCreatorNotAllowedCreatorFeeNotConfigurableForQuoteCtoCreatorAccountNotWritableCtoSharedVaultFrozenCashbackCoinNotSupportedCreatorFeesNotSweptFeeTiersEmptyFeeConfigTooShortMultiHopDiscontinuousPathInvalidQuoteBondingCurveQuoteBondingCurveNotEligibleQuotePoolAccountsRequiredQuotePoolNotFoundQuoteReservesOutOfRangeCurveDepthExceededMultiHopHopFeesMismatchQuoteCurveAwaitingMigrationMultiHopMayhemCurveNotSupportedQuoteChainAccountsRequiredQuoteMintNotWritableCreatorFeeRangeInvalidThe",
+    "UpdateBuybackConfigAn"
+   ],
+   "idl_errors_missing_in_binary": [
+    "block0_tax_bps must not exceed 10000",
+    "multi-hop: a curve in its creation slot only routes on the leg that charges the protocol fee, unless the creator trades"
+   ],
+   "idl_names_without_bare_occurrence": [
+    "AddQuoteControlMint",
+    "Buy",
+    "SetBlock0TaxBps",
+    "SetQuoteControlMintReserves",
+    "UpdateBuybackConfig"
+   ],
+   "n_idl_errors": 114,
+   "n_idl_instructions": 57
+  },
+  "pages_4k": {
+   "differing": 478,
+   "total": 2560
+  },
+  "pieces_only_new": [
+   "SetBlock0TaxBps",
+   "SetQuoteControlMintReservesNotAuthorizedAlreadyInitializedTooMuchSolRequiredTooLittleSolReceivedMintDoesNotMatchBondingCurveBondingCurveCompleteBondingCurveNotCompleteNotInitializedWithdrawTooFrequentNewSizeShouldBeGreaterThanCurrentSizeAccountTypeNotSupportedInitialRealTokenReservesShouldBeLessThanTokenTotalSupplyInitialVirtualTokenReservesShouldBeGreaterThanInitialRealTokenReservesAllZerosWithdr"
+  ],
+  "pieces_only_old": [
+   "SetQuoteControlMintReservesNotAuthorizedAlreadyInitializedTooMuchSolRequiredTooLittleSolReceivedMintDoesNotMatchBondingCurveBondingCurveCompleteBondingCurveNotCompleteNotInitializedWithdrawTooFrequentNewSizeShouldBeGreaterThanCurrentSizeAccountTypeNotSupportedInitialRealTokenReservesShouldBeLessThanTokenTotalSupplyInitialVirtualTokenReservesShouldBeGreaterThanInitialRealTokenReservesAllZerosWithdr",
+   "rent    N"
+  ],
+  "runs": {
+   "new": 63,
+   "old": 64,
+   "only_new": 1,
+   "only_old": 2
+  }
+ }
+}

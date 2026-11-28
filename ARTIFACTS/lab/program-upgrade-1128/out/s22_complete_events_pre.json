@@ -1,0 +1,193 @@
+{
+ "mode": "pre",
+ "K": 5,
+ "n_kept": 5,
+ "n_candidates_tried": 6,
+ "kept": [
+  {
+   "migration_slot": 474714967,
+   "bc_sigs_listed": 100,
+   "fetched": 1,
+   "found": true,
+   "slot": 474714965,
+   "sig": "53ck91CFTGd9AvizZGFRr7E5b6vCe6m25UT5dMBjPz4bDaSfWtuVe5GPhDqKUDjvuL6LUvnyAbjkuvemMGChbaXo",
+   "slot_ok": true,
+   "blob_len": [
+    144
+   ],
+   "trailing": [
+    0
+   ],
+   "unmatched": [],
+   "unknown_disc": 0
+  },
+  {
+   "migration_slot": 474714774,
+   "bc_sigs_listed": 100,
+   "fetched": 1,
+   "found": true,
+   "slot": 474714774,
+   "sig": "51W2jr3dKEBPh6jxCG1wdRnqi4XQhiJ3LVPNKwS4LLANrmxJivS4mezrvGD6xn5b7JBmp1cLfv4yPoTqmeGJpidR",
+   "slot_ok": true,
+   "blob_len": [
+    144
+   ],
+   "trailing": [
+    0
+   ],
+   "unmatched": [],
+   "unknown_disc": 0
+  },
+  {
+   "migration_slot": 474714686,
+   "bc_sigs_listed": 100,
+   "fetched": 1,
+   "found": true,
+   "slot": 474714685,
+   "sig": "5hxFEkHzgMBUAaSnStC6FB9rGzYkYwUSx9mQBqdahfvaDoPGPLiTHLZxNsnTzsf3v2XKGzs1CD4gEGLMtWrhSS8d",
+   "slot_ok": true,
+   "blob_len": [
+    144
+   ],
+   "trailing": [
+    0
+   ],
+   "unmatched": [],
+   "unknown_disc": 0
+  },
+  {
+   "migration_slot": 474714592,
+   "bc_sigs_listed": 100,
+   "fetched": 1,
+   "found": true,
+   "slot": 474714592,
+   "sig": "4WGyWpPkJx7vpJiGrEPW7XE6aQuE6wTqrfjNQgeH6TeczWWhEESREji8qXguPBazCpefwRTnSVMABE5FCMiMdKsr",
+   "slot_ok": true,
+   "blob_len": [
+    144
+   ],
+   "trailing": [
+    0
+   ],
+   "unmatched": [],
+   "unknown_disc": 0
+  },
+  {
+   "migration_slot": 474714033,
+   "bc_sigs_listed": 100,
+   "fetched": 1,
+   "found": true,
+   "slot": 474714032,
+   "sig": "3Z4htSVJHk1tN23K8XVuJGw9mGraULd4KLK6h1xgbDMAnqdNuTj24TivMs6fn9AmGP3XdA5AR5cF8GYskNkHN1co",
+   "slot_ok": true,
+   "blob_len": [
+    144
+   ],
+   "trailing": [
+    0
+   ],
+   "unmatched": [],
+   "unknown_disc": 0
+  }
+ ],
+ "tried": [
+  {
+   "migration_slot": 474715092,
+   "bc_sigs_listed": 100,
+   "fetched": 40,
+   "found": false
+  },
+  {
+   "migration_slot": 474714967,
+   "bc_sigs_listed": 100,
+   "fetched": 1,
+   "found": true,
+   "slot": 474714965,
+   "sig": "53ck91CFTGd9AvizZGFRr7E5b6vCe6m25UT5dMBjPz4bDaSfWtuVe5GPhDqKUDjvuL6LUvnyAbjkuvemMGChbaXo",
+   "slot_ok": true,
+   "blob_len": [
+    144
+   ],
+   "trailing": [
+    0
+   ],
+   "unmatched": [],
+   "unknown_disc": 0
+  },
+  {
+   "migration_slot": 474714774,
+   "bc_sigs_listed": 100,
+   "fetched": 1,
+   "found": true,
+   "slot": 474714774,
+   "sig": "51W2jr3dKEBPh6jxCG1wdRnqi4XQhiJ3LVPNKwS4LLANrmxJivS4mezrvGD6xn5b7JBmp1cLfv4yPoTqmeGJpidR",
+   "slot_ok": true,
+   "blob_len": [
+    144
+   ],
+   "trailing": [
+    0
+   ],
+   "unmatched": [],
+   "unknown_disc": 0
+  },
+  {
+   "migration_slot": 474714686,
+   "bc_sigs_listed": 100,
+   "fetched": 1,
+   "found": true,
+   "slot": 474714685,
+   "sig": "5hxFEkHzgMBUAaSnStC6FB9rGzYkYwUSx9mQBqdahfvaDoPGPLiTHLZxNsnTzsf3v2XKGzs1CD4gEGLMtWrhSS8d",
+   "slot_ok": true,
+   "blob_len": [
+    144
+   ],
+   "trailing": [
+    0
+   ],
+   "unmatched": [],
+   "unknown_disc": 0
+  },
+  {
+   "migration_slot": 474714592,
+   "bc_sigs_listed": 100,
+   "fetched": 1,
+   "found": true,
+   "slot": 474714592,
+   "sig": "4WGyWpPkJx7vpJiGrEPW7XE6aQuE6wTqrfjNQgeH6TeczWWhEESREji8qXguPBazCpefwRTnSVMABE5FCMiMdKsr",
+   "slot_ok": true,
+   "blob_len": [
+    144
+   ],
+   "trailing": [
+    0
+   ],
+   "unmatched": [],
+   "unknown_disc": 0
+  },
+  {
+   "migration_slot": 474714033,
+   "bc_sigs_listed": 100,
+   "fetched": 1,
+   "found": true,
+   "slot": 474714032,
+   "sig": "3Z4htSVJHk1tN23K8XVuJGw9mGraULd4KLK6h1xgbDMAnqdNuTj24TivMs6fn9AmGP3XdA5AR5cF8GYskNkHN1co",
+   "slot_ok": true,
+   "blob_len": [
+    144
+   ],
+   "trailing": [
+    0
+   ],
+   "unmatched": [],
+   "unknown_disc": 0
+  }
+ ],
+ "bars": {
+  "field_inequalities": 0,
+  "blob_len_not_144": 0,
+  "trailing_nonzero": 0,
+  "unknown_disc": 0
+ },
+ "rpc_attempts": 52
+}

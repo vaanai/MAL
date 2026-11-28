@@ -1,0 +1,18 @@
+{
+ "pre_non_mayhem_n": 25,
+ "pre_median_product": 17584505415101412593676750,
+ "post": [],
+ "post_non_mayhem_n": 19,
+ "post_max_rel_distance": 2.1094305491538938e-08,
+ "post_n_within_1e-6": 19,
+ "pre_max_rel_distance": 6.500738627405466e-08,
+ "pre_n_within_1e-6": 25,
+ "outlier": {
+  "sig": "22UDcoA8xVM3eSHkvUfbFg8YiUL8ekigfUYpGWDtSLWuE5B56dTEph6LYE85N2E7raphMtoVwFpTfzSkQCaXZqRJ",
+  "sol_amount": 95276399924,
+  "mint_amount": 184563075851654,
+  "product": 17584505426045733400874296,
+  "rel_distance_to_pre_median": 6.22384340579671e-10
+ },
+ "range_endpoint_product": 17584505693982014232059820
+}

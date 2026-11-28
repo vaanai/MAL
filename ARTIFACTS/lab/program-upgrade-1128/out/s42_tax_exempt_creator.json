@@ -1,0 +1,12 @@
+{
+ "n": 35,
+ "closed_or_absent": 0,
+ "len": {
+  "206": 35
+ },
+ "exempt_equals_creator": 29,
+ "exempt_default": 2,
+ "exempt_other": 4,
+ "created_at_slot_gt_0": 33,
+ "ctx_slot": 474898617
+}

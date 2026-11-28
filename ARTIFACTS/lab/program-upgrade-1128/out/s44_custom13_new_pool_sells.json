@@ -1,0 +1,39 @@
+{
+ "n_custom13_new_pool_sells": 116,
+ "raiser": {
+  "Au4HEtTkwKz4eTbskbaUCsKyRCWNMuUqySkDSY5n2384": 116
+ },
+ "ix_program": {
+  "Au4HEtTk": 116
+ },
+ "ix_index": {
+  "3": 116
+ },
+ "distinct_pools": 3,
+ "distinct_mints": 3,
+ "mint_owner_and_extensions": {
+  "Token-2022|[18, 19]": 3
+ },
+ "failing_txs_by_mint_owner": {
+  "Token-2022": 116
+ },
+ "successful_sells_on_the_same_pools": 11,
+ "pools_with_failure_and_a_success": 3,
+ "sells_by_class_and_success_all_new_old": {
+  "NEW|ok": 963,
+  "NEW|failed": 342,
+  "OLD|ok": 169,
+  "OLD|failed": 59,
+  "UNKNOWN|ok": 5
+ },
+ "amm_sell_where": {
+  "top": 116
+ },
+ "amm_invoked_in_logs": 0,
+ "amm_success_in_logs": 0,
+ "n_log_truncated": 0,
+ "n_amm_sell_ixs_per_tx": {
+  "1": 116
+ },
+ "rpc_attempts": 1
+}

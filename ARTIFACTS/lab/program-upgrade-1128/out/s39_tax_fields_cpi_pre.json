@@ -1,0 +1,63 @@
+{
+ "counts": {
+  "A|CloseUserVolumeAccumulatorEvent": 210,
+  "A|CollectCreatorFeeEvent": 5,
+  "A|CreateEvent": 18,
+  "A|DistributeCreatorFeesEvent": 6,
+  "A|DistributeFeeToHoldersEvent": 55,
+  "A|InitUserVolumeAccumulatorEvent": 16,
+  "A|MigrateBondingCurveCreatorEvent": 2,
+  "A|SweepBondingCurveFeeEvent": 153,
+  "A|TradeEvent": 1692,
+  "A|TradeEvent|buy": 899,
+  "A|TradeEvent|sell": 793,
+  "A|TradeEvent|trailing8": 1692,
+  "A|pump_top_ix|buy": 47,
+  "A|pump_top_ix|buy_exact_quote_in_v2": 9,
+  "A|pump_top_ix|buy_exact_quote_in_v3": 63,
+  "A|pump_top_ix|buy_exact_sol_in": 35,
+  "A|pump_top_ix|buy_v2": 12,
+  "A|pump_top_ix|buy_v3": 58,
+  "A|pump_top_ix|claim_cashback_v2": 6,
+  "A|pump_top_ix|close_user_volume_accumulator": 180,
+  "A|pump_top_ix|collect_creator_fee": 7,
+  "A|pump_top_ix|collect_creator_fee_v2": 5,
+  "A|pump_top_ix|create_v2": 16,
+  "A|pump_top_ix|distribute_creator_fees": 2,
+  "A|pump_top_ix|distribute_creator_fees_v2": 2,
+  "A|pump_top_ix|distribute_fee_to_holders": 55,
+  "A|pump_top_ix|extend_account": 1,
+  "A|pump_top_ix|init_user_volume_accumulator": 1,
+  "A|pump_top_ix|sell": 90,
+  "A|pump_top_ix|sell_v2": 17,
+  "A|pump_top_ix|sell_v3": 109,
+  "A|pump_top_ix|sweep_creator_fee": 66,
+  "A|pump_top_ix|sweep_protocol_fee": 90,
+  "M|pump_top_ix|migrate": 3,
+  "M|pump_top_ix|migrate_v2": 30
+ },
+ "cpi_programs_under_pump_top_level_ix": {
+  "11111111111111111111111111111111": 1040,
+  "6EF8rrecthR5Dkzon8Nwu78hRvfCKubJ14M5uBEwF6P": 887,
+  "ATokenGPvbdGVxr1b2hvZbsiqW5xWH25efTNsLJA8knL": 225,
+  "MAyhSmzXzV1pTf7LsNkrNwkWKTo4ougAJ1PPg47MD4e": 9,
+  "TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA": 413,
+  "TokenzQdBNbLqP5VEhdkAS6EPFLC1PHnBqCXEpPxuEb": 1557,
+  "pAMMBay6oceH9fJKBRHGP5D4bD4sWpmSwMn52FMfXEA": 108,
+  "pfeeUxB6jkeY1Hxd7CsFCAjcbHA9rWtchMGdZ6VojVZ": 210
+ },
+ "create_variants": {
+  "mayhem=False|cashback=False|quote_wsol=False": 3,
+  "mayhem=False|cashback=False|quote_wsol=True": 5,
+  "mayhem=True|cashback=False|quote_wsol=True": 10
+ },
+ "mode": "pre",
+ "trade_ix_name": {
+  "buy": 384,
+  "buy_exact_quote_in": 441,
+  "buy_exact_sol_in": 39,
+  "multi_hop_swap": 66,
+  "sell": 762
+ },
+ "unknown_pump_event_disc": {}
+}

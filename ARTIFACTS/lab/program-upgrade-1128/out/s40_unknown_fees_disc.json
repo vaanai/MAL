@@ -1,0 +1,34 @@
+{
+ "post": {
+  "txs_with_fees_228edb70_ix": 1,
+  "top_level_program_prefixes": {
+   "pfeeUxB6": 1,
+   "ComputeB": 1,
+   "ATokenGP": 1
+  },
+  "top_level_caller_prefix_of_the_cpi": {
+   "TOP-LEVEL": 6
+  },
+  "tx_contains_pump": 0,
+  "tx_contains_pump_amm": 0,
+  "ix_where_and_data_len": {
+   "('top', 9)": 6
+  }
+ },
+ "pre": {
+  "txs_with_fees_228edb70_ix": 2,
+  "top_level_program_prefixes": {
+   "pfeeUxB6": 2,
+   "ComputeB": 2,
+   "ATokenGP": 2
+  },
+  "top_level_caller_prefix_of_the_cpi": {
+   "TOP-LEVEL": 7
+  },
+  "tx_contains_pump": 0,
+  "tx_contains_pump_amm": 0,
+  "ix_where_and_data_len": {
+   "('top', 9)": 7
+  }
+ }
+}
