@@ -1,6 +1,6 @@
 """Item (c1) of QP-RULING-1115: the shape of PumpSwap buy / buy_exact_quote_in / sell instructions that landed (top-level or inner), post (A1 + M) vs pre (P + M_pre),
 WSOL-quoted (account 4 == WSOL): 8-byte discriminator, data length, account count; at the fixed and PDA positions the address the executor derives (tools/pumpswap_tx.py
-at e5fd255b, imported unchanged from a scratch copy: pda/ata/event_authority/global_volume_accumulator/user_volume_accumulator/creator_vault_authority/pool_v2/fee_config);
+at e85447f8, imported unchanged from a scratch copy: pda/ata/event_authority/global_volume_accumulator/user_volume_accumulator/creator_vault_authority/pool_v2/fee_config);
 failed txs carrying these discriminators by error word; and the owner program of each account position (getMultipleAccounts, NOW, for up to 200 instructions per side per group).
 Nothing is built, signed, simulated or sent. Run with /data/mal/venv/bin/python (solders)."""
 import collections, gzip, importlib.util, json, os, sys
@@ -8,7 +8,7 @@ from pathlib import Path
 sys.argv = [sys.argv[0]]
 exec(open("s06_parity.py").read().split("acc = dict(")[0])
 from common import LClient, OUT
-spec = importlib.util.spec_from_file_location("pst", "/data2/mal/scratch/a3-repin-1128/pumpswap_tx_e5fd255b.py"); pst = importlib.util.module_from_spec(spec); sys.modules["pst"] = pst; spec.loader.exec_module(pst)
+spec = importlib.util.spec_from_file_location("pst", "/data2/mal/scratch/a3-repin-1128/pumpswap_tx_e85447f8.py"); pst = importlib.util.module_from_spec(spec); sys.modules["pst"] = pst; spec.loader.exec_module(pst)
 from solders.pubkey import Pubkey
 P = Pubkey.from_string
 BASE = Path(os.environ.get("A3_BASE", "/data2/mal/scratch/a3-repin-1128"))
